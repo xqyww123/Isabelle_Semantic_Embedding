@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 async def theory_info(connection: "Connection", theory_name: str) -> tuple[str, str]:
     """Resolve a theory name to (long_name, file_path) via Isabelle callback."""
-    return tuple(await connection.callback("Context.theory_long_name_and_path", theory_name))
+    return tuple(await connection.callback("Context.theory_long_name_and_path", (None, theory_name)))
 
 
 async def get_session_databases(connection: "Connection") -> list[tuple[str, str]]:

@@ -213,7 +213,8 @@ def _strip_trailing_begin(source: str) -> str:
 
 
 async def _get_definition_with_pos(
-    connection: Connection, kind: EntityKind, uk: universal_key
+    connection: Connection, kind: EntityKind, uk: universal_key,
+    ctxt: Any = None,
 ) -> tuple[str, IsabellePosition] | None:
     """Look up the source code and position of the command defining an entity.
 
@@ -226,7 +227,7 @@ async def _get_definition_with_pos(
     """
     from Isabelle_RPC_Host.context import entities_of
     from .hover import command_at_position
-    entries, _ = await entities_of(connection, [kind])
+    entries, _ = await entities_of(connection, [kind], ctxt=ctxt)
     pos = None
     for key, _, p in entries:
         if key == uk:
@@ -246,14 +247,15 @@ async def _get_definition_with_pos(
 
 
 async def _get_definition_source(
-    connection: Connection, kind: EntityKind, uk: universal_key
+    connection: Connection, kind: EntityKind, uk: universal_key,
+    ctxt: Any = None,
 ) -> str | None:
     """Look up the source code of the command defining an entity.
 
     Convenience wrapper around `_get_definition_with_pos` that discards
     the position.
     """
-    result = await _get_definition_with_pos(connection, kind, uk)
+    result = await _get_definition_with_pos(connection, kind, uk, ctxt=ctxt)
     if result is None:
         return None
     source, _ = result
@@ -265,12 +267,13 @@ async def query_by_name_raw(
     kind: EntityKind,
     name: str,
     with_pretty: bool = True,
+    ctxt: Any = None,
 ) -> tuple[str, universal_key]:
     """Look up entity by kind and name, returning ``(semantic_text, universal_key)``.
 
     Raises `UndefinedEntity`, `IsabelleError`, or `LookupError` (not yet interpreted).
     """
-    uk = await universal_key_of(connection, kind, name)
+    uk = await universal_key_of(connection, kind, name, ctxt=ctxt)
     sem = Semantic_DB.query(uk, with_pretty=with_pretty)
     if sem is None:
         raise LookupError(
@@ -436,7 +439,7 @@ async def interpret_theories_by_names(connection: Connection, names: list[str]) 
     """Interpret theories by name (short or long).
     Resolves names, skips already-interpreted theories, and interprets the rest.
     Calls back into Isabelle ML via the Semantic_Store.interpret_theories callback."""
-    await connection.callback("Semantic_Store.interpret_theories", names)
+    await connection.callback("Semantic_Store.interpret_theories", (None, names))
 
 
 _RERANK_FETCH_MULTIPLIER = 4
@@ -662,6 +665,8 @@ class Semantic_Vector_Store(Vector_Store):
         type_patterns: list[str] = [],
         theories_include: list[str] = [],
         name_contains: list[str] = [],
+        target_type: str = "",
+        ctxt: Any = None,
     ) -> tuple[list[tuple[float, 'SemanticRecord']], list[str]]:
         """Search the k closest entities to query, filtered by kinds and domain.
         Returns (results, warnings) where results are (score, record) pairs
@@ -674,6 +679,8 @@ class Semantic_Vector_Store(Vector_Store):
         Pattern/theory filters (empty = no restriction):
           term_patterns: Isabelle term pattern strings (structural subterm matching)
           type_patterns: Isabelle type pattern strings (type matching)
+          target_type: induction/case-split rule target type (silently ignored
+            for other kinds; bidirectional Sign.typ_instance, wildcards allowed)
           theories_include: only entities from these theories
         """
         warnings: list[str] = []
@@ -690,7 +697,9 @@ class Semantic_Vector_Store(Vector_Store):
                                      term_patterns=term_patterns,
                                      type_patterns=type_patterns,
                                      theories_include=theories_include,
-                                     name_contains=name_contains)
+                                     name_contains=name_contains,
+                                     target_type=target_type,
+                                     ctxt=ctxt)
             candidates = [uk for uk, _, _ in entries]
             for uk, name, _ in entries:
                 candidate_names[uk] = name
@@ -703,7 +712,9 @@ class Semantic_Vector_Store(Vector_Store):
                                      term_patterns=term_patterns,
                                      type_patterns=type_patterns,
                                      theories_include=theories_include,
-                                     name_contains=name_contains)
+                                     name_contains=name_contains,
+                                     target_type=target_type,
+                                     ctxt=ctxt)
             candidates = [uk for uk, _, _ in entries]
             for uk, name, _ in entries:
                 candidate_names[uk] = name
@@ -944,7 +955,8 @@ async def _contains(arg: Any, connection: Connection) -> list[bool]:
 async def _query_knn(arg: Any, connection: Connection) -> tuple[
         list[tuple[float, tuple[int, str]]], list[str]]:
     (query_str, k, kind_ints, domain_raw,
-     term_patterns, type_patterns, theories_include, name_contains) = arg
+     term_patterns, type_patterns, theories_include, name_contains,
+     target_type) = arg
     kinds = [EntityKind(ki) for ki in kind_ints]
     # Decode domain tagged union: (tag, payload)
     domain_tag, domain_payload = domain_raw
@@ -964,7 +976,8 @@ async def _query_knn(arg: Any, connection: Connection) -> tuple[
         term_patterns=list(term_patterns),
         type_patterns=list(type_patterns),
         theories_include=list(theories_include),
-        name_contains=list(name_contains))
+        name_contains=list(name_contains),
+        target_type=str(target_type))
     return ([(score, (int(rec.kind), rec.name)) for score, rec in results],
             list(warnings))
 

@@ -12,6 +12,10 @@ signature THEORY_STRUCTURE = sig
   val get_elimination_rules_with_positions  : Context.generic -> (string * Position.T * thm) list
   val get_induction_rules_with_positions    : Context.generic -> (string * Position.T * thm) list
   val get_case_split_rules_with_positions   : Context.generic -> (string * Position.T * thm) list
+  (* Schema guard for name-based induction/case-split detection: conclusion
+     and some premise tail both end in the same schematic variable (possibly
+     0-ary, for case-split rules whose conclusion is a bare Boolean). *)
+  val has_rule_shape : thm -> bool
   val get_entities_with_positions : Context.generic -> Universal_Key.entity list ->
     (string * Position.T) list
   val get_theorems_with_positions_of : Context.generic -> Universal_Key.entity list ->
@@ -229,37 +233,97 @@ val get_elimination_rules_with_positions =
     Item_Net.content (#safeEs cs) @ Item_Net.content (#unsafeEs cs)) #"E"
 end
 
-(* Get induction / case-split rules from Induct.dest_rules.
-   The registration key (first element of each pair) is discarded;
-   Thm.get_name_hint provides the actual theorem name. *)
+(* Get induction / case-split rules by unioning:
+   1. Induct.dest_rules — theorems tagged with [induct] / [cases].
+   2. Fact-space scan by name suffix, guarded by has_rule_shape. Needed
+      because class-axiom rules (e.g. Orderings.wellorder_class.less_induct)
+      are not registered in the [induct] table. *)
 local
-fun get_induct_rules_with_positions selector context =
+
+fun strip_trueprop (Const (\<^const_name>\<open>Trueprop\<close>, _) $ x) = x
+  | strip_trueprop t = t
+
+fun schematic_head t =
+  case Term.strip_comb (strip_trueprop t) of
+    (Var (v, _), _) => SOME v
+  | _ => NONE
+
+fun tail_concl t =
+  let val body = Term.strip_all_body t
+      val c = Logic.strip_imp_concl body
+  in if c aconv t then c else tail_concl c end
+
+fun name_ends_in_any suffixes name =
+  let val base = Long_Name.base_name name
+  in exists (fn s => String.isSuffix s base) suffixes end
+
+fun has_rule_shape_impl thm =
+  let
+    val body = Term.strip_all_body (Thm.prop_of thm)
+    val prems = Logic.strip_imp_prems body
+    val concl = Logic.strip_imp_concl body
+  in
+    case schematic_head concl of
+      NONE => false
+    | SOME p =>
+        exists (fn prem =>
+          case schematic_head (tail_concl prem) of
+            SOME q => p = q
+          | NONE => false) prems
+  end
+
+fun get_induct_rules_with_positions selector suffixes context =
   let
     val thy = Context.theory_of context
     val thy_prefix = Context.theory_base_name thy ^ "."
     val ctxt = Context.cases Proof_Context.init_global I context
     val fact_space = Facts.space_of (Proof_Context.facts_of ctxt)
     val seen : unit Strhashtab.table = Strhashtab.empty 64
-    val rules = selector (Induct.dest_rules ctxt)
-  in
-    map_filter (fn (_, thm) =>
-      let val thm = Thm.transfer thy thm
-      in if not (Thm.has_name_hint thm) then NONE
-         else let val name = Thm.get_name_hint thm
-         in if Strhashtab.defined seen name then NONE
-            else if not (String.isPrefix thy_prefix name) then NONE
-            else (Strhashtab.update seen (name, ());
-                  let val pos = case try (Name_Space.the_entry fact_space) name of
-                          SOME entry => #pos entry | NONE => Position.none
-                  in SOME (name, pos, thm) end)
-         end
-      end) rules
-  end
+    fun pos_of name =
+      case try (Name_Space.the_entry fact_space) name of
+        SOME entry => #pos entry | NONE => Position.none
+
+    val src1 = selector (Induct.dest_rules ctxt)
+      |> map_filter (fn (_, thm) =>
+          let val thm = Thm.transfer thy thm in
+            if not (Thm.has_name_hint thm) then NONE
+            else let val name = Thm.get_name_hint thm in
+              if Strhashtab.defined seen name
+                 orelse not (String.isPrefix thy_prefix name) then NONE
+              else (Strhashtab.update seen (name, ());
+                    SOME (name, pos_of name, thm))
+            end
+          end)
+
+    val (parent_facts, facts) = Context.cases
+      (fn thy => (map Global_Theory.facts_of (Theory.parents_of thy), Global_Theory.facts_of thy))
+      (fn ctxt => ([Global_Theory.facts_of (Proof_Context.theory_of ctxt)], Proof_Context.facts_of ctxt))
+      context
+    val src2 = Facts.dest_static false parent_facts facts
+      |> maps (fn (name, thms) =>
+          if not (name_ends_in_any suffixes name) then []
+          else map_filter (fn thm =>
+            let val thm = Thm.transfer thy thm
+                val key = if Thm.has_name_hint thm then Thm.get_name_hint thm else name
+            in if Strhashtab.defined seen key
+                  orelse not (String.isPrefix thy_prefix key)
+                  orelse not (has_rule_shape_impl thm) then NONE
+               else (Strhashtab.update seen (key, ());
+                     SOME (name, pos_of name, thm))
+            end) thms)
+  in src1 @ src2 end
+
 in
+
+val has_rule_shape = has_rule_shape_impl
+
 val get_induction_rules_with_positions =
-  get_induct_rules_with_positions (fn r => #type_induct r @ #pred_induct r)
+  get_induct_rules_with_positions
+    (fn r => #type_induct r @ #pred_induct r) ["_induct", "_ind"]
 val get_case_split_rules_with_positions =
-  get_induct_rules_with_positions (fn r => #type_cases r @ #pred_cases r)
+  get_induct_rules_with_positions
+    (fn r => #type_cases r @ #pred_cases r) ["_cases", "_case"]
+
 end
 
 (* Look up name and position for a list of entities *)

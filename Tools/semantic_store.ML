@@ -30,7 +30,7 @@ signature SEMANTIC_STORE = sig
 
   (* Create a callback that Python can invoke to interpret a list of theories
      by name (short or long). Resolves names, skips already-interpreted ones. *)
-  val make_interpret_theory_callback : Context.generic -> Remote_Procedure_Calling.callback'
+  val make_interpret_theory_callback : Context_Callbacks.context_unpacker -> Remote_Procedure_Calling.callback'
 
   (* Config option: when true, Semantic_Vector_Store._auto_embed will
      automatically trigger semantic interpretation for missing theories. *)
@@ -51,7 +51,8 @@ signature SEMANTIC_STORE = sig
     {query_text: semantics, k: int, kinds: Universal_Key.entity_kind list,
      domain: search_domain,
      term_patterns: string list, type_patterns: string list,
-     theories_include: string list, name_contains: string list} ->
+     theories_include: string list, name_contains: string list,
+     target_type: string} ->
     (real * Universal_Key.entity) list * string list
 
   (* Embed semantic interpretations into vectors for the given theories
@@ -70,7 +71,7 @@ signature SEMANTIC_STORE = sig
 
   (* Context callbacks with infra filters and theorem cache baked in.
      Computes infra filters once and returns all entity callbacks. *)
-  val make_entity_callbacks : Context.generic ->
+  val make_entity_callbacks : Context.generic -> Context_Callbacks.context_unpacker ->
     {constants: Remote_Procedure_Calling.callback',
      theorems: Remote_Procedure_Calling.callback',
      types: Remote_Procedure_Calling.callback',
@@ -360,15 +361,59 @@ fun extract_elim_rules ctx =
   let val cs = Classical.rep_cs (Classical.get_cs ctx)
   in map #1 (Item_Net.content (#safeEs cs) @ Item_Net.content (#unsafeEs cs)) end
 
-fun extract_induct_rules ctx =
-  let val ctxt = Context.cases Proof_Context.init_global I ctx
-      val {type_induct, pred_induct, ...} = Induct.dest_rules ctxt
-  in map snd (type_induct @ pred_induct) end
+(* Query-time counterpart of Theory_Structure.get_induct_rules_with_positions:
+   both sites surface the same rule set (Induct.dest_rules + suffix-matched
+   fact scan with has_rule_shape). Specific to induction / case-split rules. *)
+local
+fun name_ends_in_any suffixes name =
+  let val base = Long_Name.base_name name
+  in exists (fn s => String.isSuffix s base) suffixes end
 
-fun extract_case_split_rules ctx =
-  let val ctxt = Context.cases Proof_Context.init_global I ctx
-      val {type_cases, pred_cases, ...} = Induct.dest_rules ctxt
-  in map snd (type_cases @ pred_cases) end
+fun extract_induct_or_cases_rules selector suffixes ctx =
+  let
+    val thy = Context.theory_of ctx
+    val ctxt = Context.cases Proof_Context.init_global I ctx
+    val seen : unit Strhashtab.table = Strhashtab.empty 64
+
+    val src1 = selector (Induct.dest_rules ctxt)
+      |> map_filter (fn (_, thm) =>
+          let val thm = Thm.transfer thy thm in
+            if not (Thm.has_name_hint thm) then SOME thm
+            else let val n = Thm.get_name_hint thm in
+              if Strhashtab.defined seen n then NONE
+              else (Strhashtab.update seen (n, ()); SOME thm)
+            end
+          end)
+
+    (* Scan ALL visible facts (including those inherited from parent theories),
+       not only facts new to the current theory. Many useful induction rules
+       (e.g. wellorder_class.less_induct, nat_less_induct) are NOT registered
+       in Induct.dest_rules and live in parent theories — restricting to
+       current-theory-only facts via `Facts.dest_static false parent_facts`
+       silently drops them. The `seen` table further down already prevents
+       double-counting against src1's names. *)
+    val facts = Context.cases Global_Theory.facts_of Proof_Context.facts_of ctx
+    val src2 = Facts.dest_static false [] facts
+      |> maps (fn (name, thms) =>
+          if not (name_ends_in_any suffixes name) then []
+          else map_filter (fn thm =>
+            let val thm = Thm.transfer thy thm
+                val k = if Thm.has_name_hint thm then Thm.get_name_hint thm else name
+            in if Strhashtab.defined seen k
+                  orelse not (Theory_Structure.has_rule_shape thm) then NONE
+               else (Strhashtab.update seen (k, ()); SOME thm)
+            end) thms)
+  in src1 @ src2 end
+in
+
+val extract_induct_rules =
+  extract_induct_or_cases_rules
+    (fn r => #type_induct r @ #pred_induct r) ["_induct", "_ind"]
+val extract_case_split_rules =
+  extract_induct_or_cases_rules
+    (fn r => #type_cases r @ #pred_cases r) ["_cases", "_case"]
+
+end
 
 (* --- Theorem cache: pre-computed non-infra theorems with universal keys --- *)
 
@@ -433,35 +478,36 @@ fun dedup_against existing new_entries =
 
 (* Convenience callbacks with infra filters and theorem cache baked in.
    Processes any uncached facts at creation time so callbacks see 0 uncached. *)
-fun make_entity_callbacks context =
-  let val {is_infra_const, is_infra_thm, is_infra_type, is_infra_class, is_infra_locale} =
-        Infra_Filter.gen_infra_filters context
+fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_Callbacks.context_unpacker) =
+  let val {is_infra_const, is_infra_thm, is_infra_induct_thm,
+           is_infra_type, is_infra_class, is_infra_locale} =
+        Infra_Filter.gen_infra_filters init_context
       val {entries = cached_entries, facts = cached_facts} =
-        Thm_Cache.get (Context.theory_of context)
+        Thm_Cache.get (Context.theory_of init_context)
       (* Process uncached facts now, so callbacks see 0 uncached *)
-      val current_facts = Context.cases Global_Theory.facts_of Proof_Context.facts_of context
+      val current_facts = Context.cases Global_Theory.facts_of Proof_Context.facts_of init_context
       val uncached_facts = Facts.dest_static false [cached_facts] current_facts
       val combined_entries =
         if null uncached_facts then cached_entries
         else let
-          val new_entries = process_facts_into_cache context is_infra_thm uncached_facts
+          val new_entries = process_facts_into_cache init_context is_infra_thm uncached_facts
           val unique_new = dedup_against cached_entries new_entries
         in cached_entries @ unique_new end
       val thm_cache = SOME (combined_entries, current_facts)
   in {
-    constants = Context_Callbacks.make_constants_callback (SOME (not o is_infra_const)) context,
-    theorems = Context_Callbacks.make_theorems_callback (SOME (not o is_infra_thm)) thm_cache context,
-    types = Context_Callbacks.make_types_callback (SOME (not o is_infra_type)) context,
-    classes = Context_Callbacks.make_classes_callback (SOME (not o is_infra_class)) context,
-    locales = Context_Callbacks.make_locales_callback (SOME (not o is_infra_locale)) context,
+    constants = Context_Callbacks.make_constants_callback (SOME (not o is_infra_const)) ctxt_unpack,
+    theorems = Context_Callbacks.make_theorems_callback (SOME (not o is_infra_thm)) thm_cache ctxt_unpack,
+    types = Context_Callbacks.make_types_callback (SOME (not o is_infra_type)) ctxt_unpack,
+    classes = Context_Callbacks.make_classes_callback (SOME (not o is_infra_class)) ctxt_unpack,
+    locales = Context_Callbacks.make_locales_callback (SOME (not o is_infra_locale)) ctxt_unpack,
     introduction_rules = Context_Callbacks.make_introduction_rules_callback
-      extract_intro_rules (SOME (not o is_infra_thm)) context,
+      extract_intro_rules (SOME (not o is_infra_thm)) ctxt_unpack,
     elimination_rules = Context_Callbacks.make_elimination_rules_callback
-      extract_elim_rules (SOME (not o is_infra_thm)) context,
+      extract_elim_rules (SOME (not o is_infra_thm)) ctxt_unpack,
     induction_rules = Context_Callbacks.make_induction_rules_callback
-      extract_induct_rules (SOME (not o is_infra_thm)) context,
+      extract_induct_rules (SOME (not o is_infra_induct_thm)) ctxt_unpack,
     case_split_rules = Context_Callbacks.make_case_split_rules_callback
-      extract_case_split_rules (SOME (not o is_infra_thm)) context
+      extract_case_split_rules (SOME (not o is_infra_thm)) ctxt_unpack
   } end
 
 fun interpret' (context : Context.generic) : usage * usage =
@@ -471,7 +517,7 @@ fun interpret' (context : Context.generic) : usage * usage =
     val thy_name = Context.theory_long_name thy
     val thy_file_path = Theory_Structure.get_theory_file_path thy
     (* 2. Extract constants and theorems, filtering infrastructure *)
-    val {is_infra_const, is_infra_thm, is_infra_type, is_infra_class, is_infra_locale} =
+    val {is_infra_const, is_infra_thm, is_infra_type, is_infra_class, is_infra_locale, ...} =
       Infra_Filter.gen_infra_filters context
 
     val const_entries = Theory_Structure.get_constants_with_positions context
@@ -599,11 +645,12 @@ fun interpret' (context : Context.generic) : usage * usage =
     if null entries then (zero_usage, zero_usage)
     else let
       (* 7. Build callbacks capturing context *)
-      val uk_cb = Universal_Key.make_universal_key_callback context
-      val theory_info_cb = Context_Callbacks.make_theory_long_name_and_path_callback context
+      val su = Context_Callbacks.static_context_unpacker context
+      val uk_cb = Universal_Key.make_universal_key_callback su
+      val theory_info_cb = Context_Callbacks.make_theory_long_name_and_path_callback su
       val {constants, theorems, types, classes, locales,
            introduction_rules, elimination_rules,
-           induction_rules, case_split_rules} = make_entity_callbacks context
+           induction_rules, case_split_rules} = make_entity_callbacks context su
       val cmd = make_interpret_file_cmd [uk_cb, theory_info_cb,
             constants, theorems, types, classes, locales,
             introduction_rules, elimination_rules,
@@ -685,13 +732,13 @@ fun mk_interpret_theory (context : Context.generic) (names : string list) : unit
     contexts
   end
 
-fun make_interpret_theory_callback (context : Context.generic)
+fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpacker)
     : Remote_Procedure_Calling.callback' =
   Remote_Procedure_Calling.mk_callback {
     name = "Semantic_Store.interpret_theories",
-    arg_schema = MessagePackBinIO.Unpack.unpackList MessagePackBinIO.Unpack.unpackString,
+    arg_schema = MessagePackBinIO.Unpack.unpackPair (ctxt_unpack, MessagePackBinIO.Unpack.unpackList MessagePackBinIO.Unpack.unpackString),
     ret_schema = MessagePackBinIO.Pack.packUnit,
-    function = mk_interpret_theory context,
+    function = fn (context, names) => mk_interpret_theory context names,
     timeout = NONE
   }
 
@@ -722,11 +769,12 @@ fun interpret_entities (context : Context.generic) (entities : Universal_Key.ent
         val thy = Context.theory_of context
         val thy_name = Context.theory_long_name thy
         val thy_file_path = Theory_Structure.get_theory_file_path thy
-        val uk_cb = Universal_Key.make_universal_key_callback context
-        val theory_info_cb = Context_Callbacks.make_theory_long_name_and_path_callback context
+        val su = Context_Callbacks.static_context_unpacker context
+        val uk_cb = Universal_Key.make_universal_key_callback su
+        val theory_info_cb = Context_Callbacks.make_theory_long_name_and_path_callback su
         val {constants, theorems, types, classes, locales,
              introduction_rules, elimination_rules,
-             induction_rules, case_split_rules} = make_entity_callbacks context
+             induction_rules, case_split_rules} = make_entity_callbacks context su
         val cmd = make_interpret_file_cmd [uk_cb, theory_info_cb,
               constants, theorems, types, classes, locales,
               introduction_rules, elimination_rules,
@@ -782,27 +830,30 @@ fun pack_search_domain ContextAll =
 
 fun query_knn (context : Context.generic) =
   let
+    val su = Context_Callbacks.static_context_unpacker context
     val {constants, theorems, types, classes, locales,
          introduction_rules, elimination_rules,
-         induction_rules, case_split_rules} = make_entity_callbacks context
+         induction_rules, case_split_rules} = make_entity_callbacks context su
     val callbacks = [
       constants, theorems, types, classes, locales,
       introduction_rules, elimination_rules,
       induction_rules, case_split_rules,
-      make_interpret_theory_callback context,
-      Context_Callbacks.make_theory_long_name_callback context,
-      Config.make_config_lookup_callback context
+      make_interpret_theory_callback su,
+      Context_Callbacks.make_theory_long_name_callback su,
+      Config.make_config_lookup_callback su
     ]
     val cmd : (string * int * Universal_Key.entity_kind list *
-               search_domain * string list * string list * string list * string list,
+               search_domain * string list * string list * string list * string list * string,
                (real * Universal_Key.entity) list * string list)
               Remote_Procedure_Calling.command = {
       name = "Semantic_Embedding.query_knn",
-      arg_schema = packTuple8 (packString, packInt,
+      arg_schema = packTuple9 (packString, packInt,
                      packList Universal_Key.pack_entity_kind',
                      pack_search_domain,
                      packList packString, packList packString,
-                     packList packString, packList packString),
+                     packList packString, packList packString,
+                     packString (* target_type, "" = no filter; only honoured by
+                                   induction/case-split rule kinds *)),
       ret_schema = unpackPair (
                      unpackList (unpackPair (unpackReal, Universal_Key.unpack_entity)),
                      unpackList unpackString),
@@ -811,20 +862,21 @@ fun query_knn (context : Context.generic) =
     }
   in
     fn {query_text, k, kinds, domain, term_patterns, type_patterns,
-        theories_include, name_contains} =>
+        theories_include, name_contains, target_type} =>
       Remote_Procedure_Calling.call_command cmd
         (query_text, k, kinds, domain, term_patterns, type_patterns,
-         theories_include, name_contains)
+         theories_include, name_contains, target_type)
   end
 
 fun is_thy_embedded (context : Context.generic) (theory_name : string, model : string) : bool =
   let
+    val su = Context_Callbacks.static_context_unpacker context
     val cmd : (string * string, bool) Remote_Procedure_Calling.command = {
       name = "Semantic_Embedding.is_thy_embedded",
       arg_schema = packPair (packString, packString),
       ret_schema = unpackBool,
-      callback = [Universal_Key.make_universal_key_callback context,
-                  Config.make_config_lookup_callback context],
+      callback = [Universal_Key.make_universal_key_callback su,
+                  Config.make_config_lookup_callback su],
       timeout = NONE
     }
   in Remote_Procedure_Calling.call_command cmd (theory_name, model) end
@@ -852,15 +904,16 @@ fun embed_all_entities_in_theories (force : bool) (context : Context.generic) (t
       let
         val _ = tracing ("[Semantic_Store] embed_all_entities_in_theories: " ^
                    Int.toString (length unembedded) ^ " theories to embed")
+        val su = Context_Callbacks.static_context_unpacker context
         val {constants, theorems, types, classes, locales,
              introduction_rules, elimination_rules,
-             induction_rules, case_split_rules} = make_entity_callbacks context
+             induction_rules, case_split_rules} = make_entity_callbacks context su
         val callbacks = [
           constants, theorems, types, classes, locales,
           introduction_rules, elimination_rules,
           induction_rules, case_split_rules,
-          Universal_Key.make_universal_key_callback context,
-          Config.make_config_lookup_callback context
+          Universal_Key.make_universal_key_callback su,
+          Config.make_config_lookup_callback su
         ]
         val cmd : (string list * string * bool, unit) Remote_Procedure_Calling.command = {
           name = "Semantic_Embedding.embed_all_entities_in_theories",
@@ -874,12 +927,13 @@ fun embed_all_entities_in_theories (force : bool) (context : Context.generic) (t
 
 fun embed_entities (context : Context.generic) (entities : Universal_Key.entity list) : unit =
   let
+    val su = Context_Callbacks.static_context_unpacker context
     val keys = map (Universal_Key.key_of NONE context) entities
     val cmd : (Universal_Key.universal_key list, unit) Remote_Procedure_Calling.command = {
       name = "Semantic_Embedding.embed_entities",
       arg_schema = packList Universal_Key.pack_universal_key,
       ret_schema = unpackUnit,
-      callback = [Config.make_config_lookup_callback context],
+      callback = [Config.make_config_lookup_callback su],
       timeout = NONE
     }
   in Remote_Procedure_Calling.call_command cmd keys end

@@ -3,6 +3,7 @@ signature INFRA_FILTER = sig
   val gen_infra_filters : Context.generic ->
     {is_infra_const: string -> bool,
      is_infra_thm: string * thm -> bool,
+     is_infra_induct_thm: string * thm -> bool,
      is_infra_type: string -> bool,
      is_infra_class: string -> bool,
      is_infra_locale: string -> bool}
@@ -13,7 +14,9 @@ structure Infra_Filter : INFRA_FILTER = struct
 val smart_size_of_term = smart_size_of_term (* from Performant_Isabelle_ML *)
 
 fun gen_infra_filters (context : Context.generic)
-    : {is_infra_const: string -> bool, is_infra_thm: string * thm -> bool,
+    : {is_infra_const: string -> bool,
+       is_infra_thm: string * thm -> bool,
+       is_infra_induct_thm: string * thm -> bool,
        is_infra_type: string -> bool, is_infra_class: string -> bool,
        is_infra_locale: string -> bool} =
   let
@@ -113,7 +116,11 @@ fun gen_infra_filters (context : Context.generic)
     val inst_infixes = map (fn T => "_" ^ Long_Name.base_name T ^ "_inst.") type_names
 
     val internal_prefixes = ["Lifting.", "BNF_Def.", "Transfer.", "BNF_Cardinal_Order_Relation.",
-          "HOL.equal", "ATP.", "Num."]
+          "HOL.equal", "ATP.", "Num.", "Code_Evaluation."]
+
+    val infra_theory_prefixes = ["Code_Evaluation."]
+    fun is_from_infra_theory name =
+      exists (fn pfx => String.isPrefix pfx name) infra_theory_prefixes
 
     (* Pre-compute names that have a _class variant as a constant.
        For each constant "a.b_class.c", record "a.b.c" as having a class variant. *)
@@ -221,19 +228,32 @@ fun gen_infra_filters (context : Context.generic)
     fun is_infra_thm (full_name, thm) =
         Name_Space.is_concealed fact_space full_name
         orelse is_hidden fact_space full_name
+        orelse is_from_infra_theory full_name
         orelse is_ADT_infra_thm full_name
         orelse is_inductive_infra_thm full_name
         orelse Term.exists_Const is_internal_constant (Thm.prop_of thm)
         orelse is_internal_class (Thm.prop_of thm)
         orelse smart_size_of_term (Thm.prop_of thm) > 1000
+
+    (* Stricter than is_infra_thm: also rejects induction rules from theory
+       prefixes that emit too-generic auto-generated rules (e.g. Basic_BNFs's
+       fsts.inducts / snds.inducts). *)
+    val infra_induct_thy_prefixes = ["Basic_BNFs."]
+    fun is_infra_induct_thm (full_name, thm) =
+        is_infra_thm (full_name, thm)
+        orelse exists (fn p => String.isPrefix p full_name) infra_induct_thy_prefixes
   in
     {is_infra_const = is_infra_const, is_infra_thm = is_infra_thm,
+     is_infra_induct_thm = is_infra_induct_thm,
      is_infra_type = fn name => Name_Space.is_concealed type_space name
-                                orelse is_hidden type_space name,
+                                orelse is_hidden type_space name
+                                orelse is_from_infra_theory name,
      is_infra_class = fn name => Name_Space.is_concealed class_space name
-                                 orelse is_hidden class_space name,
+                                 orelse is_hidden class_space name
+                                 orelse is_from_infra_theory name,
      is_infra_locale = fn name => Name_Space.is_concealed locale_space name
-                                  orelse is_hidden locale_space name}
+                                  orelse is_hidden locale_space name
+                                  orelse is_from_infra_theory name}
   end
 
 end
