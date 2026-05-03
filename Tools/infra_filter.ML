@@ -116,9 +116,9 @@ fun gen_infra_filters (context : Context.generic)
     val inst_infixes = map (fn T => "_" ^ Long_Name.base_name T ^ "_inst.") type_names
 
     val internal_prefixes = ["Lifting.", "BNF_Def.", "Transfer.", "BNF_Cardinal_Order_Relation.",
-          "HOL.equal", "ATP.", "Num.", "Code_Evaluation."]
+          "HOL.equal", "ATP.", "Code_Evaluation."]
 
-    val infra_theory_prefixes = ["Code_Evaluation."]
+    val infra_theory_prefixes = ["Code_Evaluation.", "Num."]
     fun is_from_infra_theory name =
       exists (fn pfx => String.isPrefix pfx name) infra_theory_prefixes
 

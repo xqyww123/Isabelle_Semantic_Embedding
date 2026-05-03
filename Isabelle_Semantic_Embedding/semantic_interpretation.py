@@ -21,6 +21,10 @@ from claude_agent_sdk import (
     create_sdk_mcp_server,
     tool,
 )
+try:
+    from claude_agent_sdk import RateLimitEvent
+except ImportError:
+    RateLimitEvent = None
 from claude_agent_sdk.types import (
     HookInput,
     HookContext,
@@ -438,6 +442,10 @@ async def _run_agent(options: ClaudeAgentOptions) -> None:
                     task.batch_range.start, task.batch_range.stop - 1)
             await client.query(first_prompt)
             async for message in client.receive_response():
+                if RateLimitEvent is not None and isinstance(message, RateLimitEvent):
+                    if message.rate_limit_info.status == "rejected":
+                        raise ReachLimitError()
+                    continue
                 _log_message(message)
                 content = getattr(message, "content", None)
                 if content is not None and isinstance(content, list) and content:
@@ -450,6 +458,11 @@ async def _run_agent(options: ClaudeAgentOptions) -> None:
                             raise RateLimitError()
                 if isinstance(message, ResultMessage):
                     _accumulate_usage(task, message)
+                    if message.is_error and message.result:
+                        if message.result.startswith("You've hit your limit"):
+                            raise ReachLimitError()
+                        if "Rate limit" in message.result:
+                            raise RateLimitError()
             # Retry any globally missing entries
             while True:
                 missing = [k for k, v in task.results.items() if v is None]
