@@ -272,9 +272,41 @@ def _mk_query_by_name_schema(working_names: list[str]) -> dict:
                 "description": "If true, include the Isabelle source code of the command defining the entity.",
                 "default": False,
             },
+            "context_at": {
+                "type": "object",
+                "description": "Resolve the name under the proof context at this source position. "
+                               "Omit to use the theory's global context.",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "Path to the theory file. Defaults to the current theory file.",
+                    },
+                    "line": {
+                        "type": "integer",
+                        "description": "1-based line number.",
+                    },
+                    "column": {
+                        "type": "integer",
+                        "description": "1-based column number. If omitted, uses the end of the line.",
+                    },
+                },
+                "required": ["line"],
+            },
         },
         "required": ["type", "name"],
     }
+
+
+def _end_of_line_column(file_path: str, line: int) -> int:
+    """Return the last column (1-based) of the given line in the file."""
+    try:
+        with open(file_path, 'r') as f:
+            for i, text in enumerate(f, 1):
+                if i == line:
+                    return max(1, len(text.rstrip('\n')))
+        return 1
+    except OSError:
+        return 1
 
 
 import re as _re
@@ -356,7 +388,8 @@ async def query_by_name_raw(
 
 
 def mk_query_by_name_tool(
-    connection: Connection, working_names: list[str], with_pretty: bool = True
+    connection: Connection, working_names: list[str], with_pretty: bool = True,
+    file_path: str | None = None,
 ) -> SdkMcpTool[Any]:
     log = connection.server.logger.getChild("semantics")
     description = "Look up the English translation of a dependency from parent theories."
@@ -381,6 +414,26 @@ def mk_query_by_name_tool(
             return _mk_ret(f"Invalid type: {t!r}. Must be one of {[k.label for k in EntityKind if k != EntityKind.THEORY]}.", is_error=True)
         if not name:
             return _mk_ret("Invalid name: must be a non-empty string.", is_error=True)
+
+        # Resolve optional context_at position to (file, symbol_offset)
+        ctxt = None
+        context_at = args.get("context_at")
+        if isinstance(context_at, dict):
+            line = context_at.get("line")
+            if isinstance(line, int) and line >= 1:
+                file = context_at.get("file") or file_path
+                if file:
+                    column = context_at.get("column")
+                    if not isinstance(column, int) or column < 1:
+                        column = _end_of_line_column(file, line)
+                    try:
+                        from Isabelle_RPC_Host.position import AsciiPosition
+                        isa_pos = AsciiPosition(line, column, file).to_isabelle_position()
+                        ctxt = (isa_pos.file, isa_pos.raw_offset)
+                    except Exception:
+                        log.debug("position conversion failed for %s:%d:%d",
+                                  file, line, column, exc_info=True)
+
         try:
             if working_names and name in working_names:
                 log.debug("Entity name %r is in working_names; cannot query entities assigned for interpretation.", name)
@@ -388,7 +441,7 @@ def mk_query_by_name_tool(
                     f"Cannot query \"{name}\" — it is or will be your task to interpret it from the source.",
                     is_error=True,
                 )
-            sem, uk = await query_by_name_raw(connection, tag, name, with_pretty=with_pretty)
+            sem, uk = await query_by_name_raw(connection, tag, name, with_pretty=with_pretty, ctxt=ctxt)
             if args.get("show_defs", False):
                 try:
                     src = await _get_definition_source(connection, tag, uk)

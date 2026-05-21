@@ -648,7 +648,8 @@ fun interpret' (context : Context.generic) : usage * usage =
     else let
       (* 7. Build callbacks capturing context *)
       val su = Context_Callbacks.static_context_unpacker context
-      val uk_cb = Universal_Key.make_universal_key_callback su
+      val pu = PIDE_State.position_context_unpacker context
+      val uk_cb = Universal_Key.make_universal_key_callback pu
       val theory_info_cb = Context_Callbacks.make_theory_long_name_and_path_callback su
       val {constants, theorems, types, classes, locales,
            introduction_rules, elimination_rules,
@@ -773,7 +774,8 @@ fun interpret_entities (context : Context.generic) (entities : Universal_Key.ent
         val thy_name = Context.theory_long_name thy
         val thy_file_path = Theory_Structure.get_theory_file_path thy
         val su = Context_Callbacks.static_context_unpacker context
-        val uk_cb = Universal_Key.make_universal_key_callback su
+        val pu = PIDE_State.position_context_unpacker context
+        val uk_cb = Universal_Key.make_universal_key_callback pu
         val theory_info_cb = Context_Callbacks.make_theory_long_name_and_path_callback su
         val {constants, theorems, types, classes, locales,
              introduction_rules, elimination_rules,

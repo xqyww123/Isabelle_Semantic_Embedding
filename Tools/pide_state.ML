@@ -47,6 +47,29 @@ sig
   (* Return all ancestor sessions (whose heaps are loaded) with their export database paths.
      Each entry is (session_name, db_path). *)
   val get_session_databases: unit -> (string * string) list
+
+  (* Given a file path and symbol offset, return the PIDE command ID of the
+     command at that position.  Returns NONE if not in a live PIDE node.
+     Only works for live theories, not heap-image theories. *)
+  val command_id_at_position: string -> int -> int option
+
+  (* Given a file path and symbol offset, attempt to extract the Toplevel.state
+     of the command at that position via Document.command_exec.
+     Returns NONE for heap-image theories or if the command hasn't been evaluated. *)
+  val toplevel_state_at_position: string -> int -> Toplevel.state option
+
+  type context_at_position_cfg = {re_eval_cache: bool}
+
+  (* Given a file path and symbol offset, attempt to extract the Context.generic
+     at that position.
+     Fallback chain: live PIDE -> (if re_eval_cache) re-evaluation cache -> NONE *)
+  val context_at_position: context_at_position_cfg -> string -> int -> Context.generic option
+
+  (* Msgpack unpacker that reads an optional (file, offset) pair from the wire.
+     NONE -> returns the fallback context.
+     SOME (file, offset) -> calls context_at_position, falls back on failure. *)
+  val position_context_unpacker: Context.generic ->
+    Context.generic MessagePackBinIO.Unpack.unpacker
 end;
 
 structure PIDE_State: PIDE_STATE =
@@ -263,6 +286,142 @@ val get_session_databases : unit -> (string * string) list =
       |> YXML.parse_body
       |> XML.Decode.list (XML.Decode.pair XML.Decode.string XML.Decode.string));
   in fn () => Synchronized.cache_eval {persistent = false} cache end;
+
+fun command_id_at_position file_path symbol_offset =
+  let
+    val input_body =
+      XML.Encode.pair XML.Encode.string XML.Encode.int
+        (file_path, symbol_offset);
+    val yxml = Scala.function1 "pide_state.command_id_at_position"
+      (YXML.string_of_body input_body);
+    val cmd_id = YXML.parse_body yxml |> XML.Decode.int;
+  in if cmd_id = 0 then NONE else SOME cmd_id end;
+
+fun toplevel_state_at_position file_path symbol_offset =
+  case command_id_at_position file_path symbol_offset of
+    NONE => NONE
+  | SOME cmd_id =>
+      \<^try>\<open>
+        case Document.command_exec (Document.state ()) file_path cmd_id of
+          NONE => NONE
+        | SOME (eval, _) => SOME (Command.eval_result_state eval)
+        catch _ => NONE
+      \<close>;
+
+
+(* --- Re-evaluation cache for finished theories --- *)
+
+(* Cache: file_path -> sorted list of (symbol_offset, Toplevel.state).
+   Populated on first access by re-evaluating the theory from its parents. *)
+val reeval_cache : (int * Toplevel.state) list Symtab.table Synchronized.var =
+  Synchronized.var "PIDE_State.reeval_cache" Symtab.empty;
+
+fun lookup_reeval_cache file_path symbol_offset =
+  case Symtab.lookup (Synchronized.value reeval_cache) file_path of
+    NONE => NONE
+  | SOME entries =>
+      let fun find [] = NONE
+            | find [(off, st)] = if symbol_offset >= off then SOME st else NONE
+            | find ((off1, st1) :: (rest as (off2, _) :: _)) =
+                if symbol_offset >= off1 andalso symbol_offset < off2 then SOME st1
+                else find rest
+      in find entries end;
+
+(* Find the loaded theory whose master file matches the given path *)
+fun theory_of_file file_path =
+  let
+    val target = Path.explode file_path
+    fun matches name =
+      \<^try>\<open>
+        let val thy = Thy_Info.get_theory name
+            val dir = Resources.master_directory thy
+            val thy_file = Path.append dir (Path.basic (Long_Name.base_name name ^ ".thy"))
+        in thy_file = target end
+        catch _ => false
+      \<close>
+  in List.find matches (Thy_Info.get_names ()) end;
+
+fun build_reeval_cache file_path =
+  case theory_of_file file_path of
+    NONE =>
+      (warning ("PIDE_State.build_reeval_cache: no loaded theory for " ^ file_path); [])
+  | SOME thy_name =>
+      \<^try>\<open>
+        let
+          val thy = Thy_Info.get_theory thy_name
+          val path = Path.explode file_path
+          val text = File.read path
+          val text_pos = Position.file file_path
+          val header = Thy_Header.read text_pos text
+          val parents = Theory.parents_of thy
+          val master_dir = Resources.master_directory thy
+          val fresh_thy = Resources.begin_theory master_dir header parents
+          val trs = Outer_Syntax.parse_text fresh_thy (K fresh_thy) text_pos text
+
+          val init_state = Toplevel.make_state NONE
+          val (_, entries_rev) = fold (fn tr => fn (st, acc) =>
+            let val st' = Toplevel.command_exception true tr st
+                val offset = the_default 0 (Position.offset_of (Toplevel.pos_of tr))
+            in if offset > 0 andalso not (Toplevel.is_ignored tr)
+               then (st', (offset, st') :: acc)
+               else (st', acc)
+            end) trs (init_state, [])
+          val entries = rev entries_rev
+          val _ = writeln ("PIDE_State: cached " ^ string_of_int (length entries) ^
+            " states for " ^ thy_name)
+        in
+          Synchronized.change reeval_cache (Symtab.update (file_path, entries));
+          entries
+        end
+        catch exn => (warning ("PIDE_State.build_reeval_cache: " ^ Runtime.exn_message exn); [])
+      \<close>;
+
+fun reeval_context_at_position file_path symbol_offset =
+  let
+    val entries = case Symtab.lookup (Synchronized.value reeval_cache) file_path of
+        SOME e => e
+      | NONE => build_reeval_cache file_path
+  in
+    case entries of [] => NONE | _ =>
+      let fun find [] = NONE
+            | find [(off, st)] = if symbol_offset >= off then SOME st else NONE
+            | find ((off1, st1) :: (rest as (off2, _) :: _)) =
+                if symbol_offset >= off1 andalso symbol_offset < off2 then SOME st1
+                else find rest
+      in
+        case find entries of
+          NONE => NONE
+        | SOME st =>
+            \<^try>\<open>SOME (Context.Proof (Toplevel.context_of st)) catch _ => NONE\<close>
+      end
+  end;
+
+
+type context_at_position_cfg = {re_eval_cache: bool};
+
+fun context_at_position (cfg : context_at_position_cfg) file_path symbol_offset =
+  case toplevel_state_at_position file_path symbol_offset of
+    SOME st =>
+      \<^try>\<open>SOME (Context.Proof (Toplevel.context_of st)) catch _ => NONE\<close>
+  | NONE =>
+      if #re_eval_cache cfg
+      then reeval_context_at_position file_path symbol_offset
+      else NONE;
+
+fun position_context_unpacker (fallback : Context.generic)
+    : Context.generic MessagePackBinIO.Unpack.unpacker =
+  let open MessagePackBinIO.Unpack
+  in fn src =>
+    let val (pos_opt, src') =
+      unpackOption (unpackPair (unpackString, unpackInt)) src
+    in case pos_opt of
+        NONE => (fallback, src')
+      | SOME (file, offset) =>
+          (case context_at_position {re_eval_cache = true} file offset of
+            SOME ctx => (ctx, src')
+          | NONE => (fallback, src'))
+    end
+  end;
 
 end;
 

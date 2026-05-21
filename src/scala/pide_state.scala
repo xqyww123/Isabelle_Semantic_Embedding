@@ -699,7 +699,50 @@ object Probe_Command_Header extends Scala.Fun("pide_state.probe_command_header",
 }
 
 
+/* Command ID at position: returns the PIDE command ID (Long) for the command
+   at a given symbol offset in a live PIDE node.  Returns 0 if not found.
+   Unlike command_at_position, this returns the command's internal ID rather
+   than its source text — used by ML to call Document.command_exec. */
+
+object Command_ID_At_Position extends Scala.Fun("pide_state.command_id_at_position", thread = true)
+  with Scala.Single_Fun
+{
+  val here = Scala_Project.here
+
+  override def invoke(session: Session, args: List[Bytes]): List[Bytes] = {
+    val (file_path, offset) =
+      XML.Decode.pair(XML.Decode.string, XML.Decode.int)(
+        YXML.parse_body(args.head.text))
+
+    val state = session.get_state()
+    val version = state.recent_finished.version.get_finished
+
+    // Live PIDE: iterate node.commands to find command containing offset
+    val live_result: Long =
+      version.nodes.iterator.map(_._1).find(_.node == file_path) match {
+        case Some(node_name) =>
+          val node = version.nodes(node_name)
+          var pos = 1
+          var result: Long = 0L
+          val it = node.commands.iterator
+          while (it.hasNext && result == 0L) {
+            val command = it.next()
+            val len = command.chunk.range.stop
+            if (offset >= pos && offset < pos + len)
+              result = command.id
+            pos += len
+          }
+          result
+        case None => 0L
+      }
+
+    val body = XML.Encode.long(live_result)
+    List(Bytes(YXML.string_of_body(body)))
+  }
+}
+
+
 class PIDE_State_Functions extends Scala.Functions(
   Save_Thy_Files, Resolve_Positions, Goto_Definition, Hover_Message,
   Entity_At_Position, Command_At_Position, Get_Session_Databases,
-  Probe_Command_Header)
+  Probe_Command_Header, Command_ID_At_Position)

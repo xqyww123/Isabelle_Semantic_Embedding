@@ -565,7 +565,7 @@ async def interpret_file(
 
             working_names = [e.name for e in task.entries]
             query_by_name_tool = mk_query_by_name_tool(
-                connection, working_names)
+                connection, working_names, file_path=file_path)
             query_by_position_tool = mk_query_by_position_tool(
                 connection, working_names, unicode=True)
             definition_tool = mk_definition_tool(connection, unicode=True)
