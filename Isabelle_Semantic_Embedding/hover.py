@@ -190,7 +190,10 @@ def mk_hover_tool(connection: Connection, unicode: bool = False) -> SdkMcpTool[A
             result = await hover_message(isa_pos, connection)
             if result is None:
                 log.debug("hover: not found")
-                return _mk_ret("No hover information at this position.")
+                return _mk_ret(
+                    "No hover information at this position."
+                    " If you are interpreting a syntax or notation,"
+                    " call `desugar_and_explain` instead.")
             if unicode:
                 result = pretty_unicode(result)
             log.debug("hover: -> %s", result)
