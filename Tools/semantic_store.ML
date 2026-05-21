@@ -651,10 +651,11 @@ fun interpret' (context : Context.generic) : usage * usage =
       val pu = PIDE_State.position_context_unpacker context
       val uk_cb = Universal_Key.make_universal_key_callback pu
       val theory_info_cb = Context_Callbacks.make_theory_long_name_and_path_callback su
+      val desugar_cb = Explain_Term.make_desugar_callback context
       val {constants, theorems, types, classes, locales,
            introduction_rules, elimination_rules,
            induction_rules, case_split_rules} = make_entity_callbacks context su
-      val cmd = make_interpret_file_cmd [uk_cb, theory_info_cb,
+      val cmd = make_interpret_file_cmd [uk_cb, theory_info_cb, desugar_cb,
             constants, theorems, types, classes, locales,
             introduction_rules, elimination_rules,
             induction_rules, case_split_rules]
@@ -777,10 +778,11 @@ fun interpret_entities (context : Context.generic) (entities : Universal_Key.ent
         val pu = PIDE_State.position_context_unpacker context
         val uk_cb = Universal_Key.make_universal_key_callback pu
         val theory_info_cb = Context_Callbacks.make_theory_long_name_and_path_callback su
+        val desugar_cb = Explain_Term.make_desugar_callback context
         val {constants, theorems, types, classes, locales,
              introduction_rules, elimination_rules,
              induction_rules, case_split_rules} = make_entity_callbacks context su
-        val cmd = make_interpret_file_cmd [uk_cb, theory_info_cb,
+        val cmd = make_interpret_file_cmd [uk_cb, theory_info_cb, desugar_cb,
               constants, theorems, types, classes, locales,
               introduction_rules, elimination_rules,
               induction_rules, case_split_rules]

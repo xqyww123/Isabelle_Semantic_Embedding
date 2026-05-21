@@ -8,6 +8,7 @@ ML_file \<open>Tools/pide_state.ML\<close>
 
 ML_file \<open>Tools/Sledgehammer/sledgehammer_embedding_ctxt.ML\<close>
 ML_file \<open>Tools/infra_filter.ML\<close>
+ML_file \<open>Tools/explain_term.ML\<close>
 ML_file \<open>Tools/theory_structure.ML\<close>
 ML_file \<open>Tools/semantic_store.ML\<close>
 

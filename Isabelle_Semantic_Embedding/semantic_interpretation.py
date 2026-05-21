@@ -34,6 +34,7 @@ from claude_agent_sdk.types import (
 )
 
 from .base import ToolCall_ret, mk_ret as _mk_ret
+from .desugar import mk_desugar_and_explain_tool
 from .semantics import Semantic_DB, SemanticRecord
 
 # --- Module-level configuration ---
@@ -362,6 +363,7 @@ _TOOL_WHITELIST = {
     "mcp__isabelle_semantics__definition",
     "mcp__isabelle_semantics__hover",
     "mcp__isabelle_semantics__answer",
+    "mcp__isabelle_semantics__desugar_and_explain",
 }
 
 
@@ -564,15 +566,27 @@ async def interpret_file(
                 ))
 
             working_names = [e.name for e in task.entries]
+            seen_constants: set[str] = set()
             query_by_name_tool = mk_query_by_name_tool(
                 connection, working_names, file_path=file_path)
             query_by_position_tool = mk_query_by_position_tool(
                 connection, working_names, unicode=True)
             definition_tool = mk_definition_tool(connection, unicode=True)
             hover_tool = mk_hover_tool(connection, unicode=True)
+            desugar_tool = mk_desugar_and_explain_tool(
+                connection, file_path=file_path, seen_constants=seen_constants)
             mcp = create_sdk_mcp_server("isabelle_semantics", tools=[
                 query_by_name_tool, query_by_position_tool,
-                definition_tool, hover_tool, _answer_tool])
+                definition_tool, hover_tool, desugar_tool, _answer_tool])
+
+            async def _on_compact(
+                hook_input: HookInput,
+                tool_use_id: str | None,
+                context: HookContext,
+            ) -> HookJSONOutput:
+                seen_constants.clear()
+                return {}
+
             options = ClaudeAgentOptions(
                 model=interpretation_model,
                 cwd=str(Path(__file__).parent / "Agent_Interpretation_Dir"),
@@ -585,7 +599,10 @@ async def interpret_file(
                 hooks={
                     "PreToolUse": [
                         HookMatcher(matcher="*", hooks=[_permission_control]),
-                    ]
+                    ],
+                    "PreCompact": [
+                        HookMatcher(matcher="*", hooks=[_on_compact]),
+                    ],
                 },
             )
 
