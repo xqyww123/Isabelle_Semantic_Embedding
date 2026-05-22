@@ -32,6 +32,7 @@ val _ = REPL_Server.register_app "Semantic_Store.collect" (fn (cin, cout, state)
         val re_embed_only = read unpackBool
         val thy = Thy_Info.get_theory thy_name
         val _ = Theory_Hash.store_theory_hash thy
+        val _ = Remote_Procedure_Calling.load ["Isabelle_Semantic_Embedding"]
 
         (* Hijack output channels to stream messages over the socket *)
         val old_writeln = !Private_Output.writeln_fn
