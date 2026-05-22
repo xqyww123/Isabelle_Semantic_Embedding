@@ -107,6 +107,15 @@ class _Semantic_DB:
         with self._ensure_env().begin(write=True) as txn:
             txn.put(key, msgpack.packb(tuple(record))) # type: ignore
 
+    def update_expr(self, key: universal_key, new_expr: str) -> None:
+        """Update the expr field of an existing record, leaving interpretation intact."""
+        with self._ensure_env().begin(write=True) as txn:
+            raw = txn.get(key)
+            if raw is None:
+                return
+            kind, name, _old_expr, sem = msgpack.unpackb(raw)
+            txn.put(key, msgpack.packb((kind, name, new_expr, sem)))  # type: ignore
+
     def query(self, key: universal_key, with_pretty: bool = False) -> str | None:
         """Look up a semantic interpretation by universal key."""
         rec = self[key]

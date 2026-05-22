@@ -534,9 +534,11 @@ async def interpret_file(
     # Check LMDB cache
     results: list[str | None] = [None] * n
     for i, e in enumerate(entries):
-        sem = Semantic_DB.query(e.universal_key)
-        if sem is not None:
-            results[i] = sem
+        rec = Semantic_DB[e.universal_key]
+        if rec is not None and rec.interpretation is not None:
+            results[i] = rec.interpretation
+            if e.prop_str and rec.expr != e.prop_str:
+                Semantic_DB.update_expr(e.universal_key, e.prop_str)
 
     uncached = [i for i, r in enumerate(results) if r is None]
     _log.info("interpret_file: %d cached, %d to interpret", n - len(uncached), len(uncached))

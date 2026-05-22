@@ -81,6 +81,8 @@ signature SEMANTIC_STORE = sig
      elimination_rules: Remote_Procedure_Calling.callback',
      induction_rules: Remote_Procedure_Calling.callback',
      case_split_rules: Remote_Procedure_Calling.callback'}
+
+  val strip_trailing_begin : string -> string
 end
 
 structure Semantic_Store : SEMANTIC_STORE = struct
@@ -256,6 +258,19 @@ fun trim_markup msg =
     String.concat (rev (!parts))
   end
 
+fun strip_trailing_begin src =
+  let
+    val len = size src
+    fun rskip i = if i < 0 then i
+      else if Char.isSpace (String.sub (src, i)) then rskip (i - 1) else i
+    val last = rskip (len - 1)
+  in
+    if last >= 4 andalso String.substring (src, last - 4, 5) = "begin"
+       andalso (last < 5 orelse String.sub (src, last - 5) = #"\n")
+    then String.substring (src, 0, if last >= 5 then last - 5 else 0)
+    else src
+  end
+
 fun string_of_term ctxt =
     let val ctxt' = ctxt
               |> Config.put Printer.show_types false
@@ -323,7 +338,11 @@ fun build_entries (context : Context.generic)
     val ctxt = Context.cases Proof_Context.init_global I context
     val pp = string_of_term ctxt
     val pp_typ = string_of_typ ctxt
-    fun mk_prop_str entity =
+    fun source_at_pos pos =
+      case PIDE_State.command_at_position pos of
+        SOME (src, _, _) => strip_trailing_begin src
+      | NONE => ""
+    fun mk_prop_str (entity, pos) =
       case entity of
         Universal_Key.Theorem thm =>
           (pp (Thm.prop_of thm)
@@ -349,10 +368,13 @@ fun build_entries (context : Context.generic)
           (let val T = Consts.the_constraint (Sign.consts_of thy) cname
            in pp_typ T end
            handle TYPE _ => "" | ERROR _ => "")
+      | Universal_Key.Type _ => source_at_pos pos
+      | Universal_Key.Class _ => source_at_pos pos
+      | Universal_Key.Locale _ => source_at_pos pos
       | _ => ""
   in
     raw |> map (fn (entity, name, pos, uk) =>
-      (entity, name, mk_prop_str entity, the_default 999999999 (Position.line_of pos), uk))
+      (entity, name, mk_prop_str (entity, pos), the_default 999999999 (Position.line_of pos), uk))
   end
 
 fun extract_intro_rules ctx =
