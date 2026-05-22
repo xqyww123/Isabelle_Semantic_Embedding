@@ -278,6 +278,17 @@ def cmd_collect(args: argparse.Namespace) -> None:
         print("Error: --reinterpret and --migrate-on-hash-change are mutually exclusive.",
               file=sys.stderr)
         sys.exit(1)
+    if args.re_embed and args.reinterpret:
+        print("Error: --re-embed and --reinterpret are mutually exclusive.",
+              file=sys.stderr)
+        sys.exit(1)
+    if args.re_embed and args.migrate_on_hash_change:
+        print("Error: --re-embed and --migrate-on-hash-change are mutually exclusive.",
+              file=sys.stderr)
+        sys.exit(1)
+    if args.re_embed and not args.embed_models:
+        print("Error: --re-embed requires --embed-models.", file=sys.stderr)
+        sys.exit(1)
 
     import threading
     import time
@@ -306,7 +317,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
             print("Running app...", flush=True)
             await c.run_app("Semantic_Store.collect")
             models = [m.strip() for m in args.embed_models.split(",") if m.strip()] if args.embed_models else []
-            await c._write(args.theory, models, args.reinterpret)
+            await c._write(args.theory, models, args.reinterpret, args.re_embed)
 
             has_error = False
             try:
@@ -371,6 +382,8 @@ p_collect.add_argument("--reinterpret", action="store_true",
     help="Re-interpret already-finished theories to pick up new entities")
 p_collect.add_argument("--migrate-on-hash-change", action="store_true",
     help="Copy old data to new hash instead of re-interpreting when hash changes")
+p_collect.add_argument("--re-embed", action="store_true",
+    help="Re-embed vectors without re-interpreting (requires --embed-models)")
 
 # list
 p_list = sub.add_parser("list", help="List all theories in the semantic database")

@@ -933,19 +933,23 @@ class Semantic_Vector_Store(Vector_Store):
                         n += 1
         return results[:n], warnings  # type: ignore[list-item]
 
-    async def _embed_keys(self, keys: list[universal_key]) -> int:
-        """Embed the given keys that are missing from the vector store.
+    async def _embed_keys(self, keys: list[universal_key], *,
+                          force: bool = False) -> int:
+        """Embed the given keys, storing vectors in the vector store.
         Looks up semantic texts from Semantic_DB, embeds them, and stores vectors.
+        When force=True, re-embeds all keys even if they already have vectors.
         Returns the number of entities actually embedded."""
-        # Filter to keys not already in the store
-        exists = self.contains(keys)
-        missing = [k for k, ex in zip(keys, exists) if not ex]
-        if not missing:
+        if force:
+            to_embed = keys
+        else:
+            exists = self.contains(keys)
+            to_embed = [k for k, ex in zip(keys, exists) if not ex]
+        if not to_embed:
             return 0
         # Collect semantic texts
         texts: list[str] = []
         text_keys: list[universal_key] = []
-        for k in missing:
+        for k in to_embed:
             sem = Semantic_DB.query(k, with_pretty=True)
             if sem is not None:
                 texts.append(sem)
@@ -964,7 +968,7 @@ class Semantic_Vector_Store(Vector_Store):
 
     async def embed_entities(self, keys: list[universal_key]) -> None:
         """Embed the given entity keys, skipping those already embedded."""
-        await self._embed_keys(keys)
+        await self._embed_keys(keys, force=False)
 
     async def embed_all_entities_in_theories(self, theories: list[str | universal_key],
                                               *, force: bool = False) -> None:
@@ -1007,7 +1011,7 @@ class Semantic_Vector_Store(Vector_Store):
                                theory=thy_name, the_theory_only=True)
             keys = [k for k, _, _ in entries]
             wip = is_WIP(thy_key)
-            await self._embed_keys(keys)
+            await self._embed_keys(keys, force=force)
             if not wip:
                 self.mark_thy_embedded(thy_key)
 
