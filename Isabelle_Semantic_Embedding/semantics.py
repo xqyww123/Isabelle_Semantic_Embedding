@@ -854,11 +854,12 @@ class Semantic_Vector_Store(Vector_Store):
         name_contains: list[str] = [],
         target_type: str = "",
         ctxt: Any = None,
-    ) -> tuple[list[tuple[float, 'SemanticRecord']], list[str]]:
+    ) -> tuple[list[tuple[float, 'SemanticRecord']], list[str], int]:
         """Search the k closest entities to query, filtered by kinds and domain.
-        Returns (results, warnings) where results are (score, record) pairs
-        sorted by similarity, and warnings include notices about undeclared
-        free variables in term patterns.
+        Returns (results, warnings, total) where results are (score, record)
+        pairs sorted by similarity, warnings include notices about undeclared
+        free variables in term patterns, and total is the number of entities
+        matching the filters (the full candidate pool before the top-k cut).
         Domain controls the search scope:
           ContextAll (default): all context entities of the given kinds
           ContextExtended(extra): context entities + additional keys
@@ -868,16 +869,17 @@ class Semantic_Vector_Store(Vector_Store):
           type_patterns: Isabelle type pattern strings (type matching)
           target_type: induction/case-split rule target type (silently ignored
             for other kinds; bidirectional Sign.typ_instance, wildcards allowed)
-          theories_include: only entities from these theories
+          theories_include: case-insensitive substrings matched against each
+            entity's fully-qualified theory name (any match keeps it)
         """
         warnings: list[str] = []
         if not kinds:
-            return [], warnings
+            return [], warnings, 0
         # candidate_names: uk → full name (for synthesizing placeholder records)
         candidate_names: dict[universal_key, str] = {}
         if domain is Semantic_Vector_Store.ContextAll:
             if self.connection is None:
-                return [], warnings
+                return [], warnings, 0
             from Isabelle_RPC_Host.context import entities_of
             entries, warnings = await entities_of(self.connection, kinds,
                                      theories_not_include=_SKIP_THEORY_LONG_NAMES,
@@ -892,7 +894,7 @@ class Semantic_Vector_Store(Vector_Store):
                 candidate_names[uk] = name
         elif isinstance(domain, Semantic_Vector_Store.ContextExtended):
             if self.connection is None:
-                return [], warnings
+                return [], warnings, 0
             from Isabelle_RPC_Host.context import entities_of
             entries, warnings = await entities_of(self.connection, kinds,
                                      theories_not_include=_SKIP_THEORY_LONG_NAMES,
@@ -927,7 +929,8 @@ class Semantic_Vector_Store(Vector_Store):
         else:
             raise TypeError(f"Unknown domain type: {type(domain)}")
         if not candidates:
-            return [], warnings
+            return [], warnings, 0
+        total = len(candidates)
 
         def _resolve(uk: universal_key) -> SemanticRecord | None:
             """Look up SemanticRecord, falling back to a placeholder if name is known."""
@@ -968,7 +971,7 @@ class Semantic_Vector_Store(Vector_Store):
                         rec = _resolve(uk)
                         if rec is not None and rec.name not in reranked_set:
                             reranked.append((score, rec))
-                    return reranked[:k], warnings
+                    return reranked[:k], warnings, total
                 except Exception as e:
                     import logging
                     logging.getLogger(__name__).warning("Reranker failed, falling back to embedding scores: %s", e)
@@ -992,7 +995,7 @@ class Semantic_Vector_Store(Vector_Store):
                     if rec is not None:
                         results[n] = (0.0, rec)
                         n += 1
-        return results[:n], warnings  # type: ignore[list-item]
+        return results[:n], warnings, total  # type: ignore[list-item]
 
     async def _embed_keys(self, keys: list[universal_key], *,
                           force: bool = False) -> int:
@@ -1168,7 +1171,7 @@ async def _query_knn(arg: Any, connection: Connection) -> tuple[
     else:
         raise ValueError(f"Unknown domain tag: {domain_tag}")
     store = await connection.semantic_vector_store()  # type: ignore
-    results, warnings = await store.lookup(query_str, k, kinds, domain,
+    results, warnings, _total = await store.lookup(query_str, k, kinds, domain,
         term_patterns=list(term_patterns),
         type_patterns=list(type_patterns),
         theories_include=list(theories_include),
