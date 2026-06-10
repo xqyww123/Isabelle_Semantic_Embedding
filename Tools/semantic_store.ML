@@ -77,6 +77,8 @@ signature SEMANTIC_STORE = sig
      types: Remote_Procedure_Calling.callback',
      classes: Remote_Procedure_Calling.callback',
      locales: Remote_Procedure_Calling.callback',
+     named_theorems: Remote_Procedure_Calling.callback',
+     methods: Remote_Procedure_Calling.callback',
      introduction_rules: Remote_Procedure_Calling.callback',
      elimination_rules: Remote_Procedure_Calling.callback',
      induction_rules: Remote_Procedure_Calling.callback',
@@ -193,7 +195,7 @@ local
     fn {file_path, theory_longname, theory_key, entries} =>
     packTuple4
       (packString, packString, packBytes,
-       packList (packTuple5 (pack_entry_kind, packString, packString, packInt, packBytes)))
+       packList (packTuple6 (pack_entry_kind, packString, packString, packInt, packBytes, packString)))
       (file_path, theory_longname, theory_key, entries)
 
   fun unpackUsage src =
@@ -212,7 +214,7 @@ val check_theorem_name_in_file_cmd :
 
 fun make_interpret_file_cmd callbacks :
     ({file_path: string, theory_longname: string, theory_key: Universal_Key.universal_key,
-      entries: (Universal_Key.entity * string * string * int * Word8Vector.vector) list},
+      entries: (Universal_Key.entity * string * string * int * Word8Vector.vector * string) list},
      semantics option list * string list * usage * usage)
     Remote_Procedure_Calling.command = {
   name = "Semantic_Store.interpret_file",
@@ -299,6 +301,8 @@ local
     | entity_kind_rank (Locale _) = 1
     | entity_kind_rank (Type _) = 2
     | entity_kind_rank (Constant _) = 3
+    | entity_kind_rank (Named_Theorems _) = 4
+    | entity_kind_rank (Method _) = 4
     | entity_kind_rank (Introduction_Rule _) = 5
     | entity_kind_rank (Named_Introduction_Rule _) = 5
     | entity_kind_rank (Elimination_Rule _) = 6
@@ -328,11 +332,13 @@ val contains_cmd
   timeout = NONE
 }
 
-(* Build (entity, name, prop_str, line, uk) entries from (entity, name, pos, uk) tuples.
-   Shared by interpret' and interpret_entities. *)
+(* Build (entity, name, prop_str, line, uk, prompt_hint) entries from
+   (entity, name, pos, uk) tuples.  prompt_hint is extra context shown to the
+   interpretation agent only (NOT stored as expr): currently the first members
+   of a named_theorems collection.  Shared by interpret' and interpret_entities. *)
 fun build_entries (context : Context.generic)
     (raw : (Universal_Key.entity * string * Position.T * Universal_Key.universal_key) list)
-    : (Universal_Key.entity * string * string * int * Universal_Key.universal_key) list =
+    : (Universal_Key.entity * string * string * int * Universal_Key.universal_key * string) list =
   let
     val thy = Context.theory_of context
     val ctxt = Context.cases Proof_Context.init_global I context
@@ -371,10 +377,32 @@ fun build_entries (context : Context.generic)
       | Universal_Key.Type _ => source_at_pos pos
       | Universal_Key.Class _ => source_at_pos pos
       | Universal_Key.Locale _ => source_at_pos pos
+      | Universal_Key.Named_Theorems _ => source_at_pos pos
+      | Universal_Key.Method _ => source_at_pos pos
       | _ => ""
+    (* Extra prompt-only context (never stored as expr).  For a named_theorems,
+       show up to 10 current member propositions so the agent can describe the
+       collection's purpose; members are deliberately kept out of expr/key. *)
+    fun mk_prompt_hint (Universal_Key.Named_Theorems nt_name, _) =
+          (case try (Named_Theorems.get ctxt) nt_name of
+             NONE => ""
+           | SOME [] => ""
+           | SOME thms =>
+               let
+                 val shown = Library.take 10 thms
+                 fun line thm = "  - " ^ (pp (Thm.prop_of thm) handle ERROR _ => "?")
+                 val more = if length thms > 10
+                            then ["  \226\128\166 (" ^ string_of_int (length thms - 10) ^ " more)"]
+                            else []
+               in
+                 "Current members (context only \226\128\148 do NOT list them in your answer):\n"
+                 ^ cat_lines (map line shown @ more)
+               end)
+      | mk_prompt_hint _ = ""
   in
     raw |> map (fn (entity, name, pos, uk) =>
-      (entity, name, mk_prop_str (entity, pos), the_default 999999999 (Position.line_of pos), uk))
+      (entity, name, mk_prop_str (entity, pos), the_default 999999999 (Position.line_of pos),
+       uk, mk_prompt_hint (entity, pos)))
   end
 
 fun extract_intro_rules ctx =
@@ -503,8 +531,19 @@ fun dedup_against existing new_entries =
 (* Convenience callbacks with infra filters and theorem cache baked in.
    Processes any uncached facts at creation time so callbacks see 0 uncached. *)
 fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_Callbacks.context_unpacker) =
-  let val {is_infra_const, is_infra_thm, is_infra_induct_thm,
-           is_infra_type, is_infra_class, is_infra_locale} =
+  let (* Populate coercion-transparent matching ignore set (idempotent). *)
+      val _ = List.app (fn n => Strhashtab.update Context_Callbacks.coercion_ignores (n, ())) [
+        "Nat.semiring_1_class.of_nat",
+        "Int.ring_1_class.of_int",
+        "Rat.field_char_0_class.of_rat",
+        "Real_Vector_Spaces.of_real",
+        "Rings.zero_neq_one_class.of_bool",
+        "Extended_Nat.enat",
+        "Extended_Real.ereal.ereal",
+        "Extended_Nonnegative_Real.ennreal"]
+      val {is_infra_const, is_infra_thm, is_infra_induct_thm,
+           is_infra_type, is_infra_class, is_infra_locale,
+           is_infra_named_theorems, is_infra_method} =
         Infra_Filter.gen_infra_filters init_context
       val {entries = cached_entries, facts = cached_facts} =
         Thm_Cache.get (Context.theory_of init_context)
@@ -524,6 +563,8 @@ fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_
     types = Context_Callbacks.make_types_callback (SOME (not o is_infra_type)) ctxt_unpack,
     classes = Context_Callbacks.make_classes_callback (SOME (not o is_infra_class)) ctxt_unpack,
     locales = Context_Callbacks.make_locales_callback (SOME (not o is_infra_locale)) ctxt_unpack,
+    named_theorems = Context_Callbacks.make_named_theorems_callback (SOME (not o is_infra_named_theorems)) ctxt_unpack,
+    methods = Context_Callbacks.make_methods_callback (SOME (not o is_infra_method)) ctxt_unpack,
     introduction_rules = Context_Callbacks.make_introduction_rules_callback
       extract_intro_rules (SOME (not o is_infra_thm)) ctxt_unpack,
     elimination_rules = Context_Callbacks.make_elimination_rules_callback
@@ -541,7 +582,8 @@ fun interpret' (context : Context.generic) : usage * usage =
     val thy_name = Context.theory_long_name thy
     val thy_file_path = Theory_Structure.get_theory_file_path thy
     (* 2. Extract constants and theorems, filtering infrastructure *)
-    val {is_infra_const, is_infra_thm, is_infra_type, is_infra_class, is_infra_locale, ...} =
+    val {is_infra_const, is_infra_thm, is_infra_type, is_infra_class, is_infra_locale,
+         is_infra_named_theorems, is_infra_method, ...} =
       Infra_Filter.gen_infra_filters context
 
     val const_entries = Theory_Structure.get_constants_with_positions context
@@ -627,6 +669,21 @@ fun interpret' (context : Context.generic) : usage * usage =
                in SOME (entity, name, pos,
                     Universal_Key.key_of NONE context entity) end)
 
+    (* 5a'. Extract named_theorems collections and proof methods *)
+    val named_theorems_entries = Theory_Structure.get_named_theorems_with_positions context
+      |> map_filter (fn (name, pos) =>
+          if is_infra_named_theorems name then NONE
+          else let val entity = Universal_Key.Named_Theorems name
+               in SOME (entity, name, pos,
+                    Universal_Key.key_of NONE context entity) end)
+
+    val method_entries = Theory_Structure.get_methods_with_positions context
+      |> map_filter (fn (name, pos) =>
+          if is_infra_method name then NONE
+          else let val entity = Universal_Key.Method name
+               in SOME (entity, name, pos,
+                    Universal_Key.key_of NONE context entity) end)
+
     (* 5b. Extract introduction and elimination rules *)
     val intro_entries = Theory_Structure.get_introduction_rules_with_positions context
       |> map_filter (fn (name, pos, thm) =>
@@ -661,6 +718,7 @@ fun interpret' (context : Context.generic) : usage * usage =
     val all_entries_with_pos =
       (const_entries @ deduped_thm_entries
        @ type_entries @ class_entries @ locale_entries
+       @ named_theorems_entries @ method_entries
        @ intro_entries @ elim_entries
        @ induct_entries @ case_split_entries)
       |> sort entry_ord
@@ -674,11 +732,11 @@ fun interpret' (context : Context.generic) : usage * usage =
       val uk_cb = Universal_Key.make_universal_key_callback pu
       val theory_info_cb = Context_Callbacks.make_theory_long_name_and_path_callback su
       val desugar_cb = Explain_Term.make_desugar_callback context
-      val {constants, theorems, types, classes, locales,
+      val {constants, theorems, types, classes, locales, named_theorems, methods,
            introduction_rules, elimination_rules,
            induction_rules, case_split_rules} = make_entity_callbacks context su
       val cmd = make_interpret_file_cmd [uk_cb, theory_info_cb, desugar_cb,
-            constants, theorems, types, classes, locales,
+            constants, theorems, types, classes, locales, named_theorems, methods,
             introduction_rules, elimination_rules,
             induction_rules, case_split_rules]
 
@@ -801,11 +859,11 @@ fun interpret_entities (context : Context.generic) (entities : Universal_Key.ent
         val uk_cb = Universal_Key.make_universal_key_callback pu
         val theory_info_cb = Context_Callbacks.make_theory_long_name_and_path_callback su
         val desugar_cb = Explain_Term.make_desugar_callback context
-        val {constants, theorems, types, classes, locales,
+        val {constants, theorems, types, classes, locales, named_theorems, methods,
              introduction_rules, elimination_rules,
              induction_rules, case_split_rules} = make_entity_callbacks context su
         val cmd = make_interpret_file_cmd [uk_cb, theory_info_cb, desugar_cb,
-              constants, theorems, types, classes, locales,
+              constants, theorems, types, classes, locales, named_theorems, methods,
               introduction_rules, elimination_rules,
               induction_rules, case_split_rules]
         val thy_key = Universal_Key.key_of_theory' thy
@@ -860,11 +918,11 @@ fun pack_search_domain ContextAll =
 fun query_knn (context : Context.generic) =
   let
     val su = Context_Callbacks.static_context_unpacker context
-    val {constants, theorems, types, classes, locales,
+    val {constants, theorems, types, classes, locales, named_theorems, methods,
          introduction_rules, elimination_rules,
          induction_rules, case_split_rules} = make_entity_callbacks context su
     val callbacks = [
-      constants, theorems, types, classes, locales,
+      constants, theorems, types, classes, locales, named_theorems, methods,
       introduction_rules, elimination_rules,
       induction_rules, case_split_rules,
       make_interpret_theory_callback su,
@@ -934,11 +992,11 @@ fun embed_all_entities_in_theories (force : bool) (context : Context.generic) (t
         val _ = tracing ("[Semantic_Store] embed_all_entities_in_theories: " ^
                    Int.toString (length unembedded) ^ " theories to embed")
         val su = Context_Callbacks.static_context_unpacker context
-        val {constants, theorems, types, classes, locales,
+        val {constants, theorems, types, classes, locales, named_theorems, methods,
              introduction_rules, elimination_rules,
              induction_rules, case_split_rules} = make_entity_callbacks context su
         val callbacks = [
-          constants, theorems, types, classes, locales,
+          constants, theorems, types, classes, locales, named_theorems, methods,
           introduction_rules, elimination_rules,
           induction_rules, case_split_rules,
           Universal_Key.make_universal_key_callback su,

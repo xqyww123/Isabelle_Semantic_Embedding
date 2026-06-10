@@ -7,7 +7,9 @@ signature INFRA_FILTER = sig
      is_infra_induct_thm: string * thm -> bool,
      is_infra_type: string -> bool,
      is_infra_class: string -> bool,
-     is_infra_locale: string -> bool}
+     is_infra_locale: string -> bool,
+     is_infra_named_theorems: string -> bool,
+     is_infra_method: string -> bool}
 end
 
 structure Infra_Filter : INFRA_FILTER = struct
@@ -24,13 +26,14 @@ fun gen_infra_filters (context : Context.generic)
        is_infra_thm: string * thm -> bool,
        is_infra_induct_thm: string * thm -> bool,
        is_infra_type: string -> bool, is_infra_class: string -> bool,
-       is_infra_locale: string -> bool} =
+       is_infra_locale: string -> bool,
+       is_infra_named_theorems: string -> bool, is_infra_method: string -> bool} =
   let
     val type_space = Context.cases Sign.type_space Proof_Context.type_space context
     val consts = Context.cases Sign.consts_of Proof_Context.consts_of context
     val const_space = Consts.space_of consts
-    val fact_space = Facts.space_of
-      (Context.cases Global_Theory.facts_of Proof_Context.facts_of context)
+    val facts = Context.cases Global_Theory.facts_of Proof_Context.facts_of context
+    val fact_space = Facts.space_of facts
     val class_space = Context.cases Sign.class_space Proof_Context.class_space context
     val locale_space = Locale.locale_space (Context.theory_of context)
     fun is_hidden space name =
@@ -304,6 +307,11 @@ fun gen_infra_filters (context : Context.generic)
     fun is_infra_thm (full_name, thm) =
         Name_Space.is_concealed fact_space full_name
         orelse is_hidden fact_space full_name
+        (* No accessible short name in this context (e.g. shadowed, or a
+           class-localized fact outside its locale): the agent cannot cite it by
+           name, so it is useless to surface. Facts.extern marks such names with
+           a "??." prefix (this is the exact string the agent would see). *)
+        orelse String.isPrefix "??." (Facts.extern ctxt facts full_name)
         orelse is_from_infra_theory full_name
         orelse is_ADT_infra_thm full_name
         orelse is_inductive_infra_thm full_name
@@ -318,6 +326,34 @@ fun gen_infra_filters (context : Context.generic)
     fun is_infra_induct_thm (full_name, thm) =
         is_infra_thm (full_name, thm)
         orelse exists (fn p => String.isPrefix p full_name) infra_induct_thy_prefixes
+
+    (* --- Methods: drop any method defined in a Main-ancestor theory --- *)
+    val main_anc_set =
+      let val thy = Context.theory_of context
+          val ancs = Theory.ancestors_of thy
+      in case find_first (fn t => Context.theory_base_name t = "Main") ancs of
+           SOME m => Symtab.make_set (map Context.theory_long_name (m :: Theory.ancestors_of m))
+         (* current theory is Main or below it: filter everything inherited *)
+         | NONE => Symtab.make_set (map Context.theory_long_name (thy :: ancs))
+      end
+    val method_space = Method.method_space context
+    fun is_infra_method name =
+      (case try (Name_Space.the_entry method_space) name of
+         SOME e => Symtab.defined main_anc_set (#theory_long_name e)
+       | NONE => true)
+
+    (* --- Named_theorems: HOL.no_atp + tool-internal collections (Step 0 dump) --- *)
+    val named_theorems_blacklist = Symtab.make_set [
+        "HOL.no_atp", "HOL.atomize_elim",
+        "HOL.nitpick_simp", "HOL.nitpick_psimp", "HOL.nitpick_unfold", "HOL.nitpick_choice_spec",
+        "HOL.code_pred_def", "HOL.code_pred_inline", "HOL.code_pred_simp",
+        "SMT.smt_arith_combine", "SMT.smt_arith_multiplication", "SMT.smt_arith_simplify",
+        "Quotient.quot_equiv", "Quotient.quot_preserve", "Quotient.quot_respect",
+        "Quotient.quot_thm", "Quotient.id_simps",
+        "Lifting.relator_eq_onp",
+        "Fun_Def.measure_function", "Fun_Def_Base.termination_simp",
+        "Partial_Function.partial_function_mono"]
+    fun is_infra_named_theorems name = Symtab.defined named_theorems_blacklist name
   in
     {is_infra_const = is_infra_const, is_infra_thm = is_infra_thm,
      is_infra_induct_thm = is_infra_induct_thm,
@@ -329,7 +365,9 @@ fun gen_infra_filters (context : Context.generic)
                                  orelse is_from_infra_theory name,
      is_infra_locale = fn name => Name_Space.is_concealed locale_space name
                                   orelse is_hidden locale_space name
-                                  orelse is_from_infra_theory name}
+                                  orelse is_from_infra_theory name,
+     is_infra_named_theorems = is_infra_named_theorems,
+     is_infra_method = is_infra_method}
   end
 
 end

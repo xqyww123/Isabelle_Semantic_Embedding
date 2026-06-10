@@ -49,16 +49,24 @@ _KIND_THEOREM = 2
 _KIND_TYPE = 3
 _KIND_CLASS = 4
 _KIND_LOCALE = 5
+_KIND_NAMED_THEOREMS = 6
+_KIND_METHOD = 7
 _KIND_INTRODUCTION_RULE = 0x12
 _KIND_ELIMINATION_RULE = 0x22
 _KIND_INDUCTION_RULE = 0x32
 _KIND_CASE_SPLIT_RULE = 0x42
+# NB: these label strings must stay identical to the `type` enum in
+# _answer_schema below — the agent echoes the label back and it is matched
+# against the keys built from _KIND_PROMPT_LABELS; any drift silently drops
+# every answer for that kind ("Unknown entry").
 _KIND_PROMPT_LABELS = {
     _KIND_CONSTANT: "constant",
     _KIND_THEOREM: "lemma",
     _KIND_TYPE: "type",
     _KIND_CLASS: "typeclass",
     _KIND_LOCALE: "locale",
+    _KIND_NAMED_THEOREMS: "named theorems",
+    _KIND_METHOD: "proof method",
     _KIND_INTRODUCTION_RULE: "introduction rule",
     _KIND_ELIMINATION_RULE: "elimination rule",
     _KIND_INDUCTION_RULE: "induction rule",
@@ -79,9 +87,11 @@ class Entry(NamedTuple):
     """A single entity to interpret."""
     kind: int            # _KIND_CONSTANT, _KIND_THEOREM, etc.
     name: str            # fully qualified name (Unicode)
-    prop_str: str        # printed proposition / type signature (Unicode)
+    prop_str: str        # printed proposition / type signature (Unicode); stored as expr
     line_number: int     # source line (-1 if unavailable)
     universal_key: universal_key
+    prompt_extra: str = ""  # extra context shown to the agent only, NOT stored as expr
+                            # (e.g. current members of a named_theorems collection)
 
 
 class CostSummary(NamedTuple):
@@ -203,6 +213,9 @@ class InterpretationTask:
             line = (f"  [line {e.line_number}] " if e.line_number > 0 else "  ") + f"{label} {e.name}"
             if e.prop_str:
                 line += f": {e.prop_str}"
+            if e.prompt_extra:
+                # indent the extra context block under the entry line
+                line += "\n    " + e.prompt_extra.replace("\n", "\n    ")
             lines.append(line)
         return "\n".join(lines)
 
@@ -240,12 +253,23 @@ Prefer plain English over formulas. Wrap formulas in backticks (e.g., `x`, `x + 
 When a lemma/rule/term has a well-known name (e.g., proof by contradiction), you MUST mention it explicitly in the translation. \
 Any nonstandard notation must be briefly explained.
 
+- For a `named theorems` entry, describe what kind of facts the collection gathers and its purpose; \
+you may use the listed current members to infer this, but do NOT enumerate the members in your answer. \
+The declared comment in the command (if any) is often terse, inaccurate, or incomplete, so check it \
+against the members: copy it verbatim only when it is genuinely complete and accurate, otherwise \
+correct and expand it into a full description using the members. \
+- For a `proof method` entry, describe the proof strategy or tactic it performs, when it should be used, \
+and what kinds of proof goals it is meant to solve; if its description is empty, \
+draw on the surrounding context and its uses in other files to learn what it does.
+
 Examples of good translations:
 - constant Nat.add: The addition operator on natural numbers, taking two natural numbers and returning their sum.
 - lemma List.length_append: The length of the concatenation of two lists equals the sum of their individual lengths.
 - lemma List.map_comp: Mapping `f` then `g` over a list is the same as mapping their composition `g \u2218 f`.
 - type Prod: The product type, consisting of a pair of two values of possibly different types.
 - introduction rule notI `(P \u27f9 False) \u27f9 \u00acP`: The rule of proof by contradiction \u2014 to prove `\u00acP`, assume `P` and derive `False`.
+- named theorems Groups.algebra_simps: A collection of rewrite rules that normalise expressions over groups, rings and related structures — multiplying products out and ordering sums and products into a canonical form — so the simplifier can decide algebraic equalities and help discharge inequalities.
+- proof method Presburger.presburger: An automatic decision procedure for first-order linear arithmetic over integers and naturals (Presburger arithmetic) — it eliminates quantifiers and handles divisibility and modulo constraints via Cooper's algorithm.
 
 Translation hints:
 - Suc n \u2192 "the successor of n" or "n + 1"
@@ -276,6 +300,7 @@ _answer_schema = {
                     "type": {
                         "type": "string",
                         "enum": ["constant", "lemma", "type", "typeclass", "locale",
+                                 "named theorems", "proof method",
                                  "introduction rule", "elimination rule",
                                  "induction rule", "case-split rule"]
                     },
@@ -347,12 +372,17 @@ async def _answer_tool(args: dict[str, Any]) -> ToolCall_ret:
 _TOOL_WHITELIST = {
     "Read",
     "Grep",
+    "Glob",
+    "LS",
+    "Bash",
     "Skill",
     "Agent",
     "TaskCreate",
     "TaskGet",
     "TaskList",
     "TaskUpdate",
+    "TaskOutput",
+    "TaskStop",
     "WebFetch",
     "WebSearch",
     "ExitPlanMode",
@@ -652,8 +682,9 @@ async def _interpret_file(arg: Any, connection: Connection) -> InterpretationRes
             prop_str=pretty_unicode(prop),
             line_number=lineno,
             universal_key=bytes(uk),
+            prompt_extra=pretty_unicode(hint),
         )
-        for kind, name, prop, lineno, uk in raw_entries
+        for kind, name, prop, lineno, uk, hint in raw_entries
     ]
     return await interpret_file(
         connection, file_path, theory_longname, bytes(theory_key), entries

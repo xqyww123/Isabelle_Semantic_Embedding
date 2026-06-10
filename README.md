@@ -14,7 +14,8 @@ Each entity is stored as a msgpack tuple keyed by its universal key:
 (kind: int, name: str, expr: str, interpretation: str)
 ```
 
-- `kind`: EntityKind value (1=constant, 2=lemma, 3=type, 4=typeclass, 5=locale)
+- `kind`: EntityKind value (1=constant, 2=lemma, 3=type, 4=typeclass, 5=locale,
+  6=named_theorems, 7=proof method; plus 0x12/0x22/0x32/0x42 for intro/elim/induction/case-split rules)
 - `name`: fully qualified name (e.g. `"HOL.List.append"`)
 - `expr`: pretty-printed type signature or proposition
 - `interpretation`: plain English description

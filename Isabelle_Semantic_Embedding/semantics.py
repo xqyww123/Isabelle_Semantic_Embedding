@@ -269,6 +269,7 @@ def _mk_query_by_name_schema(working_names: list[str]) -> dict:
             "type": {
                 "type": "string",
                 "enum": ["constant", "lemma", "type", "typeclass", "locale",
+                        "named theorems", "proof method",
                         "introduction rule", "elimination rule",
                         "induction rule", "case-split rule"],
                 "description": "The kind of entity to query.",

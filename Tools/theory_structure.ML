@@ -7,6 +7,8 @@ signature THEORY_STRUCTURE = sig
   val get_types_with_positions : Context.generic -> (string * Position.T) list
   val get_classes_with_positions : Context.generic -> (string * Position.T) list
   val get_locales_with_positions : Context.generic -> (string * Position.T) list
+  val get_named_theorems_with_positions : Context.generic -> (string * Position.T) list
+  val get_methods_with_positions : Context.generic -> (string * Position.T) list
   val parse_thm_name : string -> string * int option
   val get_introduction_rules_with_positions : Context.generic -> (string * Position.T * thm) list
   val get_elimination_rules_with_positions  : Context.generic -> (string * Position.T * thm) list
@@ -96,6 +98,43 @@ fun get_locales_with_positions context =
     Name_Space.get_names space
     |> map_filter (fn name =>
         if Symtab.defined parent_locale_names name then NONE
+        else SOME (name, #pos (Name_Space.the_entry space name)))
+  end
+
+(* Get named_theorems collections with positions (local definitions only).
+   Named_Theorems are registered as dynamic facts, so Facts.is_dynamic (cheap,
+   no content forcing) prefilters candidates; Named_Theorems.get then confirms
+   (only run on the few dynamic facts new to this theory). *)
+fun get_named_theorems_with_positions context =
+  let
+    val ctxt = Context.cases Proof_Context.init_global I context
+    val facts = Proof_Context.facts_of ctxt
+    val space = Facts.space_of facts
+    val parent_names =
+      Theory.parents_of (Context.theory_of context)
+      |> maps (fn parent => Name_Space.get_names (Facts.space_of (Global_Theory.facts_of parent)))
+      |> Symtab.make_set
+  in
+    Name_Space.get_names space
+    |> map_filter (fn name =>
+        if Symtab.defined parent_names name then NONE
+        else if Facts.is_dynamic facts name andalso can (Named_Theorems.get ctxt) name
+        then SOME (name, #pos (Name_Space.the_entry space name))
+        else NONE)
+  end
+
+(* Get proof methods with positions (local definitions only). *)
+fun get_methods_with_positions context =
+  let
+    val space = Method.method_space context
+    val parent_names =
+      Theory.parents_of (Context.theory_of context)
+      |> maps (fn parent => Name_Space.get_names (Method.method_space (Context.Theory parent)))
+      |> Symtab.make_set
+  in
+    Name_Space.get_names space
+    |> map_filter (fn name =>
+        if Symtab.defined parent_names name then NONE
         else SOME (name, #pos (Name_Space.the_entry space name)))
   end
 
@@ -334,6 +373,7 @@ fun get_entities_with_positions context entities =
     val type_space = Context.cases Sign.type_space Proof_Context.type_space context
     val class_space = Context.cases Sign.class_space Proof_Context.class_space context
     val locale_space = Locale.locale_space thy
+    val method_space = Method.method_space context
     val fact_space = Facts.space_of
       (Context.cases Global_Theory.facts_of Proof_Context.facts_of context)
     fun pos_of space name =
@@ -351,6 +391,8 @@ fun get_entities_with_positions context entities =
           | Universal_Key.Type name => (name, pos_of type_space name)
           | Universal_Key.Class name => (name, pos_of class_space name)
           | Universal_Key.Locale name => (name, pos_of locale_space name)
+          | Universal_Key.Named_Theorems name => (name, fact_pos name)
+          | Universal_Key.Method name => (name, pos_of method_space name)
           | Universal_Key.Named_Theorem name => (name, fact_pos name)
           | Universal_Key.Named_Introduction_Rule name => (name, fact_pos name)
           | Universal_Key.Named_Elimination_Rule name => (name, fact_pos name)
