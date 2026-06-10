@@ -52,7 +52,7 @@ Certain infrastructure theories are never interpreted: `Pure`, `Code_Generator`,
 
 1. **ML side** (`semantic_store.ML:interpret'`): extracts constants, theorems, types, classes, locales from a theory, computes universal keys, and calls Python via RPC
 2. **Python side** (`interpret_file`): checks LMDB cache for existing interpretations, launches Claude agent for uncached entries
-3. **Agent**: receives batches of entities (20 per batch), uses MCP tools (`query_by_name`, `query_by_position`, `definition`, `hover`) to understand dependencies, submits translations via the `answer` tool
+3. **Agent**: receives batches of entities (20 per batch), uses MCP tools (`query`, `definition`, `hover`) to understand dependencies, submits translations via the `answer` tool
 4. **Storage**: each answer is immediately written to LMDB via `Semantic_DB[key] = SemanticRecord(...)`
 
 `Semantic_Store.interpret(context)` interprets all uninterpreted ancestor theories plus the current proof context. `interpret_theories_by_names(connection, names)` interprets specific theories by name.

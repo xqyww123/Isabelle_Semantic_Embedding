@@ -17,7 +17,6 @@ from .semantic_interpretation import interpret_file, _interpret_file
 from .semantics import (
     Semantic_DB,
     mk_query_by_name_tool as query_by_name_tool,
-    mk_query_by_position_tool as query_by_position_tool,
     _query,
     _is_interpreted,
     _mark_interpreted,
@@ -38,6 +37,5 @@ __all__ = [
     "interpret_file",
     "Semantic_DB",
     "query_by_name_tool",
-    "query_by_position_tool",
     "theory_info",
 ]

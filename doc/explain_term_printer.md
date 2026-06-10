@@ -15,7 +15,7 @@ Given a checked Isabelle/HOL term (possibly with fancy syntax like `{x. P x}`, `
 5. Resolves de Bruijn indices to named variables
 6. Uses minimal, correct parenthesization
 
-The output is meant for the deformalizer agent. Each constant in the output can then be looked up for its semantic interpretation via `query_by_name`.
+The output is meant for the deformalizer agent. Each constant in the output can then be looked up for its semantic interpretation via `query`.
 
 ## Architecture
 

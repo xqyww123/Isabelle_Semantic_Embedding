@@ -183,7 +183,7 @@ writeln "\n=== All query tool RPC tests passed ==="
 section \<open>End-to-end query demos\<close>
 
 ML \<open>
-(* Demo 1: query_by_name output for a compiled constant *)
+(* Demo 1: query output for a compiled constant *)
 let val SOME r = run_py (space_implode "\n" [
     "from Isabelle_Semantic_Embedding.semantics import Semantic_DB, _get_definition_source",
     "from Isabelle_RPC_Host.universal_key import EntityKind, universal_key_of",
@@ -200,7 +200,7 @@ in writeln ("--- Demo 1: query conj ---\n" ^ r ^ "\n") end
 \<close>
 
 ML \<open>
-(* Demo 2: query_by_name output for a compiled theorem *)
+(* Demo 2: query output for a compiled theorem *)
 let val SOME r = run_py (space_implode "\n" [
     "from Isabelle_Semantic_Embedding.semantics import Semantic_DB, _get_definition_source",
     "from Isabelle_RPC_Host.universal_key import EntityKind, universal_key_of",

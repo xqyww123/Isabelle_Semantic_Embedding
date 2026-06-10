@@ -1,15 +1,15 @@
-# Position-Based Context Resolution for `query_by_name`
+# Position-Based Context Resolution for `query`
 
 **Commit**: `336808d` on `contrib/Semantic_Embedding`
 **Date**: 2026-05-21
 
 ## Problem
 
-The `query_by_name` MCP tool used a static theory context captured at callback registration time. This means locale-local names like `local.f` (which only exist inside a locale block's proof context) could not be resolved. The tool could only resolve globally-visible names.
+The `query` MCP tool (internally `mk_query_by_name_tool`) used a static theory context captured at callback registration time. This means locale-local names like `local.f` (which only exist inside a locale block's proof context) could not be resolved. The tool could only resolve globally-visible names.
 
 ## Solution Overview
 
-Added an optional `context_at` parameter to `query_by_name` that specifies a source position (line/column/file). The ML side resolves this position to a `Proof.context` via two fallback paths:
+Added an optional `context_at` parameter to `query` that specifies a source position (line/column/file). The ML side resolves this position to a `Proof.context` via two fallback paths:
 
 ```
 context_at_position(file, offset)
@@ -75,7 +75,7 @@ val pu = PIDE_State.position_context_unpacker context
 val uk_cb = Universal_Key.make_universal_key_callback pu
 ```
 
-Only the `uk_cb` (universal_key_of callback, used by `query_by_name`) uses the position-aware unpacker. All entity enumeration callbacks remain static (`su`) — unchanged wire protocol.
+Only the `uk_cb` (universal_key_of callback, used by `query`) uses the position-aware unpacker. All entity enumeration callbacks remain static (`su`) — unchanged wire protocol.
 
 Embedding-related sites (lines ~878, ~920) are NOT changed — they don't need position context.
 

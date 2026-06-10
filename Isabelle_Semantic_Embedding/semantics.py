@@ -11,7 +11,7 @@ import numpy as np
 import platformdirs
 from Isabelle_RPC_Host import Connection, isabelle_remote_procedure
 from Isabelle_RPC_Host.rpc import IsabelleError
-from Isabelle_RPC_Host.position import AsciiPosition, UnicodePosition, IsabellePosition
+from Isabelle_RPC_Host.position import AsciiPosition, IsabellePosition
 from Isabelle_RPC_Host.unicode import pretty_unicode
 from Isabelle_RPC_Host.universal_key import EntityKind, UndefinedEntity, universal_key, universal_key_of, destruct_key, is_WIP
 from claude_agent_sdk import SdkMcpTool, tool
@@ -19,12 +19,7 @@ from claude_agent_sdk import SdkMcpTool, tool
 from .semantic_embedding import Vector_Store, Embedding_Provider, embedding_provider, Reranker_Provider, reranker_provider, key
 
 from .base import ToolCall_ret, mk_ret as _mk_ret
-from .hover import _position_schema, _validate_position_args, _resolve_thy_path
-
-_PIDE_KIND_TO_TAG: dict[str, EntityKind] = {
-    "const": EntityKind.CONSTANT, "type": EntityKind.TYPE, "thm": EntityKind.THEOREM,
-    "class": EntityKind.CLASS, "locale": EntityKind.LOCALE,
-}
+from .hover import _resolve_thy_path
 
 # Long theory names to exclude from interpretation and entity enumeration.
 _SKIP_THEORY_LONG_NAMES = ["Pure", "Tools.Code_Generator", "HOL.Code_Evaluation", "HOL.Typerep"]
@@ -451,7 +446,7 @@ async def _try_resolve_syntax_token(
             f'"{name}" is a notation (syntax: {display}).\n'
             f'It desugars to: {compact_str}\n'
             f'Underlying constant: {const_name}\n'
-            f'(Not yet interpreted. Use `query_by_name` with name="{const_name}" '
+            f'(Not yet interpreted. Use `query` with name="{const_name}" '
             f'or `desugar_and_explain` for more details.)')
     return None
 
@@ -467,7 +462,7 @@ def mk_query_by_name_tool(
             " Do not query entries you have been asked to interpret"
             " — interpret those from the source file yourself.")
     @tool(
-        "query_by_name",
+        "query",
         description,
         input_schema=_mk_query_by_name_schema(working_names),
     )
@@ -558,82 +553,6 @@ def mk_query_by_name_tool(
             log.exception("query_by_name: error")
             raise
     return query_by_name_tool
-
-
-def mk_query_by_position_tool(
-    connection: Connection, working_names: list[str],
-    unicode: bool = False, with_pretty: bool = True
-) -> SdkMcpTool[Any]:
-    log = connection.server.logger.getChild("semantics")
-    description = "Look up the semantic interpretation of the entity at a given source position."
-    if working_names:
-        description += (
-            " Do not query entries you have been asked to interpret"
-            " — interpret those from the source file yourself.")
-    _query_by_position_schema = {
-        **_position_schema,
-        "properties": {
-            **_position_schema["properties"],
-            "show_defs": {
-                "type": "boolean",
-                "description": "If true, include the Isabelle source code of the command defining the entity.",
-                "default": False,
-            },
-        },
-    }
-    @tool(
-        "query_by_position",
-        description,
-        input_schema=_query_by_position_schema,
-    )
-    async def query_by_position_tool(args: dict[str, Any]) -> ToolCall_ret:
-        try:
-            log.debug("query_by_position: %s:%s:%s",
-                       args.get("file"), args.get("line"), args.get("column"))
-            err = _validate_position_args(args)
-            if err is not None:
-                log.warning("query_by_position: validation error: %s", err)
-                return _mk_ret(err, is_error=True)
-            thy_path = _resolve_thy_path(args["file"])
-            if unicode:
-                isa_pos = UnicodePosition(args["line"], args["column"], thy_path).to_isabelle_position()
-            else:
-                isa_pos = AsciiPosition(args["line"], args["column"], thy_path).to_isabelle_position()
-            entity = await connection.callback(
-                "pide_state.entity_at_position", (isa_pos.file, isa_pos.raw_offset))
-            if entity is None:
-                log.debug("query_by_position: no entity found")
-                return _mk_ret("No entity found at this position.")
-            kind, name = entity
-            log.debug("query_by_position: found %s %r", kind, name)
-            tag = _PIDE_KIND_TO_TAG.get(kind)
-            if tag is None:
-                return _mk_ret(f"Entity kind \"{kind}\" ({name}) is not queryable.")
-            if working_names and name in working_names:
-                return _mk_ret(
-                    f"Cannot query \"{name}\" — it is your task to interpret it from the source.",
-                    is_error=True,
-                )
-            uk = await universal_key_of(connection, tag, name)
-            sem = Semantic_DB.query(uk, with_pretty=with_pretty)
-            if sem is None:
-                return _mk_ret(f"{tag.label} \"{name}\" has not been interpreted yet.")
-            if args.get("show_defs", False):
-                try:
-                    src = await _get_definition_source(connection, tag, uk)
-                except Exception:
-                    log.debug("show_defs failed for %r", name, exc_info=True)
-                    src = None
-                if src is not None:
-                    sem += f"\n\nDefinition:\n{src}"
-            return _mk_ret(sem)
-        except (IsabelleError, UndefinedEntity) as e:
-            log.warning("%s: %s", type(e).__name__, e)
-            return _mk_ret(str(e), is_error=True)
-        except Exception:
-            log.exception("query_by_position: error")
-            raise
-    return query_by_position_tool
 
 
 # --- Other utilities ---

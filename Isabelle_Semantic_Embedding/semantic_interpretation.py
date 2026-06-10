@@ -274,8 +274,8 @@ Examples of good translations:
 Translation hints:
 - Suc n \u2192 "the successor of n" or "n + 1"
 
-When you encounter an entity whose meaning is unclear, use `mcp__isabelle_semantics__query_by_name`, \
-`mcp__isabelle_semantics__query_by_position`, `mcp__isabelle_semantics__hover`, or \
+When you encounter an entity whose meaning is unclear, use `mcp__isabelle_semantics__query`, \
+`mcp__isabelle_semantics__hover`, or \
 `mcp__isabelle_semantics__definition` to look it up before translating. \
 However, you cannot query entries you have been asked to translate \u2014 do it yourself.
 
@@ -388,8 +388,7 @@ _TOOL_WHITELIST = {
     "ExitPlanMode",
     "MCPSearch",
     "ToolSearch",
-    "mcp__isabelle_semantics__query_by_name",
-    "mcp__isabelle_semantics__query_by_position",
+    "mcp__isabelle_semantics__query",
     "mcp__isabelle_semantics__definition",
     "mcp__isabelle_semantics__hover",
     "mcp__isabelle_semantics__answer",
@@ -577,7 +576,7 @@ async def interpret_file(
 
     if uncached:
         from .hover import mk_definition_tool, mk_hover_tool
-        from .semantics import mk_query_by_name_tool, mk_query_by_position_tool
+        from .semantics import mk_query_by_name_tool
         from .theory_structure import mk_unicode_file
 
         unicode_file_path = mk_unicode_file(file_path)
@@ -601,14 +600,12 @@ async def interpret_file(
             seen_constants: set[str] = set()
             query_by_name_tool = mk_query_by_name_tool(
                 connection, working_names, file_path=file_path)
-            query_by_position_tool = mk_query_by_position_tool(
-                connection, working_names, unicode=True)
             definition_tool = mk_definition_tool(connection, unicode=True)
             hover_tool = mk_hover_tool(connection, unicode=True)
             desugar_tool = mk_desugar_and_explain_tool(
                 connection, file_path=file_path, seen_constants=seen_constants)
             mcp = create_sdk_mcp_server("isabelle_semantics", tools=[
-                query_by_name_tool, query_by_position_tool,
+                query_by_name_tool,
                 definition_tool, hover_tool, desugar_tool, _answer_tool])
 
             async def _on_compact(
