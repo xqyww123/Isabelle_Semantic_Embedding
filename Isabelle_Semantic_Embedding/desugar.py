@@ -6,6 +6,7 @@ from typing import Any
 from Isabelle_RPC_Host import Connection
 from Isabelle_RPC_Host.position import AsciiPosition
 from Isabelle_RPC_Host.universal_key import universal_key
+from Isabelle_RPC_Host.unicode import ascii_of_unicode
 from claude_agent_sdk import SdkMcpTool, tool
 
 from .base import ToolCall_ret, mk_ret as _mk_ret
@@ -78,6 +79,9 @@ def mk_desugar_and_explain_tool(
             return _mk_ret("Invalid argument: 'term' must be a non-empty string.",
                            is_error=True)
         log.debug("desugar_and_explain: term=%r", term_str)
+        # Normalize Unicode glyphs (≤, ∀, subscripts, ...) to Isabelle's
+        # ASCII-escape form; Syntax.read_term does not recognize raw UTF-8.
+        term_str = ascii_of_unicode(term_str)
 
         ctxt: tuple[str, int] | None = None
         context_at = args.get("context_at")

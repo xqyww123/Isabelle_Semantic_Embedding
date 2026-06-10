@@ -12,7 +12,7 @@ import platformdirs
 from Isabelle_RPC_Host import Connection, isabelle_remote_procedure
 from Isabelle_RPC_Host.rpc import IsabelleError
 from Isabelle_RPC_Host.position import AsciiPosition, IsabellePosition
-from Isabelle_RPC_Host.unicode import pretty_unicode
+from Isabelle_RPC_Host.unicode import pretty_unicode, ascii_of_unicode
 from Isabelle_RPC_Host.universal_key import EntityKind, UndefinedEntity, universal_key, universal_key_of, destruct_key, is_WIP
 from claude_agent_sdk import SdkMcpTool, tool
 
@@ -420,9 +420,11 @@ async def _try_resolve_syntax_token(
     _LHS = "syntax_probe_x"
     _RHS = "syntax_probe_y"
     syntax_patterns = [
-        (f"{_LHS} {name} {_RHS}", f"_ {name} _"),   # infix
-        (f"{name} {_LHS}", f"{name} _"),              # prefix unary
-        (f"{name} {_LHS} {_RHS}", f"{name} _ _"),    # prefix binary
+        (f"({name})", f"({name})"),                   # operator section, e.g. (≤)
+        (f"{_LHS} {name} {_RHS}", f"_ {name} _"),    # infix
+        (f"{name} {_LHS}", f"{name} _"),              # prefix
+        (f"{_LHS} {name}", f"_ {name}"),              # postfix
+        (f"{name} {_LHS}. {_RHS}", f"{name} _. _"),  # binder
     ]
     for pattern, display in syntax_patterns:
         try:
@@ -478,6 +480,10 @@ def mk_query_by_name_tool(
             return _mk_ret(f"Invalid type: {t!r}. Must be one of {[k.label for k in EntityKind if k != EntityKind.THEORY]}.", is_error=True)
         if not name:
             return _mk_ret("Invalid name: must be a non-empty string.", is_error=True)
+        # Normalize Unicode glyphs the agent may type (e.g. ≤, ∀, subscripts)
+        # into Isabelle's ASCII-escape form (\<le>, \<forall>, ...). Syntax.read_term
+        # and the name-space only recognize the escape form; raw UTF-8 fails.
+        name = ascii_of_unicode(name)
 
         # Resolve optional context_at position to (file, symbol_offset)
         ctxt = None
