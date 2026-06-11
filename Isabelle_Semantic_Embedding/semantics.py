@@ -413,11 +413,11 @@ async def query_by_name_raw(
 
 async def _append_definition(
     sem: str, connection: Connection, kind: EntityKind, uk: universal_key,
-    name: str, log: Any,
+    name: str, log: Any, ctxt: Any = None,
 ) -> str:
     """Append the source of the command defining *uk* to *sem* (best-effort)."""
     try:
-        src = await _get_definition_source(connection, kind, uk)
+        src = await _get_definition_source(connection, kind, uk, ctxt=ctxt)
     except Exception:
         log.debug("show_defs failed for %r", name, exc_info=True)
         return sem
@@ -430,7 +430,7 @@ async def _try_resolve_syntax_token(
     connection: Connection, name: str, ctxt: Any,
     with_pretty: bool, show_defs: bool, log: Any,
 ) -> str | None:
-    """Try to resolve a name as a syntax/notation token via desugar_and_explain.
+    """Try to resolve a name as a syntax/notation token via resolve_notation.
 
     Returns a formatted result string if the token resolves to a known constant,
     otherwise None. When *show_defs* is set, the defining command of the
@@ -447,13 +447,13 @@ async def _try_resolve_syntax_token(
     ]
     for pattern, display in syntax_patterns:
         try:
-            compact_str, constants = await connection.callback(
-                "explain_term.desugar_and_explain", (ctxt, pattern))
+            resolved = await connection.callback(
+                "explain_term.resolve_notation", (ctxt, pattern))
         except Exception:
             continue
-        if not constants:
+        if resolved is None:
             continue
-        const_name, uk_bytes = constants[0]
+        const_name, uk_bytes, compact_str = resolved
         uk: universal_key = bytes(uk_bytes)
         log.debug("resolved syntax token %r -> %s via pattern %r", name, const_name, pattern)
         sem = Semantic_DB.query(uk, with_pretty=with_pretty)
@@ -472,7 +472,8 @@ async def _try_resolve_syntax_token(
                 f'or `desugar_and_explain` for more details.)')
         if show_defs:
             result = await _append_definition(
-                result, connection, EntityKind.CONSTANT, uk, const_name, log)
+                result, connection, EntityKind.CONSTANT, uk, const_name, log,
+                ctxt=ctxt)
         return result
     return None
 
@@ -539,7 +540,8 @@ def mk_query_by_name_tool(
                 )
             sem, uk = await query_by_name_raw(connection, tag, name, with_pretty=with_pretty, ctxt=ctxt)
             if args.get("show_defs", False):
-                sem = await _append_definition(sem, connection, tag, uk, name, log)
+                sem = await _append_definition(sem, connection, tag, uk, name, log,
+                                               ctxt=ctxt)
             return _mk_ret(sem)
         except LookupError as e:
             return _mk_ret(str(e))

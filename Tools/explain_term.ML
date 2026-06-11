@@ -1,6 +1,7 @@
 signature EXPLAIN_TERM = sig
   val raw_lambda_printer : Proof.context -> term -> string
   val make_desugar_callback : Context.generic -> Remote_Procedure_Calling.callback'
+  val make_resolve_notation_callback : Context.generic -> Remote_Procedure_Calling.callback'
 end
 
 structure Explain_Term : EXPLAIN_TERM = struct
@@ -72,7 +73,13 @@ fun raw_lambda_printer ctxt t =
 
 (* --- Constant extraction and filtering --- *)
 
-fun extract_constants (ctxt : Proof.context) (checked_term : term)
+(* Collect the constants worth ANNOTATING for the interpretation agent:
+   infrastructure constants and Isabelle standard-library constants
+   (declared in Main or its ancestors) are dropped — the agent knows the
+   base vocabulary, and the semantic DB does not record it. Do NOT use
+   this for resolution questions ("which constant does this notation
+   denote") — see make_resolve_notation_callback. *)
+fun extract_nontrivial_constants (ctxt : Proof.context) (checked_term : term)
     : (string * Word8Vector.vector) list =
   let
     val thy = Proof_Context.theory_of ctxt
@@ -106,7 +113,16 @@ fun extract_constants (ctxt : Proof.context) (checked_term : term)
   in rev consts end
 
 
-(* --- RPC callback factory --- *)
+(* --- RPC callback factories --- *)
+
+fun context_at pos_opt (fallback : Context.generic) : Context.generic =
+  case pos_opt of
+    NONE => fallback
+  | SOME (file, offset) =>
+      (case PIDE_State.context_at_position
+              {re_eval_cache = true} file offset of
+         SOME ctx => ctx
+       | NONE => fallback)
 
 fun make_desugar_callback (fallback : Context.generic)
     : Remote_Procedure_Calling.callback' =
@@ -121,20 +137,44 @@ fun make_desugar_callback (fallback : Context.generic)
       packList (packPair (packString, packBytes))),
     function = fn (pos_opt, term_string) =>
       let
-        val context = case pos_opt of
-              NONE => fallback
-            | SOME (file, offset) =>
-                (case PIDE_State.context_at_position
-                        {re_eval_cache = true} file offset of
-                   SOME ctx => ctx
-                 | NONE => fallback)
+        val context = context_at pos_opt fallback
         val ctxt = Context.proof_of context
         (* mode_abbrev: type-check WITHOUT expanding abbreviations, so an
            abbreviation resolves to its own constant, not its expansion *)
         val checked = Proof_Context.read_term_abbrev ctxt term_string
         val compact = raw_lambda_printer ctxt checked
-        val constants = extract_constants ctxt checked
+        val constants = extract_nontrivial_constants ctxt checked
       in (compact, constants) end,
+    timeout = SOME (Time.fromSeconds 30)
+  }
+  end
+
+(* Resolve a notation probe (e.g. "x \<le> y") to the constant it denotes.
+   This answers a parsing-fact question — "which constant does this
+   notation stand for" — so the head constant is reported with NO
+   nontrivial filtering (unlike the annotation-oriented desugar callback).
+   Returns NONE when the probe's head is not a constant. *)
+fun make_resolve_notation_callback (fallback : Context.generic)
+    : Remote_Procedure_Calling.callback' =
+  let open MessagePackBinIO.Pack MessagePackBinIO.Unpack in
+  Remote_Procedure_Calling.mk_callback {
+    name = "explain_term.resolve_notation",
+    arg_schema = unpackPair (
+      unpackOption (unpackPair (unpackString, unpackInt)),
+      unpackString),
+    ret_schema = packOption (packTuple3 (packString, packBytes, packString)),
+    function = fn (pos_opt, probe_string) =>
+      let
+        val context = context_at pos_opt fallback
+        val ctxt = Context.proof_of context
+        val checked = Proof_Context.read_term_abbrev ctxt probe_string
+      in
+        case Term.head_of checked of
+          Const (name, _) =>
+            let val uk = Universal_Key.key_of NONE context (Universal_Key.Constant name)
+            in SOME (name, uk, raw_lambda_printer ctxt checked) end
+        | _ => NONE
+      end,
     timeout = SOME (Time.fromSeconds 30)
   }
   end
