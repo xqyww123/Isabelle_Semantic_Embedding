@@ -348,7 +348,10 @@ async def _get_definition_with_pos(
     """Look up the source code and position of the command defining an entity.
 
     Uses cached entity enumeration to find the definition position,
-    then calls command_at_position to retrieve the source.
+    then calls command_at_position to retrieve the source. A non-None
+    *ctxt* resolves the enumeration under that (file, offset) context —
+    note this bypasses the per-connection enumeration cache, costing a
+    full uncached enumeration RPC per call.
 
     Returns ``(source, cmd_pos)`` where *cmd_pos* is an
     `IsabellePosition` for the command start (symbol offset), or ``None``
@@ -555,7 +558,7 @@ def mk_query_by_name_tool(
                     return _mk_ret(f"The {name} is undefined, but we find:\n{sem}")
                 except (IsabelleError, UndefinedEntity, LookupError):
                     pass
-            # Try resolving as a syntax/notation token via desugar
+            # Try resolving as a syntax/notation token via resolve_notation
             if tag == EntityKind.CONSTANT:
                 resolved = await _try_resolve_syntax_token(
                     connection, name, ctxt, with_pretty,

@@ -740,9 +740,12 @@ fun interpret' (context : Context.generic) : usage * usage =
       val theory_info_cb = Context_Callbacks.make_theory_long_name_and_path_callback su
       val desugar_cb = Explain_Term.make_desugar_callback context
       val resolve_notation_cb = Explain_Term.make_resolve_notation_callback context
+      (* pu, not su: the query tool's show_defs threads a (file, offset)
+         context through entities_of into these callbacks; the static
+         unpacker accepts only nil and would fail to decode it. *)
       val {constants, theorems, types, classes, locales, named_theorems, methods,
            introduction_rules, elimination_rules,
-           induction_rules, case_split_rules} = make_entity_callbacks context su
+           induction_rules, case_split_rules} = make_entity_callbacks context pu
       val cmd = make_interpret_file_cmd [uk_cb, theory_info_cb, desugar_cb,
             resolve_notation_cb,
             constants, theorems, types, classes, locales, named_theorems, methods,
@@ -964,9 +967,10 @@ fun interpret_entities (context : Context.generic) (entities : Universal_Key.ent
         val theory_info_cb = Context_Callbacks.make_theory_long_name_and_path_callback su
         val desugar_cb = Explain_Term.make_desugar_callback context
         val resolve_notation_cb = Explain_Term.make_resolve_notation_callback context
+        (* pu, not su — see the comment at the interpret' site above *)
         val {constants, theorems, types, classes, locales, named_theorems, methods,
              introduction_rules, elimination_rules,
-             induction_rules, case_split_rules} = make_entity_callbacks context su
+             induction_rules, case_split_rules} = make_entity_callbacks context pu
         val cmd = make_interpret_file_cmd [uk_cb, theory_info_cb, desugar_cb,
               resolve_notation_cb,
               constants, theorems, types, classes, locales, named_theorems, methods,
