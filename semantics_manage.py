@@ -385,8 +385,8 @@ p_collect.add_argument("theory", help="Theory name to interpret (e.g., HOL.List)
 p_collect.add_argument("--repl-addr", default="127.0.0.1:6666", help="Isa-REPL server address")
 p_collect.add_argument("--rpc-addr", default="127.0.0.1:27182", help="RPC host address")
 p_collect.add_argument("--session", default="HOL", help="Session qualifier for theory name resolution")
-p_collect.add_argument("--model", default="claude-opus-4-6",
-    help="LLM model for semantic interpretation (default: claude-opus-4-6)")
+p_collect.add_argument("--model", default="claude-opus-4-8[1m]",
+    help="LLM model for semantic interpretation (default: claude-opus-4-8[1m])")
 p_collect.add_argument("--embed-models", default="",
     help="Comma-separated embedding model names (e.g., 'qwen3-embedding-8b,codestral-embed')")
 p_collect.add_argument("--reinterpret", action="store_true",

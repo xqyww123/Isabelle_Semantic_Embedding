@@ -39,7 +39,7 @@ from .semantics import Provenance, Semantic_DB, SemanticRecord
 
 # --- Module-level configuration ---
 
-interpretation_model: str = "claude-opus-4-6"
+interpretation_model: str = "claude-opus-4-8[1m]"
 """LLM model used for semantic interpretation. Set before calling interpret_file."""
 
 # --- Context-local state ---
