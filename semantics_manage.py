@@ -15,11 +15,24 @@ import lmdb
 import msgpack
 import platformdirs
 
+from Isabelle_RPC_Host.universal_key import is_thm_rule_key
+
 
 CACHE_DIR = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
 SEMANTICS_DB_PATH = os.path.join(CACHE_DIR, "semantics.lmdb")
 THEORY_HASH_CACHE_DIR = platformdirs.user_cache_dir("Isabelle_Theory_Hash", "Qiyuan")
 THEORY_HASH_DB_PATH = os.path.join(THEORY_HASH_CACHE_DIR, "theory_hash.lmdb")
+
+
+def _record_constituent_hashes(raw: bytes) -> 'set[bytes] | None':
+    """Constituent theory hashes of a theorem/rule record (the theory_constituents
+    field — the 6th tuple element, index 5; layout mirrors _Semantic_DB._decode).
+    Theorem/rule keys carry an XOR pseudo-theory prefix, so membership in a theory
+    is decided by this list, never by the key prefix.  None for legacy records."""
+    vals = msgpack.unpackb(raw)
+    if len(vals) <= 5 or vals[5] is None:
+        return None
+    return {bytes(h) for _, h in vals[5]}
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +144,7 @@ def cmd_list(args: argparse.Namespace) -> None:
     theory_meta: dict[bytes, dict] = {}  # theory_hash -> {finished, cost_usd}
     entity_counts: dict[bytes, int] = defaultdict(int)
 
+    legacy_thm_count = 0
     with env.begin() as txn:
         for key, val in txn.cursor():
             key = bytes(key)
@@ -142,6 +156,15 @@ def cmd_list(args: argparse.Namespace) -> None:
                 if isinstance(model, bytes):
                     model = model.decode("utf-8", errors="replace")
                 theory_meta[key] = {"finished": finished, "cost_usd": cost, "model": model}
+            elif is_thm_rule_key(key):
+                # XOR pseudo-theory prefix: attribute to each constituent
+                # theory (a record mentioning N theories is counted N times)
+                consts = _record_constituent_hashes(bytes(val))
+                if consts is None:
+                    legacy_thm_count += 1
+                else:
+                    for h in consts:
+                        entity_counts[h] += 1
             elif len(key) > 16:
                 entity_counts[key[:16]] += 1
     env.close()
@@ -179,7 +202,11 @@ def cmd_list(args: argparse.Namespace) -> None:
     total_entities = sum(entity_counts.values())
     n_done = sum(1 for h in all_hashes if theory_meta.get(h, {}).get("finished", False))
     print(f"{len(all_hashes)} theories ({n_done} done, {len(all_hashes) - n_done} WIP), "
-          f"{total_entities} entities total")
+          f"{total_entities} entities total "
+          f"(theorem/rule records are counted once per constituent theory)")
+    if legacy_thm_count:
+        print(f"WARNING: {legacy_thm_count} legacy theorem/rule records without "
+              f"constituent lists (pre-XOR keys); run migrate_xor_thm_keys.py to purge them.")
 
 
 # ---------------------------------------------------------------------------
@@ -193,12 +220,18 @@ def cmd_remove(args: argparse.Namespace) -> None:
 
     hash_to_name = _load_theory_names()
 
-    # Discover all theory hashes present in semantics DB
+    # Discover all theory hashes present in semantics DB.  Theorem/rule keys
+    # carry XOR pseudo-theory prefixes: their theories come from the record's
+    # constituent list, never from the key prefix.
     env = lmdb.open(SEMANTICS_DB_PATH, readonly=True, lock=False)
     thy_hashes_in_db: set[bytes] = set()
     with env.begin() as txn:
-        for key, _ in txn.cursor():
-            thy_hashes_in_db.add(bytes(key[:16]))
+        for key, val in txn.cursor():
+            key = bytes(key)
+            if is_thm_rule_key(key):
+                thy_hashes_in_db |= _record_constituent_hashes(bytes(val)) or set()
+            else:
+                thy_hashes_in_db.add(key[:16])
     env.close()
 
     resolved = _resolve_identifiers(args.identifiers, thy_hashes_in_db, hash_to_name)
@@ -206,14 +239,24 @@ def cmd_remove(args: argparse.Namespace) -> None:
         sys.exit(1)
     resolved_set = set(resolved)
 
-    # Count what will be deleted from semantics DB
+    # Count what will be deleted from semantics DB; collect the theorem/rule
+    # keys to delete (membership = the constituent list mentions a target).
     env = lmdb.open(SEMANTICS_DB_PATH, readonly=True, lock=False)
     del_counts: dict[bytes, int] = defaultdict(int)
+    thm_keys_to_delete: set[bytes] = set()
     with env.begin() as txn:
-        for key, _ in txn.cursor():
-            thy = bytes(key[:16])
-            if thy in resolved_set and len(key) > 16:
-                del_counts[thy] += 1
+        for key, val in txn.cursor():
+            key = bytes(key)
+            if is_thm_rule_key(key):
+                consts = _record_constituent_hashes(bytes(val))
+                if consts:
+                    matched = consts & resolved_set
+                    if matched:
+                        thm_keys_to_delete.add(key)
+                        for thy in matched:
+                            del_counts[thy] += 1
+            elif key[:16] in resolved_set and len(key) > 16:
+                del_counts[key[:16]] += 1
     env.close()
 
     # Print summary
@@ -237,28 +280,35 @@ def cmd_remove(args: argparse.Namespace) -> None:
             print("Aborted.")
             return
 
-    # Delete from semantics DB
+    # Delete from semantics DB: prefix-addressed keys by prefix, theorem/rule
+    # keys from the constituent-matched set collected above.
     total_deleted = 0
     env = lmdb.open(SEMANTICS_DB_PATH, map_size=1 << 33)
     with env.begin(write=True) as txn:
         to_delete: list[bytes] = []
         for key, _ in txn.cursor():
-            if bytes(key[:16]) in resolved_set:
-                to_delete.append(bytes(key))
+            key = bytes(key)
+            if key in thm_keys_to_delete or \
+               (not is_thm_rule_key(key) and key[:16] in resolved_set):
+                to_delete.append(key)
         for key in to_delete:
             txn.delete(key)
         total_deleted += len(to_delete)
     env.close()
 
-    # Delete from vector stores
+    # Delete from vector stores (keyed by the same universal keys; theorem/
+    # rule vectors are matched via the semantic-DB key set since vector
+    # stores hold no constituent lists)
     vec_deleted = 0
     for path in vec_paths:
         venv = lmdb.open(path, map_size=1 << 33)
         with venv.begin(write=True) as txn:
             to_delete = []
             for key, _ in txn.cursor():
-                if bytes(key[:16]) in resolved_set:
-                    to_delete.append(bytes(key))
+                key = bytes(key)
+                if key in thm_keys_to_delete or \
+                   (not is_thm_rule_key(key) and key[:16] in resolved_set):
+                    to_delete.append(key)
             for key in to_delete:
                 txn.delete(key)
             vec_deleted += len(to_delete)

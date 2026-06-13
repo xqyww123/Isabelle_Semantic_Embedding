@@ -79,7 +79,13 @@ class _Semantic_DB:
         interpretation: str | None
         # locale-interpretation provenance; None for ordinary entries and for
         # legacy 4-tuple records (read compatibly)
-        provenance: 'Provenance | None' = None
+        locale_provenance: 'Provenance | None' = None
+        # constituent theories of theorem/rule entities, as a sorted
+        # (theory long name, 16-byte theory hash) list: the key's theory
+        # prefix is the XOR of these hashes.  Used to find the records
+        # belonging to / affected by a theory (deletion, migration).
+        # None for non-theorem kinds and for legacy records.
+        theory_constituents: 'list[tuple[str, bytes]] | None' = None
 
         @property
         def pretty_print(self) -> str:
@@ -112,10 +118,11 @@ class _Semantic_DB:
 
     @staticmethod
     def _decode(raw: bytes) -> 'Record':
-        """Decode a stored record; legacy 4-tuples read with provenance = None."""
+        """Decode a stored record; legacy 4/5-tuples read with the missing
+        trailing fields (locale_provenance, theory_constituents) = None."""
         vals = list(msgpack.unpackb(raw))
-        vals += [None] * (5 - len(vals))
-        kind, name, expr, sem, prov_raw = vals[:5]
+        vals += [None] * (6 - len(vals))
+        kind, name, expr, sem, prov_raw, consts_raw = vals[:6]
         d = _Semantic_DB._dec
         prov = None
         if isinstance(prov_raw, dict):
@@ -126,21 +133,25 @@ class _Semantic_DB:
                 bytes(tuk) if tuk is not None else None,
                 bytes(luk) if luk is not None else None,
                 d(qual) if qual is not None else None)
-        return _Semantic_DB.Record(EntityKind(kind), d(name), d(expr), d(sem), prov)
+        consts = None
+        if consts_raw is not None:
+            consts = [(d(n), bytes(h)) for n, h in consts_raw]
+        return _Semantic_DB.Record(EntityKind(kind), d(name), d(expr), d(sem), prov, consts)
 
     @staticmethod
     def _encode(record: 'Record') -> bytes:
         prov_map = None
-        if record.provenance is not None:
+        if record.locale_provenance is not None:
             prov_map = {}
-            if record.provenance.template_uk is not None:
-                prov_map["template_uk"] = record.provenance.template_uk
-            if record.provenance.locale_uk is not None:
-                prov_map["locale_uk"] = record.provenance.locale_uk
-            if record.provenance.qualifier is not None:
-                prov_map["qualifier"] = record.provenance.qualifier
+            if record.locale_provenance.template_uk is not None:
+                prov_map["template_uk"] = record.locale_provenance.template_uk
+            if record.locale_provenance.locale_uk is not None:
+                prov_map["locale_uk"] = record.locale_provenance.locale_uk
+            if record.locale_provenance.qualifier is not None:
+                prov_map["qualifier"] = record.locale_provenance.qualifier
         return msgpack.packb((int(record.kind), record.name, record.expr,
-                              record.interpretation, prov_map))  # type: ignore[return-value]
+                              record.interpretation, prov_map,
+                              record.theory_constituents))  # type: ignore[return-value]
 
     def __getitem__(self, key: universal_key) -> 'Record | None':
         with self._ensure_env().begin() as txn:
@@ -224,6 +235,14 @@ class _Semantic_DB:
 
     @staticmethod
     def _copy_prefix(env: lmdb.Environment, old_prefix: bytes, new_prefix: bytes) -> int:
+        """Rekey prefix-addressed entries (theory records, namespace entities).
+
+        Theorem/rule keys are skipped even when their XOR pseudo-theory prefix
+        coincides with old_prefix (a single-constituent thm key equals its
+        constituent's hash byte-for-byte): blindly rewriting the prefix would
+        desynchronize the key from the record's constituent list — they are
+        rekeyed by _migrate_thm_records instead."""
+        from Isabelle_RPC_Host.universal_key import is_thm_rule_key
         assert len(old_prefix) == 16 and len(new_prefix) == 16
         count = 0
         with env.begin(write=True) as txn:
@@ -233,11 +252,80 @@ class _Semantic_DB:
                     key = bytes(cursor.key())
                     if not key.startswith(old_prefix):
                         break
-                    txn.put(new_prefix + key[16:], bytes(cursor.value()))
-                    count += 1
+                    if not is_thm_rule_key(key):
+                        txn.put(new_prefix + key[16:], bytes(cursor.value()))
+                        count += 1
                     if not cursor.next():
                         break
         return count
+
+    def keys_belonging_to(self, theory_hashes: 'set[bytes]') -> list[bytes]:
+        """All semantic-DB keys belonging to the given theories.
+
+        Keys whose 16-byte prefix is one of the hashes (theory records and
+        namespace entities), plus theorem/rule keys — whose prefix is an XOR
+        pseudo-theory — whose stored constituent list mentions one of them
+        (mention-based membership).  Legacy theorem/rule records without a
+        constituent list are never matched."""
+        from Isabelle_RPC_Host.universal_key import is_thm_rule_key
+        result: list[bytes] = []
+        with self._ensure_env().begin() as txn:
+            for key, val in txn.cursor():
+                key = bytes(key)
+                if is_thm_rule_key(key):
+                    consts = self._decode(bytes(val)).theory_constituents
+                    if consts is not None and any(h in theory_hashes for _, h in consts):
+                        result.append(key)
+                elif key[:16] in theory_hashes:
+                    result.append(key)
+        return result
+
+    def _migrate_thm_records(self, old_hash: bytes, new_hash: bytes) -> int:
+        """Rekey theorem/rule records whose constituents mention old_hash.
+
+        Replaces old_hash with new_hash in the constituent list, recomputes
+        the XOR prefix, and copies the record (and any vector-store entries)
+        under the new key.  Old entries are left in place, mirroring
+        _copy_prefix's copy semantics."""
+        from Isabelle_RPC_Host.universal_key import is_thm_rule_key, xor_theory_prefix
+        env = self._ensure_env()
+        rekeys: list[tuple[bytes, bytes, bytes]] = []
+        with env.begin() as txn:
+            for key, val in txn.cursor():
+                key = bytes(key)
+                if not is_thm_rule_key(key):
+                    continue
+                rec = self._decode(bytes(val))
+                if rec.theory_constituents is None:
+                    raise ValueError(
+                        f"theorem/rule record {key.hex()} has no constituent list "
+                        "(pre-XOR legacy record); run migrate_xor_thm_keys.py first")
+                if not any(h == old_hash for _, h in rec.theory_constituents):
+                    continue
+                new_consts = [(n, new_hash if h == old_hash else h)
+                              for n, h in rec.theory_constituents]
+                new_key = xor_theory_prefix([h for _, h in new_consts]) + key[16:]
+                rekeys.append((key, new_key,
+                               self._encode(rec._replace(theory_constituents=new_consts))))
+        if not rekeys:
+            return 0
+        with env.begin(write=True) as txn:
+            for _, new_key, new_val in rekeys:
+                txn.put(new_key, new_val)
+        cache_dir = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
+        if os.path.isdir(cache_dir):
+            from .semantic_embedding import _get_lmdb_env
+            for entry in os.listdir(cache_dir):
+                if entry.startswith("vector_") and entry.endswith(".lmdb"):
+                    path = os.path.join(cache_dir, entry)
+                    if os.path.isdir(path):
+                        venv = _get_lmdb_env(path)
+                        with venv.begin(write=True) as vtxn:
+                            for old_key, new_key, _ in rekeys:
+                                v = vtxn.get(old_key)
+                                if v is not None:
+                                    vtxn.put(new_key, bytes(v))
+        return len(rekeys)
 
     def _try_migrate(self, new_key: universal_key) -> bool:
         from Isabelle_RPC_Host.theory_hash import open_theory_hash_store
@@ -291,7 +379,12 @@ class _Semantic_DB:
                     if os.path.isdir(path):
                         self._copy_prefix(_get_lmdb_env(path), old_hash, new_hash)
 
-        print(f"Migrated {n} entries for {new_name} from {old_hash.hex()[:12]}… to {new_hash.hex()[:12]}…")
+        # Theorem/rule records reference theories through their constituent
+        # lists, not their key prefix — rekey them by XOR recomputation.
+        n_thm = self._migrate_thm_records(old_hash, new_hash)
+
+        print(f"Migrated {n} entries and {n_thm} theorem/rule records for {new_name} "
+              f"from {old_hash.hex()[:12]}… to {new_hash.hex()[:12]}…")
         return True
 
 
@@ -768,9 +861,15 @@ class Semantic_Vector_Store(Vector_Store):
                 f"but auto_interpret_for_embedding is disabled. "
                 f"Set [[auto_interpret_for_embedding = true]] to enable automatic interpretation and embedding.")
             return []
-        # Extract theory hashes from missing keys, skipping already-embedded theories
+        # Extract theory hashes from missing keys, skipping already-embedded
+        # theories.  Theorem/rule keys are skipped: their prefix is an XOR
+        # pseudo-theory, not a locatable theory — their home theory is reached
+        # through the namespace entities (constants, types, ...) that share it.
+        from Isabelle_RPC_Host.universal_key import is_thm_rule_key
         theory_hashes: set[bytes] = set()
         for k in missing:
+            if is_thm_rule_key(k):
+                continue
             entity = destruct_key(k)
             if not self.is_thy_embedded(entity.theory):
                 theory_hashes.add(entity.theory)

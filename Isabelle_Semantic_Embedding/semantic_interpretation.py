@@ -95,7 +95,11 @@ class Entry(NamedTuple):
                             # or locale-interpretation provenance)
     # locale-interpretation provenance (None for ordinary entries); stored
     # alongside the interpretation in the semantic DB
-    provenance: "Provenance | None" = None
+    locale_provenance: "Provenance | None" = None
+    # constituent theories of theorem/rule entities — sorted (theory long
+    # name, 16-byte theory hash) list whose XOR is the key's theory prefix;
+    # None for non-theorem kinds.  Stored in the semantic DB record.
+    theory_constituents: "list[tuple[str, bytes]] | None" = None
 
 
 class CostSummary(NamedTuple):
@@ -149,7 +153,7 @@ class InterpretationTask:
         entry = self.entries[task_idx]
         Semantic_DB[entry.universal_key] = SemanticRecord(
             EntityKind(entry.kind), entry.name, entry.prop_str, sem,
-            entry.provenance)
+            entry.locale_provenance, entry.theory_constituents)
 
     def historical_cost(self) -> tuple[int, int, int, int, float]:
         """Read cumulative cost from LMDB (without modifying it)."""
@@ -695,6 +699,7 @@ async def interpret_file(
 
 @isabelle_remote_procedure("Semantic_Store.interpret_file")
 async def _interpret_file(arg: Any, connection: Connection) -> InterpretationResult:
+    from Isabelle_RPC_Host.universal_key import THM_RULE_KINDS
     (file_path, theory_longname, theory_key, raw_entries) = arg
     entries = [
         Entry(
@@ -704,13 +709,16 @@ async def _interpret_file(arg: Any, connection: Connection) -> InterpretationRes
             line_number=lineno,
             universal_key=bytes(uk),
             prompt_extra=pretty_unicode(hint),
-            provenance=(Provenance(
+            locale_provenance=(Provenance(
                 template_uk=bytes(prov[0]) if prov[0] is not None else None,
                 locale_uk=bytes(prov[1]) if prov[1] is not None else None,
                 qualifier=prov[2],
             ) if prov is not None else None),
+            theory_constituents=(
+                [(n, bytes(h)) for n, h in consts]
+                if EntityKind(kind) in THM_RULE_KINDS else None),
         )
-        for kind, name, prop, lineno, uk, hint, prov in raw_entries
+        for kind, name, prop, lineno, uk, hint, prov, consts in raw_entries
     ]
     return await interpret_file(
         connection, file_path, theory_longname, bytes(theory_key), entries
