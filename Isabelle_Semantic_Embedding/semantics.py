@@ -77,8 +77,8 @@ class _Semantic_DB:
         name: str
         expr: str | None
         interpretation: str | None
-        # locale-interpretation provenance; None for ordinary entries and for
-        # legacy 4-tuple records (read compatibly)
+        # locale-interpretation provenance; None for entries that are not
+        # locale-generated facts
         locale_provenance: 'Provenance | None' = None
         # constituent theories of theorem/rule entities, as a sorted
         # (theory long name, 16-byte theory hash) list: the key's theory
@@ -118,8 +118,8 @@ class _Semantic_DB:
 
     @staticmethod
     def _decode(raw: bytes) -> 'Record':
-        """Decode a stored record; legacy 4/5-tuples read with the missing
-        trailing fields (locale_provenance, theory_constituents) = None."""
+        """Decode a stored record.  Records with fewer than 6 fields read with
+        the missing trailing fields (locale_provenance, theory_constituents) = None."""
         vals = list(msgpack.unpackb(raw))
         vals += [None] * (6 - len(vals))
         kind, name, expr, sem, prov_raw, consts_raw = vals[:6]

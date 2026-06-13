@@ -2,10 +2,8 @@
 """Migrate semantics.lmdb entity records from legacy 4-tuples to 5-tuples,
 adding the locale_provenance field (= None).
 
-The record format has since gained a 6th field (theory_constituents) that
-_Semantic_DB._decode supplies by padding, so this 4->5 step is still valid and
-left unchanged.  Theory-status records (16-byte keys, msgpack dicts) are
-untouched.  Idempotent: non-4-tuple records are left as is.
+Theory-status records (16-byte keys, msgpack dicts) are untouched.  Idempotent:
+non-4-tuple records are left as is.
 
 A timestamped backup copy of the environment is written next to the original
 before any modification (lmdb's live-safe Environment.copy)."""

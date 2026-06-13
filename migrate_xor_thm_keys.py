@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Purge pre-XOR theorem/rule records from semantics.lmdb and all vector stores.
+"""Purge all theorem/rule records from semantics.lmdb and all vector stores.
 
-The theory-key component of theorem/rule keys (32 bytes, tag 0x02/0x12/0x22/
-0x32/0x42) changed meaning: it is now the XOR of the constituent theories'
-hashes instead of the (unreliable) defining theory's hash, and records carry
-the constituent list in a new 6th field.  Old records cannot be rekeyed (the
-constituent list cannot be reconstructed from the key), and they MUST not be
-left in place: a new key whose constituent set is a single theory T degenerates
-to hash(T) itself and collides byte-for-byte with the old named-theorem key of
-the same proposition defined in T — a stale record without a constituent list
-would then shadow the new scheme.
+Run once when switching the store to the XOR theory-key scheme.  A theorem/rule
+key (32 bytes, tag 0x02/0x12/0x22/0x32/0x42) carries its constituent theories in
+the record's 6th field and its 16-byte prefix is an XOR pseudo-theory; a record
+without that list cannot be located by theory and is unsafe to keep, since a
+single-constituent key equals hash(T) and can collide byte-for-byte with another
+key for the same proposition.  This wipes every theorem/rule record so the
+scheme starts clean.
 
 A timestamped backup copy of every touched environment is written next to the
 original before any modification (lmdb's live-safe Environment.copy).
