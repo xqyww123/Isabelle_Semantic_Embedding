@@ -34,6 +34,13 @@ class Embedding_Provider(ABC):
     max_request_size: int = 2048
     supports_batch: bool = False
     normalize: bool = False  # L2-normalize returned vectors
+    # Fallback scores for entities with no embedding vector (no interpretation),
+    # used by Semantic_Vector_Store.lookup in place of the old hardcoded 0.0. The
+    # meaningful value depends on the model's score distribution (these sit on the
+    # same axis as 1 - L2/2 ≈ cosine), so each provider sets its own. Base 0.0
+    # preserves the previous behavior for any provider that does not opt in.
+    default_score: float = 0.0        # no-embedding, non-local fallback
+    default_local_score: float = 0.0  # no-embedding, proof-context-local fallback
     PROVIDERS: dict[name, type['Embedding_Provider']] = {}
     _cache: diskcache.Cache | None = None
 
@@ -384,6 +391,8 @@ class Qwen3_Embedding_8B(OpenAI_Embedding_Provider):
     max_request_size = int(os.getenv("QWEN3_EMBEDDING_MAX_REQUEST_SIZE", "2048"))
     supports_batch = False
     normalize = True
+    default_score = 0.3        # no-embedding, non-local fallback
+    default_local_score = 0.5  # no-embedding, proof-context-local fallback
 
 @register_embedding_provider("gemini.gemini-embedding-2")
 class Gemini_Embedding(Embedding_Provider):

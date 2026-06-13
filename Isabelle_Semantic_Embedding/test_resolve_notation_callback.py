@@ -20,6 +20,6 @@ async def test_entities_with_ctxt(arg, connection: Connection):
     from Isabelle_RPC_Host.context import entities_of
     from Isabelle_RPC_Host.universal_key import EntityKind
     ctxt = tuple(arg) if arg is not None else None
-    entries, _warnings = await entities_of(
+    entries, _is_local, _warnings = await entities_of(
         connection, [EntityKind.CONSTANT], limit=50, ctxt=ctxt)
     return len(entries)

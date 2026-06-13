@@ -36,7 +36,7 @@ let
   val SOME r = run_py (space_implode "\n" [
     "from Isabelle_RPC_Host.context import entities_of",
     "from Isabelle_RPC_Host.universal_key import EntityKind",
-    "entries, _ = await entities_of(connection, [EntityKind.CONSTANT])",
+    "entries, _, _ = await entities_of(connection, [EntityKind.CONSTANT])",
     "with_pos = sum(1 for _, _, p in entries if p is not None)",
     "return f'total={len(entries)} with_pos={with_pos}'"
   ])
@@ -52,7 +52,7 @@ let
     "from Isabelle_RPC_Host.context import entities_of",
     "from Isabelle_RPC_Host.universal_key import EntityKind, universal_key_of",
     "uk = await universal_key_of(connection, EntityKind.CONSTANT, 'True')",
-    "entries, _ = await entities_of(connection, [EntityKind.CONSTANT])",
+    "entries, _, _ = await entities_of(connection, [EntityKind.CONSTANT])",
     "for k, _, p in entries:",
     "    if k == uk:",
     "        return f'file={p.file} line={p.line} offset={p.raw_offset}'",
@@ -71,7 +71,7 @@ let
     "from Isabelle_RPC_Host.context import entities_of",
     "from Isabelle_RPC_Host.universal_key import EntityKind, universal_key_of",
     "uk = await universal_key_of(connection, EntityKind.CONSTANT, 'Query_Test_Const')",
-    "entries, _ = await entities_of(connection, [EntityKind.CONSTANT])",
+    "entries, _, _ = await entities_of(connection, [EntityKind.CONSTANT])",
     "for k, _, p in entries:",
     "    if k == uk:",
     "        return f'pos={p}'",
@@ -114,7 +114,7 @@ let
   val SOME r = run_py (space_implode "\n" [
     "from Isabelle_RPC_Host.context import entities_of",
     "from Isabelle_RPC_Host.universal_key import EntityKind",
-    "entries, _ = await entities_of(connection, [EntityKind.THEOREM])",
+    "entries, _, _ = await entities_of(connection, [EntityKind.THEOREM])",
     "with_pos = sum(1 for _, _, p in entries if p is not None)",
     "return f'total={len(entries)} with_pos={with_pos}'"
   ])
@@ -130,7 +130,7 @@ let
     "from Isabelle_RPC_Host.context import entities_of",
     "from Isabelle_RPC_Host.universal_key import EntityKind, universal_key_of",
     "uk = await universal_key_of(connection, EntityKind.THEOREM, 'refl')",
-    "entries, _ = await entities_of(connection, [EntityKind.THEOREM])",
+    "entries, _, _ = await entities_of(connection, [EntityKind.THEOREM])",
     "for k, _, p in entries:",
     "    if k == uk:",
     "        return f'{p.file}:{p.line}'",
@@ -165,7 +165,7 @@ let
     "from Isabelle_RPC_Host.context import entities_of",
     "from Isabelle_RPC_Host.universal_key import EntityKind, universal_key_of",
     "uk = await universal_key_of(connection, EntityKind.CONSTANT, 'True')",
-    "entries, _ = await entities_of(connection, [EntityKind.CONSTANT])",
+    "entries, _, _ = await entities_of(connection, [EntityKind.CONSTANT])",
     "for k, _, p in entries:",
     "    if k == uk:",
     "        return 'abs' if p.file.startswith('/') else 'unexpanded'",
@@ -266,7 +266,7 @@ let val SOME r = run_py (space_implode "\n" [
     "from Isabelle_RPC_Host.universal_key import EntityKind, universal_key_of",
     "for name in ['conj', 'disj', 'implies', 'Not']:",
     "    uk = await universal_key_of(connection, EntityKind.CONSTANT, name)",
-    "    entries, _ = await entities_of(connection, [EntityKind.CONSTANT])",
+    "    entries, _, _ = await entities_of(connection, [EntityKind.CONSTANT])",
     "    for k, _, p in entries:",
     "        if k == uk:",
     "            break",
