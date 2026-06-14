@@ -72,12 +72,40 @@ _KIND_PROMPT_LABELS = {
     _KIND_INDUCTION_RULE: "induction rule",
     _KIND_CASE_SPLIT_RULE: "case-split rule",
 }
+
+# Module-load invariants for the agent addressing scheme (see `_label`).  The
+# ML side (Universal_Key.entity_kind_int) and this dict must agree: every
+# interpretable entity kind needs exactly one title, and titles must be
+# injective — the agent echoes the title back to address an entry, so two kinds
+# sharing a title would make answers ambiguous, and a missing kind would route
+# to the dead "unknown" branch.  Asserting here makes such drift fail fast at
+# import rather than only on a coincidental runtime collision.  THEORY (0) is
+# excluded: theory entities are never interpreted.
+assert len(set(_KIND_PROMPT_LABELS.values())) == len(_KIND_PROMPT_LABELS), (
+    "_KIND_PROMPT_LABELS titles must be injective (the agent addresses entries "
+    "by title + name)")
+assert set(_KIND_PROMPT_LABELS) == {
+    k.value for k in EntityKind if k is not EntityKind.THEORY
+}, ("_KIND_PROMPT_LABELS keys must cover exactly the interpretable EntityKind "
+    "ints (all kinds except THEORY); it has drifted from Universal_Key.entity_kind_int")
+
 _BATCH_SIZE = 20
 
 
+def _label(e: Entry) -> str:
+    """The agent-facing addressing label for an entry: kind-title + name.
+
+    This is the ONLY handle the agent has to address an entry (it echoes
+    ``{type, name}`` back through the ``answer`` tool).  It must be IDENTICAL
+    everywhere it is formed — the prompt the agent reads (`format_entries` /
+    `_pretty_print_entry`), the `results` key, and the answer-routing map — so
+    the label the agent echoes round-trips to the right entry.  Use `.get(...,
+    "unknown")` (not `[...]`) so the key matches what `format_entries` shows."""
+    return f"{_KIND_PROMPT_LABELS.get(e.kind, 'unknown')} {e.name}"
+
+
 def _pretty_print_entry(e: Entry) -> str:
-    label = _KIND_PROMPT_LABELS.get(e.kind, "unknown")
-    pp = f"{label} {e.name}"
+    pp = _label(e)
     if e.prop_str:
         pp += f": {e.prop_str}"
     return pp
@@ -128,10 +156,28 @@ class InterpretationTask:
         self.theory_longname = theory_longname
         self.theory_key = theory_key
         self.entries = entries
-        self.results: dict[str, str | None] = {
-            f"{_KIND_PROMPT_LABELS[e.kind]} {e.name}": None
-            for e in entries
-        }
+        # results / _keys / _label_to_idx are strictly 1:1 with `entries`, in
+        # order.  Because the agent addresses an entry only by its label (see
+        # `_label` and `_answer_tool`), two entries sharing a label are mutually
+        # un-addressable; a label-keyed dict comprehension would SILENTLY
+        # collapse them, desyncing _keys vs entries and mis-routing write_answer
+        # (the "name != content" LMDB corruption).  Build it with a loop that
+        # RAISES on the first duplicate instead — the ML side
+        # (Semantic_Store, (entity-kind, name) assert) guarantees uniqueness, so
+        # this only ever fires on a genuine regression.
+        self.results: dict[str, str | None] = {}
+        self._label_to_idx: dict[str, int] = {}
+        for i, e in enumerate(entries):
+            key = _label(e)
+            if key in self.results:
+                j = self._label_to_idx[key]
+                raise ValueError(
+                    f"duplicate interpretation label {key!r} at entries {j} and {i} "
+                    f"(uks {bytes(entries[j].universal_key).hex()} and "
+                    f"{bytes(e.universal_key).hex()}); (kind,name) labels must be "
+                    f"unique to be addressable by the agent")
+            self.results[key] = None
+            self._label_to_idx[key] = i
         self._keys = list(self.results.keys())
         self.batches: list[tuple[str, range]] = []
         self.current_batch: int = 0
@@ -350,7 +396,11 @@ async def _answer_tool(args: dict[str, Any]) -> ToolCall_ret:
             errors.append(f"Unknown entry: {key!r}")
             continue
         task.results[key] = item["translation"]
-        task.write_answer(task._keys.index(key), item["translation"])
+        # Address by the precomputed label->entry-index map (O(1), and indexes
+        # the FULL `entries` list correctly).  The old `_keys.index(key)` indexed
+        # the deduped key list against the full entries list — the misalignment
+        # that wrote translations onto neighbouring entries' universal_keys.
+        task.write_answer(task._label_to_idx[key], item["translation"])
         _log.info("answer: %s = %s", key, item["translation"])
         count += 1
     batch_remaining = sum(1 for i in task.batch_range if task.results[task._keys[i]] is None)
@@ -675,8 +725,12 @@ async def interpret_file(
                 task.total_cost_usd)
             cumulative_cost = CostSummary(*cum)
 
-            # Remap agent results to original indices (cache already written incrementally)
-            for i, sem in enumerate(task.results.values()):
+            # Remap agent results to original indices (cache already written
+            # incrementally). Iterate _keys by position — it is 1:1 with
+            # task.entries and with `uncached` — instead of relying on
+            # results.values() insertion order.
+            for i, key in enumerate(task._keys):
+                sem = task.results[key]
                 if sem is not None:
                     results[uncached[i]] = sem
     else:

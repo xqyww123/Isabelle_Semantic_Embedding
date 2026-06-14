@@ -267,15 +267,25 @@ fun get_rules_with_positions is_elim suffix context =
     val facts_list = Facts.dest_static false parent_facts facts
     val name_results = maps (fn (name, thms) =>
       if not (has_rule_suffix suffix name) then []
-      else map_filter (fn thm =>
-        let val thm = Thm.transfer thy thm
-            val key = if Thm.has_name_hint thm then Thm_Name.print (Thm.get_name_hint thm) else name
-        in if Strhashtab.defined seen key then NONE
-           else (Strhashtab.update seen (key, ());
-                 let val pos = case try (Name_Space.the_entry fact_space) name of
-                       SOME entry => #pos entry | NONE => Position.none
-                 in SOME (name, pos, thm) end)
-        end) thms) facts_list
+      else
+        let val n = length thms in
+        map_index (fn (i, thm) =>
+          let val thm = Thm.transfer thy thm
+              (* fact-position name (Isabelle-canonical, hint-independent): bare
+                 for a singleton fact, name(i) for a member of a multi-thm fact.
+                 Emit this name (not the per-thm hint), so no-hint members of a
+                 multi-thm rule fact each get a distinct citable name instead of
+                 collapsing onto the bare fact name.  thy_prefix guard added to
+                 match the Source 1 / induct src2 convention. *)
+              val key = Thm_Name.print (name, if n = 1 then 0 else i + 1)
+          in if Strhashtab.defined seen key
+                orelse not (String.isPrefix thy_prefix key) then NONE
+             else (Strhashtab.update seen (key, ());
+                   let val pos = case try (Name_Space.the_entry fact_space) name of
+                         SOME entry => #pos entry | NONE => Position.none
+                   in SOME (key, pos, thm) end)
+          end) thms |> map_filter I
+        end) facts_list
   in cs_results @ name_results end
 
 in
@@ -356,15 +366,19 @@ fun get_induct_rules_with_positions selector suffixes context =
     val src2 = Facts.dest_static false parent_facts facts
       |> maps (fn (name, thms) =>
           if not (name_ends_in_any suffixes name) then []
-          else map_filter (fn thm =>
-            let val thm = Thm.transfer thy thm
-                val key = if Thm.has_name_hint thm then Thm_Name.print (Thm.get_name_hint thm) else name
-            in if Strhashtab.defined seen key
-                  orelse not (String.isPrefix thy_prefix key)
-                  orelse not (has_rule_shape_impl thm) then NONE
-               else (Strhashtab.update seen (key, ());
-                     SOME (name, pos_of name, thm))
-            end) thms)
+          else
+            let val n = length thms in
+            map_index (fn (i, thm) =>
+              let val thm = Thm.transfer thy thm
+                  (* fact-position name (see get_rules_with_positions Source 2). *)
+                  val key = Thm_Name.print (name, if n = 1 then 0 else i + 1)
+              in if Strhashtab.defined seen key
+                    orelse not (String.isPrefix thy_prefix key)
+                    orelse not (has_rule_shape_impl thm) then NONE
+                 else (Strhashtab.update seen (key, ());
+                       SOME (key, pos_of name, thm))
+              end) thms |> map_filter I
+            end)
   in src1 @ src2 end
 
 in
