@@ -607,60 +607,16 @@ fun extract_elim_rules ctx =
   in map #1 (Classical.dest_decls ctxt (fn (_, {kind, ...}) =>
        Bires.kind_is_elim kind andalso not (Bires.kind_extra kind))) end
 
-(* Query-time counterpart of Theory_Structure.get_induct_rules_with_positions:
-   both sites surface the same rule set (Induct.dest_rules + suffix-matched
-   fact scan with has_rule_shape). Specific to induction / case-split rules. *)
-local
-fun name_ends_in_any suffixes name =
-  let val base = Long_Name.base_name name
-  in exists (fn s => String.isSuffix s base) suffixes end
+(* Source-1 (Induct.dest_rules net) providers for the induction / case-split rule
+   callbacks.  The former Source-2 fact-suffix scan now lives in the prep-time rule
+   cache (process_static_rule_facts) plus the callback's live delta, so this returns
+   ONLY the net as a flat thm list — the shared engine name-hints and dedups it. *)
+fun extract_induct_or_cases_net selector ctx =
+  let val ctxt = Context.cases Proof_Context.init_global I ctx
+  in map #2 (selector (Induct.dest_rules ctxt)) end
 
-fun extract_induct_or_cases_rules selector suffixes ctx =
-  let
-    val thy = Context.theory_of ctx
-    val ctxt = Context.cases Proof_Context.init_global I ctx
-    val seen : unit Strhashtab.table = Strhashtab.empty 64
-
-    val src1 = selector (Induct.dest_rules ctxt)
-      |> map_filter (fn (_, thm) =>
-          let val thm = Thm.transfer thy thm in
-            if not (Thm.has_name_hint thm) then SOME thm
-            else let val n = Thm_Name.print (Thm.get_name_hint thm) in
-              if Strhashtab.defined seen n then NONE
-              else (Strhashtab.update seen (n, ()); SOME thm)
-            end
-          end)
-
-    (* Scan ALL visible facts (including those inherited from parent theories),
-       not only facts new to the current theory. Many useful induction rules
-       (e.g. wellorder_class.less_induct, nat_less_induct) are NOT registered
-       in Induct.dest_rules and live in parent theories — restricting to
-       current-theory-only facts via `Facts.dest_static false parent_facts`
-       silently drops them. The `seen` table further down already prevents
-       double-counting against src1's names. *)
-    val facts = Context.cases Global_Theory.facts_of Proof_Context.facts_of ctx
-    val src2 = Facts.dest_static false [] facts
-      |> maps (fn (name, thms) =>
-          if not (name_ends_in_any suffixes name) then []
-          else map_filter (fn thm =>
-            let val thm = Thm.transfer thy thm
-                val k = if Thm.has_name_hint thm
-                        then Thm_Name.print (Thm.get_name_hint thm) else name
-            in if Strhashtab.defined seen k
-                  orelse not (Theory_Structure.has_rule_shape thm) then NONE
-               else (Strhashtab.update seen (k, ()); SOME thm)
-            end) thms)
-  in src1 @ src2 end
-in
-
-val extract_induct_rules =
-  extract_induct_or_cases_rules
-    (fn r => #type_induct r @ #pred_induct r) ["_induct", "_ind"]
-val extract_case_split_rules =
-  extract_induct_or_cases_rules
-    (fn r => #type_cases r @ #pred_cases r) ["_cases", "_case"]
-
-end
+val extract_induct_net = extract_induct_or_cases_net (fn r => #type_induct r @ #pred_induct r)
+val extract_case_split_net = extract_induct_or_cases_net (fn r => #type_cases r @ #pred_cases r)
 
 (* --- Theorem cache: pre-computed non-infra theorems with universal keys --- *)
 
@@ -840,6 +796,57 @@ fun dedup_against existing new_entries =
     val _ = List.app (fn e => Bytehashtab.update seen (#uk e, ())) existing
   in filter (fn e => not (Bytehashtab.defined seen (#uk e))) new_entries end
 
+(* Prep-time static rule-fact cache (A2.3 Reading Y): scan all visible facts ONCE,
+   route each by rule-name suffix (same priority as process_dynamic's rule_kind_of),
+   and build per-kind cached_thm_entry as Fixed fact-position names.  Index runs over
+   the FULL thm list and shape/infra are dropped AFTER indexing, matching the collect
+   side (theory_structure get_*_rules_with_positions Source 2) so cached QUERY names
+   equal collect names.  intro/elim use is_infra_thm and NO shape gate (decision 6);
+   induct/case use is_infra_induct_thm and has_rule_shape.  Returns the four buckets
+   (intro, elim, induct, case).  No thy-prefix restriction: query enumerates all
+   reachable rule facts; the constituent-scope filter applies live at query time. *)
+fun process_static_rule_facts (context : Context.generic)
+    (is_infra_thm : string * thm -> bool)
+    (is_infra_induct_thm : string * thm -> bool) =
+  let
+    val thy = Context.theory_of context
+    val facts = Context.cases Global_Theory.facts_of Proof_Context.facts_of context
+    val fact_space = Facts.space_of facts
+    fun build key_of is_infra shape_ok name epos thms =
+      let val n = length thms
+      in map_index (fn (i, thm) =>
+           let val thm' = Thm.transfer thy thm
+           in if is_infra (name, thm') orelse not (shape_ok thm') then NONE
+              else SOME ({uk = key_of NONE context thm',
+                          name = Context_Callbacks.Fixed (name, if n = 1 then 0 else i + 1),
+                          pos = epos, thm = thm',
+                          theories = map #1 (#2 (Universal_Key.thm_constituents context thm'))}
+                         : Context_Callbacks.cached_thm_entry)
+           end) thms |> map_filter I
+      end
+    val rows = Facts.dest_static false [] facts
+      |> map_filter (fn (name, thms) =>
+           case try (Name_Space.the_entry fact_space) name of
+             NONE => NONE
+           | SOME e =>
+               if #concealed e
+                  orelse Long_Name.is_hidden (Name_Space.intern fact_space name)
+               then NONE
+               else
+                 let val epos = Context_Callbacks.entry_def_pos e in
+                 if Theory_Structure.is_introduction_rule_name name then
+                   SOME (1, build Universal_Key.key_of_introduction_rule' is_infra_thm (K true) name epos thms)
+                 else if Theory_Structure.is_elimination_rule_name name then
+                   SOME (2, build Universal_Key.key_of_elimination_rule' is_infra_thm (K true) name epos thms)
+                 else if Theory_Structure.is_induction_rule_name name then
+                   SOME (3, build Universal_Key.key_of_induction_rule' is_infra_induct_thm Theory_Structure.has_rule_shape name epos thms)
+                 else if Theory_Structure.is_case_split_rule_name name then
+                   SOME (4, build Universal_Key.key_of_case_split_rule' is_infra_induct_thm Theory_Structure.has_rule_shape name epos thms)
+                 else NONE
+                 end)
+    fun pick t = maps (fn (tag, es) => if tag = t then es else []) rows
+  in (pick 1, pick 2, pick 3, pick 4) end
+
 (* Convenience callbacks with infra filters and theorem cache baked in.
    Processes any uncached facts at creation time so callbacks see 0 uncached. *)
 fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_Callbacks.context_unpacker) =
@@ -868,15 +875,31 @@ fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_
           val new_entries = process_facts_into_cache init_context is_infra_thm uncached_facts
           val unique_new = dedup_against cached_entries new_entries
         in cached_entries @ unique_new end
-      (* Dynamic-collection members: snapshot once here (never enter the
-         persistent Thm_Cache).  Deduped against the static set so a member that
-         is also a static fact keeps the static (Fixed) name/position. *)
-      val member_entries =
-        dedup_against static_combined
-          (map #1 (process_dynamic_facts_into_cache init_context is_infra_dynamic_fact
-                     is_infra_thm is_infra_induct_thm false))
-      val combined_entries = static_combined @ member_entries
+      (* Dynamic-collection members: snapshot once here (never enter the persistent
+         Thm_Cache).  process_dynamic emits, per member, a Theorem (0x02) entry AND a
+         rule-kind entry; partition by the entity constructor so each goes to its own
+         cache.  Q1 fix: ONLY Theorem-kind members enter the theorems cache (the rule
+         entries used to pollute it via the old `map #1`). *)
+      val dyn = process_dynamic_facts_into_cache init_context is_infra_dynamic_fact
+                  is_infra_thm is_infra_induct_thm false
+      fun members pred = map_filter (fn (cte, _, entity) =>
+            if pred entity then SOME cte else NONE) dyn
+      val theorem_members = members (fn Universal_Key.Theorem _ => true | _ => false)
+      val intro_members  = members (fn Universal_Key.Introduction_Rule _ => true | _ => false)
+      val elim_members   = members (fn Universal_Key.Elimination_Rule _ => true | _ => false)
+      val induct_members = members (fn Universal_Key.Induction_Rule _ => true | _ => false)
+      val case_members   = members (fn Universal_Key.Case_Split_Rule _ => true | _ => false)
+      (* Theorem members deduped against the static set so a member that is also a
+         static fact keeps the static (Fixed) name/position. *)
+      val combined_entries = static_combined @ dedup_against static_combined theorem_members
       val thm_cache = SOME (combined_entries, current_facts)
+      (* Per-kind rule caches (Reading Y): prep-time static rule facts + dynamic
+         members.  Static facts first so a member that is also a static rule fact
+         keeps the static (Fixed) name.  current_facts is the snapshot pinning each
+         rule callback's live Source-2 delta. *)
+      val (intro_static, elim_static, induct_static, case_static) =
+        process_static_rule_facts init_context is_infra_thm is_infra_induct_thm
+      fun rule_cache static mems = SOME (static @ dedup_against static mems, current_facts)
   in {
     constants = Context_Callbacks.make_constants_callback (SOME (not o is_infra_const)) ctxt_unpack,
     theorems = Context_Callbacks.make_theorems_callback (SOME (not o is_infra_thm)) thm_cache ctxt_unpack,
@@ -886,13 +909,17 @@ fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_
     named_theorems = Context_Callbacks.make_theorem_collection_callback (SOME (not o is_infra_dynamic_fact)) ctxt_unpack,
     methods = Context_Callbacks.make_methods_callback (SOME (not o is_infra_method)) ctxt_unpack,
     introduction_rules = Context_Callbacks.make_introduction_rules_callback
-      extract_intro_rules (SOME (not o is_infra_thm)) ctxt_unpack,
+      extract_intro_rules Theory_Structure.is_introduction_rule_name (K true)
+      (SOME (not o is_infra_thm)) (rule_cache intro_static intro_members) ctxt_unpack,
     elimination_rules = Context_Callbacks.make_elimination_rules_callback
-      extract_elim_rules (SOME (not o is_infra_thm)) ctxt_unpack,
+      extract_elim_rules Theory_Structure.is_elimination_rule_name (K true)
+      (SOME (not o is_infra_thm)) (rule_cache elim_static elim_members) ctxt_unpack,
     induction_rules = Context_Callbacks.make_induction_rules_callback
-      extract_induct_rules (SOME (not o is_infra_induct_thm)) ctxt_unpack,
+      extract_induct_net Theory_Structure.is_induction_rule_name Theory_Structure.has_rule_shape
+      (SOME (not o is_infra_induct_thm)) (rule_cache induct_static induct_members) ctxt_unpack,
     case_split_rules = Context_Callbacks.make_case_split_rules_callback
-      extract_case_split_rules (SOME (not o is_infra_thm)) ctxt_unpack
+      extract_case_split_net Theory_Structure.is_case_split_rule_name Theory_Structure.has_rule_shape
+      (SOME (not o is_infra_thm)) (rule_cache case_static case_members) ctxt_unpack
   } end
 
 fun interpret' (context : Context.generic) : usage * usage =
