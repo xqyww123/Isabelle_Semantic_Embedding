@@ -80,7 +80,7 @@ signature SEMANTIC_STORE = sig
      kinds; it is stored in the record for deletion/migration by theory.
      Exposed for tests. *)
   val build_entries : Context.generic ->
-    (Universal_Key.entity * string * Position.T * Universal_Key.universal_key) list ->
+    (Universal_Key.entity * string * Position.T * Universal_Key.universal_key * int option) list ->
     (Universal_Key.entity * string * string * int * Universal_Key.universal_key * string
      * (Universal_Key.universal_key option * Universal_Key.universal_key option * string) option
      * Universal_Key.constituent list) list
@@ -362,13 +362,13 @@ val contains_cmd
    interpretation.  The trailing provenance field (template_uk, locale_uk,
    qualifier; NONE for ordinary entries) is carried into the stored record.
    ONLY this function (build_entries) is shared by interpret' and
-   interpret_entities.  The downstream coll(i) member-rename post-pass and the
-   Part C (entity_kind_int, name) uniqueness assert below run on the live
-   interpret' path ONLY — interpret_entities (currently dead) does not apply
-   them; if it is revived with rule/member entities, factor both out and apply
-   them at that call site too. *)
+   interpret_entities.  build_entries itself renders a member's coll(i) from its
+   member_idx; the Part C (entity_kind_int, name) uniqueness assert below runs on
+   the live interpret' path ONLY — interpret_entities (currently dead) passes
+   member_idx = NONE for every entity, so it never produces members; if it is
+   revived with rule/member entities, factor Part C out and apply it there too. *)
 fun build_entries (context : Context.generic)
-    (raw : (Universal_Key.entity * string * Position.T * Universal_Key.universal_key) list)
+    (raw : (Universal_Key.entity * string * Position.T * Universal_Key.universal_key * int option) list)
     : (Universal_Key.entity * string * string * int * Universal_Key.universal_key * string
        * (Universal_Key.universal_key option * Universal_Key.universal_key option * string) option
        * Universal_Key.constituent list) list =
@@ -447,12 +447,19 @@ fun build_entries (context : Context.generic)
          Context.Theory thy' =>
            let
              val pfacts = Context.cases Global_Theory.facts_of Proof_Context.facts_of context
+             (* members carry the BARE coll name in raw (coll(i) is rendered only at
+                the record-write below), so this both keeps detect's name tokens
+                clean AND lets the is_dynamic bypass still fire for members. *)
              val detected =
-               Locale_Instance.detect thy' (map (fn (_, name, _, uk) => (name, uk)) raw)
+               Locale_Instance.detect thy' (map (fn (_, name, _, uk, _) => (name, uk)) raw)
            in
-             (* Dynamic-collection members (name = a dynamic collection) are not
-                locale instances: bypass detection so they never carry provenance. *)
-             map2 (fn (_, name, _, _) => fn d =>
+             (* A dynamic collection itself (Theorem_Collection, name = the bin) and
+                its members (Theorem, name = the bare bin) are not locale instances:
+                bypass detection so they never carry provenance.  Keyed on the bare
+                name being a dynamic fact — covers BOTH (member_idx alone would miss
+                the collection entity).  The per-entry name is read post-dedup, so a
+                surviving static entry keeps its own (non-dynamic) name and provenance. *)
+             map2 (fn (_, name, _, _, _) => fn d =>
                      if Facts.is_dynamic pfacts name then [] else d)
                   raw detected
            end
@@ -569,15 +576,20 @@ fun build_entries (context : Context.generic)
       | _ => []
   in
     (raw ~~ (provss ~~ prim_provenance)) |> map
-      (fn ((entity, name, pos, uk), (provs, prov)) =>
+      (fn ((entity, name, pos, uk, midx), (provs, prov)) =>
         let
           val hint =
             if is_thm_entity entity andalso not (null provs)
             then mk_instance_hint provs
                    (case prov of SOME (t, l, _) => (t, l) | NONE => (NONE, NONE))
             else mk_prompt_hint (entity, pos)
+          (* A6: render coll(i) here (members carry bare coll + member_idx). *)
+          val disp_name =
+            case midx of
+              SOME i => name ^ "(" ^ string_of_int i ^ ")"
+            | NONE => name
         in
-          (entity, name, mk_prop_str (entity, pos),
+          (entity, disp_name, mk_prop_str (entity, pos),
            the_default 999999999 (Position.line_of pos), uk, hint, prov,
            mk_constituents (entity, uk, name))
         end)
@@ -900,12 +912,13 @@ fun interpret' (context : Context.generic) : usage * usage =
       best_thms []
 
     (* 5a''. Dynamic-collection members as Theorem entities, deduped against the
-       static theorems by uk (static name/pos wins).  Members carry the BARE
-       collection name into build_entries (so the locale-provenance bypass, which
-       keys on Facts.is_dynamic of the name, still fires); the unique coll(i) name
-       is applied to build_entries' OUTPUT in a post-pass below, keyed by uk.
-       `member_pos` records uk -> enumeration index for that post-pass. *)
-    val member_pos : int Bytehashtab.table = Bytehashtab.empty 256
+       static theorems by uk (static name/pos wins).  A6: each member carries the
+       BARE collection name + member_idx = SOME i (the carried full-bin position
+       from process_dynamic).  build_entries renders coll(i) at the record-write
+       and uses member_idx (not a Facts.is_dynamic name test) for the locale-
+       provenance bypass.  No member_pos / post-pass: the global keep-first below
+       resolves member-vs-static by uk (static, with a real line, wins; a dropped
+       member takes its SOME i with it, so no surviving static entry is renamed). *)
     val member_entries =
       let
         val seen = Bytehashtab.empty 256
@@ -915,10 +928,9 @@ fun interpret' (context : Context.generic) : usage * usage =
         process_dynamic_facts_into_cache context is_infra_dynamic_fact is_infra_thm
         |> map_filter (fn (e, i) =>
              if Bytehashtab.defined seen (#uk e) then NONE
-             else (Bytehashtab.update member_pos (#uk e, i);
-                   SOME (Universal_Key.Theorem (#thm e),
-                         Context_Callbacks.bare_name (#name e),
-                         Position.none, #uk e)))
+             else SOME (Universal_Key.Theorem (#thm e),
+                        Context_Callbacks.bare_name (#name e),
+                        Position.none, #uk e, SOME i))
       end
 
     (* 5. Extract types, classes, and locales *)
@@ -1003,34 +1015,33 @@ fun interpret' (context : Context.generic) : usage * usage =
        (distinct kind-tag byte in the key), so this keep-first pass removes only
        intra-rule-list duplicates (keeping the position-dominant one, since the
        list is already sorted by entry_ord) and leaves every other kind
-       untouched.  Done on the flat (entity,name,pos,uk) tuples BEFORE
-       build_entries so the positional raw ~~ provss zip there stays aligned. *)
+       untouched.  Done on the flat (entity,name,pos,uk,member_idx) tuples BEFORE
+       build_entries so the positional raw ~~ provss zip there stays aligned.
+       Non-member producers carry member_idx = NONE; member_entries already carry
+       SOME i.  A member whose uk equals a static entry's is dropped here (static,
+       with a real line, sorts first), taking its SOME i with it — so no surviving
+       entry is ever mis-rendered as coll(i). *)
     val all_entries_with_pos =
-      (const_entries @ deduped_thm_entries @ member_entries
-       @ type_entries @ class_entries @ locale_entries
-       @ named_theorems_entries @ method_entries
-       @ intro_entries @ elim_entries
-       @ induct_entries @ case_split_entries)
-      |> sort entry_ord
-      |> (fn es =>
-            let val seen = Bytehashtab.empty (Int.max (16, length es))
-            in filter (fn (_, _, _, uk) =>
-                 if Bytehashtab.defined seen uk then false
-                 else (Bytehashtab.update seen (uk, ()); true)) es
-            end)
-    val entries0 = build_entries context all_entries_with_pos
-    (* Post-pass: rename dynamic members to a unique coll(i) (i = enumeration
-       index), keyed by uk.  Applied AFTER build_entries so the locale-provenance
-       bypass (keyed on the bare collection name being dynamic) still fires; the
-       unique name is required so the interpretation answer endpoint can match
-       per-member translations back to entities (it indexes entries by name). *)
-    val entries =
-      entries0 |> map (fn (ent, nm, prop, line, uk, hint, prov, cons) =>
-        case Bytehashtab.lookup member_pos uk of
-          SOME i => (ent, nm ^ "(" ^ string_of_int i ^ ")", prop, line, uk, hint, prov, cons)
-        | NONE => (ent, nm, prop, line, uk, hint, prov, cons))
-    (* Enforce (entity-kind, name) uniqueness over the FINAL entries (after the
-       coll(i) post-pass), before they reach the agent.  The Python interpreter
+      let val tag = map (fn (e, n, p, u) => (e, n, p, u, NONE)) in
+        (tag (const_entries @ deduped_thm_entries)
+         @ member_entries
+         @ tag (type_entries @ class_entries @ locale_entries
+                @ named_theorems_entries @ method_entries
+                @ intro_entries @ elim_entries
+                @ induct_entries @ case_split_entries))
+        |> sort entry_ord
+        |> (fn es =>
+              let val seen = Bytehashtab.empty (Int.max (16, length es))
+              in filter (fn (_, _, _, uk, _) =>
+                   if Bytehashtab.defined seen uk then false
+                   else (Bytehashtab.update seen (uk, ()); true)) es
+              end)
+      end
+    (* coll(i) is rendered inside build_entries (from member_idx); no post-pass. *)
+    val entries = build_entries context all_entries_with_pos
+    (* Enforce (entity-kind, name) uniqueness over the FINAL entries (with each
+       member's coll(i) already rendered by build_entries), before they reach the
+       agent.  The Python interpreter
        keys its results dict / answer routing on f"{KIND_TITLE} {name}", and
        KIND_TITLE is a function of Universal_Key.entity_kind_int (several
        constructors collapse to one title); two entries sharing
@@ -1276,8 +1287,8 @@ fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpa
   }
 
 (* NB: unlike `interpret'`, this path does NOT enumerate dynamic-collection
-   members nor run the member_pos coll(i) post-pass — it interprets exactly the
-   `entities` it is given, under their bare names. It is currently dead (its only
+   members (it passes member_idx = NONE for every entity) — it interprets exactly
+   the `entities` it is given, under their bare names. It is currently dead (its only
    caller in agent_server.ML is commented out), so no member entity can reach it.
    If it is ever re-enabled with dynamic-member entities, mirror interpret's
    member handling here. *)
@@ -1300,8 +1311,9 @@ fun interpret_entities (context : Context.generic) (entities : Universal_Key.ent
                   Int.toString (length entities) ^ " entities need interpretation")
         (* 3. Get names and positions *)
         val names_pos = Theory_Structure.get_entities_with_positions context (map #1 missing)
+        (* interpret_entities never handles dynamic members, so member_idx = NONE. *)
         val raw_entries = map2 (fn (entity, uk) => fn (name, pos) =>
-          (entity, name, pos, uk)) missing names_pos
+          (entity, name, pos, uk, NONE)) missing names_pos
 
         (* 4. Build entries and call interpret RPC *)
         val entries = build_entries context raw_entries
