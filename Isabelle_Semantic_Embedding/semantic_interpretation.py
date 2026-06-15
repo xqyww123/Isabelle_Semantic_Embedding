@@ -182,11 +182,25 @@ class InterpretationTask:
         self.batches: list[tuple[str, range]] = []
         self.current_batch: int = 0
         self.batch_range: range = range(0)
+        # `total_*` is the pending delta not yet flushed to LMDB; write_cost()
+        # accumulates it into the theory record and resets it to 0.  Cost is
+        # flushed per agent round (see _accumulate_usage), mirroring how answers
+        # are written per-answer (write_answer) — so an interrupt (the parallel
+        # scheduler's by-design hard-crash) cannot drop cost for answers that
+        # are already cached.
         self.total_input_tokens = 0
         self.total_cache_creation_tokens = 0
         self.total_cache_read_tokens = 0
         self.total_output_tokens = 0
         self.total_cost_usd = 0.0
+        # `run_*` is the cumulative cost of THIS interpret_file invocation; it is
+        # never reset by write_cost(), so it survives the per-round flushes and
+        # is reported as `current_cost`.
+        self.run_input_tokens = 0
+        self.run_cache_creation_tokens = 0
+        self.run_cache_read_tokens = 0
+        self.run_output_tokens = 0
+        self.run_cost_usd = 0.0
 
     def __enter__(self) -> InterpretationTask:
         return self
@@ -511,13 +525,30 @@ async def _list_tools(client: ClaudeSDKClient) -> None:
 
 def _accumulate_usage(task: InterpretationTask, message: ResultMessage) -> None:
     if message.usage:
-        task.total_input_tokens += message.usage.get("input_tokens", 0)
-        task.total_cache_creation_tokens += message.usage.get("cache_creation_input_tokens", 0)
-        task.total_cache_read_tokens += message.usage.get("cache_read_input_tokens", 0)
-        task.total_output_tokens += message.usage.get("output_tokens", 0)
-    if message.total_cost_usd:
-        task.total_cost_usd += message.total_cost_usd
+        d_in = message.usage.get("input_tokens", 0)
+        d_cw = message.usage.get("cache_creation_input_tokens", 0)
+        d_cr = message.usage.get("cache_read_input_tokens", 0)
+        d_out = message.usage.get("output_tokens", 0)
+    else:
+        d_in = d_cw = d_cr = d_out = 0
+    d_cost = message.total_cost_usd or 0.0
+    # pending delta to be flushed into the theory record this round
+    task.total_input_tokens += d_in
+    task.total_cache_creation_tokens += d_cw
+    task.total_cache_read_tokens += d_cr
+    task.total_output_tokens += d_out
+    task.total_cost_usd += d_cost
+    # run-level accumulator (never reset by write_cost) — reported as current_cost
+    task.run_input_tokens += d_in
+    task.run_cache_creation_tokens += d_cw
+    task.run_cache_read_tokens += d_cr
+    task.run_output_tokens += d_out
+    task.run_cost_usd += d_cost
     _log.info("round usage: %s, cost: $%.4f", message.usage, message.total_cost_usd or 0)
+    # Flush immediately so an interrupt cannot drop this round's cost: answers are
+    # persisted per-answer (write_answer), and on resume they become free cache
+    # hits, so their cost must be persisted just as eagerly.
+    task.write_cost()
 
 
 class ReachLimitError(Exception):
@@ -723,11 +754,15 @@ async def interpret_file(
             answered = sum(1 for v in task.results.values() if v is not None)
             _log.info("interpret_file: agent finished, %d/%d interpreted",
                        answered, len(task.entries))
+            # Cost is flushed per round in _accumulate_usage, so this is normally
+            # a no-op flush; it still returns the up-to-date cumulative totals.
             cum = task.write_cost()
+            # current_cost = cost of THIS run; read from the run-level
+            # accumulator (write_cost resets total_*, but never run_*).
             current_cost = CostSummary(
-                task.total_input_tokens, task.total_cache_creation_tokens,
-                task.total_cache_read_tokens, task.total_output_tokens,
-                task.total_cost_usd)
+                task.run_input_tokens, task.run_cache_creation_tokens,
+                task.run_cache_read_tokens, task.run_output_tokens,
+                task.run_cost_usd)
             cumulative_cost = CostSummary(*cum)
 
             # Remap agent results to original indices (cache already written
