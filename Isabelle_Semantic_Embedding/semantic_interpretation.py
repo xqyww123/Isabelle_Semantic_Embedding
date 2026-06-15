@@ -286,7 +286,10 @@ class InterpretationTask:
                 f"Do NOT explain how it is derived or why it is useful. "
                 f"The formal statement is already shown; describe its meaning rather than transcribing it. "
                 f"Prefer plain English over formulas. Wrap formulas in backticks (like `x`, `x + 1`). "
-                f"Any nonstandard notation must be briefly explained.\n\n"
+                f"Every translation must be **self-contained**: assume the reader has no prior context and "
+                f"knows no notation. Do not assume they know what any symbol means — for instance, do not "
+                f"assume they know that `x # l` prepends `x` to the list `l`; spell out such notation wherever "
+                f"you use it.\n\n"
                 f"Entries:\n{entries_text}\n\n"
                 f"Submit translations via `mcp__isabelle_semantics__answer`."
             )
@@ -306,7 +309,9 @@ Do NOT explain how it is derived or why it is useful. \
 The formal statement is already shown; describe its meaning **rather than** transcribing it. \
 Prefer plain English over formulas. Wrap formulas in backticks (e.g., `x`, `x + 1`). \
 When a lemma/rule/term has a well-known name (e.g., proof by contradiction), you MUST mention it explicitly in the translation. \
-Any nonstandard notation must be briefly explained.
+Every translation must be **self-contained**: assume the reader has no prior context and knows no notation. \
+Do not assume they know what any symbol means — for instance, do not assume they know that `x # l` prepends `x` \
+to the list `l`; spell out such notation wherever you use it.
 
 - For a `named theorem bundles` entry, describe what kind of facts the collection gathers and its purpose; \
 you may use the listed current members to infer this, but do NOT enumerate the members in your answer. \
