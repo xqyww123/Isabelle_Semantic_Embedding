@@ -19,6 +19,25 @@ import isabelle._
 /* Shared query helpers operating on any Document.Snapshot */
 
 object PIDE_Query {
+  /** Locate the command in a live PIDE node containing the given 1-based symbol
+    * offset.  Returns the command and the 1-based symbol offset of its first
+    * symbol (sym_pos), accumulating widths via command.span.symbol_length (the
+    * authoritative symbol count) rather than chunk.range.stop (a char count). */
+  private def command_at_symbol_offset(
+    node: Document.Node, offset: Int
+  ): Option[(Command, Int)] = {
+    var pos = 1
+    val it = node.commands.iterator
+    var found: Option[(Command, Int)] = None
+    while (it.hasNext && found.isEmpty) {
+      val c = it.next()
+      val len = c.span.symbol_length
+      if (offset >= pos && offset < pos + len) found = Some((c, pos))
+      pos += len
+    }
+    found
+  }
+
   private def symbol_offset_to_range(
     snapshot: Document.Snapshot, offset: Int
   ): Text.Range = {
@@ -31,8 +50,23 @@ object PIDE_Query {
         val stop = command.chunk.decode(offset + 1)
         Text.Range(start, stop)
       case Nil =>
-        // Live PIDE: offsets are already in the right coordinate system
-        Text.Range(offset - 1, offset)
+        // Live PIDE: `offset` is a 1-based *file-global symbol* offset.  Locate
+        // the command containing it (accumulating span.symbol_length, the true
+        // symbol count), then map the in-command symbol offset to a char offset
+        // via chunk.decode and shift by the command's char start in the node.
+        command_at_symbol_offset(snapshot.node, offset) match {
+          case Some((command, sym_pos)) =>
+            val local = offset - sym_pos + 1
+            // command came from node.commands, so command_start always hits.
+            val char_base = snapshot.node.command_start(command).get
+            Text.Range(char_base + command.chunk.decode(local),
+                       char_base + command.chunk.decode(local + 1))
+          case None =>
+            // offset out of [1, total_symbols]: degenerate empty range so the
+            // caller's cumulate finds nothing (never reuse the old char≈symbol
+            // assumption here).
+            Text.Range(0, 0)
+        }
     }
   }
 
@@ -52,7 +86,7 @@ object PIDE_Query {
                   val name = command.node_name.node
                   val preceding_symbols =
                     node.commands.iterator.takeWhile(_ != command)
-                      .map(_.chunk.range.stop).sum
+                      .map(_.span.symbol_length).sum
                   val within_lines =
                     if (def_range.start <= 0) 0
                     else {
@@ -101,17 +135,11 @@ object PIDE_Query {
   }
 
   def command_at_position(node: Document.Node, offset: Int): (String, Int, Int) = {
-    var pos = 1
-    var result: (String, Int, Int) = ("", 0, 0)
-    val it = node.commands.iterator
-    while (it.hasNext && result._1.isEmpty) {
-      val command = it.next()
-      val len = command.chunk.range.stop
-      if (offset >= pos && offset < pos + len)
-        result = (command.source, pos, pos + len)
-      pos += len
+    command_at_symbol_offset(node, offset) match {
+      case Some((command, pos)) =>
+        (command.source, pos, pos + command.span.symbol_length)
+      case None => ("", 0, 0)
     }
-    result
   }
 
   def command_at_position(snapshot: Document.Snapshot, offset: Int): (String, Int, Int) = {
@@ -408,7 +436,7 @@ object Resolve_Positions extends Scala.Fun("pide_state.resolve_positions", threa
         if (needed_ids.contains(command.id)) {
           preceding_symbols_map(command.id) = symbols
         }
-        symbols += command.chunk.range.stop
+        symbols += command.span.symbol_length
       }
     }
 
@@ -729,7 +757,7 @@ object Command_ID_At_Position extends Scala.Fun("pide_state.command_id_at_positi
           val it = node.commands.iterator
           while (it.hasNext && result == 0L) {
             val command = it.next()
-            val len = command.chunk.range.stop
+            val len = command.span.symbol_length
             if (offset >= pos && offset < pos + len)
               result = command.id
             pos += len
