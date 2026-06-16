@@ -294,7 +294,8 @@ class InterpretationTask:
 
         if indices.start != 0:
             return (
-                f"Continue to translate the following entities into concise plain English. "
+                f"Continue to translate the following entities into thorough, self-contained plain English "
+                f"(aim for 3–6 sentences each). "
                 f"State only what the entity defines or asserts. "
                 f"Do NOT explain how it is derived or why it is useful. "
                 f"The formal statement is already shown; describe its meaning rather than transcribing it. "
@@ -302,7 +303,10 @@ class InterpretationTask:
                 f"Every translation must be **self-contained**: assume the reader has no prior context and "
                 f"knows no notation. Do not assume they know what any symbol means — for instance, do not "
                 f"assume they know that `x # l` prepends `x` to the list `l`; spell out such notation wherever "
-                f"you use it.\n\n"
+                f"you use it. Make sure that every nonstandard notion has been clearly explained somewhere in "
+                f"each of your translations. Be thorough rather than terse: fully unfold what the statement "
+                f"means — name and explain every variable, symbol, and sub-expression it involves — instead of "
+                f"compressing it into a single line (still without explaining its derivation or usefulness).\n\n"
                 f"Entries:\n{entries_text}\n\n"
                 f"Submit translations via `mcp__isabelle_semantics__answer`."
             )
@@ -316,7 +320,7 @@ Entries:
 
 Line numbers in brackets (e.g. [line 42]) indicate where each entity appears in the source file.
 
-For each entry, translate the formal statement into a concise plain-English description (1\u20133 sentences). \
+For each entry, translate the formal statement into a thorough, self-contained plain-English description (aim for 3\u20136 sentences). \
 State only what the entity defines or asserts. \
 Do NOT explain how it is derived or why it is useful. \
 The formal statement is already shown; describe its meaning **rather than** transcribing it. \
@@ -324,7 +328,11 @@ Prefer plain English over formulas. Wrap formulas in backticks (e.g., `x`, `x + 
 When a lemma/rule/term has a well-known name (e.g., proof by contradiction), you MUST mention it explicitly in the translation. \
 Every translation must be **self-contained**: assume the reader has no prior context and knows no notation. \
 Do not assume they know what any symbol means — for instance, do not assume they know that `x # l` prepends `x` \
-to the list `l`; spell out such notation wherever you use it.
+to the list `l`; spell out such notation wherever you use it. \
+Make sure that every nonstandard notion has been clearly explained somewhere in each of your translations. \
+Be thorough rather than terse: fully unfold what the statement means — name and explain every variable, symbol, \
+and sub-expression it involves — instead of compressing it into a single line (still without explaining its \
+derivation or usefulness).
 
 - For a `named theorem bundles` entry, describe what kind of facts the collection gathers and its purpose; \
 you may use the listed current members to infer this, but do NOT enumerate the members in your answer. \
