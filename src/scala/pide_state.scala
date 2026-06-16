@@ -269,8 +269,8 @@ object DB_Snapshots {
     store.try_open_database(session_name, server_mode = false) match {
       case Some(db) =>
         try {
-          // Query only name and digest columns for .thy files — skip reading file bodies
-          val thy_digests = db.execute_query_statement(
+          // (1) Query only name and digest columns for .thy files — skip reading file bodies.
+          val src_rows = db.execute_query_statement(
             Store.private_data.Sources.table.select(
               List(Store.private_data.Sources.name, Store.private_data.Sources.digest),
               sql = SQL.where_and(
@@ -279,12 +279,43 @@ object DB_Snapshots {
             List.from[(String, String)],
             res => (res.string(Store.private_data.Sources.name),
                     res.string(Store.private_data.Sources.digest)))
-          for ((name, digest) <- thy_digests) {
+
+          // (2) Real theory long-names from THIS session's exports (one index-covered query).
+          // A flat session (e.g. MathBench_ProverBase) compiles theories of other AFP entries
+          // directly via $AFP/<Entry>/*.thy; their exports keep the ORIGINAL prefix
+          // (Hermite_Lindemann.More_Polynomial_HLW), NOT <this session>.<base>.  Fabricating
+          // session_name + "." + base would mis-address load_snapshot and yield an empty
+          // snapshot (goto/hover/entity = NONE), so resolve the genuine long-name here.
+          val by_base = Export.read_theory_names(db, session_name).groupBy(Long_Name.base_name)
+
+          // (3) Source-side base counts: a base shared by >1 source row cannot be resolved by
+          // base alone (the unique-export branch would misroute the unexported twin), so skip it.
+          val src_base_counts =
+            src_rows.groupBy { case (name, _) =>
+              Library.try_unsuffix(".thy", Path.explode(name).file_name).getOrElse("")
+            }.view.mapValues(_.size).toMap
+
+          // (4) Resolve each source .thy to its genuine long-name; warn+skip on any ambiguity
+          // (degrades to NONE, logged) rather than guessing or throwing.
+          for ((name, digest) <- src_rows) {
             val base = Library.try_unsuffix(".thy", Path.explode(name).file_name).getOrElse("")
             if (base.nonEmpty) {
-              val theory_name = session_name + "." + base
-              digest_index += (digest -> (session_name, theory_name))
-              name_index += (base -> (session_name, theory_name))
+              if (src_base_counts.getOrElse(base, 0) > 1)
+                Output.warning("DB_Snapshots.index_session: skipping source-duplicate theory base " +
+                  quote(base) + " in session " + quote(session_name) + " (goto/hover degrade to NONE)")
+              else by_base.getOrElse(base, Nil) match {
+                case Nil =>
+                  // No export for this source (e.g. export_theory=false): it was NONE before and
+                  // stays NONE — do not populate a known-unloadable mapping.
+                  ()
+                case List(theory_name) =>
+                  digest_index += (digest -> (session_name, theory_name))
+                  name_index += (base -> (session_name, theory_name))
+                case cands =>
+                  Output.warning("DB_Snapshots.index_session: skipping ambiguous theory base " +
+                    quote(base) + " in session " + quote(session_name) + " among " +
+                    commas_quote(cands) + " (goto/hover degrade to NONE)")
+              }
             }
           }
         }
