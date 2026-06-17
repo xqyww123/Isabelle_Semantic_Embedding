@@ -203,7 +203,7 @@ fun gen_infra_filters (context : Context.generic)
           "HOL.equal", "ATP.", "Code_Evaluation."] @ infra_session_thy_prefixes
 
     val infra_theory_prefixes =
-      ["Code_Evaluation.", "Num."]
+      ["Code_Evaluation."]
       @ map (fn n => n ^ ".") infra_base_theory_names
       @ infra_session_thy_prefixes
     fun is_from_infra_theory name =
