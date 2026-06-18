@@ -876,6 +876,14 @@ async def interpret_file(
                 mcp_servers={"isabelle_semantics": mcp},
                 thinking=ThinkingConfigAdaptive(type="adaptive"),
                 effort="high",
+                # The answer tool hands the next batch of entries back in its
+                # result; that payload is dense Isabelle Unicode (⟦⟧⟹…), which
+                # tokenizes ~2x heavier per char than English, so a ~50KB batch
+                # crosses the 25,000-token default MCP-output cap and gets
+                # spilled to disk (forcing the agent to re-read it via Bash/jq).
+                # Raise the cap so the batch is returned inline.  Merged onto the
+                # inherited environment by the SDK, so other env vars are kept.
+                env={"MAX_MCP_OUTPUT_TOKENS": "100000"},
                 hooks={
                     "PreToolUse": [
                         HookMatcher(matcher="*", hooks=[_permission_control]),
