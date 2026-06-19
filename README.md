@@ -59,25 +59,31 @@ Certain infrastructure theories are never interpreted: `Pure`, `Code_Generator`,
 
 ## Embedding Providers
 
-`Embedding_Provider` (in `semantic_embedding.py`) is the abstract base for text embedding services.
+`Embedding_Provider` (in `semantic_embedding.py`) is the abstract base for text embedding services. A provider is selected by **three parameters** — `driver`, `base_url`, `model` — rather than a per-model registered subclass:
 
-### Registered Providers
+- **driver**: a registered driver class. `OpenAI_Embedding_Provider` serves any OpenAI-compatible `/v1/embeddings` endpoint (Fireworks, OpenAI, Mistral, Aliyun DashScope, …); `Gemini_Embedding` is the native Google Gemini API. Default `OpenAI_Embedding_Provider`.
+- **base_url**: the API endpoint. Default `https://api.fireworks.ai/inference`.
+- **model**: the **canonical** model name — the HuggingFace name where one exists (e.g. `Qwen/Qwen3-Embedding-8B`), else the provider's id (e.g. `text-embedding-3-large`). Default `Qwen/Qwen3-Embedding-8B`.
 
-| Name | Model | Dimension | API |
-|------|-------|-----------|-----|
-| `oai.text-embedding-3-large` | text-embedding-3-large | 3072 | OpenAI |
-| `oai.text-embedding-3-small` | text-embedding-3-small | 1536 | OpenAI |
-| `mistral.codestral-embed` | codestral-embed | 1536 | Mistral |
+Build one with `make_embedding_provider(driver, base_url, model)`. The API key is read **only** from the `EMBEDDING_API_KEY` environment variable (Gemini additionally falls back to `GEMINI_API_KEY`).
 
-Custom providers can be added via `@register_embedding_provider("name")` or placed as `drivers/{name}.py`.
+### YAML config
+
+All model/endpoint specifics live in a YAML config at `$ISABELLE_HOME_USER/etc/embedding_config`, seeded on first run from the bundled `embedding_config_template.yaml`. It is keyed by the canonical model name and by the base_url domain (netloc):
+
+- per model: `dimension` (**required** — determines the LMDB matrix shape; a missing entry is a hard error), `default_scores` (`{score, local}` fallbacks for un-embedded entities), `normalize` (L2-normalize returned vectors), `max_request_size`
+- `providers.<domain>.normalization`: maps the canonical name to the id this endpoint expects (e.g. on `api.fireworks.ai`, `Qwen/Qwen3-Embedding-8B` → `fireworks/qwen3-embedding-8b`)
+- `providers.<domain>.batch`: the Batch API shape (`dialect: openai | mistral`, endpoint, status strings, `max_batch_size`); its presence is what enables batch for that domain
+
+Add a model by editing the YAML; add a new driver class via `@register_embedding_driver("Name")` or `drivers/{Name}.py`.
 
 ### Caching
 
-Embedding results are cached per-string in a DiskCache database at `~/.cache/Isabelle_Semantic_Embedding/embed_cache/` (100MB limit, 3-day TTL). Only short queries (total text length <= 512 chars) are cached by `embed()`. `embed_batch()` always uses the cache.
+Embedding results are cached per-string (keyed by the canonical model name + text) in a DiskCache database at `~/.cache/Isabelle_Semantic_Embedding/embed_cache/` (2 GB limit, 3-day TTL). Both `embed()` and `embed_batch()` use the cache. This cache is purely local and is **excluded** from the published DB snapshot.
 
 ### Batch API
 
-`OpenAI_Embedding_Provider._embed_batch` uses the OpenAI Batch API for 50% cost reduction. It uploads a JSONL file, creates an async batch job, polls for completion, and downloads results. Large inputs are split into sub-batches of `max_batch_size` (default 50,000) and submitted in parallel on the server side.
+When the base_url's domain has a `batch` entry in the YAML config, `OpenAI_Embedding_Provider._embed_batch` uses the OpenAI-style Batch API (e.g. for 50% cost reduction on OpenAI). It uploads a JSONL file, creates an async batch job, polls for completion, and downloads results. Large inputs are split into sub-batches of `max_batch_size` (from the YAML `batch` config) and submitted in parallel on the server side. The `dialect` (`openai`/`mistral`) selects the request/response shape.
 
 ## Vector Store & Semantic Vector Store
 
@@ -94,8 +100,9 @@ Key operations:
 
 `Semantic_Vector_Store` (in `semantics.py`) extends `Vector_Store` with:
 - **Auto-interpretation**: when vectors are missing, automatically interprets uninterpreted theories (if `auto_interpret_for_embedding` is enabled), fetches semantic texts from `Semantic_DB`, embeds them, and stores the vectors
-- **Model resolution**: reads from Isabelle config `Semantic_Embedding.embedding_model`, then env var `EMBEDDING_MODEL`, then defaults to `qwen3-embedding-8b`
-- **Per-connection registry**: each `Connection` maintains a dict of stores by model name, accessed via `connection.semantic_vector_store(model_name)`
+- **Provider resolution**: resolves `(driver, base_url, model)`, each by Isabelle config (`Semantic_Embedding.embedding_driver` / `embedding_base_url` / `embedding_model`) → env var (`EMBEDDING_DRIVER` / `EMBEDDING_BASE_URL` / `EMBEDDING_MODEL`) → default (`OpenAI_Embedding_Provider` / Fireworks / `Qwen/Qwen3-Embedding-8B`)
+- **Store identity**: the LMDB vector store lives at `vector_<canonical model>.lmdb`, with the canonical name made filesystem-safe (`/` → `__`), e.g. `vector_Qwen__Qwen3-Embedding-8B.lmdb`
+- **Per-connection registry**: each `Connection` maintains a dict of stores by canonical model name, accessed via `connection.semantic_vector_store(model_name)`. NOTE: one run has a single active driver+base_url, so embedding several models at once only works for models served by that same endpoint.
 
 `lookup(query, k, kinds, domain)` combines entity filtering with k-NN search:
 - `kinds`: filter by `EntityKind` (e.g. `[ConstantK, TheoremK]`)
@@ -109,7 +116,9 @@ Set in Isabelle via `declare [[option = value]]`:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `auto_interpret_for_embedding` | bool | `true` | Auto-trigger interpretation when embeddings are missing |
-| `Semantic_Embedding.embedding_model` | string | `""` | Override embedding model (empty = use env var or default) |
+| `Semantic_Embedding.embedding_driver` | string | `""` | Embedding driver class (empty = env `EMBEDDING_DRIVER` or `OpenAI_Embedding_Provider`) |
+| `Semantic_Embedding.embedding_base_url` | string | `""` | Embedding endpoint base_url (empty = env `EMBEDDING_BASE_URL` or the Fireworks endpoint) |
+| `Semantic_Embedding.embedding_model` | string | `""` | Canonical (HuggingFace) embedding model name (empty = env `EMBEDDING_MODEL` or `Qwen/Qwen3-Embedding-8B`) |
 | `Semantic_Embedding.reranker_model` | string | `""` | Reranker model for re-ranking search results (empty = disabled; env var `RERANKER_MODEL`) |
 
 These are accessible from Python via `connection.config_lookup("option_name")`.
