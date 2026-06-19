@@ -15,7 +15,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
-dependencies = ["msgpack", "Isabelle_RPC_Host", "rocksdict", "lmdb", "platformdirs", "transformers", "numpy", "faiss-cpu", "requests", "diskcache", "claude_agent_sdk"]
+dependencies = ["msgpack", "Isabelle_RPC_Host", "rocksdict", "lmdb", "platformdirs", "transformers", "numpy", "faiss-cpu", "requests", "diskcache", "claude_agent_sdk", "pyyaml"]
 
 [project.urls]
 "Homepage" = "https://github.com/xqyww123/Semantic_Embedding"
@@ -23,3 +23,6 @@ dependencies = ["msgpack", "Isabelle_RPC_Host", "rocksdict", "lmdb", "platformdi
 [tool.setuptools.packages.find]
 include = ["Isabelle_Semantic_Embedding", "Isabelle_Semantic_Embedding.*"]
 exclude = ["contrib", "contrib.*"]
+
+[tool.setuptools.package-data]
+Isabelle_Semantic_Embedding = ["embedding_config_template.yaml"]

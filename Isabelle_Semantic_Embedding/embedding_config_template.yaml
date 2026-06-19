@@ -1,0 +1,86 @@
+# Embedding provider configuration.
+#
+# This file is consulted by the parametrized OpenAI_Embedding_Provider (and the
+# native Gemini_Embedding driver) in semantic_embedding.py. A user selects a
+# provider with three parameters -- driver, base_url, model -- and everything
+# model/endpoint specific lives here, keyed by the *canonical* model name
+# (the HuggingFace name where one exists, else the model's canonical id) and by
+# the base_url domain (netloc).
+#
+# On first run, semantic_embedding copies this template to
+#   $ISABELLE_HOME_USER/etc/embedding_config
+# Edit that copy to add models / endpoints; this template is the seed only.
+
+# Per-model embedding vector dimension. Required for every model in use
+# (it determines the LMDB matrix shape). A missing entry is a hard error.
+dimension:
+  Qwen/Qwen3-Embedding-8B: 4096
+  text-embedding-3-large: 3072
+  text-embedding-3-small: 1536
+  codestral-embed: 1536
+  text-embedding-v4: 1024
+  harrier-oss-v1-27b: 5376
+  llama-nv-embed-reasoning-3b: 3072
+  gemini-embedding-2-preview: 3072
+
+# Per-model fallback scores for entities with no embedding vector (no
+# interpretation). Used by Semantic_Vector_Store.lookup. Models not listed
+# default to {score: 0.0, local: 0.0} (the previous hardcoded behavior).
+default_scores:
+  Qwen/Qwen3-Embedding-8B:     {score: 0.3, local: 0.5}
+  harrier-oss-v1-27b:          {score: 0.3, local: 0.5}
+  llama-nv-embed-reasoning-3b: {score: 0.3, local: 0.5}
+
+# Per-model: L2-normalize the returned vectors. Required for models whose server
+# does NOT return unit vectors, so that faiss L2 distance maps to cosine (the
+# topk score formula 1 - dist/2 assumes unit vectors). Models not listed: false.
+# NOTE: the existing Qwen/Qwen3-Embedding-8B vector store was built normalized;
+# do not flip this off for it.
+normalize:
+  Qwen/Qwen3-Embedding-8B: true
+  harrier-oss-v1-27b: true
+  llama-nv-embed-reasoning-3b: true
+
+# Per-model max number of texts per (non-batch) embedding request. Some endpoints
+# cap this hard. Models not listed default to 2048.
+max_request_size:
+  text-embedding-v4: 10     # Aliyun DashScope hard cap
+  codestral-embed: 50
+  gemini-embedding-2-preview: 100
+
+# Per-domain provider config. Key = the netloc of base_url
+# (e.g. "https://api.fireworks.ai/inference" -> "api.fireworks.ai").
+#   normalization: maps canonical model name -> the model id this endpoint
+#                  expects in the API request body. Unlisted models pass through
+#                  unchanged.
+#   batch:         presence enables the OpenAI-style Batch API for this domain.
+#                  `dialect` selects the request/response shape (openai|mistral).
+providers:
+  api.fireworks.ai:
+    normalization:
+      Qwen/Qwen3-Embedding-8B: fireworks/qwen3-embedding-8b
+      harrier-oss-v1-27b: fireworks/harrier-oss-v1-27b
+      llama-nv-embed-reasoning-3b: fireworks/llama-nv-embed-reasoning-3b
+
+  api.openai.com:
+    normalization: {}        # OpenAI model ids are already canonical
+    batch:
+      dialect: openai
+      endpoint: /v1/batches
+      completed: completed
+      failed: [failed, expired, cancelled]
+      output_file_key: output_file_id
+      max_batch_size: 50000
+
+  api.mistral.ai:
+    normalization: {}
+    batch:
+      dialect: mistral
+      endpoint: /v1/batch/jobs
+      completed: SUCCESS
+      failed: [FAILED, TIMEOUT_EXCEEDED, CANCELLED]
+      output_file_key: output_file
+      max_batch_size: 1000000
+
+  dashscope-intl.aliyuncs.com:
+    normalization: {}

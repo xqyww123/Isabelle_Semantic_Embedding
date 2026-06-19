@@ -16,7 +16,9 @@ from Isabelle_RPC_Host.unicode import pretty_unicode, ascii_of_unicode
 from Isabelle_RPC_Host.universal_key import EntityKind, UndefinedEntity, universal_key, universal_key_of, destruct_key, is_WIP, RULE_ONLY_TAG_BYTES
 from claude_agent_sdk import SdkMcpTool, tool
 
-from .semantic_embedding import Vector_Store, Embedding_Provider, embedding_provider, Reranker_Provider, reranker_provider, key
+from .semantic_embedding import (Vector_Store, Embedding_Provider, make_embedding_provider,
+                                 sanitize_model, unsanitize_model,
+                                 Reranker_Provider, reranker_provider, key)
 
 from .base import ToolCall_ret, mk_ret as _mk_ret
 from .hover import resolve_context_at
@@ -783,25 +785,27 @@ class Semantic_Vector_Store(Vector_Store):
             return []
         prefix = "vector_"
         suffix = ".lmdb"
-        return [entry[len(prefix):-len(suffix)]
+        return [unsanitize_model(entry[len(prefix):-len(suffix)])
                 for entry in os.listdir(cache_dir)
                 if entry.startswith(prefix) and entry.endswith(suffix)
                 and os.path.isdir(os.path.join(cache_dir, entry))]
 
     def __init__(
         self,
-        emb_provider: Embedding_Provider.name | Embedding_Provider | None = None,
+        emb_provider: Embedding_Provider | None = None,
         connection: Connection | None = None,
     ):
+        # When no provider is supplied, build one from the env-resolved
+        # (driver, base_url, model) triple (no connection config available here).
         if emb_provider is None:
-            emb_provider = os.getenv("EMBEDDING_MODEL", "qwen3-embedding-8b")
-        if isinstance(emb_provider, str):
-            model_name = emb_provider
-        else:
-            model_name = getattr(emb_provider, '_registration_name', getattr(emb_provider, 'model', 'custom'))
+            driver, base_url, model = _resolve_embedding_config_env()
+            emb_provider = make_embedding_provider(driver, base_url, model)
+        # Identity = the canonical (HuggingFace) model name; the LMDB store
+        # directory uses a filesystem-safe form of it.
+        model_name = emb_provider.canonical_model
         cache_dir = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
         os.makedirs(cache_dir, exist_ok=True)
-        path = os.path.join(cache_dir, f"vector_{model_name}.lmdb")
+        path = os.path.join(cache_dir, f"vector_{sanitize_model(model_name)}.lmdb")
         super().__init__(path, emb_provider, connection)
         self.model_name = model_name
         if connection is not None:
@@ -1232,15 +1236,26 @@ class Semantic_Vector_Store(Vector_Store):
 _svs_lock = threading.Lock()
 
 
-async def _resolve_embedding_model(connection: Connection | None, emb_provider: str | None) -> str:
-    """Resolve embedding model name from config, env, or default."""
-    if emb_provider is not None:
-        return emb_provider
+_DEFAULT_EMBEDDING_DRIVER = "OpenAI_Embedding_Provider"
+_DEFAULT_EMBEDDING_BASE_URL = "https://api.fireworks.ai/inference"
+_DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-8B"
+
+
+def _resolve_embedding_config_env() -> tuple[str, str, str]:
+    """Resolve (driver, base_url, model) from env vars, falling back to defaults."""
+    return (os.getenv("EMBEDDING_DRIVER", _DEFAULT_EMBEDDING_DRIVER),
+            os.getenv("EMBEDDING_BASE_URL", _DEFAULT_EMBEDDING_BASE_URL),
+            os.getenv("EMBEDDING_MODEL", _DEFAULT_EMBEDDING_MODEL))
+
+
+async def _resolve_embedding_config(connection: Connection | None) -> tuple[str, str, str]:
+    """Resolve (driver, base_url, model), each by: ML config -> env -> default."""
+    driver, base_url, model = _resolve_embedding_config_env()
     if connection is not None:
-        name = await connection.config_lookup("Semantic_Embedding.embedding_model")
-        if name:
-            return name
-    return os.getenv("EMBEDDING_MODEL", "qwen3-embedding-8b")
+        driver = (await connection.config_lookup("Semantic_Embedding.embedding_driver")) or driver
+        base_url = (await connection.config_lookup("Semantic_Embedding.embedding_base_url")) or base_url
+        model = (await connection.config_lookup("Semantic_Embedding.embedding_model")) or model
+    return driver, base_url, model
 
 
 async def _resolve_reranker_model(connection: Connection | None) -> str | None:
@@ -1254,13 +1269,26 @@ async def _resolve_reranker_model(connection: Connection | None) -> str | None:
 
 
 async def _conn_semantic_vector_store(self: Connection, embedding_model: str | None = None) -> Semantic_Vector_Store:
-    """Get or create a Semantic_Vector_Store for the given embedding model."""
-    resolved = await _resolve_embedding_model(self, embedding_model)
+    """Get or create a Semantic_Vector_Store for the active (or given) embedding model.
+
+    With no ``embedding_model``, uses the fully resolved (driver, base_url, model)
+    triple. When ``embedding_model`` is given, it overrides only the model while
+    reusing the active driver + base_url.
+
+    LIMITATION: a single run has exactly one active driver + base_url, so embedding
+    several models in one run (e.g. semantics_manage --embed-models) only works for
+    models served by that same endpoint (fireworks-hosted qwen3/harrier/nv-embed
+    are fine; mixing e.g. fireworks + mistral in one run is not supported).
+    """
+    driver, base_url, model = await _resolve_embedding_config(self)
+    if embedding_model is not None:
+        model = embedding_model
     with _svs_lock:
         stores = getattr(self, '_semantic_vector_stores', None)
-        if stores is not None and resolved in stores:
-            return stores[resolved]
-    return Semantic_Vector_Store(emb_provider=resolved, connection=self)
+        if stores is not None and model in stores:
+            return stores[model]
+    provider = make_embedding_provider(driver, base_url, model)
+    return Semantic_Vector_Store(emb_provider=provider, connection=self)
 
 Connection.semantic_vector_store = _conn_semantic_vector_store  # type: ignore
 

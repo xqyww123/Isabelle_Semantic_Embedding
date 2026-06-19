@@ -7,6 +7,7 @@ import os
 import pathlib
 import tempfile
 import time
+from urllib.parse import urlsplit
 from typing import TYPE_CHECKING, Awaitable, Callable, ClassVar, NamedTuple, cast
 if TYPE_CHECKING:
     from Isabelle_RPC_Host.rpc import Connection
@@ -28,25 +29,44 @@ class EmbedResult(NamedTuple):
 
 class Embedding_Provider(ABC):
     type name = str
-    _registration_name: ClassVar[str]
-    dimension : int
-    model : str
+    canonical_model: str  # identity: HuggingFace name where one exists, else canonical id
+    model: str            # model id actually sent to the API
+    base_url: str
+    api_key: str | None
+    dimension: int
     max_request_size: int = 2048
     supports_batch: bool = False
     normalize: bool = False  # L2-normalize returned vectors
     # Fallback scores for entities with no embedding vector (no interpretation),
     # used by Semantic_Vector_Store.lookup in place of the old hardcoded 0.0. The
     # meaningful value depends on the model's score distribution (these sit on the
-    # same axis as 1 - L2/2 ≈ cosine), so each provider sets its own. Base 0.0
-    # preserves the previous behavior for any provider that does not opt in.
+    # same axis as 1 - L2/2 ≈ cosine), so it is configured per model in the YAML
+    # embedding config. Base 0.0 preserves the previous behavior when unset.
     default_score: float = 0.0        # no-embedding, non-local fallback
     default_local_score: float = 0.0  # no-embedding, proof-context-local fallback
-    PROVIDERS: dict[name, type['Embedding_Provider']] = {}
+    DRIVERS: dict[name, type['Embedding_Provider']] = {}
     _cache: diskcache.Cache | None = None
+
+    def __init__(self, base_url: str, model: str, api_key: str | None = None) -> None:
+        """Configure a provider from the three user parameters + the YAML config.
+
+        ``model`` is the canonical (identity) name; per-model metadata
+        (dimension, default scores, normalization, request size) is resolved
+        from the embedding config keyed by it.
+        """
+        from . import embedding_config as cfg
+        self.canonical_model = model
+        self.base_url = base_url
+        self.model = model
+        self.api_key = api_key if api_key is not None else os.getenv("EMBEDDING_API_KEY")
+        self.dimension = cfg.dimension(model)
+        self.default_score, self.default_local_score = cfg.default_scores(model)
+        self.normalize = cfg.normalize(model)
+        self.max_request_size = cfg.max_request_size(model)
 
     @property
     def _cache_key_prefix(self) -> str:
-        return getattr(self, '_registration_name', self.model)
+        return self.canonical_model
 
     @abstractmethod
     async def _embed(self, text: list[str]) -> EmbedResult:
@@ -154,45 +174,83 @@ class Embedding_Provider(ABC):
         await self._log(f"[Embedding Batch] {self.model}: done, total_tokens={result.total_tokens}")
         return self._normalize(result)
 
-def register_embedding_provider(name: str):
-    """Class decorator to register an Embedding_Provider subclass by name."""
+def sanitize_model(model: str) -> str:
+    """Filesystem-safe form of a canonical model name (for LMDB store dirnames)."""
+    return model.replace("/", "__")
+
+def unsanitize_model(name: str) -> str:
+    """Inverse of sanitize_model: recover the canonical model name from a dirname."""
+    return name.replace("__", "/")
+
+def register_embedding_driver(name: str):
+    """Class decorator to register an Embedding_Provider driver class by name."""
     def decorator(cls: type[Embedding_Provider]) -> type[Embedding_Provider]:
-        cls._registration_name = name
-        Embedding_Provider.PROVIDERS[name] = cls
+        Embedding_Provider.DRIVERS[name] = cls
         return cls
     return decorator
 
-def embedding_provider(name: Embedding_Provider.name) -> Embedding_Provider:
-    """Instantiate an Embedding_Provider by name.
-    Checks PROVIDERS registry first, then dynamically loads from drivers/{name}.py."""
-    if name in Embedding_Provider.PROVIDERS:
-        return Embedding_Provider.PROVIDERS[name]()
-    path = pathlib.Path(__file__).parent / "drivers" / f"{name}.py"
-    if not path.exists():
-        raise ImportError(f"Embedding driver {name!r} not found in PROVIDERS or at {path}")
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load embedding driver {name!r} from {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.Embedding_Provider()
+def make_embedding_provider(driver: str, base_url: str, model: str) -> Embedding_Provider:
+    """Instantiate an embedding driver class with the (base_url, model) parameters.
+    Checks the DRIVERS registry first, then dynamically loads drivers/{driver}.py
+    (whose module must expose an ``Embedding_Provider`` driver class)."""
+    cls = Embedding_Provider.DRIVERS.get(driver)
+    if cls is None:
+        path = pathlib.Path(__file__).parent / "drivers" / f"{driver}.py"
+        if not path.exists():
+            raise ImportError(f"Embedding driver {driver!r} not found in DRIVERS or at {path}")
+        spec = importlib.util.spec_from_file_location(driver, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load embedding driver {driver!r} from {path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        cls = mod.Embedding_Provider
+    return cls(base_url, model)
 
+@register_embedding_driver("OpenAI_Embedding_Provider")
 class OpenAI_Embedding_Provider(Embedding_Provider):
-    base_url: str = "https://api.openai.com"
-    api_key: str | None = os.getenv("OPENAI_API_KEY")
-    model: str
+    """Generic provider for any OpenAI-compatible ``/v1/embeddings`` endpoint.
+
+    All model/endpoint specifics come from the YAML embedding config: the API
+    model id (per-domain normalization), the dimension/scores/normalize/request
+    size (per model), and the optional Batch API shape (per domain). Batch is
+    enabled iff the base_url's domain has a ``batch`` entry; ``dialect`` selects
+    the request/response shape (``openai`` or ``mistral``).
+    """
     max_batch_size: int = 50000
-    supports_batch: bool = True
 
-    # --- Batch API hooks (override for Mistral, etc.) ---
+    def __init__(self, base_url: str, model: str, api_key: str | None = None) -> None:
+        from . import embedding_config as cfg
+        super().__init__(base_url, model, api_key)
+        domain = urlsplit(base_url).netloc
+        self.model = cfg.api_model_name(domain, model)  # name sent to the API
+        self._batch: dict = cfg.batch_config(domain) or {}
+        self.supports_batch = bool(self._batch)
+        if self._batch:
+            self.max_batch_size = int(self._batch.get("max_batch_size", 50000))
 
-    _batch_endpoint: str = "/v1/batches"
-    _batch_completed_status: str = "completed"
-    _batch_failed_statuses: set[str] = {"failed", "expired", "cancelled"}
-    _batch_output_file_key: str = "output_file_id"
+    # --- Batch API hooks (shape selected by the per-domain `dialect`) ---
+
+    @property
+    def _batch_endpoint(self) -> str:
+        return self._batch["endpoint"]
+
+    @property
+    def _batch_completed_status(self) -> str:
+        return self._batch["completed"]
+
+    @property
+    def _batch_failed_statuses(self) -> set[str]:
+        return set(self._batch["failed"])
+
+    @property
+    def _batch_output_file_key(self) -> str:
+        return self._batch["output_file_key"]
 
     def _format_batch_line(self, i: int, text: str) -> dict:
         """One JSONL line for the batch input file."""
+        if self._batch["dialect"] == "mistral":
+            return {"custom_id": str(i),
+                    "body": {"input": text, "encoding_format": "float"}}
         return {"custom_id": str(i), "method": "POST",
                 "url": "/v1/embeddings",
                 "body": {"model": self.model, "input": text,
@@ -200,12 +258,17 @@ class OpenAI_Embedding_Provider(Embedding_Provider):
 
     def _create_batch_request(self, file_id: str) -> dict:
         """JSON body for the create-batch POST."""
+        if self._batch["dialect"] == "mistral":
+            return {"input_files": [file_id], "model": self.model,
+                    "endpoint": "/v1/embeddings", "timeout_hours": 24}
         return {"input_file_id": file_id,
                 "endpoint": "/v1/embeddings",
                 "completion_window": "24h"}
 
     def _batch_progress(self, data: dict) -> tuple[int, int]:
         """Extract (completed, total) from poll response."""
+        if self._batch["dialect"] == "mistral":
+            return data.get("completed_requests", 0), data.get("total_requests", 0)
         counts = data.get("request_counts", {})
         return counts.get("completed", 0), counts.get("total", 0)
 
@@ -337,73 +400,26 @@ class OpenAI_Embedding_Provider(Embedding_Provider):
         combined = np.concatenate(all_results) if len(all_results) > 1 else all_results[0]
         return EmbedResult(combined, grand_total_tokens)
 
-@register_embedding_provider("oai.text-embedding-3-large")
-class Text_Embedding_3_Large(OpenAI_Embedding_Provider):
-    model = "text-embedding-3-large"
-    dimension = 3072
+_GEMINI_DEFAULT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta"
 
-@register_embedding_provider("oai.text-embedding-3-small")
-class Text_Embedding_3_Small(OpenAI_Embedding_Provider):
-    model = "text-embedding-3-small"
-    dimension = 1536
-
-@register_embedding_provider("codestral-embed")
-class Codestral_Embed(OpenAI_Embedding_Provider):
-    base_url = "https://api.mistral.ai"
-    api_key: str | None = os.getenv("MISTRAL_API_KEY")
-    model = "codestral-embed"
-    dimension = 1536
-    max_request_size = 50
-    max_batch_size = 1000000
-    supports_batch = False
-
-    _batch_endpoint = "/v1/batch/jobs"
-    _batch_completed_status = "SUCCESS"
-    _batch_failed_statuses = {"FAILED", "TIMEOUT_EXCEEDED", "CANCELLED"}
-    _batch_output_file_key = "output_file"
-
-    def _format_batch_line(self, i: int, text: str) -> dict:
-        return {"custom_id": str(i),
-                "body": {"input": text, "encoding_format": "float"}}
-
-    def _create_batch_request(self, file_id: str) -> dict:
-        return {"input_files": [file_id], "model": self.model,
-                "endpoint": "/v1/embeddings", "timeout_hours": 24}
-
-    def _batch_progress(self, data: dict) -> tuple[int, int]:
-        return data.get("completed_requests", 0), data.get("total_requests", 0)
-
-@register_embedding_provider("aliyun.text-embedding-v4")
-class Qwen3_Embedding_by_Aliyun(OpenAI_Embedding_Provider):
-    base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode"
-    api_key: str | None = os.getenv("ALIYUN_API_KEY")
-    model = "text-embedding-v4"
-    dimension = 1024
-    max_request_size = 10
-    supports_batch = False
-
-@register_embedding_provider("qwen3-embedding-8b")
-class Qwen3_Embedding_8B(OpenAI_Embedding_Provider):
-    base_url = os.getenv("QWEN3_EMBEDDING_BASE_URL", "https://api.fireworks.ai/inference")
-    api_key: str | None = os.getenv("QWEN3_EMBEDDING_API_KEY")
-    model = os.getenv("QWEN3_EMBEDDING_MODEL", "fireworks/qwen3-embedding-8b")
-    dimension = 4096
-    max_request_size = int(os.getenv("QWEN3_EMBEDDING_MAX_REQUEST_SIZE", "2048"))
-    supports_batch = False
-    normalize = True
-    default_score = 0.3        # no-embedding, non-local fallback
-    default_local_score = 0.5  # no-embedding, proof-context-local fallback
-
-@register_embedding_provider("gemini.gemini-embedding-2")
+@register_embedding_driver("Gemini_Embedding")
 class Gemini_Embedding(Embedding_Provider):
-    model = "gemini-embedding-2-preview"
-    dimension = 3072
-    max_request_size = 100  # Gemini batchEmbedContents limit
-    api_key: str | None = os.getenv("GEMINI_API_KEY")
+    """Native Google Gemini embeddings (``batchEmbedContents``), not OpenAI-shaped.
+
+    ``base_url`` overrides the Gemini endpoint base only when it looks like a
+    Gemini URL (contains ``generativelanguage``); otherwise the standard
+    endpoint is used (the default base_url is the OpenAI-compatible one, which
+    does not apply here). api_key falls back to ``GEMINI_API_KEY``.
+    """
+    def __init__(self, base_url: str, model: str, api_key: str | None = None) -> None:
+        super().__init__(base_url, model, api_key)
+        if self.api_key is None:
+            self.api_key = os.getenv("GEMINI_API_KEY")
+        self._endpoint_base = (base_url if base_url and "generativelanguage" in base_url
+                               else _GEMINI_DEFAULT_ENDPOINT)
 
     async def _embed(self, text: list[str]) -> EmbedResult:
-        url = (f"https://generativelanguage.googleapis.com/v1beta"
-               f"/models/{self.model}:batchEmbedContents")
+        url = f"{self._endpoint_base.rstrip('/')}/models/{self.model}:batchEmbedContents"
         requests = [{"model": f"models/{self.model}",
                      "content": {"parts": [{"text": t}]}}
                     for t in text]
@@ -526,13 +542,10 @@ atexit.register(_close_all_lmdb_envs)
 class Vector_Store(ABC):
     emb_provider : Embedding_Provider
 
-    def __init__(self, path: str, emb_provider: Embedding_Provider.name | Embedding_Provider,
+    def __init__(self, path: str, emb_provider: Embedding_Provider,
                  connection: Connection | None = None):
         self.path = path
-        if isinstance(emb_provider, str):
-            self.emb_provider = embedding_provider(emb_provider)
-        else:
-            self.emb_provider = emb_provider
+        self.emb_provider = emb_provider
         self.dimension = self.emb_provider.dimension
         self.connection = connection
 

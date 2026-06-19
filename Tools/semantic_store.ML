@@ -37,8 +37,19 @@ signature SEMANTIC_STORE = sig
      automatically trigger semantic interpretation for missing theories. *)
   val auto_interpret_for_embedding : bool Config.T
 
-  (* Config option: embedding model name used by Semantic_Vector_Store.
-     Empty string means use the environment variable EMBEDDING_MODEL. *)
+  (* Config option: embedding driver class name used by Semantic_Vector_Store.
+     Empty string means use the environment variable EMBEDDING_DRIVER
+     (default OpenAI_Embedding_Provider). *)
+  val embedding_driver : string Config.T
+
+  (* Config option: embedding endpoint base_url used by Semantic_Vector_Store.
+     Empty string means use the environment variable EMBEDDING_BASE_URL
+     (default the Fireworks OpenAI-compatible endpoint). *)
+  val embedding_base_url : string Config.T
+
+  (* Config option: canonical embedding model name (HuggingFace name) used by
+     Semantic_Vector_Store. Empty string means use the environment variable
+     EMBEDDING_MODEL (default Qwen/Qwen3-Embedding-8B). *)
   val embedding_model : string Config.T
 
   (* Config option: reranker model name for re-ranking search results.
@@ -131,6 +142,16 @@ val auto_interpret_for_embedding = Attrib.setup_config_bool
   \<^binding>\<open>auto_interpret_for_embedding\<close> (K true)
 val _ = Config.register_rpc_option "auto_interpret_for_embedding"
           (Config.bool_value auto_interpret_for_embedding)
+
+val embedding_driver = Attrib.setup_config_string
+  \<^binding>\<open>embedding_driver\<close> (K "")
+val _ = Config.register_rpc_option "Semantic_Embedding.embedding_driver"
+          (Config.string_value embedding_driver)
+
+val embedding_base_url = Attrib.setup_config_string
+  \<^binding>\<open>embedding_base_url\<close> (K "")
+val _ = Config.register_rpc_option "Semantic_Embedding.embedding_base_url"
+          (Config.string_value embedding_base_url)
 
 val embedding_model = Attrib.setup_config_string
   \<^binding>\<open>embedding_model\<close> (K "")

@@ -448,7 +448,10 @@ p_collect.add_argument("--session", default="HOL", help="Session qualifier for t
 p_collect.add_argument("--model", default="claude-opus-4-8[1m]",
     help="LLM model for semantic interpretation (default: claude-opus-4-8[1m])")
 p_collect.add_argument("--embed-models", default="",
-    help="Comma-separated embedding model names (e.g., 'qwen3-embedding-8b,codestral-embed')")
+    help="Comma-separated canonical (HuggingFace) embedding model names "
+         "(e.g., 'Qwen/Qwen3-Embedding-8B'). NOTE: all listed models are embedded "
+         "via the one active driver+base_url, so they must be served by the same "
+         "endpoint.")
 p_collect.add_argument("--reinterpret", action="store_true",
     help="Re-interpret already-finished theories to pick up new entities")
 p_collect.add_argument("--migrate-on-hash-change", action="store_true",
