@@ -945,29 +945,32 @@ fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_
          per-collection via dynamic_fact_members, NOT from the globally-uk-deduped `dyn`:
          `dyn`'s single seen-table drops a member shared by two bundles from whichever
          enumerates second, which would skew that bundle's half-count and make the
-         keep/drop decision order-dependent.  Prep-time only — no live collection
-         evaluation at query time.  Keys are the same long-names Name_Space.get_names
-         yields for the dynamic-fact space, matching what ns_filter passes to the
-         callback's extra_filter.  A bundle with no non-infra members is omitted (lookup
-         miss => not shown under patterns, per the zero-members rule). *)
-      val collection_member_thms : thm list Strhashtab.table =
-        let val thy = Context.theory_of init_context
-            val space = Facts.space_of current_facts
-            val tab = Strhashtab.empty 64
-            val _ = List.app (fn coll =>
-                      if not (Facts.is_dynamic current_facts coll)
-                         orelse is_infra_dynamic_fact coll then ()
-                      else case Context_Callbacks.dynamic_fact_members
-                                  init_context current_facts coll of
-                             NONE => ()
-                           | SOME thms =>
-                               let val members = thms
-                                     |> map (Thm.transfer thy)
-                                     |> filter (fn thm => not (is_infra_thm (coll, thm)))
-                               in if null members then ()
-                                  else Strhashtab.update tab (coll, members) end)
-                    (Name_Space.get_names space)
-        in tab end
+         keep/drop decision order-dependent.  Wrapped in Lazy: the build (one
+         dynamic_fact_members sweep) is deferred and memoized, so it runs at most once
+         per `by aoa` and ONLY if a patterned bundle query forces it — an unpatterned
+         proof pays nothing.  Keys are the same long-names Name_Space.get_names yields
+         for the dynamic-fact space, matching what ns_filter passes to the callback's
+         extra_filter.  A bundle with no non-infra members is omitted (lookup miss =>
+         not shown under patterns, per the zero-members rule). *)
+      val collection_member_thms : thm list Strhashtab.table Lazy.lazy =
+        Lazy.lazy (fn () =>
+          let val thy = Context.theory_of init_context
+              val space = Facts.space_of current_facts
+              val tab = Strhashtab.empty 64
+              val _ = List.app (fn coll =>
+                        if not (Facts.is_dynamic current_facts coll)
+                           orelse is_infra_dynamic_fact coll then ()
+                        else case Context_Callbacks.dynamic_fact_members
+                                    init_context current_facts coll of
+                               NONE => ()
+                             | SOME thms =>
+                                 let val members = thms
+                                       |> map (Thm.transfer thy)
+                                       |> filter (fn thm => not (is_infra_thm (coll, thm)))
+                                 in if null members then ()
+                                    else Strhashtab.update tab (coll, members) end)
+                      (Name_Space.get_names space)
+          in tab end)
       val intro_members  = members (fn Universal_Key.Introduction_Rule _ => true | _ => false)
       val elim_members   = members (fn Universal_Key.Elimination_Rule _ => true | _ => false)
       val induct_members = members (fn Universal_Key.Induction_Rule _ => true | _ => false)
