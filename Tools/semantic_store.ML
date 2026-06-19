@@ -940,6 +940,34 @@ fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_
       fun members pred = map_filter (fn (cte, _, entity) =>
             if pred entity then SOME cte else NONE) dyn
       val theorem_members = members (fn Universal_Key.Theorem _ => true | _ => false)
+      (* Bundle long-name -> its non-infra member thms, for the theorem-collection
+         half-match pattern gate (context.ML make_theorem_collection_callback).  Built
+         per-collection via dynamic_fact_members, NOT from the globally-uk-deduped `dyn`:
+         `dyn`'s single seen-table drops a member shared by two bundles from whichever
+         enumerates second, which would skew that bundle's half-count and make the
+         keep/drop decision order-dependent.  Prep-time only — no live collection
+         evaluation at query time.  Keys are the same long-names Name_Space.get_names
+         yields for the dynamic-fact space, matching what ns_filter passes to the
+         callback's extra_filter.  A bundle with no non-infra members is omitted (lookup
+         miss => not shown under patterns, per the zero-members rule). *)
+      val collection_member_thms : thm list Strhashtab.table =
+        let val thy = Context.theory_of init_context
+            val space = Facts.space_of current_facts
+            val tab = Strhashtab.empty 64
+            val _ = List.app (fn coll =>
+                      if not (Facts.is_dynamic current_facts coll)
+                         orelse is_infra_dynamic_fact coll then ()
+                      else case Context_Callbacks.dynamic_fact_members
+                                  init_context current_facts coll of
+                             NONE => ()
+                           | SOME thms =>
+                               let val members = thms
+                                     |> map (Thm.transfer thy)
+                                     |> filter (fn thm => not (is_infra_thm (coll, thm)))
+                               in if null members then ()
+                                  else Strhashtab.update tab (coll, members) end)
+                    (Name_Space.get_names space)
+        in tab end
       val intro_members  = members (fn Universal_Key.Introduction_Rule _ => true | _ => false)
       val elim_members   = members (fn Universal_Key.Elimination_Rule _ => true | _ => false)
       val induct_members = members (fn Universal_Key.Induction_Rule _ => true | _ => false)
@@ -964,7 +992,8 @@ fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_
     types = Context_Callbacks.make_types_callback (SOME (not o is_infra_type)) ctxt_unpack,
     classes = Context_Callbacks.make_classes_callback (SOME (not o is_infra_class)) ctxt_unpack,
     locales = Context_Callbacks.make_locales_callback (SOME (not o is_infra_locale)) ctxt_unpack,
-    named_theorems = Context_Callbacks.make_theorem_collection_callback (SOME (not o is_infra_dynamic_fact)) ctxt_unpack,
+    named_theorems = Context_Callbacks.make_theorem_collection_callback
+      collection_member_thms (SOME (not o is_infra_dynamic_fact)) ctxt_unpack,
     methods = Context_Callbacks.make_methods_callback (SOME (not o is_infra_method)) ctxt_unpack,
     introduction_rules = Context_Callbacks.make_introduction_rules_callback
       extract_intro_rules Theory_Structure.is_introduction_rule_name (K true)
