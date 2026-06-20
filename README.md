@@ -71,11 +71,12 @@ Build one with `make_embedding_provider(driver, base_url, model)`. The API key i
 
 All model/endpoint specifics live in a YAML config at `$ISABELLE_HOME_USER/etc/embedding_config`, seeded on first run from the bundled `embedding_config_template.yaml`. It is keyed by the canonical model name and by the base_url domain (netloc):
 
-- per model: `dimension` (**required** — determines the LMDB matrix shape; a missing entry is a hard error), `default_scores` (`{score, local}` fallbacks for un-embedded entities), `normalize` (L2-normalize returned vectors), `max_request_size`
+- per model: `dimension` (**required** — determines the LMDB matrix shape; a missing entry is a hard error), `default_scores` (`{score, local}` fallbacks for un-embedded entities), `normalize` (L2-normalize returned vectors), `max_request_size`, `templates` (per-model `query`/`document` text wrappers applied before embedding; default identity `"{text}"`, literal `str.replace` over `{text}`/`{task}` so Isabelle `{ }` text is safe)
 - `providers.<domain>.normalization`: maps the canonical name to the id this endpoint expects (e.g. on `api.fireworks.ai`, `Qwen/Qwen3-Embedding-8B` → `fireworks/qwen3-embedding-8b`)
 - `providers.<domain>.batch`: the Batch API shape (`dialect: openai | mistral`, endpoint, status strings, `max_batch_size`); its presence is what enables batch for that domain
+- `task_description`: the static sentence injected into a query template's `{task}` slot (shared across models; must **not** contain literal `{text}`/`{task}`)
 
-Add a model by editing the YAML; add a new driver class via `@register_embedding_driver("Name")` or `drivers/{Name}.py`.
+Add a model by editing the YAML; add a new driver class via `@register_embedding_driver("Name")` or `drivers/{Name}.py`. Configs are seeded once and never auto-merged, so a machine that already has `etc/embedding_config` must add `templates`/`task_description` by hand.
 
 ### Caching
 

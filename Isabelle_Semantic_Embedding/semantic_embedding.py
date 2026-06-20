@@ -146,14 +146,44 @@ class Embedding_Provider(ABC):
             faiss.normalize_L2(result.vectors)
         return result
 
+    def _apply_template(self, texts: list[str], role: str) -> list[str]:
+        """Wrap each text in the model's query/document template before embedding.
+
+        Uses literal str.replace (NOT str.format) so raw text containing '{' or
+        '}' -- routine in Isabelle interpretation text -- is safe. A model with
+        no template entry, or the identity template '{text}', leaves the text
+        unchanged (fully backward-compatible).
+        """
+        from . import embedding_config as cfg
+        model = self.canonical_model
+        if role == "document":
+            tmpl = cfg.document_template(model)
+            return [tmpl.replace("{text}", t) for t in texts]
+        if role == "query":
+            tmpl = cfg.query_template(model)
+            task = cfg.task_description()
+            # Enforce the config constraint: a hand-edited task_description with a
+            # literal {text}/{task} would otherwise be spliced by the .replace
+            # below (corrupting the query). Fail fast rather than silently garble.
+            if "{text}" in task or "{task}" in task:
+                raise ValueError(
+                    "task_description must not contain '{text}' or '{task}': "
+                    f"{task!r}")
+            # {task} first, then {text}; the inserted t is never re-scanned, so
+            # any braces inside t are inert.
+            return [tmpl.replace("{task}", task).replace("{text}", t) for t in texts]
+        raise ValueError(f"unknown embed role {role!r}")
+
     async def _log(self, msg: str) -> None:
         from Isabelle_RPC_Host.rpc import Connection
         conn = Connection.current()
         if conn is not None:
             await conn.tracing(msg)
 
-    async def embed(self, text: list[str]) -> EmbedResult:
-        """Embed texts, always using cache."""
+    async def embed(self, text: list[str], *, role: str = "document") -> EmbedResult:
+        """Embed texts, always using cache. ``role`` ('document' for corpus text,
+        'query' for a search query) selects the per-model template applied first."""
+        text = self._apply_template(text, role)
         total_chars = sum(len(t) for t in text)
         await self._log(f"[Embedding] {self.model}: embedding {len(text)} texts, {total_chars} chars")
         result = await self._embed_cached(text, self._embed)
@@ -166,8 +196,9 @@ class Embedding_Provider(ABC):
             return await self._embed_batch(text)
         return await self._embed(text)
 
-    async def embed_batch(self, text: list[str]) -> EmbedResult:
-        """Embed a large batch of texts, always using cache."""
+    async def embed_batch(self, text: list[str], *, role: str = "document") -> EmbedResult:
+        """Embed a large batch of texts, always using cache. See ``embed`` for ``role``."""
+        text = self._apply_template(text, role)
         total_chars = sum(len(t) for t in text)
         await self._log(f"[Embedding Batch] {self.model}: embedding {len(text)} texts, {total_chars} chars")
         result = await self._embed_cached(text, self._embed_batch_or_fallback)
@@ -605,7 +636,11 @@ class Vector_Store(ABC):
         if isinstance(query, str):
             if self.connection is not None:
                 await self.connection.tracing(f"[Semantic_Embedding] embedding query: {query!r}")
-            query = (await self.emb_provider.embed([query])).vectors[0]
+            # A string input to topk is a search query -> use the query template
+            # (Instruct/query: prefix). Corpus text is embedded as role="document"
+            # elsewhere. lookup() keeps passing the *string* here, so its reranker
+            # gate (isinstance(query, str)) is unaffected.
+            query = (await self.emb_provider.embed([query], role="query")).vectors[0]
         matrix = np.empty((len(domain), self.dimension), dtype=np.float32)
         valid_keys: list[key] = []
         missing_keys: list[key] = []

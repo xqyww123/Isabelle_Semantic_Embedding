@@ -86,6 +86,127 @@ def test_missing_dimension_errors():
                                    "no-such-model-xyz")
 
 
+# --- Per-model query/document template refactor -----------------------------
+
+QWEN = "Qwen/Qwen3-Embedding-8B"
+NVEMBED = "llama-nv-embed-reasoning-3b"
+
+
+def _task():
+    from Isabelle_Semantic_Embedding import embedding_config as cfg
+    return cfg.task_description()
+
+
+def _qwen():
+    return se.make_embedding_provider("OpenAI_Embedding_Provider", FIREWORKS, QWEN)
+
+
+def _nvembed():
+    return se.make_embedding_provider("OpenAI_Embedding_Provider", FIREWORKS, NVEMBED)
+
+
+def test_template_accessors():
+    from Isabelle_Semantic_Embedding import embedding_config as cfg
+    assert cfg.query_template(QWEN) == "Instruct: {task}\nQuery: {text}"
+    assert cfg.document_template(QWEN) == "{text}"
+    assert cfg.query_template(NVEMBED) == "query: {text}"
+    assert cfg.document_template(NVEMBED) == "passage: {text}"
+    # unlisted model -> identity templates (raw, fully backward-compatible)
+    assert cfg.query_template("text-embedding-3-large") == "{text}"
+    assert cfg.document_template("text-embedding-3-large") == "{text}"
+    # task_description is a static sentence (no {kinds} slot, no {text}/{task})
+    td = cfg.task_description()
+    assert "{kinds}" not in td and "{text}" not in td and "{task}" not in td
+    assert "Isabelle/HOL" in td
+
+
+def test_apply_template_query_and_document():
+    p = _qwen()
+    task = _task()
+    assert p._apply_template(["find me a lemma"], "query") == \
+        ["Instruct: " + task + "\nQuery: find me a lemma"]
+    # Qwen3 document template is identity -> existing corpus vectors stay valid
+    assert p._apply_template(["a theorem about lists"], "document") == \
+        ["a theorem about lists"]
+
+
+def test_apply_template_nvembed():
+    p = _nvembed()
+    # nv-embed: query and document get DISTINCT prefixes (docs cannot be raw)
+    assert p._apply_template(["q"], "query") == ["query: q"]
+    assert p._apply_template(["d"], "document") == ["passage: d"]
+
+
+def test_apply_template_brace_safety():
+    # Set-builder / record braces must pass through verbatim (no str.format).
+    p = _qwen()
+    task = _task()
+    text = "{x. x > 0} and (| a = 1 |)"
+    assert p._apply_template([text], "query") == \
+        ["Instruct: " + task + "\nQuery: " + text]
+    assert p._apply_template([text], "document") == [text]
+
+
+def test_apply_template_unlisted_model_is_raw():
+    p = se.make_embedding_provider("OpenAI_Embedding_Provider",
+                                   "https://api.openai.com", "text-embedding-3-large")
+    assert p._apply_template(["raw {q}"], "query") == ["raw {q}"]
+    assert p._apply_template(["raw {q}"], "document") == ["raw {q}"]
+
+
+def test_apply_template_bad_role():
+    p = _qwen()
+    raised = False
+    try:
+        p._apply_template(["x"], "neither")
+    except ValueError:
+        raised = True
+    assert raised
+
+
+def test_task_description_guard():
+    # A hand-edited task_description with literal {text}/{task} must fail fast,
+    # not silently splice the query into the instruction sentence.
+    from Isabelle_Semantic_Embedding import embedding_config as cfg
+    p = _qwen()
+    orig = cfg.task_description
+    cfg.task_description = lambda: "leak {text} into instruction"
+    try:
+        raised = False
+        try:
+            p._apply_template(["q"], "query")
+        except ValueError:
+            raised = True
+        assert raised, "expected ValueError for {text} in task_description"
+        # document role does not use task_description -> not guarded
+        assert p._apply_template(["d"], "document") == ["d"]
+    finally:
+        cfg.task_description = orig
+
+
+def test_embed_role_templates_before_cache():
+    # embed(role=...) must apply the template BEFORE the per-string cache/backend,
+    # so the cache key and HTTP body see the *templated* text.
+    import asyncio
+    import numpy as np
+    p = _qwen()
+    task = _task()
+    captured = {}
+
+    async def fake_cached(text, backend):
+        captured["text"] = list(text)
+        return se.EmbedResult(np.zeros((len(text), p.dimension), dtype=np.float32), 0)
+
+    p._embed_cached = fake_cached  # bypass the real diskcache + network
+    asyncio.run(p.embed(["hello {set}"], role="query"))
+    assert captured["text"] == ["Instruct: " + task + "\nQuery: hello {set}"]
+    asyncio.run(p.embed(["hello {set}"], role="document"))
+    assert captured["text"] == ["hello {set}"]   # Qwen3 document = identity
+    # default role is "document" (all existing corpus callers keep behaving raw)
+    asyncio.run(p.embed(["plain"]))
+    assert captured["text"] == ["plain"]
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

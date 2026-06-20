@@ -48,6 +48,31 @@ max_request_size:
   codestral-embed: 50
   gemini-embedding-2-preview: 100
 
+# Per-model embedding text templates, keyed by CANONICAL model name.
+#   query:    wraps a search query.    May reference {task} and {text}.
+#   document: wraps a corpus document. May reference {text}.
+# {text} is the raw text; {task} is the task_description below.
+# A model not listed, or a missing query/document key, defaults to "{text}" (raw)
+# -- i.e. fully backward-compatible. Substitution is literal str.replace (NOT
+# str.format), so the raw text may safely contain '{' / '}'. The '\n' in a
+# double-quoted scalar is a real newline (kept double-quoted on purpose).
+templates:
+  Qwen/Qwen3-Embedding-8B:
+    query:    "Instruct: {task}\nQuery: {text}"
+    document: "{text}"
+  harrier-oss-v1-27b:
+    query:    "Instruct: {task}\nQuery: {text}"
+    document: "{text}"
+  llama-nv-embed-reasoning-3b:
+    query:    "query: {text}"
+    document: "passage: {text}"
+
+# The task sentence injected into a query template's {task} slot. Static
+# (model- and query-independent) so cross-model comparison stays fair.
+# CONSTRAINT: must NOT contain the literal substrings "{text}" or "{task}"
+# (enforced in Embedding_Provider._apply_template, which fails fast otherwise).
+task_description: "Given a natural-language description, retrieve the most relevant Isabelle/HOL constructs"
+
 # Per-domain provider config. Key = the netloc of base_url
 # (e.g. "https://api.fireworks.ai/inference" -> "api.fireworks.ai").
 #   normalization: maps canonical model name -> the model id this endpoint

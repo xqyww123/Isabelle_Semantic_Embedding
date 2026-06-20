@@ -10,6 +10,9 @@ id) and by the base_url domain (netloc):
   - ``default_scores``: per-model {score, local} fallback for un-embedded entities
   - ``providers``:      per-domain ``normalization`` (canonical -> API model id)
                         and ``batch`` (Batch API shape) config
+  - ``templates`` / ``task_description``: per-model query/document text templates
+                        applied (before caching) in Embedding_Provider, via
+                        ``query_template`` / ``document_template`` / ``task_description``.
 
 Set ``EMBEDDING_CONFIG_PATH`` to override the config file location (used by tests).
 """
@@ -131,3 +134,28 @@ def api_model_name(domain: str, model: str) -> str:
 def batch_config(domain: str) -> dict | None:
     """Batch API config for this domain, or None if batch is not configured."""
     return _provider_entry(domain).get("batch")
+
+
+_DEFAULT_TEXT_TEMPLATE = "{text}"
+_DEFAULT_TASK_DESCRIPTION = "retrieve the most relevant Isabelle/HOL constructs"
+
+
+def query_template(model: str) -> str:
+    """Query template for a canonical model name; defaults to '{text}' (raw)."""
+    cfg = load_embedding_config()
+    entry = (cfg.get("templates") or {}).get(model) or {}
+    return entry.get("query", _DEFAULT_TEXT_TEMPLATE)
+
+
+def document_template(model: str) -> str:
+    """Document template for a canonical model name; defaults to '{text}' (raw)."""
+    cfg = load_embedding_config()
+    entry = (cfg.get("templates") or {}).get(model) or {}
+    return entry.get("document", _DEFAULT_TEXT_TEMPLATE)
+
+
+def task_description() -> str:
+    """Static task sentence injected into a query template's {task} slot
+    (model- and query-independent). Defaults to a plain retrieval sentence."""
+    cfg = load_embedding_config()
+    return cfg.get("task_description") or _DEFAULT_TASK_DESCRIPTION
