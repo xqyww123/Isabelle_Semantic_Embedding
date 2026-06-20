@@ -47,8 +47,14 @@ structure Infra_Decl = Generic_Data (
      Symtab.merge (K true) (y1,y2))
 )
 
-(* The declaration attributes ignore the theorem (they only mutate context data), so
-   they are used in the `declare [[ ... ]]` no-fact form. *)
+(* `infra_constant`/`infra_type` are no-fact declarations (`declare [[infra_constant
+   c ...]]`): constants/types cannot carry attributes, and `Args.const`/`Args.type_name`
+   resolve the GLOBAL entity at parse time, closing over the interned name — immune to
+   locale morphism replay.  `infra_thm`, by contrast, is an ordinary fact attribute
+   (`declare some_lemma[infra_thm]`): it reads the theorem's own name hint, so it is safe
+   inside locales (a `[[infra_thm name]]` arg form would store a fact-name token that
+   locale interpretation re-resolves in the global target context, aborting on any
+   locale-local fact). *)
 fun infra_decl_attr add = Thm.declaration_attribute (K (Infra_Decl.map add))
 
 val _ = Theory.setup (
@@ -61,14 +67,15 @@ val _ = Theory.setup (
       (fn ns => infra_decl_attr (fn (c,t,y) => (c, t, fold Symtab.insert_set ns y))))
     "declare types as semantic-retrieval infrastructure" #>
   Attrib.setup \<^binding>\<open>infra_thm\<close>
-    (Scan.lift (Scan.repeat1 Parse.name_position) >>
-      (fn nps => Thm.declaration_attribute (fn _ => fn context =>
-         let val facts =
-               Context.cases Global_Theory.facts_of Proof_Context.facts_of context
-             val ns = map (Facts.check context facts) nps
-         in Infra_Decl.map
-              (fn (c,t,y) => (c, fold Symtab.insert_set ns t, y)) context end)))
-    "declare theorems as semantic-retrieval infrastructure")
+    (Scan.succeed (Thm.declaration_attribute (fn th => fn context =>
+       (* base fact name (drop the multi-thm index), matching the keys is_infra_thm
+          compares against; skip unnamed/unknown thms rather than recording junk *)
+       let val name = #1 (Thm.get_name_hint th)
+       in if name = "" orelse name = "??.unknown" then context
+          else Infra_Decl.map
+                 (fn (c,t,y) => (c, Symtab.insert_set name t, y)) context
+       end)))
+    "declare a theorem as semantic-retrieval infrastructure")
 
 fun gen_infra_filters (context : Context.generic)
     : {is_infra_const: string -> bool,
