@@ -67,11 +67,13 @@ templates:
     query:    "query: {text}"
     document: "passage: {text}"
 
-# The task sentence injected into a query template's {task} slot. Static
-# (model- and query-independent) so cross-model comparison stays fair.
+# The task sentence injected into a query template's {task} slot. Its {kinds}
+# slot is filled per query from the EntityKind filter (e.g. "constants and
+# theorems"); an empty / "all" filter -> the default phrase "constructs".
+# Model-independent, so cross-model comparison stays fair.
 # CONSTRAINT: must NOT contain the literal substrings "{text}" or "{task}"
 # (enforced in Embedding_Provider._apply_template, which fails fast otherwise).
-task_description: "Given a natural-language description, retrieve the most relevant Isabelle/HOL constructs"
+task_description: "Given a natural-language description, retrieve the most relevant Isabelle/HOL {kinds}"
 
 # Per-domain provider config. Key = the netloc of base_url
 # (e.g. "https://api.fireworks.ai/inference" -> "api.fireworks.ai").

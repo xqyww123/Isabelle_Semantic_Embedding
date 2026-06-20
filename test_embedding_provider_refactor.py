@@ -93,8 +93,10 @@ NVEMBED = "llama-nv-embed-reasoning-3b"
 
 
 def _task():
+    # task_description rendered with NO kinds filter (the default phrase) -- the
+    # value embed(role="query") produces when no kinds_phrase is passed.
     from Isabelle_Semantic_Embedding import embedding_config as cfg
-    return cfg.task_description()
+    return cfg.task_description().replace("{kinds}", cfg._DEFAULT_KINDS_PHRASE)
 
 
 def _qwen():
@@ -114,9 +116,11 @@ def test_template_accessors():
     # unlisted model -> identity templates (raw, fully backward-compatible)
     assert cfg.query_template("text-embedding-3-large") == "{text}"
     assert cfg.document_template("text-embedding-3-large") == "{text}"
-    # task_description is a static sentence (no {kinds} slot, no {text}/{task})
+    # task_description carries the dynamic {kinds} slot (filled per query) but
+    # never the literal {text}/{task}
     td = cfg.task_description()
-    assert "{kinds}" not in td and "{text}" not in td and "{task}" not in td
+    assert "{kinds}" in td
+    assert "{text}" not in td and "{task}" not in td
     assert "Isabelle/HOL" in td
 
 
@@ -205,6 +209,37 @@ def test_embed_role_templates_before_cache():
     # default role is "document" (all existing corpus callers keep behaving raw)
     asyncio.run(p.embed(["plain"]))
     assert captured["text"] == ["plain"]
+
+
+def test_render_kinds():
+    from Isabelle_RPC_Host.universal_key import EntityKind as EK
+    from Isabelle_Semantic_Embedding.semantics import render_kinds
+    from Isabelle_Semantic_Embedding import embedding_config as cfg
+    assert render_kinds([EK.CONSTANT]) == "constants"
+    assert render_kinds([EK.CLASS]) == "type classes"
+    assert render_kinds([EK.THEOREM_COLLECTION]) == "theorem collections"
+    assert render_kinds([EK.METHOD]) == "proof methods"
+    # Oxford-style join for 2 and 3 kinds
+    assert render_kinds([EK.CONSTANT, EK.THEOREM]) == "constants and theorems"
+    assert render_kinds([EK.CONSTANT, EK.THEOREM, EK.TYPE]) == "constants, theorems and types"
+    # all four rule kinds collapse to a single phrase; THEOREM is NOT a rule
+    assert render_kinds([EK.INTRODUCTION_RULE, EK.ELIMINATION_RULE,
+                         EK.INDUCTION_RULE, EK.CASE_SPLIT_RULE]) == "inference rules"
+    assert render_kinds([EK.THEOREM]) == "theorems"
+    assert render_kinds([EK.CONSTANT, EK.CONSTANT]) == "constants"      # dedup
+    # empty / unknown -> default phrase, never KeyError
+    assert render_kinds([]) == cfg._DEFAULT_KINDS_PHRASE
+    assert render_kinds([EK.THEORY]) == cfg._DEFAULT_KINDS_PHRASE
+
+
+def test_apply_template_query_with_kinds():
+    from Isabelle_Semantic_Embedding import embedding_config as cfg
+    p = _qwen()
+    rendered = cfg.task_description().replace("{kinds}", "constants and theorems")
+    assert p._apply_template(["find X"], "query", "constants and theorems") == \
+        ["Instruct: " + rendered + "\nQuery: find X"]
+    # document role ignores kinds_phrase entirely
+    assert p._apply_template(["d"], "document", "constants and theorems") == ["d"]
 
 
 if __name__ == "__main__":

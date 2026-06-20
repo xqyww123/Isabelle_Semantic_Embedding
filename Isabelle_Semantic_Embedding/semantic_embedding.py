@@ -146,13 +146,15 @@ class Embedding_Provider(ABC):
             faiss.normalize_L2(result.vectors)
         return result
 
-    def _apply_template(self, texts: list[str], role: str) -> list[str]:
+    def _apply_template(self, texts: list[str], role: str,
+                        kinds_phrase: str | None = None) -> list[str]:
         """Wrap each text in the model's query/document template before embedding.
 
         Uses literal str.replace (NOT str.format) so raw text containing '{' or
         '}' -- routine in Isabelle interpretation text -- is safe. A model with
         no template entry, or the identity template '{text}', leaves the text
-        unchanged (fully backward-compatible).
+        unchanged (fully backward-compatible). For role='query', ``kinds_phrase``
+        fills the task_description's {kinds} slot (None -> the default phrase).
         """
         from . import embedding_config as cfg
         model = self.canonical_model
@@ -161,10 +163,13 @@ class Embedding_Provider(ABC):
             return [tmpl.replace("{text}", t) for t in texts]
         if role == "query":
             tmpl = cfg.query_template(model)
-            task = cfg.task_description()
-            # Enforce the config constraint: a hand-edited task_description with a
-            # literal {text}/{task} would otherwise be spliced by the .replace
-            # below (corrupting the query). Fail fast rather than silently garble.
+            phrase = kinds_phrase if kinds_phrase is not None else cfg._DEFAULT_KINDS_PHRASE
+            task = cfg.task_description().replace("{kinds}", phrase)
+            # Enforce the config constraint AFTER {kinds} substitution: a
+            # hand-edited task_description with a literal {text}/{task} would
+            # otherwise be spliced by the .replace below (corrupting the query).
+            # Fail fast rather than silently garble. (render_kinds' phrase is
+            # brace-free, so it can never introduce {text}/{task}.)
             if "{text}" in task or "{task}" in task:
                 raise ValueError(
                     "task_description must not contain '{text}' or '{task}': "
@@ -180,10 +185,12 @@ class Embedding_Provider(ABC):
         if conn is not None:
             await conn.tracing(msg)
 
-    async def embed(self, text: list[str], *, role: str = "document") -> EmbedResult:
+    async def embed(self, text: list[str], *, role: str = "document",
+                    kinds_phrase: str | None = None) -> EmbedResult:
         """Embed texts, always using cache. ``role`` ('document' for corpus text,
-        'query' for a search query) selects the per-model template applied first."""
-        text = self._apply_template(text, role)
+        'query' for a search query) selects the per-model template applied first;
+        ``kinds_phrase`` fills a query template's {kinds} slot (ignored for documents)."""
+        text = self._apply_template(text, role, kinds_phrase)
         total_chars = sum(len(t) for t in text)
         await self._log(f"[Embedding] {self.model}: embedding {len(text)} texts, {total_chars} chars")
         result = await self._embed_cached(text, self._embed)
@@ -196,9 +203,10 @@ class Embedding_Provider(ABC):
             return await self._embed_batch(text)
         return await self._embed(text)
 
-    async def embed_batch(self, text: list[str], *, role: str = "document") -> EmbedResult:
-        """Embed a large batch of texts, always using cache. See ``embed`` for ``role``."""
-        text = self._apply_template(text, role)
+    async def embed_batch(self, text: list[str], *, role: str = "document",
+                          kinds_phrase: str | None = None) -> EmbedResult:
+        """Embed a large batch of texts, always using cache. See ``embed`` for ``role``/``kinds_phrase``."""
+        text = self._apply_template(text, role, kinds_phrase)
         total_chars = sum(len(t) for t in text)
         await self._log(f"[Embedding Batch] {self.model}: embedding {len(text)} texts, {total_chars} chars")
         result = await self._embed_cached(text, self._embed_batch_or_fallback)
@@ -628,19 +636,22 @@ class Vector_Store(ABC):
         Default: returns [], i.e., missing keys are skipped."""
         return []
 
-    async def topk(self, query: np.ndarray | str, domain: list[key], k: int) -> list[tuple[key, float]]:
+    async def topk(self, query: np.ndarray | str, domain: list[key], k: int,
+                   *, kinds_phrase: str | None = None) -> list[tuple[key, float]]:
         """Return the top-k (key, score) pairs from domain most similar to query.
-        If query is a string, it is embedded via emb_provider first.
+        If query is a string, it is embedded via emb_provider first (role="query",
+        with ``kinds_phrase`` filling the instruction's {kinds} slot).
         Keys missing from LMDB are passed to _auto_embed for recovery.
         Uses faiss.knn directly on the assembled matrix (no index)."""
         if isinstance(query, str):
             if self.connection is not None:
                 await self.connection.tracing(f"[Semantic_Embedding] embedding query: {query!r}")
             # A string input to topk is a search query -> use the query template
-            # (Instruct/query: prefix). Corpus text is embedded as role="document"
-            # elsewhere. lookup() keeps passing the *string* here, so its reranker
-            # gate (isinstance(query, str)) is unaffected.
-            query = (await self.emb_provider.embed([query], role="query")).vectors[0]
+            # (Instruct/query: prefix) with the caller's kinds_phrase. Corpus text
+            # is embedded as role="document" elsewhere. lookup() keeps passing the
+            # *string* here, so its reranker gate (isinstance(query, str)) is unaffected.
+            query = (await self.emb_provider.embed(
+                [query], role="query", kinds_phrase=kinds_phrase)).vectors[0]
         matrix = np.empty((len(domain), self.dimension), dtype=np.float32)
         valid_keys: list[key] = []
         missing_keys: list[key] = []

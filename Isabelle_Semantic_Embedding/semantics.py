@@ -13,7 +13,7 @@ from Isabelle_RPC_Host import Connection, isabelle_remote_procedure
 from Isabelle_RPC_Host.rpc import IsabelleError
 from Isabelle_RPC_Host.position import IsabellePosition
 from Isabelle_RPC_Host.unicode import pretty_unicode, ascii_of_unicode
-from Isabelle_RPC_Host.universal_key import EntityKind, UndefinedEntity, universal_key, universal_key_of, destruct_key, is_WIP, RULE_ONLY_TAG_BYTES
+from Isabelle_RPC_Host.universal_key import EntityKind, UndefinedEntity, universal_key, universal_key_of, destruct_key, is_WIP, RULE_ONLY_TAG_BYTES, RULE_ONLY_KINDS
 from claude_agent_sdk import SdkMcpTool, tool
 
 from .semantic_embedding import (Vector_Store, Embedding_Provider, make_embedding_provider,
@@ -22,6 +22,43 @@ from .semantic_embedding import (Vector_Store, Embedding_Provider, make_embeddin
 
 from .base import ToolCall_ret, mk_ret as _mk_ret
 from .hover import resolve_context_at
+from .embedding_config import _DEFAULT_KINDS_PHRASE
+
+
+# Map an EntityKind to the plural noun phrase used in a query instruction's
+# {kinds} slot (e.g. [CONSTANT, THEOREM] -> "constants and theorems"). Keyed on
+# the real EntityKind members; do NOT pluralize EntityKind.label (those are
+# singular display strings, e.g. "lemma"/"named theorem bundles"). The four rule
+# kinds are intentionally absent -> they collapse to "inference rules" below.
+_KIND_PHRASE = {
+    EntityKind.CONSTANT:           "constants",
+    EntityKind.THEOREM:            "theorems",
+    EntityKind.TYPE:               "types",
+    EntityKind.CLASS:              "type classes",
+    EntityKind.LOCALE:             "locales",
+    EntityKind.THEOREM_COLLECTION: "theorem collections",
+    EntityKind.METHOD:             "proof methods",
+}
+
+
+def render_kinds(kinds: list) -> str:
+    """Render an EntityKind filter into the noun phrase for a query instruction's
+    {kinds} slot. One kind -> its phrase; several -> an Oxford-style join; the
+    four rule kinds (INTRODUCTION/ELIMINATION/INDUCTION/CASE_SPLIT) collapse to a
+    single "inference rules"; empty or unknown -> the shared default phrase.
+    Total over every EntityKind value (uses .get, never raises KeyError)."""
+    if not kinds:
+        return _DEFAULT_KINDS_PHRASE
+    phrases: list[str] = []
+    for k in kinds:
+        p = _KIND_PHRASE.get(k)
+        if p is None:
+            p = "inference rules" if k in RULE_ONLY_KINDS else _DEFAULT_KINDS_PHRASE
+        if p not in phrases:
+            phrases.append(p)
+    if len(phrases) == 1:
+        return phrases[0]
+    return ", ".join(phrases[:-1]) + " and " + phrases[-1]
 
 
 def unpack_thy_status(raw: bytes) -> dict:
@@ -1086,7 +1123,8 @@ class Semantic_Vector_Store(Vector_Store):
         query_str = query if isinstance(query, str) else None
         reranker = (await self._get_reranker()) if query_str else None
         fetch_k = k * _RERANK_FETCH_MULTIPLIER if reranker else k
-        top = await self.topk(query, candidates, fetch_k)
+        top = await self.topk(query, candidates, fetch_k,
+                               kinds_phrase=render_kinds(kinds))
         # Rerank if configured and query was a string
         if reranker is not None and query_str is not None and len(top) > 1:
             doc_entries: list[tuple[universal_key, SemanticRecord, str]] = []

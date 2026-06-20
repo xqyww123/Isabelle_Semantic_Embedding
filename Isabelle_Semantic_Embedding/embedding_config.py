@@ -138,6 +138,10 @@ def batch_config(domain: str) -> dict | None:
 
 _DEFAULT_TEXT_TEMPLATE = "{text}"
 _DEFAULT_TASK_DESCRIPTION = "retrieve the most relevant Isabelle/HOL constructs"
+# Phrase filling a query template's {kinds} slot when the query has no (or an
+# "all") EntityKind filter; also the value of render_kinds([]). Single source of
+# truth -- imported by semantics.render_kinds so the two never drift.
+_DEFAULT_KINDS_PHRASE = "constructs"
 
 
 def query_template(model: str) -> str:
