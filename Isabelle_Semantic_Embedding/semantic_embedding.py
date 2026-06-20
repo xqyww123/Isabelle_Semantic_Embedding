@@ -321,7 +321,7 @@ class OpenAI_Embedding_Provider(Embedding_Provider):
                 "input": text,
                 "model": self.model,
                 "encoding_format": "float",
-            }, headers=headers, timeout=60)
+            }, headers=headers, timeout=600)
             resp.raise_for_status()
             data = resp.json()
             vectors = np.asarray(
@@ -464,7 +464,7 @@ class Gemini_Embedding(Embedding_Provider):
                     for t in text]
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, params={"key": self.api_key},
-                json={"requests": requests}, timeout=60)
+                json={"requests": requests}, timeout=600)
             resp.raise_for_status()
             data = resp.json()
             vectors = np.asarray(
@@ -535,7 +535,7 @@ class OpenAI_Reranker_Provider(Reranker_Provider):
                 "query": query,
                 "documents": documents,
                 "top_n": top_n,
-            }, headers=headers, timeout=60)
+            }, headers=headers, timeout=600)
             resp.raise_for_status()
             data = resp.json()
         results = sorted(data["results"], key=lambda r: r["relevance_score"], reverse=True)
