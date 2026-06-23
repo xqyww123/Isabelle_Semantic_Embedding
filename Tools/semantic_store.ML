@@ -962,10 +962,10 @@ fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_
             if pred entity then SOME cte else NONE) dyn
       val theorem_members = members (fn Universal_Key.Theorem _ => true | _ => false)
       (* Bundle long-name -> its non-infra member thms, for the theorem-collection
-         half-match pattern gate (context.ML make_theorem_collection_callback).  Built
+         pattern-match gate (context.ML make_theorem_collection_callback).  Built
          per-collection via dynamic_fact_members, NOT from the globally-uk-deduped `dyn`:
          `dyn`'s single seen-table drops a member shared by two bundles from whichever
-         enumerates second, which would skew that bundle's half-count and make the
+         enumerates second, which would skew that bundle's match-count and make the
          keep/drop decision order-dependent.  Wrapped in Lazy: the build (one
          dynamic_fact_members sweep) is deferred and memoized, so it runs at most once
          per `by aoa` and ONLY if a patterned bundle query forces it — an unpatterned
