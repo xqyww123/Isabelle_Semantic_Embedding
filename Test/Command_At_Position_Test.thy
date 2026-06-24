@@ -1,5 +1,5 @@
 theory Command_At_Position_Test
-  imports Semantic_Embedding
+  imports Semantic_Embedding.Semantic_Embedding
 begin
 
 section \<open>Test targets\<close>
@@ -77,6 +77,33 @@ let
   val (direct_src, _, _) = the direct_result
   val _ = @{assert} (String.isSubstring "Cmd_Test_A" direct_src)
   val _ = writeln ("Test 8 - query via absolute file+offset: OK")
+
+  (* ---- Test 9: WIP re-cut returns a SINGLE command, never the whole file ----
+     The whole-theory-dump fix (command_at_position, s <= 1 branch) relies on
+     command_spans_of_text / command_at_position_wip splitting a multi-command
+     source into individual commands.  A position inside Cmd_Test_B must re-cut
+     to ONLY that command's source — not the whole file (which would also carry
+     Cmd_Test_A and Cmd_Test_Lemma). *)
+  val [abs_B] = PIDE_State.absolutize_id_based_pos {write_to_temp_file = false} [pos_B]
+  val file_B = the (Position.file_of abs_B)
+  val off_B = the (Position.offset_of abs_B)
+  val wip_B = PIDE_State.command_at_position_wip file_B off_B
+  val _ = @{assert} (is_some wip_B)
+  val (wip_src_B, _, _) = the wip_B
+  val _ = @{assert} (String.isSubstring "Cmd_Test_B" wip_src_B)
+  val _ = @{assert} (not (String.isSubstring "Cmd_Test_A" wip_src_B))
+  val _ = @{assert} (not (String.isSubstring "Cmd_Test_Lemma" wip_src_B))
+  val _ = writeln ("Test 9 - WIP re-cut returns only Cmd_Test_B, not the whole file: OK")
+
+  (* ---- Test 10: WIP re-cut MISS returns NONE (no whole-file leak) ----
+     When command_at_position's re-cut finds no span at the offset, the fix
+     degrades to command_at_position_wip, which on a genuine miss returns NONE
+     (caller then does a single-line search) rather than leaking the whole file.
+     Verify an offset far past EOF yields NONE. *)
+  val file_size = size (File.read (Path.explode file_B))
+  val wip_miss = PIDE_State.command_at_position_wip file_B (file_size + 1000)
+  val _ = @{assert} (is_none wip_miss)
+  val _ = writeln ("Test 10 - WIP re-cut past EOF returns NONE (no whole-file leak): OK")
 
 in
   writeln "\n=== All PIDE_State.command_at_position tests passed ==="

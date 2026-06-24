@@ -475,7 +475,15 @@ fun command_at_position pos =
              read and no risk of a stale/edited buffer mismatch — and return the
              single command at the offset.  This is correct whether the result was
              the whole-file dump or genuinely the file's first command, so no
-             whole-file-vs-large-command discrimination is needed. *)
+             whole-file-vs-large-command discrimination is needed.
+
+             If the re-cut locates NO span at the offset (the offset fell in
+             inter-command whitespace, or `command_spans_of_text` failed to
+             parse and returned []), we must NOT fall back to the raw `r`: that
+             is exactly the whole-file dump and returning it leaks the entire
+             theory to the caller.  Degrade to the WIP path (re-cut from the
+             clean on-disk source); if that also finds nothing it returns NONE,
+             and the caller degrades to a single-line search. *)
           if s > 1 then SOME r
           else
             let
@@ -484,7 +492,7 @@ fun command_at_position pos =
             in
               case List.find (fn (_, ss, ee) => local_off >= ss andalso local_off < ee) spans of
                 SOME (src, ss, ee) => SOME (src, s + ss - 1, s + ee - 1)
-              | NONE => SOME r
+              | NONE => command_at_position_wip file offset
             end
       | NONE => command_at_position_wip file offset
   end;

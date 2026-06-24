@@ -8,3 +8,4 @@ session Semantic_Embedding = HOL +
 session Semantic_Embedding_Test in "Test" = Semantic_Embedding +
   theories
     Infra_Decl_Test
+    Command_At_Position_Test
