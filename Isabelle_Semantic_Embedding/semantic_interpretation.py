@@ -80,15 +80,19 @@ _KIND_PROMPT_LABELS = {
 # injective — the agent echoes the title back to address an entry, so two kinds
 # sharing a title would make answers ambiguous, and a missing kind would route
 # to the dead "unknown" branch.  Asserting here makes such drift fail fast at
-# import rather than only on a coincidental runtime collision.  THEORY (0) is
-# excluded: theory entities are never interpreted.
+# import rather than only on a coincidental runtime collision.  THEORY (0) and
+# EXPERIENCE (8) are excluded: theory entities are never interpreted, and an
+# experience carries its own goal_description as the interpretation (it is
+# written directly, never produced by this deformalization pipeline).
+_NON_INTERPRETABLE_KINDS = (EntityKind.THEORY, EntityKind.EXPERIENCE)
 assert len(set(_KIND_PROMPT_LABELS.values())) == len(_KIND_PROMPT_LABELS), (
     "_KIND_PROMPT_LABELS titles must be injective (the agent addresses entries "
     "by title + name)")
 assert set(_KIND_PROMPT_LABELS) == {
-    k.value for k in EntityKind if k is not EntityKind.THEORY
+    k.value for k in EntityKind if k not in _NON_INTERPRETABLE_KINDS
 }, ("_KIND_PROMPT_LABELS keys must cover exactly the interpretable EntityKind "
-    "ints (all kinds except THEORY); it has drifted from Universal_Key.entity_kind_int")
+    "ints (all kinds except THEORY and EXPERIENCE); it has drifted from "
+    "Universal_Key.entity_kind_int")
 
 _BATCH_SIZE = 20
 

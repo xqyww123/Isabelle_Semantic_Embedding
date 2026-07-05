@@ -147,14 +147,17 @@ class Embedding_Provider(ABC):
         return result
 
     def _apply_template(self, texts: list[str], role: str,
-                        kinds_phrase: str | None = None) -> list[str]:
+                        kinds_phrase: str | None = None,
+                        task_override: str | None = None) -> list[str]:
         """Wrap each text in the model's query/document template before embedding.
 
         Uses literal str.replace (NOT str.format) so raw text containing '{' or
         '}' -- routine in Isabelle interpretation text -- is safe. A model with
         no template entry, or the identity template '{text}', leaves the text
         unchanged (fully backward-compatible). For role='query', ``kinds_phrase``
-        fills the task_description's {kinds} slot (None -> the default phrase).
+        fills the task_description's {kinds} slot (None -> the default phrase);
+        ``task_override``, when given, REPLACES the whole task sentence (used by
+        the experience-memory query pass, whose sentence has no {kinds} slot).
         """
         from . import embedding_config as cfg
         model = self.canonical_model
@@ -163,8 +166,11 @@ class Embedding_Provider(ABC):
             return [tmpl.replace("{text}", t) for t in texts]
         if role == "query":
             tmpl = cfg.query_template(model)
-            phrase = kinds_phrase if kinds_phrase is not None else cfg._DEFAULT_KINDS_PHRASE
-            task = cfg.task_description().replace("{kinds}", phrase)
+            if task_override is not None:
+                task = task_override
+            else:
+                phrase = kinds_phrase if kinds_phrase is not None else cfg._DEFAULT_KINDS_PHRASE
+                task = cfg.task_description().replace("{kinds}", phrase)
             # Enforce the config constraint AFTER {kinds} substitution: a
             # hand-edited task_description with a literal {text}/{task} would
             # otherwise be spliced by the .replace below (corrupting the query).
@@ -186,11 +192,13 @@ class Embedding_Provider(ABC):
             await conn.tracing(msg)
 
     async def embed(self, text: list[str], *, role: str = "document",
-                    kinds_phrase: str | None = None) -> EmbedResult:
+                    kinds_phrase: str | None = None,
+                    task_override: str | None = None) -> EmbedResult:
         """Embed texts, always using cache. ``role`` ('document' for corpus text,
         'query' for a search query) selects the per-model template applied first;
-        ``kinds_phrase`` fills a query template's {kinds} slot (ignored for documents)."""
-        text = self._apply_template(text, role, kinds_phrase)
+        ``kinds_phrase`` fills a query template's {kinds} slot (ignored for documents);
+        ``task_override`` replaces the whole query task sentence (experience pass)."""
+        text = self._apply_template(text, role, kinds_phrase, task_override)
         total_chars = sum(len(t) for t in text)
         await self._log(f"[Embedding] {self.model}: embedding {len(text)} texts, {total_chars} chars")
         result = await self._embed_cached(text, self._embed)
@@ -613,6 +621,12 @@ class Vector_Store(ABC):
     def put(self, k: key, vector: np.ndarray) -> None:
         """Store a vector for key k. Alias for __setitem__."""
         self[k] = vector
+
+    def delete(self, k: key) -> bool:
+        """Delete the stored vector for key k. Returns True if it existed.
+        Used e.g. to overwrite an experience memory (see write_memory)."""
+        with self._env.begin(write=True) as txn:
+            return txn.delete(k)
 
     def contains(self, keys: list[key]) -> list[bool]:
         """Check existence for a batch of keys in a single transaction."""

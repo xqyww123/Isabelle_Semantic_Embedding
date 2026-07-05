@@ -1,6 +1,7 @@
 """Semantic query tools for looking up interpretations from parent theories."""
 
 import asyncio
+import json
 import os
 import threading
 from typing import Any, NamedTuple
@@ -131,6 +132,19 @@ class _Semantic_DB:
     _lock = threading.Lock()
 
     class Record(NamedTuple):
+        # NB (EXPERIENCE kind): an AoA "experience memory" (a reusable proof
+        # strategy for a general class of goals; see AoA/docs/EXPERIENCE_MEMORY.md)
+        # is stored as a Record of kind EXPERIENCE, REUSING the entity fields:
+        #   name                -> agent-provided experience name (short, stable id)
+        #   expr                -> the goal_patterns, joined (the term patterns the
+        #                          strategy applies to)
+        #   interpretation      -> goal_description (the WHEN-to-use text; this is
+        #                          what gets embedded for semantic retrieval)
+        #   theory_constituents -> minimal antichain of constituent theories of the
+        #                          patterns' constants (drives availability), same
+        #                          XOR-prefix convention as thm/rule keys
+        #   experience          -> the how-to-prove payload (NOT embedded)
+        # locale_provenance is always None for experiences.
         kind: EntityKind
         name: str
         expr: str | None
@@ -138,12 +152,15 @@ class _Semantic_DB:
         # locale-interpretation provenance; None for entries that are not
         # locale-generated facts
         locale_provenance: 'Provenance | None' = None
-        # constituent theories of theorem/rule entities, as a sorted
-        # (theory long name, 16-byte theory hash) list: the key's theory
+        # constituent theories of theorem/rule (and experience) entities, as a
+        # sorted (theory long name, 16-byte theory hash) list: the key's theory
         # prefix is the XOR of these hashes.  Used to find the records
         # belonging to / affected by a theory (deletion, migration).
         # None for non-theorem kinds and for legacy records.
         theory_constituents: 'list[tuple[str, bytes]] | None' = None
+        # EXPERIENCE-only: the how-to-prove payload (natural language).  Not
+        # embedded (only interpretation is).  None for all other kinds.
+        experience: 'str | None' = None
 
         @property
         def pretty_print(self) -> str:
@@ -176,11 +193,12 @@ class _Semantic_DB:
 
     @staticmethod
     def _decode(raw: bytes) -> 'Record':
-        """Decode a stored record.  Records with fewer than 6 fields read with
-        the missing trailing fields (locale_provenance, theory_constituents) = None."""
+        """Decode a stored record.  Records with fewer than 7 fields read with
+        the missing trailing fields (locale_provenance, theory_constituents,
+        experience) = None."""
         vals = list(msgpack.unpackb(raw))
-        vals += [None] * (6 - len(vals))
-        kind, name, expr, sem, prov_raw, consts_raw = vals[:6]
+        vals += [None] * (7 - len(vals))
+        kind, name, expr, sem, prov_raw, consts_raw, experience = vals[:7]
         d = _Semantic_DB._dec
         prov = None
         if isinstance(prov_raw, dict):
@@ -194,7 +212,8 @@ class _Semantic_DB:
         consts = None
         if consts_raw is not None:
             consts = [(d(n), bytes(h)) for n, h in consts_raw]
-        return _Semantic_DB.Record(EntityKind(kind), d(name), d(expr), d(sem), prov, consts)
+        return _Semantic_DB.Record(EntityKind(kind), d(name), d(expr), d(sem), prov,
+                                   consts, d(experience) if experience is not None else None)
 
     @staticmethod
     def _encode(record: 'Record') -> bytes:
@@ -209,7 +228,8 @@ class _Semantic_DB:
                 prov_map["qualifier"] = record.locale_provenance.qualifier
         return msgpack.packb((int(record.kind), record.name, record.expr,
                               record.interpretation, prov_map,
-                              record.theory_constituents))  # type: ignore[return-value]
+                              record.theory_constituents,
+                              record.experience))  # type: ignore[return-value]
 
     def __getitem__(self, key: universal_key) -> 'Record | None':
         with self._ensure_env().begin() as txn:
@@ -230,6 +250,12 @@ class _Semantic_DB:
     def __setitem__(self, key: universal_key, record: 'Record') -> None:
         with self._ensure_env().begin(write=True) as txn:
             txn.put(key, self._encode(record))
+
+    def delete(self, key: universal_key) -> bool:
+        """Delete a record by key. Returns True if a record existed and was removed.
+        Used e.g. to overwrite an experience memory (see write_memory)."""
+        with self._ensure_env().begin(write=True) as txn:
+            return txn.delete(key)
 
     def update_expr(self, key: universal_key, new_expr: str) -> None:
         """Update the expr field of an existing record, leaving all other fields intact."""
@@ -295,12 +321,13 @@ class _Semantic_DB:
     def _copy_prefix(env: lmdb.Environment, old_prefix: bytes, new_prefix: bytes) -> int:
         """Rekey prefix-addressed entries (theory records, namespace entities).
 
-        Theorem/rule keys are skipped even when their XOR pseudo-theory prefix
-        coincides with old_prefix (a single-constituent thm key equals its
-        constituent's hash byte-for-byte): blindly rewriting the prefix would
-        desynchronize the key from the record's constituent list — they are
-        rekeyed by _migrate_thm_records instead."""
-        from Isabelle_RPC_Host.universal_key import is_thm_rule_key
+        XOR-prefixed keys (theorem/rule AND experience keys) are skipped even
+        when their XOR pseudo-theory prefix coincides with old_prefix (a
+        single-constituent such key equals its constituent's hash byte-for-byte):
+        blindly rewriting the prefix would desynchronize the key from the
+        record's constituent list — they are rekeyed by
+        _migrate_constituent_records instead."""
+        from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
         assert len(old_prefix) == 16 and len(new_prefix) == 16
         count = 0
         with env.begin(write=True) as txn:
@@ -310,7 +337,7 @@ class _Semantic_DB:
                     key = bytes(cursor.key())
                     if not key.startswith(old_prefix):
                         break
-                    if not is_thm_rule_key(key):
+                    if not is_xor_prefixed_key(key):
                         txn.put(new_prefix + key[16:], bytes(cursor.value()))
                         count += 1
                     if not cursor.next():
@@ -321,16 +348,16 @@ class _Semantic_DB:
         """All semantic-DB keys belonging to the given theories.
 
         Keys whose 16-byte prefix is one of the hashes (theory records and
-        namespace entities), plus theorem/rule keys — whose prefix is an XOR
-        pseudo-theory — whose stored constituent list mentions one of them
-        (mention-based membership).  Legacy theorem/rule records without a
-        constituent list are never matched."""
-        from Isabelle_RPC_Host.universal_key import is_thm_rule_key
+        namespace entities), plus XOR-prefixed keys (theorem/rule AND experience
+        keys) — whose prefix is an XOR pseudo-theory — whose stored constituent
+        list mentions one of them (mention-based membership).  Legacy thm/rule
+        records without a constituent list are never matched."""
+        from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
         result: list[bytes] = []
         with self._ensure_env().begin() as txn:
             for key, val in txn.cursor():
                 key = bytes(key)
-                if is_thm_rule_key(key):
+                if is_xor_prefixed_key(key):
                     consts = self._decode(bytes(val)).theory_constituents
                     if consts is not None and any(h in theory_hashes for _, h in consts):
                         result.append(key)
@@ -338,26 +365,33 @@ class _Semantic_DB:
                     result.append(key)
         return result
 
-    def _migrate_thm_records(self, old_hash: bytes, new_hash: bytes) -> int:
-        """Rekey theorem/rule records whose constituents mention old_hash.
+    def _migrate_constituent_records(self, old_hash: bytes, new_hash: bytes) -> int:
+        """Rekey XOR-prefixed records (theorem/rule AND experience) whose
+        constituents mention old_hash.
 
         Replaces old_hash with new_hash in the constituent list, recomputes
         the XOR prefix, and copies the record (and any vector-store entries)
         under the new key.  Old entries are left in place, mirroring
-        _copy_prefix's copy semantics."""
-        from Isabelle_RPC_Host.universal_key import is_thm_rule_key, xor_theory_prefix
+        _copy_prefix's copy semantics.  Experience records always carry a
+        constituent list, so they never trip the legacy-record guard below."""
+        from Isabelle_RPC_Host.universal_key import (
+            is_xor_prefixed_key, xor_theory_prefix, EntityKind)
         env = self._ensure_env()
         rekeys: list[tuple[bytes, bytes, bytes]] = []
+        # Experience keys additionally live in the (separate) inverted index,
+        # keyed by their constituent hashes — rekeying moves them there too.
+        # (old_key, new_key, old_hashes, new_hashes)
+        exp_rekeys: list[tuple[bytes, bytes, list[bytes], list[bytes]]] = []
         with env.begin() as txn:
             for key, val in txn.cursor():
                 key = bytes(key)
-                if not is_thm_rule_key(key):
+                if not is_xor_prefixed_key(key):
                     continue
                 rec = self._decode(bytes(val))
                 if rec.theory_constituents is None:
                     raise ValueError(
-                        f"theorem/rule record {key.hex()} has no constituent list "
-                        "(pre-XOR legacy record); run migrate_xor_thm_keys.py first")
+                        f"XOR-prefixed record {key.hex()} has no constituent list "
+                        "(pre-XOR legacy theorem/rule record); run migrate_xor_thm_keys.py first")
                 if not any(h == old_hash for _, h in rec.theory_constituents):
                     continue
                 new_consts = [(n, new_hash if h == old_hash else h)
@@ -365,11 +399,20 @@ class _Semantic_DB:
                 new_key = xor_theory_prefix([h for _, h in new_consts]) + key[16:]
                 rekeys.append((key, new_key,
                                self._encode(rec._replace(theory_constituents=new_consts))))
+                if key[16] == int(EntityKind.EXPERIENCE):
+                    exp_rekeys.append((key, new_key,
+                                       [h for _, h in rec.theory_constituents],
+                                       [h for _, h in new_consts]))
         if not rekeys:
             return 0
         with env.begin(write=True) as txn:
             for _, new_key, new_val in rekeys:
                 txn.put(new_key, new_val)
+        if exp_rekeys:
+            from .experience_index import Experience_Index
+            for old_key, new_key, old_hashes, new_hashes in exp_rekeys:
+                Experience_Index.remove(old_key, old_hashes)
+                Experience_Index.add(new_key, new_hashes)
         cache_dir = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
         if os.path.isdir(cache_dir):
             from .semantic_embedding import _get_lmdb_env
@@ -437,11 +480,11 @@ class _Semantic_DB:
                     if os.path.isdir(path):
                         self._copy_prefix(_get_lmdb_env(path), old_hash, new_hash)
 
-        # Theorem/rule records reference theories through their constituent
-        # lists, not their key prefix — rekey them by XOR recomputation.
-        n_thm = self._migrate_thm_records(old_hash, new_hash)
+        # Theorem/rule AND experience records reference theories through their
+        # constituent lists, not their key prefix — rekey them by XOR recomputation.
+        n_thm = self._migrate_constituent_records(old_hash, new_hash)
 
-        print(f"Migrated {n} entries and {n_thm} theorem/rule records for {new_name} "
+        print(f"Migrated {n} entries and {n_thm} constituent records for {new_name} "
               f"from {old_hash.hex()[:12]}… to {new_hash.hex()[:12]}…")
         return True
 
@@ -904,13 +947,14 @@ class Semantic_Vector_Store(Vector_Store):
                 f"Set [[auto_interpret_for_embedding = true]] to enable automatic interpretation and embedding.")
             return []
         # Extract theory hashes from missing keys, skipping already-embedded
-        # theories.  Theorem/rule keys are skipped: their prefix is an XOR
-        # pseudo-theory, not a locatable theory — their home theory is reached
-        # through the namespace entities (constants, types, ...) that share it.
-        from Isabelle_RPC_Host.universal_key import is_thm_rule_key
+        # theories.  XOR-prefixed keys (theorem/rule AND experience) are skipped:
+        # their prefix is an XOR pseudo-theory, not a locatable theory — their
+        # home theory is reached through the namespace entities (constants,
+        # types, ...) that share it.
+        from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
         theory_hashes: set[bytes] = set()
         for k in missing:
-            if is_thm_rule_key(k):
+            if is_xor_prefixed_key(k):
                 continue
             entity = destruct_key(k)
             if not self.is_thy_embedded(entity.theory):
@@ -986,6 +1030,44 @@ class Semantic_Vector_Store(Vector_Store):
         for th in theory_hashes:
             self.mark_thy_embedded(th, embed_result.total_tokens)
         return text_keys
+
+    async def _experience_hits(self, term_patterns: 'list[str]',
+                               ctxt: Any) -> 'dict[universal_key, float]':
+        """Available experience memories → hit_rate.
+
+        Availability (Python-driven, §3): an experience is available iff every
+        theory in its constituent list is loaded.  We get the loaded theory
+        hashes from ML (Context.loaded_theory_hashes), take the inverted-index
+        candidates that mention any loaded theory, then keep those whose FULL
+        constituent set is loaded.  hit_rate is the fraction of query
+        ``term_patterns`` matched (ML Context.experiences, relaxed bidirectional
+        subterm; only >0 returned).  With no term_patterns every available
+        experience gets 1.0 (pure semantic ranking; the boost is disabled
+        downstream)."""
+        from .experience_index import Experience_Index
+        conn = self.connection
+        if conn is None:
+            return {}
+        raw = await conn.callback("Context.loaded_theory_hashes", ctxt)
+        loaded = {bytes(h) for h in raw}
+        available: list[tuple[universal_key, list[str]]] = []
+        for uk in Experience_Index.candidates(loaded):
+            rec = Semantic_DB[uk]
+            if rec is None or rec.theory_constituents is None:
+                continue
+            if all(h in loaded for _, h in rec.theory_constituents):
+                try:
+                    pats = json.loads(rec.expr) if rec.expr else []
+                except (json.JSONDecodeError, TypeError):
+                    pats = []
+                available.append((uk, pats))
+        if not available:
+            return {}
+        if not term_patterns:
+            return {uk: 1.0 for uk, _ in available}
+        hit_raw = await conn.callback(
+            "Context.experiences", (ctxt, (term_patterns, available)))
+        return {bytes(uk): float(hr) for uk, hr in hit_raw}
 
     async def lookup(
         self,
@@ -1090,9 +1172,16 @@ class Semantic_Vector_Store(Vector_Store):
             candidates = [dk for dk in domain.keys if destruct_key(dk).kind in kind_set]
         else:
             raise TypeError(f"Unknown domain type: {type(domain)}")
-        if not candidates:
+        # Experience-memory track: availability + hit_rate (Python-driven, §3/§5).
+        # Only when EXPERIENCE is among the requested kinds and the query is a
+        # string (experiences are ranked by their own embedded query).
+        exp_hit: dict[universal_key, float] = {}
+        if (EntityKind.EXPERIENCE in kinds and self.connection is not None
+                and isinstance(query, str)):
+            exp_hit = await self._experience_hits(term_patterns, ctxt)
+        if not candidates and not exp_hit:
             return [], warnings, 0
-        total = len(candidates)
+        total = len(candidates) + len(exp_hit)
 
         def _apply_live_name(uk: universal_key, rec: SemanticRecord) -> SemanticRecord:
             """Prefer the live, context-resolved name (e.g. 'coll(i)' for a member
@@ -1123,15 +1212,41 @@ class Semantic_Vector_Store(Vector_Store):
         query_str = query if isinstance(query, str) else None
         reranker = (await self._get_reranker()) if query_str else None
         fetch_k = k * _RERANK_FETCH_MULTIPLIER if reranker else k
-        top = await self.topk(query, candidates, fetch_k,
-                               kinds_phrase=render_kinds(kinds))
+        # Stage-1: entity track (embedded with the {kinds} task) merged with the
+        # experience track (embedded with the experience task). EXPERIENCE never
+        # reaches entities_of (no per-kind callback), so `candidates` is entity-only.
+        entity_kinds = [kk for kk in kinds if kk != EntityKind.EXPERIENCE]
+        top: list[tuple[universal_key, float]] = []
+        if candidates:
+            top = await self.topk(query, candidates, fetch_k,
+                                   kinds_phrase=render_kinds(entity_kinds))
+        if exp_hit and query_str is not None:
+            from . import embedding_config as _ecfg
+            exp_qvec = (await self.emb_provider.embed(
+                [query_str], role="query",
+                task_override=_ecfg.experience_task_description())).vectors[0]
+            top = top + await self.topk(exp_qvec, list(exp_hit.keys()), fetch_k)
+        # Stage-1 relevance boost (§6): a convex pull of the cosine toward 1 by
+        # hit_rate, applied uniformly (entities default hit_rate 1). Disabled when
+        # the query has <= 1 term pattern (every survivor then has hit_rate 1, so
+        # the boost is a uniform monotone shift that cannot reorder). ONLY Stage 1:
+        # the reranker's own scores are never touched. Merge-sort the two tracks by
+        # (boosted) score and keep fetch_k.
+        if len(term_patterns) > 1:
+            _BETA = 0.25
+            top = [(uk, s + (1.0 - s) * _BETA * exp_hit.get(uk, 1.0)) for uk, s in top]
+        top.sort(key=lambda x: x[1], reverse=True)
+        top = top[:fetch_k]
         # Rerank if configured and query was a string
         if reranker is not None and query_str is not None and len(top) > 1:
             doc_entries: list[tuple[universal_key, SemanticRecord, str]] = []
             for uk, _score in top:
                 rec = Semantic_DB[uk]
                 if rec is not None:
-                    doc_text = Semantic_DB.query(uk, with_pretty=True)
+                    # Experience doc_text = its goal_description (§7.3), not the
+                    # pretty-printed name+expr used for entities.
+                    doc_text = (rec.interpretation if rec.kind == EntityKind.EXPERIENCE
+                                else Semantic_DB.query(uk, with_pretty=True))
                     if doc_text:
                         doc_entries.append((uk, _apply_live_name(uk, rec), doc_text))
             if doc_entries:

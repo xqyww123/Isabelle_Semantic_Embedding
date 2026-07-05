@@ -15,7 +15,7 @@ import lmdb
 import msgpack
 import platformdirs
 
-from Isabelle_RPC_Host.universal_key import is_thm_rule_key
+from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
 
 
 CACHE_DIR = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
@@ -166,7 +166,7 @@ def cmd_list(args: argparse.Namespace) -> None:
                 if isinstance(model, bytes):
                     model = model.decode("utf-8", errors="replace")
                 theory_meta[key] = {"finished": finished, "cost_usd": cost, "model": model}
-            elif is_thm_rule_key(key):
+            elif is_xor_prefixed_key(key):
                 # XOR pseudo-theory prefix: attribute to each constituent
                 # theory (a record mentioning N theories is counted N times)
                 consts = _record_constituent_hashes(bytes(val))
@@ -238,7 +238,7 @@ def cmd_remove(args: argparse.Namespace) -> None:
     with env.begin() as txn:
         for key, val in txn.cursor():
             key = bytes(key)
-            if is_thm_rule_key(key):
+            if is_xor_prefixed_key(key):
                 thy_hashes_in_db |= _record_constituent_hashes(bytes(val)) or set()
             else:
                 thy_hashes_in_db.add(key[:16])
@@ -257,7 +257,7 @@ def cmd_remove(args: argparse.Namespace) -> None:
     with env.begin() as txn:
         for key, val in txn.cursor():
             key = bytes(key)
-            if is_thm_rule_key(key):
+            if is_xor_prefixed_key(key):
                 consts = _record_constituent_hashes(bytes(val))
                 if consts:
                     matched = consts & resolved_set
@@ -299,7 +299,7 @@ def cmd_remove(args: argparse.Namespace) -> None:
         for key, _ in txn.cursor():
             key = bytes(key)
             if key in thm_keys_to_delete or \
-               (not is_thm_rule_key(key) and key[:16] in resolved_set):
+               (not is_xor_prefixed_key(key) and key[:16] in resolved_set):
                 to_delete.append(key)
         for key in to_delete:
             txn.delete(key)
@@ -317,7 +317,7 @@ def cmd_remove(args: argparse.Namespace) -> None:
             for key, _ in txn.cursor():
                 key = bytes(key)
                 if key in thm_keys_to_delete or \
-                   (not is_thm_rule_key(key) and key[:16] in resolved_set):
+                   (not is_xor_prefixed_key(key) and key[:16] in resolved_set):
                     to_delete.append(key)
             for key in to_delete:
                 txn.delete(key)

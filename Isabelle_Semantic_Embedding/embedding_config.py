@@ -163,3 +163,18 @@ def task_description() -> str:
     (model- and query-independent). Defaults to a plain retrieval sentence."""
     cfg = load_embedding_config()
     return cfg.get("task_description") or _DEFAULT_TASK_DESCRIPTION
+
+
+# Task sentence for the experience-memory query pass (§8.2 of AoA's
+# EXPERIENCE_MEMORY.md).  Unlike task_description it has NO {kinds} slot:
+# experiences are retrieved by their own dedicated instruction, not the
+# entity-kind phrase.  Passed to Embedding_Provider.embed via task_override.
+_DEFAULT_EXPERIENCE_TASK_DESCRIPTION = (
+    "Given a proof situation, retrieve experiences and proof strategies "
+    "that help prove the goal")
+
+
+def experience_task_description() -> str:
+    """Task sentence for embedding an experience-memory retrieval query."""
+    cfg = load_embedding_config()
+    return cfg.get("experience_task_description") or _DEFAULT_EXPERIENCE_TASK_DESCRIPTION
