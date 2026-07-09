@@ -45,6 +45,8 @@ dependencies = [
     "diskcache",
     "claude-agent-sdk",
     "pyyaml",
+    # r2_sync: the semantic DB is synced with a Cloudflare R2 bucket over S3.
+    "boto3",
 ]
 
 [project.urls]
@@ -58,4 +60,5 @@ exclude = ["contrib", "contrib.*"]
 # libisabelle_vector.so is compiled and staged into the build tree by setup.py's
 # build_py, not tracked in the source tree; listing it keeps sdist-derived and
 # prebuilt-drop-in builds picking it up too.
-Isabelle_Semantic_Embedding = ["embedding_config_template.yaml", "libisabelle_vector.so"]
+Isabelle_Semantic_Embedding = ["embedding_config_template.yaml", "config_template.yaml",
+                               "libisabelle_vector.so"]

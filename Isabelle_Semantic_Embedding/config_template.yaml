@@ -1,0 +1,32 @@
+# Isabelle_Semantic_Embedding — user configuration.
+#
+# Seeded here on first use from the template bundled in the package.  Every key
+# is optional: what is not set here falls back to a default written in code.
+# Environment variables win over this file.
+#
+# NO SECRETS HERE.  The R2 credentials have no defaults and are read only from
+# the environment:
+#
+#     export R2_ACCESS_KEY_ID=...
+#     export R2_SECRET_ACCESS_KEY=...
+
+r2:
+  # The remote is a single object.  Unset keys use the built-in defaults.
+  # account_id: 532d99283b5aa1e02486ee3fdcb163d5
+  # bucket: mlml
+  # endpoint: https://<account_id>.r2.cloudflarestorage.com   # derived from account_id
+  object_key: Isabelle_Semantic_Embedding.tar.zst
+
+  # Uploading is ALWAYS explicit — `semantics_manage.py push`, never automatic.
+  # These two govern only the download side.
+
+  # Probe the remote (one HEAD request, no transfer) at most every
+  # check_interval_hours, and print a line when a newer snapshot exists.
+  auto_check: true
+
+  # Download and merge that snapshot without being asked.  The merge is only
+  # half-reversible (the pre-merge backup is the sole way back), so this is off
+  # by default; it also refuses to run when another process holds the database.
+  auto_pull: false
+
+  check_interval_hours: 168        # weekly

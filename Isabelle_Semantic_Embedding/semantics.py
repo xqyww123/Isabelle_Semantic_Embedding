@@ -82,6 +82,19 @@ def unpack_thy_status(raw: bytes) -> dict:
     return {(k.encode() if isinstance(k, str) else k): v for k, v in d.items()}
 
 
+def record_constituent_hashes(raw: bytes) -> 'set[bytes] | None':
+    """Constituent theory hashes of a stored theorem/rule/experience record.
+
+    The theory_constituents field is the 6th tuple element (index 5); the layout
+    mirrors _Semantic_DB._decode.  Such keys carry an XOR pseudo-theory prefix,
+    so membership in a theory is decided by this list and never by the prefix.
+    None for legacy records, which predate the field."""
+    vals = msgpack.unpackb(raw)
+    if len(vals) <= 5 or vals[5] is None:
+        return None
+    return {bytes(h) for _, h in vals[5]}
+
+
 # Long theory names to exclude from interpretation and entity enumeration.
 _SKIP_THEORY_LONG_NAMES = ["Pure", "Tools.Code_Generator", "HOL.Code_Evaluation", "HOL.Typerep"]
 
@@ -101,8 +114,10 @@ persist_wip: bool = os.getenv("SEMANTIC_PERSIST_WIP", "") != ""
 # reserves virtual address space, and the value passed at open() is the hard
 # limit for *writes* by that process (exceeding it raises MapFullError).
 # Read-only openers are unaffected — lmdb adopts the file's actual size.
-# Keep every writer of semantics.lmdb on this one constant.
-SEMANTICS_MAP_SIZE: int = 1 << 30
+# Keep every writer of semantics.lmdb on this one constant.  Raised from 1<<30
+# because `r2_sync` merges a remote snapshot into this store, and 1 GiB was the
+# lowest ceiling anywhere in the tree (semantics_manage's `remove` used 1<<33).
+SEMANTICS_MAP_SIZE: int = 1 << 32   # 4 GiB
 
 
 def _iter_vector_store_envs() -> 'Iterator[lmdb.Environment]':

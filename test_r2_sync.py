@@ -1,0 +1,262 @@
+"""Tests for the R2 sync's pure logic: the merge rules, settings resolution, and
+the gates that reject an incompatible snapshot.
+
+Nothing here touches the network or the real database.  `merge_env` is exercised
+on throwaway LMDB environments, which is the whole of the merge: `pull` adds only
+the download, the extraction, and the index rebuild around it.
+
+The merge is where a bug is expensive.  It is half-reversible (the pre-merge
+backup is the only way back), and its one non-obvious rule -- a theory finished
+locally must not be knocked back to WIP by a remote that has not finished it --
+guards against silently re-spending money on re-interpretation and re-embedding.
+"""
+from __future__ import annotations
+
+import os
+
+import lmdb
+import msgpack
+import pytest
+
+from Isabelle_Semantic_Embedding import r2_sync
+from Isabelle_Semantic_Embedding._user_config import env_bool
+
+
+def _env(tmp_path, name: str) -> lmdb.Environment:
+    path = tmp_path / name
+    path.mkdir()
+    return lmdb.open(str(path), map_size=1 << 20)
+
+
+def _fill(env: lmdb.Environment, records: dict[bytes, bytes]) -> None:
+    with env.begin(write=True) as txn:
+        for k, v in records.items():
+            txn.put(k, v)
+
+
+def _read(env: lmdb.Environment) -> dict[bytes, bytes]:
+    with env.begin() as txn:
+        return {bytes(k): bytes(v) for k, v in txn.cursor()}
+
+
+def _thy(finished: bool, cost: float) -> bytes:
+    return msgpack.packb({b"finished": finished, b"cost_usd": cost})
+
+
+THY_A = b"\xAA" * 16
+THY_B = b"\xBB" * 16
+ENTITY = b"\xCC" * 16 + b"\x01" + b"\x00" * 15
+
+
+# ---------------------------------------------------------------------------
+# merge_env
+# ---------------------------------------------------------------------------
+
+def test_remote_wins_on_entity_records(tmp_path):
+    src, dst = _env(tmp_path, "src"), _env(tmp_path, "dst")
+    new_key = b"\xDD" * 32
+    _fill(dst, {ENTITY: b"local"})
+    _fill(src, {ENTITY: b"remote", new_key: b"fresh"})
+
+    stats = r2_sync.merge_env(src, dst)
+
+    assert _read(dst) == {ENTITY: b"remote", new_key: b"fresh"}
+    assert (stats.added, stats.overwritten, stats.thy_kept_local) == (1, 1, 0)
+
+
+def test_an_identical_record_is_neither_added_nor_overwritten(tmp_path):
+    src, dst = _env(tmp_path, "src"), _env(tmp_path, "dst")
+    _fill(dst, {ENTITY: b"same"})
+    _fill(src, {ENTITY: b"same"})
+
+    stats = r2_sync.merge_env(src, dst)
+
+    assert (stats.added, stats.overwritten, stats.thy_kept_local) == (0, 0, 0)
+
+
+def test_a_theory_finished_locally_is_not_knocked_back_to_wip(tmp_path):
+    """The one rule that is not "remote wins".
+
+    Overwriting blindly would mark a locally-finished theory unfinished, and the
+    next collection run would re-interpret and re-embed it -- pure API spend for
+    a result already on disk.  `finished` is therefore a logical OR, and the
+    other fields follow the more-finished side.
+    """
+    src, dst = _env(tmp_path, "src"), _env(tmp_path, "dst")
+    _fill(dst, {THY_A: _thy(True, 5.0), THY_B: _thy(False, 1.0)})
+    _fill(src, {THY_A: _thy(False, 0.5), THY_B: _thy(True, 9.0)})
+
+    stats = r2_sync.merge_env(src, dst)
+
+    got = _read(dst)
+    assert msgpack.unpackb(got[THY_A]) == {b"finished": True, b"cost_usd": 5.0}, \
+        "local `finished` survived a remote WIP"
+    assert msgpack.unpackb(got[THY_B]) == {b"finished": True, b"cost_usd": 9.0}, \
+        "remote `finished` was adopted over a local WIP"
+    assert (stats.overwritten, stats.thy_kept_local) == (1, 1)
+
+
+def test_when_both_sides_finished_the_remote_metadata_wins(tmp_path):
+    src, dst = _env(tmp_path, "src"), _env(tmp_path, "dst")
+    _fill(dst, {THY_A: _thy(True, 5.0)})
+    _fill(src, {THY_A: _thy(True, 9.0)})
+
+    r2_sync.merge_env(src, dst)
+
+    assert msgpack.unpackb(_read(dst)[THY_A])[b"cost_usd"] == 9.0
+
+
+def test_a_theory_absent_locally_is_taken_verbatim(tmp_path):
+    src, dst = _env(tmp_path, "src"), _env(tmp_path, "dst")
+    _fill(src, {THY_A: _thy(False, 1.0)})
+
+    stats = r2_sync.merge_env(src, dst)
+
+    assert msgpack.unpackb(_read(dst)[THY_A]) == {b"finished": False, b"cost_usd": 1.0}
+    assert (stats.added, stats.thy_kept_local) == (1, 0)
+
+
+def test_the_merge_spans_batches_and_is_idempotent(tmp_path):
+    """merge_env commits in batches -- one write txn could not hold a whole
+    vector store's dirty pages.  A batch boundary must not drop or re-count a key.
+    """
+    src, dst = _env(tmp_path, "src"), _env(tmp_path, "dst")
+    records = {i.to_bytes(32, "big"): f"v{i}".encode() for i in range(25)}
+    _fill(src, records)
+
+    first = r2_sync.merge_env(src, dst, batch=4)     # 25 keys, 7 transactions
+    assert _read(dst) == records
+    assert (first.added, first.overwritten) == (25, 0)
+
+    again = r2_sync.merge_env(src, dst, batch=4)
+    assert _read(dst) == records
+    assert (again.added, again.overwritten, again.thy_kept_local) == (0, 0, 0)
+
+
+def test_merging_an_empty_snapshot_changes_nothing(tmp_path):
+    src, dst = _env(tmp_path, "src"), _env(tmp_path, "dst")
+    _fill(dst, {ENTITY: b"local"})
+
+    assert r2_sync.merge_env(src, dst) == (0, 0, 0)
+    assert _read(dst) == {ENTITY: b"local"}
+
+
+# ---------------------------------------------------------------------------
+# settings
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def cfg(tmp_path, monkeypatch):
+    """Point the loader at a throwaway config.yaml and drop the process cache."""
+    path = tmp_path / "config.yaml"
+    monkeypatch.setenv("SEMANTIC_EMBEDDING_CONFIG_PATH", str(path))
+    for var in ("R2_ACCOUNT_ID", "R2_BUCKET", "R2_ENDPOINT", "R2_OBJECT_KEY",
+                "R2_AUTO_CHECK", "R2_AUTO_PULL", "R2_CHECK_INTERVAL_HOURS"):
+        monkeypatch.delenv(var, raising=False)
+
+    def write(text: str) -> None:
+        path.write_text(text)
+        r2_sync._CONFIG.load(force_reload=True)
+    write("")                                        # seeded-but-empty by default
+    return write
+
+
+def test_defaults_come_from_code_not_from_the_template(cfg):
+    """Seeding only ever creates a *missing* file, so a key added to the template
+    later never reaches an existing user.  An empty config must still resolve."""
+    s = r2_sync.settings()
+    assert s.account_id == r2_sync.DEFAULT_ACCOUNT_ID
+    assert s.bucket == r2_sync.DEFAULT_BUCKET
+    assert s.object_key == r2_sync.DEFAULT_OBJECT_KEY
+    assert s.endpoint == f"https://{r2_sync.DEFAULT_ACCOUNT_ID}.r2.cloudflarestorage.com"
+    assert (s.auto_check, s.auto_pull) == (True, False)
+
+
+def test_the_endpoint_follows_a_configured_account_id(cfg):
+    cfg("r2:\n  account_id: abc123\n")
+    assert r2_sync.settings().endpoint == "https://abc123.r2.cloudflarestorage.com"
+
+
+def test_env_beats_the_config_file(cfg, monkeypatch):
+    cfg("r2:\n  bucket: from_file\n  auto_pull: true\n")
+    assert r2_sync.settings().bucket == "from_file"
+    monkeypatch.setenv("R2_BUCKET", "from_env")
+    assert r2_sync.settings().bucket == "from_env"
+
+
+def test_r2_auto_pull_0_disables_it(cfg, monkeypatch):
+    """The trap this exists to prevent: the package's one prior env-boolean idiom
+    is `os.getenv(x, "") != ""`, under which `R2_AUTO_PULL=0` reads as True --
+    turning ON a non-interactive, half-reversible merge for a user turning it off.
+    """
+    cfg("r2:\n  auto_pull: true\n")
+    assert r2_sync.settings().auto_pull is True
+    monkeypatch.setenv("R2_AUTO_PULL", "0")
+    assert r2_sync.settings().auto_pull is False
+
+
+def test_a_nonsense_boolean_is_an_error_not_a_guess(cfg, monkeypatch):
+    monkeypatch.setenv("R2_AUTO_PULL", "sure")
+    with pytest.raises(ValueError, match="not a boolean"):
+        r2_sync.settings()
+
+
+def test_env_bool_distinguishes_unset_from_empty():
+    assert env_bool("_R2_TEST_ABSENT") is None       # fall through to the config
+    os.environ["_R2_TEST_EMPTY"] = ""
+    try:
+        assert env_bool("_R2_TEST_EMPTY") is False   # an explicit "off"
+    finally:
+        del os.environ["_R2_TEST_EMPTY"]
+
+
+# ---------------------------------------------------------------------------
+# the gates that run before a byte is downloaded
+# ---------------------------------------------------------------------------
+
+def _md(**over) -> dict:
+    md = {"schema-version": r2_sync.SCHEMA_VERSION, "vector-format": "q15",
+          "models": "", "dimension": ""}
+    md.update(over)
+    return md
+
+
+def test_a_future_schema_version_is_refused(cfg):
+    with pytest.raises(r2_sync.R2Error, match="schema-version"):
+        r2_sync._check_metadata(_md(**{"schema-version": "99"}))
+
+
+def test_float32_vectors_are_refused(cfg):
+    with pytest.raises(r2_sync.R2Error, match="float32"):
+        r2_sync._check_metadata(_md(**{"vector-format": "float32"}))
+
+
+def test_a_dimension_mismatch_is_refused(cfg):
+    md = _md(models="Qwen/Qwen3-Embedding-8B", dimension="1024")
+    with pytest.raises(r2_sync.R2Error, match="1024-dimensional"):
+        r2_sync._check_metadata(md)
+
+
+def test_a_matching_dimension_passes(cfg):
+    r2_sync._check_metadata(_md(models="Qwen/Qwen3-Embedding-8B", dimension="4096"))
+
+
+def test_metadata_free_objects_are_allowed_through_to_the_manifest(cfg, capsys):
+    """Someone may upload with `aws s3 cp`, which carries no x-amz-meta-*.  Then
+    the tarball's own MANIFEST.json is the only check, and it runs post-download."""
+    r2_sync._check_metadata({})
+    assert "no metadata" in capsys.readouterr().out
+
+
+def test_one_dimension_field_covers_several_models():
+    assert r2_sync._parse_dimensions({"models": "a,b", "dimension": "4096"}) == \
+        {"a": 4096, "b": 4096}
+    assert r2_sync._parse_dimensions({"models": "a,b", "dimension": "4096,1024"}) == \
+        {"a": 4096, "b": 1024}
+    assert r2_sync._parse_dimensions({}) == {}
+
+
+def test_a_manifest_from_a_future_client_is_refused():
+    with pytest.raises(r2_sync.R2Error, match="schema_version"):
+        r2_sync._check_manifest({"schema_version": "99"})
+    r2_sync._check_manifest({"schema_version": r2_sync.SCHEMA_VERSION})

@@ -571,11 +571,20 @@ import atexit
 _lmdb_envs: dict[str, lmdb.Environment] = {}
 _lmdb_lock = threading.Lock()
 
+# Write ceiling for a vector_<model>.lmdb store.  LMDB does not preallocate: the
+# value only reserves virtual address space, and the one passed at open() is the
+# hard limit on *writes* by that process (past it, MapFullError).  Read-only
+# openers adopt the file's real size and ignore it.  Lives here rather than in
+# semantics.py because semantics imports this module, not the other way round.
+# Every writer of a vector store must open with this one value.
+VECTOR_MAP_SIZE: int = 1 << 34      # 16 GiB
+
+
 def _get_lmdb_env(path: str) -> lmdb.Environment:
     with _lmdb_lock:
         env = _lmdb_envs.get(path)
         if env is None:
-            env = lmdb.open(path, map_size=1 << 34)
+            env = lmdb.open(path, map_size=VECTOR_MAP_SIZE)
             _lmdb_envs[path] = env
         return env
 

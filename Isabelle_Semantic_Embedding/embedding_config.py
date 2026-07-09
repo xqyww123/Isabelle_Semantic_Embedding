@@ -20,14 +20,8 @@ from __future__ import annotations
 
 import os
 import pathlib
-import shutil
 
-import yaml
-
-_TEMPLATE_PATH = pathlib.Path(__file__).parent / "embedding_config_template.yaml"
-
-_config: dict | None = None
-_config_source: pathlib.Path | None = None
+from ._user_config import User_Config
 
 
 def _isabelle_home_user() -> pathlib.Path | None:
@@ -43,21 +37,12 @@ def _isabelle_home_user() -> pathlib.Path | None:
 
 def _resolve_config_path() -> pathlib.Path | None:
     """Path of the editable config file, or None if it cannot be located."""
-    override = os.getenv("EMBEDDING_CONFIG_PATH")
-    if override:
-        return pathlib.Path(override)
     home = _isabelle_home_user()
-    if home is None:
-        return None
-    return home / "etc" / "embedding_config"
+    return None if home is None else home / "etc" / "embedding_config"
 
 
-def _ensure_seeded(path: pathlib.Path) -> None:
-    """Copy the bundled template to `path` if it does not exist yet."""
-    if path.exists():
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(_TEMPLATE_PATH, path)
+_CONFIG = User_Config("embedding_config_template.yaml", "EMBEDDING_CONFIG_PATH",
+                      _resolve_config_path)
 
 
 def load_embedding_config(force_reload: bool = False) -> dict:
@@ -67,25 +52,12 @@ def load_embedding_config(force_reload: bool = False) -> dict:
     config location cannot be resolved (e.g. ISABELLE_HOME_USER unset), falls
     back to reading the bundled template read-only.
     """
-    global _config, _config_source
-    if _config is not None and not force_reload:
-        return _config
-    path = _resolve_config_path()
-    if path is not None:
-        _ensure_seeded(path)
-        source = path
-    else:
-        source = _TEMPLATE_PATH
-    with open(source, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    _config = data
-    _config_source = source
-    return data
+    return _CONFIG.load(force_reload)
 
 
 def config_source() -> pathlib.Path | None:
     """Path the active config was loaded from (for diagnostics)."""
-    return _config_source
+    return _CONFIG.source()
 
 
 def dimension(model: str) -> int:
@@ -95,7 +67,7 @@ def dimension(model: str) -> int:
     if model not in dims:
         raise KeyError(
             f"No 'dimension' entry for model {model!r} in embedding config "
-            f"({_config_source}). Add it under 'dimension:'.")
+            f"({config_source()}). Add it under 'dimension:'.")
     return int(dims[model])
 
 

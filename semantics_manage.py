@@ -7,6 +7,9 @@ Subcommands:
   remove    Remove specific theories from the database (offline)
   reindex   Rebuild experience_index.lmdb from semantics.lmdb (offline)
   fsck      Check semantics.lmdb invariants; --fix repairs the derived ones (offline)
+  status    Compare the local database with the Cloudflare R2 snapshot
+  push      Upload the local database to R2 (overwrites the remote snapshot)
+  pull      Download the R2 snapshot and merge it into the local database
 """
 import argparse
 import os
@@ -19,22 +22,14 @@ import platformdirs
 
 from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
 
+# NOTE: Isabelle_Semantic_Embedding is imported lazily, inside the subcommands.
+# Importing it pulls in faiss, httpx and the Claude SDK — seconds of startup that
+# `list` and `remove` have no use for.
 
 CACHE_DIR = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
 SEMANTICS_DB_PATH = os.path.join(CACHE_DIR, "semantics.lmdb")
 THEORY_HASH_CACHE_DIR = platformdirs.user_cache_dir("Isabelle_Theory_Hash", "Qiyuan")
 THEORY_HASH_DB_PATH = os.path.join(THEORY_HASH_CACHE_DIR, "theory_hash.lmdb")
-
-
-def _record_constituent_hashes(raw: bytes) -> 'set[bytes] | None':
-    """Constituent theory hashes of a theorem/rule record (the theory_constituents
-    field — the 6th tuple element, index 5; layout mirrors _Semantic_DB._decode).
-    Theorem/rule keys carry an XOR pseudo-theory prefix, so membership in a theory
-    is decided by this list, never by the key prefix.  None for legacy records."""
-    vals = msgpack.unpackb(raw)
-    if len(vals) <= 5 or vals[5] is None:
-        return None
-    return {bytes(h) for _, h in vals[5]}
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +144,7 @@ def cmd_list(args: argparse.Namespace) -> None:
         print(f"No semantic database found at {SEMANTICS_DB_PATH}")
         return
 
+    from Isabelle_Semantic_Embedding.semantics import record_constituent_hashes
     hash_to_name = _load_theory_names()
 
     # Scan semantics.lmdb
@@ -171,7 +167,7 @@ def cmd_list(args: argparse.Namespace) -> None:
             elif is_xor_prefixed_key(key):
                 # XOR pseudo-theory prefix: attribute to each constituent
                 # theory (a record mentioning N theories is counted N times)
-                consts = _record_constituent_hashes(bytes(val))
+                consts = record_constituent_hashes(bytes(val))
                 if consts is None:
                     legacy_thm_count += 1
                 else:
@@ -230,6 +226,9 @@ def cmd_remove(args: argparse.Namespace) -> None:
         print(f"No semantic database found at {SEMANTICS_DB_PATH}", file=sys.stderr)
         sys.exit(1)
 
+    from Isabelle_Semantic_Embedding.semantics import (
+        record_constituent_hashes, SEMANTICS_MAP_SIZE)
+    from Isabelle_Semantic_Embedding.semantic_embedding import VECTOR_MAP_SIZE
     hash_to_name = _load_theory_names()
 
     # Discover all theory hashes present in semantics DB.  Theorem/rule keys
@@ -241,7 +240,7 @@ def cmd_remove(args: argparse.Namespace) -> None:
         for key, val in txn.cursor():
             key = bytes(key)
             if is_xor_prefixed_key(key):
-                thy_hashes_in_db |= _record_constituent_hashes(bytes(val)) or set()
+                thy_hashes_in_db |= record_constituent_hashes(bytes(val)) or set()
             else:
                 thy_hashes_in_db.add(key[:16])
     env.close()
@@ -260,7 +259,7 @@ def cmd_remove(args: argparse.Namespace) -> None:
         for key, val in txn.cursor():
             key = bytes(key)
             if is_xor_prefixed_key(key):
-                consts = _record_constituent_hashes(bytes(val))
+                consts = record_constituent_hashes(bytes(val))
                 if consts:
                     matched = consts & resolved_set
                     if matched:
@@ -295,7 +294,7 @@ def cmd_remove(args: argparse.Namespace) -> None:
     # Delete from semantics DB: prefix-addressed keys by prefix, theorem/rule
     # keys from the constituent-matched set collected above.
     total_deleted = 0
-    env = lmdb.open(SEMANTICS_DB_PATH, map_size=1 << 33)
+    env = lmdb.open(SEMANTICS_DB_PATH, map_size=SEMANTICS_MAP_SIZE)
     with env.begin(write=True) as txn:
         to_delete: list[bytes] = []
         for key, _ in txn.cursor():
@@ -313,7 +312,7 @@ def cmd_remove(args: argparse.Namespace) -> None:
     # stores hold no constituent lists)
     vec_deleted = 0
     for path in vec_paths:
-        venv = lmdb.open(path, map_size=1 << 33)
+        venv = lmdb.open(path, map_size=VECTOR_MAP_SIZE)
         with venv.begin(write=True) as txn:
             to_delete = []
             for key, _ in txn.cursor():
@@ -432,6 +431,96 @@ def cmd_fsck(args: argparse.Namespace) -> None:
         print(f"{problems} problem(s) remain.")
         sys.exit(1)
     print("All checks passed.")
+
+
+# ---------------------------------------------------------------------------
+# status / push / pull  (Cloudflare R2)
+# ---------------------------------------------------------------------------
+
+def _r2():
+    """Import r2_sync and adapt its errors to this script's fail-fast contract.
+
+    Every R2 subcommand is typed by a human at a terminal, so an incompatible
+    snapshot or a busy database must stop the run with a non-zero exit — unlike
+    r2_sync.maybe_auto_pull, which runs inside somebody else's process and only
+    ever prints.
+    """
+    from Isabelle_Semantic_Embedding import r2_sync
+    return r2_sync
+
+
+def _run_r2(fn, *a, **kw) -> None:
+    from Isabelle_Semantic_Embedding.r2_sync import R2Error
+    try:
+        fn(*a, **kw)
+    except R2Error as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:            # a malformed boolean env var
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _confirm() -> bool:
+    try:
+        return input("\nConfirm? [y/N] ").strip().lower() == "y"
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted.")
+        sys.exit(1)
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    _run_r2(lambda: _r2().status())
+
+
+def cmd_push(args: argparse.Namespace) -> None:
+    _require_db()
+
+    def go() -> None:
+        r2 = _r2()
+        s = r2.settings()
+        if not args.yes and not args.dry_run:
+            head = r2.remote_head(s)
+            print(f"push OVERWRITES the entire remote snapshot at "
+                  f"s3://{s.bucket}/{s.object_key}.")
+            if head is None:
+                print("  there is no object there yet.")
+            else:
+                print(f"  the object there now is {head.size / 1024 ** 3:.2f} GiB, "
+                      f"uploaded {head.last_modified:%Y-%m-%d %H:%M} by "
+                      f"{head.metadata.get('created-by', '?')}")
+            if not _confirm():
+                print("Aborted.")
+                return
+        r2.push_snapshot(force=args.force, dry_run=args.dry_run)
+    _run_r2(go)
+
+
+def cmd_pull(args: argparse.Namespace) -> None:
+    def go() -> None:
+        r2 = _r2()
+        s = r2.settings()
+        if not args.yes and not args.dry_run:
+            head = r2.remote_head(s)
+            if head is None:
+                print(f"s3://{s.bucket}/{s.object_key} does not exist. Nothing to pull.",
+                      file=sys.stderr)
+                sys.exit(1)
+            if head.etag == r2.read_marker().get("etag") and not args.force:
+                print(f"Already up to date (ETag {head.etag}).")
+                return
+            print(f"pull MERGES {head.size / 1024 ** 3:.2f} GiB from "
+                  f"s3://{s.bucket}/{s.object_key} into the local database.")
+            print("  Remote records win, except that a theory finished locally "
+                  "stays finished.")
+            print("  A backup is taken first." if not args.no_backup
+                  else "  --no-backup: THE MERGE WILL NOT BE REVERSIBLE.")
+            if not _confirm():
+                print("Aborted.")
+                return
+        r2.pull_snapshot(backup=not args.no_backup, force=args.force,
+                         dry_run=args.dry_run)
+    _run_r2(go)
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +674,31 @@ p_fsck.add_argument("--fix", action="store_true",
     help="Repair the derived artefacts: rebuild the experience index, and re-key "
          "records whose XOR prefix disagrees with their constituent list.")
 
+# status
+p_status = sub.add_parser("status",
+    help="Compare the local database with the Cloudflare R2 snapshot (one HEAD request)")
+
+# push
+p_push = sub.add_parser("push",
+    help="Upload the local database to R2, OVERWRITING the remote snapshot")
+p_push.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+p_push.add_argument("--dry-run", action="store_true", help="Say what would happen")
+p_push.add_argument("--force", action="store_true",
+    help="Push even when the database is open elsewhere, or when the remote has "
+         "moved since this machine last synced (which would discard the difference).")
+
+# pull
+p_pull = sub.add_parser("pull",
+    help="Download the R2 snapshot and merge it into the local database")
+p_pull.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+p_pull.add_argument("--dry-run", action="store_true", help="Say what would happen")
+p_pull.add_argument("--no-backup", action="store_true",
+    help="Skip the pre-merge backup. The merge then has no way back.")
+p_pull.add_argument("--force", action="store_true",
+    help="Merge even when the local copy is already current, or the database is "
+         "open in another process.")
+
 args = parser.parse_args()
 {"collect": cmd_collect, "list": cmd_list, "remove": cmd_remove,
- "reindex": cmd_reindex, "fsck": cmd_fsck}[args.command](args)
+ "reindex": cmd_reindex, "fsck": cmd_fsck,
+ "status": cmd_status, "push": cmd_push, "pull": cmd_pull}[args.command](args)
