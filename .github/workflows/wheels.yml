@@ -274,15 +274,83 @@ jobs:
             esac
           done
 
+      - name: Exercise the wheel
+        shell: bash
+        # Everything up to here has tested the C, or the shape of the files. This
+        # installs the wheel and runs the Python layer against it: that the extension
+        # module imports at all, that the kernel loads through ctypes and releases the
+        # GIL, that top-k reproduces a numpy reference at every buffer alignment, and
+        # that quantization still approximates the cosine it claims to.
+        #
+        # Run from a scratch directory with the `pytest` entry point, never
+        # `python -m pytest`: both the cwd and the test file's directory land on
+        # sys.path, and from the checkout the source tree would shadow the wheel --
+        # the suite would pass while testing something else. VECARITH_REQUIRE_INSTALLED
+        # turns that from a silence into an error.
+        run: |
+          python -m pip install --quiet pytest numpy
+          python -m pip install --quiet --no-deps dist/*.whl
+          mkdir -p /tmp/vecarith-run
+          cd /tmp/vecarith-run
+          VECARITH_REQUIRE_INSTALLED=1 pytest -q "$GITHUB_WORKSPACE/tests/test_vecarith.py"
+
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.arch }}
           path: dist/*.whl
           if-no-files-found: error
 
-  # Only on a version tag, and only after every architecture has built and passed
-  # its tests -- a partial upload cannot be undone, since PyPI refuses to let a
-  # filename be reused even after the release is deleted.
+  # The universal2 wheel is built on an Apple Silicon runner, where an arm64-only
+  # extension module imports perfectly well. Only an Intel host can tell whether the
+  # x86_64 slice is real. macos-13 is that host, and it need not build anything.
+  intel-mac:
+    name: universal2 on Intel
+    needs: wheel
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11" # also the abi3 floor: the wheel must load here
+      - uses: actions/download-artifact@v4
+        with: { name: wheel-universal2, path: dist }
+      - shell: bash
+        run: |
+          python -c "import platform; print('host:', platform.machine())"
+          python -m pip install --quiet pytest numpy
+          python -m pip install --quiet --no-deps dist/*.whl
+          mkdir -p /tmp/vecarith-run && cd /tmp/vecarith-run
+          VECARITH_REQUIRE_INSTALLED=1 pytest -q "$GITHUB_WORKSPACE/tests/test_vecarith.py"
+
+  # The wheel says cp311-abi3: one binary for every CPython from 3.11 on. That is a
+  # claim about the limited API, and it is cheap enough to test rather than assume --
+  # the extension is built once, against 3.12, and must import on all of them.
+  abi3:
+    name: abi3 on ${{ matrix.python }}
+    needs: wheel
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with: { name: wheel-x86_64, path: dist }
+      - shell: bash
+        run: |
+          python -m pip install --quiet pytest numpy
+          python -m pip install --quiet --no-deps dist/*.whl
+          mkdir -p /tmp/vecarith-run && cd /tmp/vecarith-run
+          VECARITH_REQUIRE_INSTALLED=1 pytest -q "$GITHUB_WORKSPACE/tests/test_vecarith.py"
+
+  # Only on a version tag, and only after every architecture has built, every wheel
+  # has been exercised, and the universal2 one has proved itself on an Intel host --
+  # a partial upload cannot be undone, since PyPI refuses to let a filename be
+  # reused even after the release is deleted.
   #
   # There is no sdist. Building from source needs cmake, a C++17 compiler and the
   # vendored Highway tree, none of which travel in an sdist today; a `pip install`
@@ -290,7 +358,7 @@ jobs:
   # a clean "no matching distribution" instead.
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: wheel
+    needs: [wheel, intel-mac, abi3]
     runs-on: ubuntu-24.04
     environment: pypi
     permissions:
