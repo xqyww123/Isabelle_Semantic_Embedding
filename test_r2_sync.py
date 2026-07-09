@@ -13,6 +13,8 @@ guards against silently re-spending money on re-interpretation and re-embedding.
 from __future__ import annotations
 
 import os
+import time
+from datetime import datetime
 
 import lmdb
 import msgpack
@@ -151,7 +153,7 @@ def cfg(tmp_path, monkeypatch):
     path = tmp_path / "config.yaml"
     monkeypatch.setenv("SEMANTIC_EMBEDDING_CONFIG_PATH", str(path))
     for var in ("R2_ACCOUNT_ID", "R2_BUCKET", "R2_ENDPOINT", "R2_OBJECT_KEY",
-                "R2_AUTO_CHECK", "R2_AUTO_PULL", "R2_CHECK_INTERVAL_HOURS"):
+                "R2_AUTO_CHECK", "R2_CHECK_INTERVAL_HOURS"):
         monkeypatch.delenv(var, raising=False)
 
     def write(text: str) -> None:
@@ -169,7 +171,15 @@ def test_defaults_come_from_code_not_from_the_template(cfg):
     assert s.bucket == r2_sync.DEFAULT_BUCKET
     assert s.object_key == r2_sync.DEFAULT_OBJECT_KEY
     assert s.endpoint == f"https://{r2_sync.DEFAULT_ACCOUNT_ID}.r2.cloudflarestorage.com"
-    assert (s.auto_check, s.auto_pull) == (True, False)
+    assert s.auto_check is True
+    assert s.check_interval_hours == r2_sync.DEFAULT_CHECK_INTERVAL_HOURS
+
+
+def test_there_is_no_automatic_merge(cfg):
+    """`check_update` warns; only the CLI merges.  If an `auto_pull` switch ever
+    comes back, it must come back with §6.2's guardrails, not by accident."""
+    assert not hasattr(r2_sync.settings(), "auto_pull")
+    assert not hasattr(r2_sync, "maybe_auto_pull")
 
 
 def test_the_endpoint_follows_a_configured_account_id(cfg):
@@ -178,27 +188,117 @@ def test_the_endpoint_follows_a_configured_account_id(cfg):
 
 
 def test_env_beats_the_config_file(cfg, monkeypatch):
-    cfg("r2:\n  bucket: from_file\n  auto_pull: true\n")
+    cfg("r2:\n  bucket: from_file\n")
     assert r2_sync.settings().bucket == "from_file"
     monkeypatch.setenv("R2_BUCKET", "from_env")
     assert r2_sync.settings().bucket == "from_env"
 
 
-def test_r2_auto_pull_0_disables_it(cfg, monkeypatch):
+def test_r2_auto_check_0_disables_it(cfg, monkeypatch):
     """The trap this exists to prevent: the package's one prior env-boolean idiom
-    is `os.getenv(x, "") != ""`, under which `R2_AUTO_PULL=0` reads as True --
-    turning ON a non-interactive, half-reversible merge for a user turning it off.
+    is `os.getenv(x, "") != ""`, under which `R2_AUTO_CHECK=0` reads as True --
+    turning a switch ON for a user who set it to turn it off.
     """
-    cfg("r2:\n  auto_pull: true\n")
-    assert r2_sync.settings().auto_pull is True
-    monkeypatch.setenv("R2_AUTO_PULL", "0")
-    assert r2_sync.settings().auto_pull is False
+    cfg("r2:\n  auto_check: true\n")
+    assert r2_sync.settings().auto_check is True
+    monkeypatch.setenv("R2_AUTO_CHECK", "0")
+    assert r2_sync.settings().auto_check is False
 
 
 def test_a_nonsense_boolean_is_an_error_not_a_guess(cfg, monkeypatch):
-    monkeypatch.setenv("R2_AUTO_PULL", "sure")
+    monkeypatch.setenv("R2_AUTO_CHECK", "sure")
     with pytest.raises(ValueError, match="not a boolean"):
         r2_sync.settings()
+
+
+# ---------------------------------------------------------------------------
+# check_update — the one automatic path, and it only ever logs
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def check(cfg, monkeypatch, tmp_path):
+    """Isolate the marker file and reset the once-per-process latch."""
+    monkeypatch.setattr(r2_sync, "MARKER_PATH", str(tmp_path / "marker.json"))
+    monkeypatch.setattr(r2_sync, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(r2_sync, "_checked_this_process", False)
+    lines: list[str] = []
+
+    def run(**marker):
+        if marker:
+            r2_sync._write_marker(**marker)
+        monkeypatch.setattr(r2_sync, "_checked_this_process", False)
+        r2_sync.check_update(log=lines.append)
+        return lines
+    return run
+
+
+def _head(etag="new", **md):
+    return r2_sync.Remote_Head(
+        etag=etag, size=750 * 1024 ** 2,
+        last_modified=datetime(2026, 7, 9, 12, 0),
+        metadata={"created-by": "somewhere", **md})
+
+
+def test_check_update_names_the_command_to_run(check, monkeypatch):
+    monkeypatch.setattr(r2_sync, "remote_head", lambda s: _head())
+    [line] = check(etag="old", pulled_at=datetime(2026, 6, 1).timestamp())
+
+    assert "A newer Semantic-Embedding DB is available" in line
+    assert "2026-07-09" in line and "last synced here 2026-06-01" in line
+    assert f"Run: {r2_sync.manage_script()} pull" in line
+    assert os.path.isabs(r2_sync.manage_script()), "the command must be runnable as printed"
+
+
+def test_check_update_is_silent_when_current(check, monkeypatch):
+    monkeypatch.setattr(r2_sync, "remote_head", lambda s: _head(etag="same"))
+    assert check(etag="same") == []
+
+
+def test_check_update_is_silent_when_the_remote_is_empty(check, monkeypatch):
+    monkeypatch.setattr(r2_sync, "remote_head", lambda s: None)
+    assert check(etag="old") == []
+
+
+def test_check_update_respects_the_interval(check, monkeypatch):
+    called = []
+    monkeypatch.setattr(r2_sync, "remote_head",
+                        lambda s: called.append(1) or _head())
+    assert check(etag="old", last_checked_at=time.time()) == []
+    assert called == [], "probed the network inside the throttle window"
+
+
+def test_check_update_probes_once_per_process(cfg, monkeypatch, tmp_path):
+    monkeypatch.setattr(r2_sync, "MARKER_PATH", str(tmp_path / "m.json"))
+    monkeypatch.setattr(r2_sync, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(r2_sync, "_checked_this_process", False)
+    called = []
+    monkeypatch.setattr(r2_sync, "remote_head", lambda s: called.append(1) or None)
+
+    for _ in range(5):                    # the AoA hook fires once per `by aoa`
+        r2_sync.check_update(log=lambda _: None)
+    assert len(called) == 1
+
+
+def test_check_update_advances_the_clock_even_when_r2_is_unreachable(check, monkeypatch):
+    """Otherwise a machine whose R2 egress is blackholed re-runs the slow path at
+    every single startup, paying the full connect+read timeout each time."""
+    def boom(s):
+        raise OSError("network is unreachable")
+    monkeypatch.setattr(r2_sync, "remote_head", boom)
+
+    [line] = check(etag="old")
+
+    assert "update check skipped" in line and "unreachable" in line
+    assert r2_sync.read_marker().get("last_checked_at"), "the clock did not advance"
+
+
+def test_check_update_never_raises(check, monkeypatch):
+    """It runs inside somebody else's process; a traceback would take down a
+    headless AoA batch and nobody would ever see it."""
+    def boom(s):
+        raise RuntimeError("anything at all")
+    monkeypatch.setattr(r2_sync, "remote_head", boom)
+    assert len(check(etag="old")) == 1        # logged, not raised
 
 
 def test_env_bool_distinguishes_unset_from_empty():

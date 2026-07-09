@@ -442,8 +442,8 @@ def _r2():
 
     Every R2 subcommand is typed by a human at a terminal, so an incompatible
     snapshot or a busy database must stop the run with a non-zero exit — unlike
-    r2_sync.maybe_auto_pull, which runs inside somebody else's process and only
-    ever prints.
+    r2_sync.check_update, which runs inside somebody else's process and only
+    ever logs.
     """
     from Isabelle_Semantic_Embedding import r2_sync
     return r2_sync

@@ -18,11 +18,16 @@ last sync, and never runs on its own — there is no automatic upload path.
 ``pull`` is only half-reversible: the pre-merge backup is the sole way back.
 Everything that can reject a snapshot runs before the first byte is written.
 
-Failure semantics split by caller (a background merge must never take down the
-process it is parasitic on):
+BOTH DIRECTIONS ARE EXPLICIT.  Nothing here ever merges on its own: the only
+automatic path is ``check_update``, which probes the remote at most once a week
+and prints a line telling you to run ``pull`` yourself.  A background merge would
+have to take the LMDB write lock inside somebody else's long-running process, and
+undoing it means restoring a 0.7 GiB backup — not a thing to do unattended.
+
+Failure semantics split by caller:
 
   * ``push_snapshot`` / ``pull_snapshot`` raise. ``semantics_manage.py`` exits non-zero.
-  * ``maybe_auto_pull`` swallows everything and prints one line.
+  * ``check_update`` swallows everything and logs one line.
 
 Credentials come only from the environment and have no defaults:
 
@@ -40,9 +45,9 @@ import os
 import pathlib
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, NamedTuple
@@ -109,7 +114,6 @@ class Settings(NamedTuple):
     endpoint: str
     object_key: str
     auto_check: bool
-    auto_pull: bool
     check_interval_hours: int
 
 
@@ -142,9 +146,18 @@ def settings() -> Settings:
         endpoint=endpoint,
         object_key=pick("R2_OBJECT_KEY", "object_key", DEFAULT_OBJECT_KEY),
         auto_check=flag("R2_AUTO_CHECK", "auto_check", True),
-        auto_pull=flag("R2_AUTO_PULL", "auto_pull", False),
         check_interval_hours=int(hours if hours is not None else DEFAULT_CHECK_INTERVAL_HOURS),
     )
+
+
+def manage_script() -> str:
+    """Absolute path of semantics_manage.py, for telling a user what to run.
+
+    It sits beside the package directory in a source checkout.  A wheel does not
+    ship it (it is a script, not package data), so fall back to the bare name.
+    """
+    p = pathlib.Path(__file__).resolve().parent.parent / "semantics_manage.py"
+    return str(p) if p.exists() else "semantics_manage.py"
 
 
 def config_path() -> str:
@@ -841,8 +854,8 @@ def status() -> None:
     marker = read_marker()
     _log(f"config      : {config_path()}")
     _log(f"remote      : s3://{s.bucket}/{s.object_key}  ({s.endpoint})")
-    _log(f"auto_check  : {s.auto_check}   auto_pull: {s.auto_pull}   "
-         f"every {s.check_interval_hours}h")
+    _log(f"auto_check  : {s.auto_check}, every {s.check_interval_hours}h "
+         f"(checks and warns; never merges)")
     _log("")
 
     for label, ts in (("last pulled", marker.get("pulled_at")),
@@ -863,28 +876,39 @@ def status() -> None:
          f"{head.metadata.get('created-by', '?')}")
     _log("")
     _log("Up to date." if head.etag == marker.get("etag")
-         else "A newer snapshot is available. Run: semantics_manage.py pull")
+         else f"A newer Semantic-Embedding DB is available. "
+              f"Run: {manage_script()} pull")
 
 
-def maybe_auto_pull() -> None:
-    """Probe the remote at most once per `check_interval_hours`; merge only if
-    `auto_pull` is on.  NOT WIRED TO ANY CALLER YET.
+_checked_this_process = False
 
-    NEVER raises and never prompts.  It is meant to run inside somebody else's
-    process — a headless AoA batch, a collection run — where an exception would
-    take the whole run down and nobody would see the traceback.  Every guardrail
-    that fails degrades to a single printed line.
 
-    TWO THINGS TO FIX BEFORE CALLING IT FROM THE ISABELLE RPC HOST:
+def check_update(log: 'Callable[[str], None] | None' = None) -> None:
+    """Probe the remote at most once per `check_interval_hours` and, if it holds a
+    newer database, say so.  Never downloads, never merges, never raises.
 
-    * `_log` prints to stdout, and the host daemonizes (`fork_and_launch__` in
-      Isabelle_RPC's rpc.py dup2's stdout/stderr to /dev/null), so every message
-      here would vanish.  Route them to `connection.server.logger` instead.
-    * `remote_head` is blocking boto3 on the host's single event loop, which runs
-      several coroutines concurrently.  A dead R2 stalls all of them for as long
-      as the timeouts allow.  Call it via `asyncio.to_thread`.
+    Blocking, on purpose: `remote_head` is blocking boto3.  A caller on an event
+    loop — the Isabelle RPC host runs several coroutines on one — must wrap this
+    in `asyncio.to_thread`, or an unreachable R2 stalls all of them for as long
+    as the timeouts allow.
+
+    `log` defaults to printing, which is right for a terminal and useless inside
+    the RPC host: `fork_and_launch__` (Isabelle_RPC's rpc.py) daemonizes and
+    dup2's stdout onto /dev/null.  Pass `connection.server.logger.warning` there.
+
+    Suppresses every exception.  It is a courtesy check running inside somebody
+    else's process — a headless AoA batch, a collection run — where a traceback
+    would take down the run and nobody would ever see it.
     """
+    global _checked_this_process
+    log = log or _log
     try:
+        # The weekly marker throttles the network call; this throttles the file
+        # read, because the AoA hook fires once per `by aoa`, not once per process.
+        if _checked_this_process:
+            return
+        _checked_this_process = True
+
         s = settings()
         if not s.auto_check:
             return
@@ -900,12 +924,12 @@ def maybe_auto_pull() -> None:
             _write_marker(last_checked_at=time.time())
         if head is None or head.etag == marker.get("etag"):
             return
-        if not s.auto_pull:
-            _log(f"[semantic-db] a newer snapshot is available "
-                 f"({head.last_modified:%Y-%m-%d}, {_human(head.size)}). "
-                 f"Run: semantics_manage.py pull")
-            return
-        _log("[semantic-db] pulling the newer snapshot...")
-        pull_snapshot()
+
+        synced = marker.get("pulled_at") or marker.get("pushed_at")
+        since = (datetime.fromtimestamp(synced).strftime("%Y-%m-%d") if synced
+                 else "never")
+        log(f"[semantic-db] A newer Semantic-Embedding DB is available "
+            f"({head.last_modified:%Y-%m-%d}, {_human(head.size)}), "
+            f"last synced here {since}. Run: {manage_script()} pull")
     except Exception as e:                        # noqa: BLE001 — see the docstring
-        print(f"[semantic-db] automatic sync skipped: {e}", file=sys.stderr, flush=True)
+        log(f"[semantic-db] update check skipped: {e}")

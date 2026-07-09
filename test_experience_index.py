@@ -172,25 +172,39 @@ open(go + ".done", "w").write(str(blocked))
 """
 
 
-def test_rebuild_holds_the_semantics_write_lock_across_the_scan(isolated_cache, tmp_path):
+SCAN_SECS = 1.0        # how long the stubbed scan takes; see the test below
+
+
+def test_rebuild_holds_the_semantics_write_lock_across_the_scan(isolated_cache, tmp_path,
+                                                                monkeypatch):
     """A concurrent writer must block for the whole rebuild, scan included.
 
     This is the property that makes the stale snapshot above unreachable: the
     scan and the index wipe live in one semantics write transaction, and LMDB's
-    single-writer lock is inter-process.  Enough experiences are written that the
-    scan is measurably slow, so a writer starting mid-scan is observably blocked.
+    single-writer lock is inter-process.  Revert that fix and this test fails.
+
+    The scan is stubbed to take a known SCAN_SECS rather than made slow by
+    seeding a lot of records.  Wall-clock thresholds tuned against a real scan
+    are a flake waiting to happen: a real 50k-record scan measures 0.20-0.47s
+    here depending on machine load, against a threshold that has to be about
+    0.2s -- no margin at all.  Stubbing decouples the assertion from both the
+    machine's speed and the record count, and it still tests the real property,
+    which is that the write lock spans the call to _scan_experiences.
     """
     from Isabelle_Semantic_Embedding.experience_index import Experience_Index
     from Isabelle_Semantic_Embedding.semantics import Semantic_DB
     _reset(isolated_cache)
 
-    n = 50_000
     prefix = xor_theory_prefix([H1])
-    _write_records({
-        prefix + bytes([EXP]) + b"\x01" + i.to_bytes(14, "big"):
-            _record(EXP, f"e{i}", [("T1", H1)], "when to use " * 8)
-        for i in range(n)
-    })
+    one = prefix + bytes([EXP]) + b"\x01" + bytes(14)
+    _write_records({one: _record(EXP, "e", [("T1", H1)])})
+
+    real_scan = Semantic_DB._scan_experiences
+
+    def slow_scan(txn):
+        time.sleep(SCAN_SECS)
+        return real_scan(txn)
+    monkeypatch.setattr(Semantic_DB, "_scan_experiences", staticmethod(slow_scan))
 
     go = str(tmp_path / "go")
     script = tmp_path / "writer.py"
@@ -200,15 +214,15 @@ def test_rebuild_holds_the_semantics_write_lock_across_the_scan(isolated_cache, 
         time.sleep(0.01)
 
     open(go, "w").write("go")
-    started = time.time()
     indexed = Semantic_DB.rebuild_experience_index()
-    rebuild_secs = time.time() - started
     assert writer.wait(timeout=60) == 0
     blocked = float(open(go + ".done").read())
 
-    assert indexed == n
-    assert rebuild_secs > 0.2, f"scan too fast ({rebuild_secs:.2f}s) to observe the lock"
-    assert blocked > 0.2, f"the writer was not blocked ({blocked:.2f}s): the lock does not span the scan"
+    assert indexed == 1
+    # The writer starts ~55ms in (5ms poll + its own 50ms sleep), so if the lock
+    # spans the scan it waits ~SCAN_SECS; if it only covers the index wipe, ~0.
+    assert blocked > SCAN_SECS / 2, \
+        f"the writer was not blocked ({blocked:.2f}s): the lock does not span the scan"
 
     new = prefix + bytes([EXP]) + b"\xFF" * 15
     assert new in Experience_Index.all_keys(), "the concurrent experience was erased"

@@ -17,16 +17,11 @@ r2:
   # endpoint: https://<account_id>.r2.cloudflarestorage.com   # derived from account_id
   object_key: Isabelle_Semantic_Embedding.tar.zst
 
-  # Uploading is ALWAYS explicit — `semantics_manage.py push`, never automatic.
-  # These two govern only the download side.
-
-  # Probe the remote (one HEAD request, no transfer) at most every
-  # check_interval_hours, and print a line when a newer snapshot exists.
+  # Both `push` and `pull` are ALWAYS explicit — nothing here syncs on its own.
+  #
+  # auto_check only probes the remote (one HEAD request, no transfer) at most
+  # every check_interval_hours, and prints a line when a newer database exists.
+  # It never downloads and never merges; you run `pull` yourself.
   auto_check: true
-
-  # Download and merge that snapshot without being asked.  The merge is only
-  # half-reversible (the pre-merge backup is the sole way back), so this is off
-  # by default; it also refuses to run when another process holds the database.
-  auto_pull: false
 
   check_interval_hours: 168        # weekly
