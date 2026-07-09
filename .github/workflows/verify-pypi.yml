@@ -49,9 +49,11 @@ jobs:
           - { runner: ubuntu-24.04, python: "3.11", label: linux-x86_64 }
           - { runner: ubuntu-24.04, python: "3.14", label: linux-x86_64 }
           - { runner: ubuntu-24.04-arm, python: "3.12", label: linux-aarch64 }
-          - { runner: macos-14, python: "3.12", label: macos-arm64 }
+          - { runner: macos-15, python: "3.12", label: macos-arm64 }
           # The one host that can tell a real x86_64 slice from a universal2 tag.
-          - { runner: macos-13, python: "3.11", label: macos-intel }
+          # macos-15-intel: the macOS 13 image is retired, and a job requesting a dead
+          # label queues indefinitely instead of failing.
+          - { runner: macos-15-intel, python: "3.11", label: macos-intel }
           - { runner: windows-2022, python: "3.13", label: windows-amd64 }
 
     steps:

@@ -45,7 +45,7 @@ jobs:
           # An Apple Silicon runner, but it builds for both architectures: Isabelle
           # runs native arm64 Poly/ML there (etc/options ML_system_apple = true) and
           # x86_64 on Intel Macs, and one fat binary serves both.
-          - { runner: macos-14, arch: universal2, lib: libisabelle_vector.dylib }
+          - { runner: macos-15, arch: universal2, lib: libisabelle_vector.dylib }
           - { runner: windows-2022, arch: amd64, lib: isabelle_vector.dll }
 
     steps:
@@ -306,11 +306,17 @@ jobs:
 
   # The universal2 wheel is built on an Apple Silicon runner, where an arm64-only
   # extension module imports perfectly well. Only an Intel host can tell whether the
-  # x86_64 slice is real. macos-13 is that host, and it need not build anything.
+  # x86_64 slice is real. This job is that host, and it builds nothing.
+  #
+  # macos-15-intel, not macos-13: GitHub retired the macOS 13 image, and a job asking
+  # for a label that no longer exists queues forever rather than failing -- ours sat
+  # there for an hour and twenty minutes before the label, not the queue, turned out
+  # to be the problem. The surviving Intel labels are macos-15-intel and
+  # macos-26-intel, both standard runners and free on public repositories.
   intel-mac:
     name: universal2 on Intel
     needs: wheel
-    runs-on: macos-13
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
