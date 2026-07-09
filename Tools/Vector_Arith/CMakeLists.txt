@@ -15,11 +15,18 @@ endif()
 # find_package(HWY QUIET)  # 注释掉，不使用系统的
 
 if(TRUE)  # 强制手动查找
-    # 优先查找 ./contrib 下的静态库
+    # 优先查找 ./contrib 下的静态库。
+    #
+    # hwybuild, not build: Highway ships a Bazel file named BUILD at its root, and
+    # macOS filesystems are case-insensitive by default, so `cmake -B .../build`
+    # collides with it ("Unable to (re)create the private pkgRedirects directory").
+    # `build` stays in the list because existing checkouts have one.
     find_library(HWY_STATIC_LIBRARY
         NAMES libhwy.a
         PATHS
+            ${CMAKE_SOURCE_DIR}/contrib/highway-1.3.0/hwybuild
             ${CMAKE_SOURCE_DIR}/contrib/highway-1.3.0/build
+            ${CMAKE_SOURCE_DIR}/contrib/highway/hwybuild
             ${CMAKE_SOURCE_DIR}/contrib/highway/build
             ${CMAKE_SOURCE_DIR}/contrib/build
         NO_DEFAULT_PATH

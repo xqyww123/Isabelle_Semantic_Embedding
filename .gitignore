@@ -17,6 +17,9 @@ IsaREPL.egg-info
 .idea
 .trash
 build
+# Highway's out-of-tree build. Not `build`: Highway ships a Bazel file named BUILD,
+# and macOS filesystems are case-insensitive, so the two would collide there.
+hwybuild
 *.egg-info
 secret.sh
 

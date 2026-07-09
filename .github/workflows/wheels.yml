@@ -72,29 +72,34 @@ jobs:
         # the library, and none of them ship. Highway already forces PIC on that
         # target, which matters because the archive is linked into a shared object.
         #
-        # The output must land in contrib/highway-1.3.0/build: Tools/Vector_Arith's
-        # CMakeLists looks there and nowhere else, and cross-checks that the headers
-        # come from the same tree as the archive, because libhwy.a owns the dispatch
-        # tables and their target numbering is not stable across releases.
+        # The output must land where Tools/Vector_Arith's CMakeLists looks for it; it
+        # cross-checks that the headers come from the same tree as the archive,
+        # because libhwy.a owns the dispatch tables and their target numbering is not
+        # stable across releases.
+        #
+        # hwybuild, not build: Highway's root holds a Bazel file named BUILD, and the
+        # macOS runner's filesystem is case-insensitive, so `cmake -B .../build`
+        # fails there with "Unable to (re)create the private pkgRedirects directory".
         #
         # On macOS the archive must be fat too, or linking the kernel fails with
         # "building for macOS-arm64 but attempting to link with file built for
         # macOS-x86_64". Highway adds no -march on x86_64/arm64, so clang's two
-        # front-end passes are safe.
+        # front-end passes are safe. The semicolon is a CMake list separator and must
+        # survive the shell, hence the array.
         run: |
           hwy=Tools/Vector_Arith/contrib/highway-1.3.0
+          osx=()
           if [ "$RUNNER_OS" = macOS ]; then
-            osx='-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0'
-          else
-            osx=''
+            osx=(-DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0)
           fi
-          cmake -S "$hwy" -B "$hwy/build" $osx \
+          cmake -S "$hwy" -B "$hwy/hwybuild" "${osx[@]}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
             -DHWY_ENABLE_TESTS=OFF \
             -DHWY_ENABLE_EXAMPLES=OFF \
             -DHWY_ENABLE_CONTRIB=OFF
-          cmake --build "$hwy/build" --target hwy --parallel
+          cmake --build "$hwy/hwybuild" --target hwy --parallel
+          if [ "$RUNNER_OS" = macOS ]; then lipo -info "$hwy/hwybuild/libhwy.a"; fi
 
       - name: Build the kernel and run its tests
         # setup.py would build the library on its own, but not the tests. Run them
@@ -153,7 +158,9 @@ jobs:
         # on macOS especially, where they are produced by different toolchains and
         # only the wheel itself shows whether both obeyed.
         run: |
-          test -n "$(ls dist/*-${{ matrix.arch }}.whl)"
+          # The tag's architecture is the last component, after an underscore:
+          # ...-manylinux_2_17_x86_64.whl, ...-macosx_11_0_universal2.whl
+          test -n "$(ls dist/*_${{ matrix.arch }}.whl)"
           python - <<'PY'
           import pathlib, zipfile
           whl, = pathlib.Path("dist").glob("*.whl")
