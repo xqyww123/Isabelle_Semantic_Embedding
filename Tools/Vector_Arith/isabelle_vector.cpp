@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 // #include <queue>
 
 #undef HWY_TARGET_INCLUDE
@@ -71,31 +72,72 @@ Entry pop_heap(Heap& heap) {
   return result;
 }
 
+/* Offer one (score,index) to the top-k min-heap. Shared by both entry points. */
+static inline void heap_offer(Heap& heap, int16_t score, int32_t index) {
+  if (heap.size < heap.capacity) {
+    /* Heap not full: insert at end, sift up */
+    heap.size++;
+    heap.data[heap.size] = {score, index};
+    sift_up(heap, heap.size);
+  } else if (score > heap.data[1].score) {
+    /* New score beats the weakest in top-k: replace root, sift down */
+    heap.data[1] = {score, index};
+    sift_down(heap);
+  }
+  /* else: worse than weakest, skip */
+}
+
+/* Drain the min-heap into result arrays in DESCENDING score order.
+   Pop yields ascending; fill in reverse. Consumes exactly heap.size==k entries. */
+static void heap_fill_desc(Heap& heap, int32_t k, int32_t* out_idx, int16_t* out_scores) {
+  for (int32_t i = k - 1; i >= 0; i--) {
+    Entry entry = pop_heap(heap);
+    out_idx[i] = entry.index;
+    out_scores[i] = entry.score;
+  }
+}
+
 extern "C" void top_k_q15(const int16_t* vectors, const int16_t* query, int32_t D, int32_t N, int32_t k, int32_t* result_indexes, int16_t* result_scores) {
   int16_t* scores = (int16_t*)malloc(N * sizeof(int16_t));
   int32_t D_aligned = (D + 31) & ~31;
   for (int32_t i = 0; i < N; i++)
     scores[i] = dot_q15(vectors + i * D_aligned, query, D);
   Heap heap = allocate_heap(k);
-  for (int32_t i = 0; i < N; i++) {
-    if (heap.size < heap.capacity) {
-      /* Heap not full: insert at end, sift up */
-      heap.size++;
-      heap.data[heap.size] = {scores[i], i};
-      sift_up(heap, heap.size);
-    } else if (scores[i] > heap.data[1].score) {
-      /* New score beats the weakest in top-k: replace root, sift down */
-      heap.data[1] = {scores[i], i};
-      sift_down(heap);
-    }
-    /* else: worse than weakest, skip */
-  }
-  /* Pop from min-heap gives ascending order; fill result in reverse for descending */
-  for (int32_t i = k - 1; i >= 0; i--) {
-    Entry entry = pop_heap(heap);
-    result_indexes[i] = entry.index;
-    result_scores[i] = entry.score;
-  }
+  for (int32_t i = 0; i < N; i++)
+    heap_offer(heap, scores[i], i);
+  heap_fill_desc(heap, k, result_indexes, result_scores);
   free(scores);
   free_heap(heap);
+}
+
+/* Gather-mode top-k, ZERO-COPY. vec_addrs[i] points directly at the i-th Q1.15
+   vector (D int16, packed, arbitrary alignment) — typically straight into an LMDB
+   mmap value. The kernel reads it in place via LoadU; nothing is copied.
+
+   Measured: zero-copy LoadU beats memcpy-into-an-aligned-row by 1.5x (2.0x when
+   the addresses are in scattered/unsorted order), because memcpy makes the data
+   cross memory twice. Alignment itself is worth nothing here (aligned Load 75.5ms
+   vs unaligned LoadU 76.0ms), so we neither pad the stored values nor copy.
+
+   CALLER CONTRACT:
+     - each vec_addrs[i] must have exactly D*2 readable bytes (assert len==D*2 on
+       the Python side; a stale float32 record is D*4 and would silently mis-read);
+     - the LMDB read transaction must stay open for the whole call, since the
+       addresses point into its MVCC snapshot of the mmap.
+   Returns 0 on success, 2 on invalid k/N. */
+extern "C" int top_k_q15_gather(
+    const uintptr_t* vec_addrs, const int16_t* query,
+    int32_t D, int32_t N, int32_t k,
+    int32_t* out_idx, int16_t* out_scores) {
+  if (k > N) k = N;              /* F: clamp at entry, do not trust caller */
+  if (k <= 0 || N <= 0) return 2;
+  Heap heap = allocate_heap(k);
+  for (int32_t i = 0; i < N; i++) {
+    int16_t s = HWY_DYNAMIC_DISPATCH(project::DotQ15Impl)(
+        (const int16_t*)vec_addrs[i], query, (size_t)D);   /* zero-copy, LoadU */
+    heap_offer(heap, s, i);
+  }
+  heap_fill_desc(heap, k, out_idx, out_scores);
+  free_heap(heap);
+  return 0;
 }

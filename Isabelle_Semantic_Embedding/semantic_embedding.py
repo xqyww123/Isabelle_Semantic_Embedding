@@ -18,6 +18,8 @@ import faiss
 import diskcache
 import platformdirs
 
+from ._vecarith import encode_q15, gather_addrs, top_k_q15_gather, Q15_SCALE
+
 _EMBED_CACHE_TTL = 3 * 86400  # 3 days
 
 
@@ -586,6 +588,23 @@ def _close_all_lmdb_envs() -> None:
 atexit.register(_close_all_lmdb_envs)
 
 
+def _decode_q15(raw, D: int, k: key) -> np.ndarray:
+    """Dequantize one stored Q1.15 value to float32.
+
+    The value must be exactly D*2 bytes. A D*4 one is a leftover float32 record:
+    reinterpreting it as int16 would yield a plausible-looking but wrong vector,
+    so say what happened instead.
+    """
+    if len(raw) == D * 4:
+        raise ValueError(
+            f"vector for key {k.hex()[:16]}… is {D * 4} bytes (float32); this store "
+            f"has not been migrated to Q1.15. Run the migration script first.")
+    if len(raw) != D * 2:
+        raise ValueError(
+            f"vector for key {k.hex()[:16]}… is {len(raw)} bytes, expected {D * 2}")
+    return np.frombuffer(bytes(raw), dtype="<i2").astype(np.float32) / Q15_SCALE
+
+
 class Vector_Store(ABC):
     emb_provider : Embedding_Provider
 
@@ -601,12 +620,17 @@ class Vector_Store(ABC):
         return _get_lmdb_env(self.path)
 
     def __getitem__(self, k: key) -> np.ndarray | None:
-        """Return the vector for key k, or None if not stored."""
+        """Return the vector for key k, dequantized to float32, or None.
+
+        What comes back is the Q1.15 round-trip: a unit vector scaled to
+        TARGET_NORM, not the provider's raw output. Nothing reads magnitudes back
+        out of the store today; a caller that needs the original must re-embed.
+        """
         with self._env.begin(buffers=True) as txn:
             raw = txn.get(k)
             if raw is None:
                 return None
-            return np.array(np.frombuffer(raw, dtype=np.float32))
+            return _decode_q15(raw, self.dimension, k)
 
     def __contains__(self, k: key) -> bool:
         """Check if key k has a stored vector."""
@@ -614,9 +638,9 @@ class Vector_Store(ABC):
             return txn.cursor().set_key(k)
 
     def __setitem__(self, k: key, vector: np.ndarray) -> None:
-        """Store a vector for key k."""
+        """Store a vector for key k, quantized to Q1.15."""
         with self._env.begin(write=True) as txn:
-            txn.put(k, vector.astype(np.float32).tobytes())
+            txn.put(k, encode_q15(vector).tobytes())
 
     def put(self, k: key, vector: np.ndarray) -> None:
         """Store a vector for key k. Alias for __setitem__."""
@@ -640,23 +664,31 @@ class Vector_Store(ABC):
         result = await self.emb_provider.embed(texts)
         with self._env.begin(write=True) as txn:
             for (k, _), vec in zip(kv_pairs, result.vectors):
-                txn.put(k, vec.astype(np.float32).tobytes())
+                txn.put(k, encode_q15(vec).tobytes())
         return result.total_tokens
 
-    async def _auto_embed(self, missing: list[key], matrix: np.ndarray, row: int) -> list[key]:
-        """Override to automatically obtain and store vectors for missing keys during topk.
-        Writes recovered vectors directly into matrix starting at the given row.
-        Returns the list of recovered keys (in the same order as written to matrix).
-        Default: returns [], i.e., missing keys are skipped."""
+    async def _auto_embed(self, missing: list[key]) -> list[key]:
+        """Override to obtain and persist vectors for keys absent from the store.
+
+        Called by topk before it opens its read transaction, so implementations
+        are free to await. Whatever they persist is picked up by the subsequent
+        gather; they need not hand the vectors back.
+        Returns the keys that are now stored. Default: none recovered."""
         return []
 
     async def topk(self, query: np.ndarray | str, domain: list[key], k: int,
                    *, kinds_phrase: str | None = None) -> list[tuple[key, float]]:
-        """Return the top-k (key, score) pairs from domain most similar to query.
+        """Return the top-k (key, cosine) pairs from domain most similar to query.
+
         If query is a string, it is embedded via emb_provider first (role="query",
         with ``kinds_phrase`` filling the instruction's {kinds} slot).
         Keys missing from LMDB are passed to _auto_embed for recovery.
-        Uses faiss.knn directly on the assembled matrix (no index)."""
+
+        Split in two phases. Everything that awaits — embedding the query, and
+        recovering missing vectors — happens here, on the event loop. The scan
+        itself runs in a worker thread, because py-lmdb read transactions are
+        bound to the thread that opened them and must not span an await.
+        """
         if isinstance(query, str):
             if self.connection is not None:
                 await self.connection.tracing(f"[Semantic_Embedding] embedding query: {query!r}")
@@ -666,26 +698,46 @@ class Vector_Store(ABC):
             # *string* here, so its reranker gate (isinstance(query, str)) is unaffected.
             query = (await self.emb_provider.embed(
                 [query], role="query", kinds_phrase=kinds_phrase)).vectors[0]
-        matrix = np.empty((len(domain), self.dimension), dtype=np.float32)
-        valid_keys: list[key] = []
-        missing_keys: list[key] = []
-        i = 0
+
+        query_q15 = encode_q15(query)
+        # The scan runs in a worker thread; ctypes releases the GIL for the kernel
+        # call, so the event loop keeps running instead of freezing for the scan.
+        # Missing keys fall out of the gather itself — probing for them up front
+        # would mean a second pass over the whole domain on the event loop.
+        results, missing = await asyncio.to_thread(self._topk_sync, query_q15, domain, k)
+        if missing and await self._auto_embed(missing):
+            results, _ = await asyncio.to_thread(self._topk_sync, query_q15, domain, k)
+        return results
+
+    def _topk_sync(self, query_q15: np.ndarray, domain: list[key],
+                   k: int) -> tuple[list[tuple[key, float]], list[key]]:
+        """Gather the domain's vectors straight out of the LMDB mmap and scan them.
+
+        Nothing is copied: each address points at a value inside the transaction's
+        MVCC snapshot, and the SIMD kernel reads it in place. Two consequences —
+        the kernel must run before the transaction closes, and a value whose length
+        is not exactly D*2 (a pre-migration float32 record, say) would be read as a
+        truncated vector, so those are skipped rather than trusted.
+        """
+        D = self.dimension
+        expected = D * 2
+        # Sorting turns ~10^5 scattered b-tree lookups into a near-sequential walk
+        # of the file; measured 2.9 -> 7.95 GB/s on the production store. Duplicates
+        # then sit next to each other, so dropping them costs a comparison rather
+        # than the ~48ms a set() of 10^5 keys takes.
+        ordered = sorted(domain)
+        keys = [dk for i, dk in enumerate(ordered) if i == 0 or dk != ordered[i - 1]]
         with self._env.begin(buffers=True) as txn:
-            for dk in domain:
-                raw = txn.get(dk)
-                if raw is not None:
-                    matrix[i] = np.frombuffer(raw, dtype=np.float32)
-                    valid_keys.append(dk)
-                    i += 1
-                else:
-                    missing_keys.append(dk)
-        if missing_keys:
-            recovered = await self._auto_embed(missing_keys, matrix, i)
-            valid_keys.extend(recovered)
-            i += len(recovered)
-        matrix = matrix[:i]
-        if i == 0:
-            return []
-        distances, indices = faiss.knn(query.reshape(1, -1).astype(np.float32), matrix, min(k, i)) # type: ignore
-        return [(valid_keys[j], 1.0 - float(distances[0][ri]) / 2.0)
-                for ri, j in enumerate(indices[0]) if j >= 0]
+            # The memoryviews must outlive the kernel call: their addresses point
+            # into this transaction's snapshot of the mmap, and nothing is copied.
+            buffers = [txn.get(dk) for dk in keys]
+            addrs, kept, missing_at, skipped = gather_addrs(buffers, expected)
+            if skipped:
+                print(f"[Semantic_Embedding] topk skipped {skipped} record(s) whose size "
+                      f"is not {expected} bytes; the store may not be migrated to Q1.15")
+            missing = [keys[int(i)] for i in missing_at]
+            if addrs.size == 0:
+                return [], missing
+            idx, cos = top_k_q15_gather(addrs, query_q15, D, min(k, int(addrs.size)))
+            results = [(keys[int(kept[int(i)])], float(c)) for i, c in zip(idx, cos)]
+        return results, missing

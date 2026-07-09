@@ -20,6 +20,7 @@ from claude_agent_sdk import SdkMcpTool, tool
 from .semantic_embedding import (Vector_Store, Embedding_Provider, make_embedding_provider,
                                  sanitize_model, unsanitize_model,
                                  Reranker_Provider, reranker_provider, key)
+from ._vecarith import encode_q15
 
 from .base import ToolCall_ret, mk_ret as _mk_ret
 from .hover import resolve_context_at
@@ -937,7 +938,7 @@ class Semantic_Vector_Store(Vector_Store):
                 data[b"total_tokens"] = data.get(b"total_tokens", 0) + total_tokens
             txn.put(theory_key, msgpack.packb(data))  # type: ignore
 
-    async def _auto_embed(self, missing: list[key], matrix: np.ndarray, row: int) -> list[key]:
+    async def _auto_embed(self, missing: list[key]) -> list[key]:
         if self.connection is None:
             return []
         if not await self.connection.config_lookup("auto_interpret_for_embedding"):
@@ -1020,12 +1021,10 @@ class Semantic_Vector_Store(Vector_Store):
             f"[Semantic_Embedding] embedding {len(texts)} of {len(missing)} missing entities "
             f"({total_chars} chars total) into vectors")
         embed_result = await self.emb_provider.embed(texts)
-        # Write vectors into matrix and store in LMDB
+        # Persist into LMDB; topk's gather picks them up from there.
         with self._env.begin(write=True) as txn:
-            for j, (k, vec) in enumerate(zip(text_keys, embed_result.vectors)):
-                v = vec.astype(np.float32)
-                matrix[row + j] = v
-                txn.put(k, v.tobytes())
+            for k, vec in zip(text_keys, embed_result.vectors):
+                txn.put(k, encode_q15(vec).tobytes())
         # Mark processed theories as embedded, recording cost
         for th in theory_hashes:
             self.mark_thy_embedded(th, embed_result.total_tokens)
@@ -1333,7 +1332,7 @@ class Semantic_Vector_Store(Vector_Store):
         result = await self.emb_provider.embed(texts)
         with self._env.begin(write=True) as txn:
             for k, vec in zip(text_keys, result.vectors):
-                txn.put(k, vec.astype(np.float32).tobytes())
+                txn.put(k, encode_q15(vec).tobytes())
         return len(text_keys)
 
     async def embed_entities(self, keys: list[universal_key]) -> None:

@@ -192,6 +192,13 @@ fun top_k (assoc_array, query, k) =
         let val wi = Word.fromInt i
             val j = Word32.toInt (get32 (result_indexes_ptr, wi))
             val raw = Word.toInt (get16 (result_scores_ptr, wi))
+            (* The kernel accumulates round((a*b)/32768) per lane, so raw is Q1.15:
+               raw = 32768 * |a| * |b| * cos. Vectors reach C already scaled to
+               TARGET_NORM (see Isabelle_Semantic_Embedding._vecarith.encode_q15),
+               which both keeps |raw| under int16 -- the accumulator wraps, it does
+               not saturate -- and makes this a cosine up to that constant factor.
+               Sledgehammer_MaSh.normalize_scores divides each list by its own mean,
+               so the constant is irrelevant downstream. *)
             val score = Real.fromInt (if raw >= 32768 then raw - 65536 else raw) / 32768.0
             val (v, _) = Array.sub (assoc_array, j)
          in (v, score)

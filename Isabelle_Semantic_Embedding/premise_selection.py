@@ -3,6 +3,7 @@ from Isabelle_RPC_Host import Connection, isabelle_remote_procedure
 from Isabelle_RPC_Host.unicode import pretty_unicode as _pretty_unicode
 from rocksdict import Rdict
 import rocksdict
+from ._vecarith import encode_q15
 import platformdirs
 import numpy as np
 import os
@@ -58,7 +59,10 @@ async def embed(arg : tuple[list[bytes | str], config], connection : Connection)
         api_key = API_KEY_DEFAULT
 
     cache_dir = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
-    cache_file = os.path.join(cache_dir, f"{MODEL_ID.replace('/', '_')}.db")
+    # The suffix pins the Q1.15 encoding. Entries written before the switch to
+    # encode_q15 used a per-vector scale (v / (|v| + 0.05)) and would mix badly
+    # with the fixed-norm ones; a new filename retires them instead.
+    cache_file = os.path.join(cache_dir, f"{MODEL_ID.replace('/', '_')}_q15n95.db")
     with Rdict(cache_file, options=rocksdict.Options(raw_mode=True)) as db:
         byte_num = dimension * 2
         output: list[bytes | None] = [None] * len(texts)
@@ -83,8 +87,7 @@ async def embed(arg : tuple[list[bytes | str], config], connection : Connection)
             # tricks: random normalized vectors (L2 norm = 1)
             rng = np.random.default_rng()
             vecs = rng.standard_normal((len(new_texts), dimension)).astype(np.float32)
-            vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
-            vecs_int16 = (vecs * 32768).astype('<i2')  # Q1.15 format (little-endian int16)
+            vecs_int16 = encode_q15(vecs)  # Q1.15, L2-normalized to TARGET_NORM
             vecs_q15_bytes = [vecs_int16[i].tobytes() for i in range(len(vecs_int16))]
         else:
             url = base_url.rstrip("/") + "/v1/embeddings"
@@ -107,8 +110,11 @@ async def embed(arg : tuple[list[bytes | str], config], connection : Connection)
 
             # OpenAI format: data = [{"embedding": [...], "index": i, ...}, ...]
             vecs = np.asarray([item["embedding"] for item in data["data"]], dtype=np.float32)
-            vecs /= (np.linalg.norm(vecs, axis=1, keepdims=True) + 0.05) # this "+ 0.05" prevents overflow.
-            vecs_int16 = (vecs * 32768).astype('<i2')  # Q1.15 format (little-endian int16)
+            # Was `v / (|v| + 0.05)`, whose result approaches 1.0 as |v| grows: with
+            # the kernel's Q1.15 rounding multiply the accumulator |s| <= 32768*norm^2
+            # then sits a hair under int16's 32767, and Add wraps rather than
+            # saturates. encode_q15 pins the norm at TARGET_NORM, so |s| <= 29573.
+            vecs_int16 = encode_q15(vecs)
             vecs_q15_bytes = [vecs_int16[i].tobytes() for i in range(len(vecs_int16))]  # list of bytes, one per row
 
         for i, text in enumerate(new_texts):
