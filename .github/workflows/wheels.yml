@@ -1,0 +1,148 @@
+# Build the platform wheels that carry libisabelle_vector.so.
+#
+# One job per architecture, each on a native runner. There is deliberately no
+# cibuildwheel and no qemu here:
+#
+#   * cibuildwheel exists to build one wheel per CPython ABI and to run auditwheel
+#     over the result. Neither applies. The library is dlopened, never imported --
+#     it links no libpython and touches only stable-ABI functions -- so the wheel
+#     is py3-none and a single build serves every interpreter. And Highway is
+#     linked statically, so DT_NEEDED is libc.so.6 alone and there is nothing for
+#     auditwheel to vendor. setup.py reads the ELF itself and refuses to emit a
+#     manylinux tag the binary cannot honour, which is the only check that was
+#     ever load-bearing.
+#   * qemu is unnecessary now that GitHub hosts native arm64 runners. Emulating an
+#     aarch64 Highway build costs tens of minutes; ubuntu-24.04-arm costs none.
+#     (Free for public repositories; private repos pay per-minute.)
+#
+# Highway is vendored in-tree, so nothing is fetched from the network.
+name: wheels
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "Tools/Vector_Arith/**"
+      - "setup.py"
+      - "pyproject.toml"
+      - ".github/workflows/wheels.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    name: ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build vendored Highway (static)
+        # Only the `hwy` target: the tests and examples are a far larger build than
+        # the library, and none of them ship. Highway already forces PIC on that
+        # target, which matters because the archive is linked into a shared object.
+        #
+        # The output must land in contrib/highway-1.3.0/build: Tools/Vector_Arith's
+        # CMakeLists looks there and nowhere else, and cross-checks that the headers
+        # come from the same tree as the archive, because libhwy.a owns the dispatch
+        # tables and their target numbering is not stable across releases.
+        run: |
+          hwy=Tools/Vector_Arith/contrib/highway-1.3.0
+          cmake -S "$hwy" -B "$hwy/build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DHWY_ENABLE_TESTS=OFF \
+            -DHWY_ENABLE_EXAMPLES=OFF \
+            -DHWY_ENABLE_CONTRIB=OFF
+          cmake --build "$hwy/build" --target hwy --parallel
+
+      - name: Build the kernel and run its tests
+        # setup.py would build the library on its own, but not the tests. Run them
+        # before the wheel is packed: test_ml_dlopen is the one that catches a
+        # CPython *data* symbol creeping into vecgather.c, which would break
+        # Isabelle/ML's Foreign.loadLibrary (dlopen with RTLD_LAZY) at load time
+        # while leaving Python perfectly happy.
+        run: |
+          cmake -S Tools/Vector_Arith -B Tools/Vector_Arith/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build Tools/Vector_Arith/build --parallel
+          ./Tools/Vector_Arith/build/test_gather
+          ./Tools/Vector_Arith/build/test_ml_dlopen ./Tools/Vector_Arith/build/libisabelle_vector.so
+
+      - name: Report what Highway compiled in
+        # The dispatch table is chosen at build time, per architecture. If this
+        # prints only EMU128/SCALAR the wheel is a scalar fallback wearing a SIMD
+        # name -- worth seeing in the log rather than discovering by benchmark.
+        run: |
+          nm -C Tools/Vector_Arith/build/libisabelle_vector.so \
+            | grep -o 'N_[A-Z0-9_]*' | sort -u | tr '\n' ' '
+          echo
+          objdump -p Tools/Vector_Arith/build/libisabelle_vector.so | grep NEEDED
+          objdump -T Tools/Vector_Arith/build/libisabelle_vector.so \
+            | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
+
+      - name: Build the wheel
+        # --wheel, not a bare `python -m build`: the latter builds an sdist first
+        # and then the wheel from inside it, and the sdist carries no Tools/ tree.
+        # setup.py reuses the library built above, then derives the platform tag
+        # from its ELF header and verifies DT_NEEDED and the glibc symbol versions
+        # against the manylinux allowlist.
+        run: |
+          python -m pip install --upgrade build
+          python -m build --wheel
+          ls -l dist/
+
+      - name: Check the tag matches the runner
+        run: |
+          test -n "$(ls dist/*-manylinux_*_${{ matrix.arch }}.whl)"
+          python - <<'PY'
+          import pathlib, zipfile
+          whl, = pathlib.Path("dist").glob("*.whl")
+          names = zipfile.ZipFile(whl).namelist()
+          assert "Isabelle_Semantic_Embedding/libisabelle_vector.so" in names, names
+          print("ok:", whl.name)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.arch }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  # Only on a version tag, and only after every architecture has built and passed
+  # its tests -- a partial upload cannot be undone, since PyPI refuses to let a
+  # filename be reused even after the release is deleted.
+  #
+  # There is no sdist. Building from source needs cmake, a C++17 compiler and the
+  # vendored Highway tree, none of which travel in an sdist today; a `pip install`
+  # that fell back to it would fail confusingly. Platforms without a wheel here get
+  # a clean "no matching distribution" instead.
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: wheel
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write # mints the OIDC token that PyPI trusted publishing verifies
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+
+      - run: ls -l dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,8 +1,9 @@
 [build-system]
 # setup.py stages a compiled artifact into the wheel and overrides bdist_wheel's
-# tag; 64 is the first setuptools that exposes build_py.editable_mode. cmake and a
-# C/C++ toolchain must be on PATH -- they cannot be declared here. See setup.py.
-requires = ["setuptools>=64", "wheel"]
+# tag; 77 is the first setuptools that reads `license` as an SPDX expression rather
+# than free-form text. cmake and a C/C++ toolchain must also be on PATH -- those
+# cannot be declared here. See setup.py.
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -11,6 +12,10 @@ version = "0.1.0"
 description = "Isabelle Semantic Embedding"
 readme = "README.md"
 license = "LGPL-2.1-or-later"
+# desugar, hover, premise_selection and semantics annotate with `X | Y` and do not
+# import `annotations` from __future__, so those annotations are evaluated at import
+# time. isabelle-rpc requires 3.10 independently.
+requires-python = ">=3.10"
 authors = [
     { name="Qiyuan Xu", email="xqyww123@gmail.com" },
 ]
@@ -19,10 +24,26 @@ classifiers = [
     # The wheel carries libisabelle_vector.so, an ELF pinned to one architecture.
     "Operating System :: POSIX :: Linux",
 ]
-dependencies = ["msgpack", "Isabelle_RPC_Host", "rocksdict", "lmdb", "platformdirs", "transformers", "numpy", "faiss-cpu", "requests", "diskcache", "claude_agent_sdk", "pyyaml"]
+# Distribution names, not import names: `Isabelle_RPC_Host` is what you import, but
+# `isabelle-rpc` is what pip resolves -- the former does not exist on PyPI, so a
+# published wheel naming it could never be installed.
+dependencies = [
+    "msgpack",
+    "isabelle-rpc>=0.3.0",
+    "rocksdict",
+    "lmdb",
+    "platformdirs",
+    "transformers",
+    "numpy",
+    "faiss-cpu",
+    "requests",
+    "diskcache",
+    "claude-agent-sdk",
+    "pyyaml",
+]
 
 [project.urls]
-"Homepage" = "https://github.com/xqyww123/Semantic_Embedding"
+"Homepage" = "https://github.com/xqyww123/Premise_Embedding"
 
 [tool.setuptools.packages.find]
 include = ["Isabelle_Semantic_Embedding", "Isabelle_Semantic_Embedding.*"]
