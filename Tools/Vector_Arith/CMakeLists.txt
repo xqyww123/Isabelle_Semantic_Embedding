@@ -25,7 +25,14 @@ if(TRUE)  # 强制手动查找
         NO_DEFAULT_PATH
     )
 
+    # NO_DEFAULT_PATH matters: without it, find_path searches the system prefixes
+    # *before* PATHS, so /usr/include wins and the headers come from whatever
+    # libhwy-dev the distro ships (1.0.7 here) while the static library above is
+    # the vendored 1.3.0. Highway's ops are header-only, but libhwy.a carries the
+    # runtime target detection and the dispatch tables, whose target numbering is
+    # not stable across releases -- a mismatch can dispatch into the wrong entry.
     find_path(HWY_INCLUDE_DIR hwy/highway.h
+        NO_DEFAULT_PATH
         PATHS
             ${CMAKE_SOURCE_DIR}/contrib/highway-1.3.0
             ${CMAKE_SOURCE_DIR}/contrib/highway
@@ -37,7 +44,20 @@ if(TRUE)  # 强制手动查找
     message(STATUS "DEBUG: HWY_INCLUDE_DIR = ${HWY_INCLUDE_DIR}")
 
     if(HWY_STATIC_LIBRARY AND HWY_INCLUDE_DIR)
-        message(STATUS "Found Highway static library: ${HWY_STATIC_LIBRARY}")
+        # Headers and library must come from the same source tree.
+        get_filename_component(_hwy_lib_root "${HWY_STATIC_LIBRARY}" DIRECTORY)
+        get_filename_component(_hwy_lib_root "${_hwy_lib_root}" DIRECTORY)
+        if(NOT "${HWY_INCLUDE_DIR}" STREQUAL "${_hwy_lib_root}")
+            message(FATAL_ERROR
+                "Highway headers and static library come from different trees:\n"
+                "  headers: ${HWY_INCLUDE_DIR}\n  library: ${HWY_STATIC_LIBRARY}\n"
+                "Their versions must match; libhwy.a owns the dispatch tables.")
+        endif()
+        file(STRINGS "${HWY_INCLUDE_DIR}/hwy/base.h" _hwy_ver
+             REGEX "^#define HWY_(MAJOR|MINOR|PATCH) ")
+        string(REGEX MATCHALL "[0-9]+" _hwy_ver "${_hwy_ver}")
+        string(REPLACE ";" "." _hwy_ver "${_hwy_ver}")
+        message(STATUS "Highway ${_hwy_ver} (headers and static library from ${HWY_INCLUDE_DIR})")
         set(HWY_FOUND TRUE)
     else()
         message(FATAL_ERROR "Highway static library not found in ./contrib!\nStatic lib: ${HWY_STATIC_LIBRARY}\nInclude dir: ${HWY_INCLUDE_DIR}")

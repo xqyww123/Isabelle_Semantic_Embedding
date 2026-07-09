@@ -6,6 +6,48 @@ val top_k : ('a * Word8Vector.vector) array * Word8Vector.vector * int
          -> ('a * real) list
 end
 
+(* Where libisabelle_vector.so lives is no longer fixed. A source checkout builds it
+   under Tools/Vector_Arith/build, but a pip-installed wheel ships it as package data
+   beside the Python module, under a site-packages path that depends on the
+   interpreter. So ask the Python package over RPC: its library_path() resolves and
+   validates the very file ctypes loads, which keeps ML and Python on one build.
+   ISABELLE_VECTOR_SO overrides, and a checkout with no usable Python falls back to
+   the in-tree path.
+
+   Resolution is deferred until the library is first used, never done at theory-load
+   time: Remote_Procedure_Calling auto-launches the Python host, and an `isabelle
+   build` has no business spawning one just to load a theory. Lazy also means the
+   three functor instantiations below share one lookup and one dlopen. *)
+local open MessagePackBinIO.Pack MessagePackBinIO.Unpack in
+val vector_library_path_cmd : (unit, string) Remote_Procedure_Calling.command = {
+  name = "Vector_Arith.library_path",
+  arg_schema = packUnit,
+  ret_schema = unpackString,
+  callback = [],
+  timeout = SOME (Time.fromSeconds 60)
+}
+end
+
+val vector_library_path =
+  let
+    fun in_tree () =
+      Resources.master_directory \<^theory>
+        + Path.make ["Tools", "Vector_Arith", "build", "libisabelle_vector.so"]
+        |> Path.expand |> Path.implode
+    fun ask_python () =
+      (Remote_Procedure_Calling.load ["Isabelle_Semantic_Embedding"];
+       Remote_Procedure_Calling.call_command vector_library_path_cmd ())
+    (* Any failure to reach the host -- not launched, module missing, library not
+       built there -- means fall back to the checkout. Interrupts are not failures. *)
+    val resolved = Lazy.lazy (fn () =>
+      case getenv "ISABELLE_VECTOR_SO" of
+        "" =>
+          (case Exn.capture_body ask_python of
+             Exn.Res path => path
+           | Exn.Exn exn => if Exn.is_interrupt exn then Exn.reraise exn else in_tree ())
+      | path => path)
+  in fn () => Lazy.force resolved end
+
 functor Vector_Arith (
       CONFIG : sig val DIM : int
                    val encoding : string (*e.g., Q.15*)
@@ -156,12 +198,11 @@ end
 fun soft_dot (v1, v2) = 0
 *)
 
-val (dot_opr, tok_k_c) =
+(* Deferred: resolving the path talks to the Python host, so nothing here may run
+   before the first dot/top_k. See vector_library_path above. *)
+val foreign_calls = Lazy.lazy (fn () =>
   let open Foreign
-      val lib = loadLibrary (
-            Resources.master_directory @{theory} + Path.make ["Tools", "Vector_Arith", "build", "libisabelle_vector.so"]
-              |> Path.expand
-              |> Path.implode)
+      val lib = loadLibrary (vector_library_path ())
       val suffix = CONFIG.encoding
       val dot_sym = getSymbol lib ("dot_" ^ suffix)
       val dot_fun = buildCall3 (dot_sym, (cWord8Vector, cWord8Vector, cSsize), CONFIG.dot_ret_conv)
@@ -172,7 +213,10 @@ val (dot_opr, tok_k_c) =
             cVoid)
    in (dot_fun, tok_k_c)
   end handle Foreign.Foreign msg => (
-        error ("Fail to load the Isabelle Vector library.\n" ^ msg))
+        error ("Fail to load the Isabelle Vector library.\n" ^ msg)))
+
+fun dot_opr args = #1 (Lazy.force foreign_calls) args
+fun tok_k_c args = #2 (Lazy.force foreign_calls) args
 
 fun dot (x,y) = dot_opr (x,y,CONFIG.DIM)
 fun top_k (assoc_array, query, k) =

@@ -20,7 +20,7 @@ from claude_agent_sdk import SdkMcpTool, tool
 from .semantic_embedding import (Vector_Store, Embedding_Provider, make_embedding_provider,
                                  sanitize_model, unsanitize_model,
                                  Reranker_Provider, reranker_provider, key)
-from ._vecarith import encode_q15
+from ._vecarith import encode_q15, library_path as _vector_library_path
 
 from .base import ToolCall_ret, mk_ret as _mk_ret
 from .hover import resolve_context_at
@@ -95,6 +95,13 @@ def is_thy_skipped(name: str) -> bool:
 
 migrate_on_hash_change: bool = False
 persist_wip: bool = os.getenv("SEMANTIC_PERSIST_WIP", "") != ""
+
+# Write ceiling for semantics.lmdb.  LMDB does not preallocate: this only
+# reserves virtual address space, and the value passed at open() is the hard
+# limit for *writes* by that process (exceeding it raises MapFullError).
+# Read-only openers are unaffected — lmdb adopts the file's actual size.
+# Keep every writer of semantics.lmdb on this one constant.
+SEMANTICS_MAP_SIZE: int = 1 << 30
 
 
 class Provenance(NamedTuple):
@@ -177,7 +184,8 @@ class _Semantic_DB:
                     import atexit
                     cache_dir = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
                     os.makedirs(cache_dir, exist_ok=True)
-                    _Semantic_DB._env = lmdb.open(os.path.join(cache_dir, "semantics.lmdb"), map_size=1 << 30)
+                    _Semantic_DB._env = lmdb.open(os.path.join(cache_dir, "semantics.lmdb"),
+                                                  map_size=SEMANTICS_MAP_SIZE)
                     atexit.register(_Semantic_DB._close)
         return self._env  # type: ignore
 
@@ -317,6 +325,34 @@ class _Semantic_DB:
             for key in to_delete:
                 txn.delete(key)
         return len(to_delete)
+
+    def experience_entries(self) -> 'list[tuple[universal_key, list[bytes]]]':
+        """``(key, constituent theory hashes)`` for every EXPERIENCE record.
+
+        Experience keys are XOR-prefixed (32 bytes, kind tag at byte 16), so they
+        are recognized from the key alone; only the matches are decoded."""
+        from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
+        tag = int(EntityKind.EXPERIENCE)
+        entries: list[tuple[bytes, list[bytes]]] = []
+        with self._ensure_env().begin() as txn:
+            for key, val in txn.cursor():
+                key = bytes(key)
+                if not is_xor_prefixed_key(key) or key[16] != tag:
+                    continue
+                rec = self._decode(bytes(val))
+                entries.append((key, [h for _, h in (rec.theory_constituents or [])]))
+        return entries
+
+    def rebuild_experience_index(self) -> int:
+        """Rebuild experience_index.lmdb from the EXPERIENCE records stored here.
+
+        The index is a derived view of these records (see Experience_Index.rebuild),
+        and the three stores an experience lives in are written without cross-store
+        atomicity, so it can drift.  Call this after any bulk mutation of
+        semantics.lmdb that bypasses Experience_Index (e.g. merging in another
+        machine's snapshot).  Returns the number of experiences indexed."""
+        from .experience_index import Experience_Index
+        return Experience_Index.rebuild(self.experience_entries())
 
     @staticmethod
     def _copy_prefix(env: lmdb.Environment, old_prefix: bytes, new_prefix: bytes) -> int:
@@ -1540,3 +1576,18 @@ async def _is_thy_embedded_rpc(arg: Any, connection: Connection) -> bool:
     except UndefinedEntity:
         return False
     return store.is_thy_embedded(thy_key)
+
+
+@isabelle_remote_procedure("Vector_Arith.library_path")
+async def _vector_library_path_rpc(arg: Any, connection: Connection) -> str:
+    """Tell Isabelle/ML where libisabelle_vector.so is.
+
+    Tools/simd_vector.ML dlopens the same object, and a wheel install puts it under
+    site-packages, which no path hard-coded in a theory can find. Answering here
+    also guarantees ML and Python load the same file: library_path() reports the
+    library only after loading it and checking it exports the kernel.
+
+    It lives in this module rather than in _vecarith so that the numeric core stays
+    importable without Isabelle_RPC_Host -- the migration script depends on that.
+    """
+    return _vector_library_path()

@@ -81,16 +81,40 @@ def recover_cos(scores: np.ndarray, D: int, target_norm: float = TARGET_NORM) ->
 
 _ENV_VAR = "ISABELLE_VECTOR_SO"
 _REQUIRED_SYMBOL = "top_k_q15_gather"
-_SEARCH = ("Tools/Vector_Arith/build",)
-"""Same directory Tools/simd_vector.ML dlopen's, so ML and Python share one build."""
+_LIB_NAME = "libisabelle_vector.so"
 
 
 def _candidate_paths() -> list[pathlib.Path]:
+    """Where the shared object may live, most authoritative first.
+
+    A source checkout builds it under Tools/Vector_Arith/build and that copy wins:
+    a developer who just rebuilt expects to be running what they built. A wheel
+    ships it as package data next to this module, which is all an installed
+    deployment has. Tools/simd_vector.ML asks library_path() rather than guessing,
+    so Isabelle/ML always dlopens the same file.
+    """
     override = os.environ.get(_ENV_VAR)
     if override:
         return [pathlib.Path(override)]
-    root = pathlib.Path(__file__).resolve().parent.parent  # contrib/Semantic_Embedding
-    return [root / d / "libisabelle_vector.so" for d in _SEARCH]
+    here = pathlib.Path(__file__).resolve().parent          # the package directory
+    checkout = here.parent                                   # contrib/Semantic_Embedding
+    return [
+        checkout / "Tools" / "Vector_Arith" / "build" / _LIB_NAME,
+        here / _LIB_NAME,
+    ]
+
+
+def library_path() -> str:
+    """Absolute path of the shared object, after checking it is the right one.
+
+    Loading it is what validates it, so this reports a library that actually
+    exports the kernel rather than merely a file that exists. Isabelle/ML calls
+    this out of Tools/simd_vector.ML: a wheel install puts the library under
+    site-packages, which no hard-coded checkout path can find.
+    """
+    _lib()
+    assert _lib_path is not None
+    return str(_lib_path)
 
 
 def _load() -> ctypes.CDLL:
