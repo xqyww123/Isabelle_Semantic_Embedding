@@ -14,10 +14,10 @@ import time
 
 import lmdb
 import msgpack
-import platformdirs
+from Isabelle_Semantic_Embedding._paths import semantic_DB_dir
 
 DB_PATH = os.path.join(
-    platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan"),
+    semantic_DB_dir(),
     "semantics.lmdb")
 
 

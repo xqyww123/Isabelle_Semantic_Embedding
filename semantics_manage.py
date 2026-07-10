@@ -19,6 +19,7 @@ from collections import defaultdict
 import lmdb
 import msgpack
 import platformdirs
+from Isabelle_Semantic_Embedding._paths import semantic_DB_dir
 
 from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
 
@@ -26,7 +27,7 @@ from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
 # Importing it pulls in faiss, httpx and the Claude SDK — seconds of startup that
 # `list` and `remove` have no use for.
 
-CACHE_DIR = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
+CACHE_DIR = semantic_DB_dir()
 SEMANTICS_DB_PATH = os.path.join(CACHE_DIR, "semantics.lmdb")
 THEORY_HASH_CACHE_DIR = platformdirs.user_cache_dir("Isabelle_Theory_Hash", "Qiyuan")
 THEORY_HASH_DB_PATH = os.path.join(THEORY_HASH_CACHE_DIR, "theory_hash.lmdb")

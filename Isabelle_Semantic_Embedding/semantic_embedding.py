@@ -16,7 +16,7 @@ import numpy as np
 import lmdb
 import faiss
 import diskcache
-import platformdirs
+from ._paths import semantic_DB_dir
 
 from ._vecarith import encode_q15, gather_addrs, top_k_q15_gather, Q15_SCALE
 
@@ -89,7 +89,7 @@ class Embedding_Provider(ABC):
     @staticmethod
     def _get_cache() -> diskcache.Cache:
         if Embedding_Provider._cache is None:
-            cache_dir = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
+            cache_dir = semantic_DB_dir()
             os.makedirs(cache_dir, exist_ok=True)
             Embedding_Provider._cache = diskcache.Cache(
                 os.path.join(cache_dir, "embed_cache"),

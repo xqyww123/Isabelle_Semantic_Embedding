@@ -29,7 +29,7 @@ from typing import Any
 
 import lmdb
 import msgpack
-import platformdirs
+from ._paths import semantic_DB_dir
 
 from Isabelle_RPC_Host.universal_key import universal_key
 
@@ -51,7 +51,7 @@ class _Experience_Index:
             with self._lock:
                 if self._env is None:
                     import atexit
-                    cache_dir = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
+                    cache_dir = semantic_DB_dir()
                     os.makedirs(cache_dir, exist_ok=True)
                     _Experience_Index._env = lmdb.open(
                         os.path.join(cache_dir, "experience_index.lmdb"), map_size=1 << 27)

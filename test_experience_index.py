@@ -39,8 +39,11 @@ def isolated_cache(tmp_path_factory):
     """Point the package's caches at a throwaway directory for the whole session."""
     cache = tmp_path_factory.mktemp("cache")
     os.environ["XDG_CACHE_HOME"] = str(cache)
-    import platformdirs
-    resolved = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
+    # Clear the override too, else a dev with SEMANTIC_DB_DIR set in their env
+    # would defeat the XDG_CACHE_HOME isolation below.
+    os.environ.pop("SEMANTIC_DB_DIR", None)
+    from Isabelle_Semantic_Embedding._paths import semantic_DB_dir
+    resolved = semantic_DB_dir()
     assert str(cache) in resolved, f"cache not isolated: {resolved}"
     os.makedirs(resolved, exist_ok=True)
     return resolved

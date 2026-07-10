@@ -19,9 +19,9 @@ import argparse
 import os
 import sys
 
-import platformdirs
+from Isabelle_Semantic_Embedding._paths import semantic_DB_dir
 
-CACHE_DIR = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
+CACHE_DIR = semantic_DB_dir()
 
 # old store dir name -> new store dir name (both without the cache dir prefix)
 RENAMES = {

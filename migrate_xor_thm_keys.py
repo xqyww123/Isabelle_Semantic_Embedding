@@ -19,11 +19,11 @@ import sys
 import time
 
 import lmdb
-import platformdirs
+from Isabelle_Semantic_Embedding._paths import semantic_DB_dir
 
 from Isabelle_RPC_Host.universal_key import is_thm_rule_key
 
-CACHE_DIR = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
+CACHE_DIR = semantic_DB_dir()
 SEMANTICS_DB_PATH = os.path.join(CACHE_DIR, "semantics.lmdb")
 
 

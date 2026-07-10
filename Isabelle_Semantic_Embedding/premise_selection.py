@@ -4,7 +4,7 @@ from Isabelle_RPC_Host.unicode import pretty_unicode as _pretty_unicode
 from rocksdict import Rdict
 import rocksdict
 from ._vecarith import encode_q15
-import platformdirs
+from ._paths import semantic_DB_dir
 import numpy as np
 import os
 import re
@@ -58,7 +58,7 @@ async def embed(arg : tuple[list[bytes | str], config], connection : Connection)
     if api_key == "":
         api_key = API_KEY_DEFAULT
 
-    cache_dir = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
+    cache_dir = semantic_DB_dir()
     # The suffix pins the Q1.15 encoding. Entries written before the switch to
     # encode_q15 used a per-vector scale (v / (|v| + 0.05)) and would mix badly
     # with the fixed-norm ones; a new filename retires them instead.

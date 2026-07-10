@@ -10,7 +10,7 @@ from typing import Any, NamedTuple
 import lmdb
 import msgpack
 import numpy as np
-import platformdirs
+from ._paths import semantic_DB_dir
 from Isabelle_RPC_Host import Connection, isabelle_remote_procedure
 from Isabelle_RPC_Host.rpc import IsabelleError
 from Isabelle_RPC_Host.position import IsabellePosition
@@ -125,7 +125,7 @@ def _iter_vector_store_envs() -> 'Iterator[lmdb.Environment]':
 
     One store per embedding model; the model name is encoded in the directory name.
     """
-    cache_dir = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
+    cache_dir = semantic_DB_dir()
     if not os.path.isdir(cache_dir):
         return
     from .semantic_embedding import _get_lmdb_env
@@ -214,7 +214,7 @@ class _Semantic_DB:
             with self._lock:
                 if self._env is None:
                     import atexit
-                    cache_dir = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
+                    cache_dir = semantic_DB_dir()
                     os.makedirs(cache_dir, exist_ok=True)
                     _Semantic_DB._env = lmdb.open(os.path.join(cache_dir, "semantics.lmdb"),
                                                   map_size=SEMANTICS_MAP_SIZE)
@@ -638,7 +638,7 @@ class _Semantic_DB:
 
         n = self._copy_prefix(sem_env, old_hash, new_hash)
 
-        cache_dir = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
+        cache_dir = semantic_DB_dir()
         if os.path.isdir(cache_dir):
             from .semantic_embedding import _get_lmdb_env
             for entry in os.listdir(cache_dir):
@@ -1017,7 +1017,7 @@ class Semantic_Vector_Store(Vector_Store):
     @staticmethod
     def created_embedding_models() -> list[str]:
         """Return names of all embedding models that have LMDB stores on disk."""
-        cache_dir = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
+        cache_dir = semantic_DB_dir()
         if not os.path.isdir(cache_dir):
             return []
         prefix = "vector_"
@@ -1040,7 +1040,7 @@ class Semantic_Vector_Store(Vector_Store):
         # Identity = the canonical (HuggingFace) model name; the LMDB store
         # directory uses a filesystem-safe form of it.
         model_name = emb_provider.canonical_model
-        cache_dir = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
+        cache_dir = semantic_DB_dir()
         os.makedirs(cache_dir, exist_ok=True)
         path = os.path.join(cache_dir, f"vector_{sanitize_model(model_name)}.lmdb")
         super().__init__(path, emb_provider, connection)

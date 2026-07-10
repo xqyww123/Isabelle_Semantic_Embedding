@@ -69,6 +69,7 @@ from typing import Any, NamedTuple
 
 import lmdb
 import platformdirs
+from ._paths import semantic_DB_dir
 
 from ._user_config import User_Config, env_bool
 
@@ -84,7 +85,7 @@ DEFAULT_OBJECT_KEY = "Isabelle_Semantic_Embedding.tar.zst"
 DEFAULT_PUBLIC_URL = "https://data.mlml.qiyuan.me"
 DEFAULT_CHECK_INTERVAL_HOURS = 168      # weekly
 
-CACHE_DIR = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
+CACHE_DIR = semantic_DB_dir()
 MANIFEST_NAME = "MANIFEST.json"
 MARKER_PATH = os.path.join(CACHE_DIR, ".r2_snapshot.json")
 LOCK_PATH = os.path.join(CACHE_DIR, ".r2_pull.lock")
