@@ -13,6 +13,7 @@ guards against silently re-spending money on re-interpretation and re-embedding.
 from __future__ import annotations
 
 import os
+import subprocess
 import time
 from datetime import datetime
 
@@ -153,7 +154,7 @@ def cfg(tmp_path, monkeypatch):
     path = tmp_path / "config.yaml"
     monkeypatch.setenv("SEMANTIC_EMBEDDING_CONFIG_PATH", str(path))
     for var in ("R2_ACCOUNT_ID", "R2_BUCKET", "R2_ENDPOINT", "R2_OBJECT_KEY",
-                "R2_AUTO_CHECK", "R2_CHECK_INTERVAL_HOURS"):
+                "R2_PUBLIC_URL", "R2_AUTO_CHECK", "R2_CHECK_INTERVAL_HOURS"):
         monkeypatch.delenv(var, raising=False)
 
     def write(text: str) -> None:
@@ -171,15 +172,41 @@ def test_defaults_come_from_code_not_from_the_template(cfg):
     assert s.bucket == r2_sync.DEFAULT_BUCKET
     assert s.object_key == r2_sync.DEFAULT_OBJECT_KEY
     assert s.endpoint == f"https://{r2_sync.DEFAULT_ACCOUNT_ID}.r2.cloudflarestorage.com"
+    assert s.public_url == r2_sync.DEFAULT_PUBLIC_URL
     assert s.auto_check is True
     assert s.check_interval_hours == r2_sync.DEFAULT_CHECK_INTERVAL_HOURS
 
 
 def test_there_is_no_automatic_merge(cfg):
     """`check_update` warns; only the CLI merges.  If an `auto_pull` switch ever
-    comes back, it must come back with §6.2's guardrails, not by accident."""
+    comes back, it must come back with its guardrails, not by accident."""
     assert not hasattr(r2_sync.settings(), "auto_pull")
     assert not hasattr(r2_sync, "maybe_auto_pull")
+
+
+def test_pull_and_status_need_no_credentials(cfg, monkeypatch):
+    """The whole point of the public origin.  `_client` is the only thing that
+    demands keys, and only `push` may reach it."""
+    monkeypatch.delenv("R2_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("R2_SECRET_ACCESS_KEY", raising=False)
+    s = r2_sync.settings()
+
+    assert s.public_object_url == \
+        f"{r2_sync.DEFAULT_PUBLIC_URL}/{r2_sync.DEFAULT_OBJECT_KEY}"
+    with pytest.raises(r2_sync.R2Error, match="only .?push.? does"):
+        r2_sync._client(s)          # push's path, and only push's
+
+
+def test_a_trailing_slash_on_the_public_url_does_not_double_up(cfg):
+    cfg("r2:\n  public_url: https://example.test/\n  object_key: snap.tar.zst\n")
+    assert r2_sync.settings().public_object_url == "https://example.test/snap.tar.zst"
+
+
+def test_an_empty_public_url_forces_reads_through_s3(cfg):
+    """`pick` treats "" as unset; this key must not, or a user who deliberately
+    disables the public origin would silently keep using it."""
+    cfg('r2:\n  public_url: ""\n')
+    assert r2_sync.settings().public_url == ""
 
 
 def test_the_endpoint_follows_a_configured_account_id(cfg):
@@ -232,11 +259,9 @@ def check(cfg, monkeypatch, tmp_path):
     return run
 
 
-def _head(etag="new", **md):
-    return r2_sync.Remote_Head(
-        etag=etag, size=750 * 1024 ** 2,
-        last_modified=datetime(2026, 7, 9, 12, 0),
-        metadata={"created-by": "somewhere", **md})
+def _head(etag="new"):
+    return r2_sync.Remote_Head(etag=etag, size=750 * 1024 ** 2,
+                               last_modified=datetime(2026, 7, 9, 12, 0))
 
 
 def test_check_update_names_the_command_to_run(check, monkeypatch):
@@ -311,52 +336,37 @@ def test_env_bool_distinguishes_unset_from_empty():
 
 
 # ---------------------------------------------------------------------------
-# the gates that run before a byte is downloaded
+# the gates.  All of them read the unpacked snapshot: what a snapshot claims
+# about itself is written by whoever pushed it, but its bytes are not.  There is
+# deliberately no pre-download gate -- that would need metadata the anonymous
+# endpoint does not serve, to save a download that is free and takes ten seconds.
 # ---------------------------------------------------------------------------
-
-def _md(**over) -> dict:
-    md = {"schema-version": r2_sync.SCHEMA_VERSION, "vector-format": "q15",
-          "models": "", "dimension": ""}
-    md.update(over)
-    return md
-
-
-def test_a_future_schema_version_is_refused(cfg):
-    with pytest.raises(r2_sync.R2Error, match="schema-version"):
-        r2_sync._check_metadata(_md(**{"schema-version": "99"}))
-
-
-def test_float32_vectors_are_refused(cfg):
-    with pytest.raises(r2_sync.R2Error, match="float32"):
-        r2_sync._check_metadata(_md(**{"vector-format": "float32"}))
-
-
-def test_a_dimension_mismatch_is_refused(cfg):
-    md = _md(models="Qwen/Qwen3-Embedding-8B", dimension="1024")
-    with pytest.raises(r2_sync.R2Error, match="1024-dimensional"):
-        r2_sync._check_metadata(md)
-
-
-def test_a_matching_dimension_passes(cfg):
-    r2_sync._check_metadata(_md(models="Qwen/Qwen3-Embedding-8B", dimension="4096"))
-
-
-def test_metadata_free_objects_are_allowed_through_to_the_manifest(cfg, capsys):
-    """Someone may upload with `aws s3 cp`, which carries no x-amz-meta-*.  Then
-    the tarball's own MANIFEST.json is the only check, and it runs post-download."""
-    r2_sync._check_metadata({})
-    assert "no metadata" in capsys.readouterr().out
-
-
-def test_one_dimension_field_covers_several_models():
-    assert r2_sync._parse_dimensions({"models": "a,b", "dimension": "4096"}) == \
-        {"a": 4096, "b": 4096}
-    assert r2_sync._parse_dimensions({"models": "a,b", "dimension": "4096,1024"}) == \
-        {"a": 4096, "b": 1024}
-    assert r2_sync._parse_dimensions({}) == {}
-
 
 def test_a_manifest_from_a_future_client_is_refused():
     with pytest.raises(r2_sync.R2Error, match="schema_version"):
         r2_sync._check_manifest({"schema_version": "99"})
+    with pytest.raises(r2_sync.R2Error, match="vector_format"):
+        r2_sync._check_manifest({"schema_version": r2_sync.SCHEMA_VERSION,
+                                 "vector_format": "float32"})
     r2_sync._check_manifest({"schema_version": r2_sync.SCHEMA_VERSION})
+
+
+def test_a_corrupt_download_never_reaches_the_merge(tmp_path):
+    """`pull` verifies nothing by hand: `tar --zstd` carries an XXH64 content
+    checksum, so a flipped byte fails to extract and no merge is attempted.  This
+    pins that property of the format, which is what let the sha256 pass go."""
+    payload = tmp_path / "d" / "blob"
+    payload.parent.mkdir()
+    payload.write_bytes(bytes(range(256)) * 4096)
+    tar = tmp_path / "snap.tar.zst"
+    subprocess.run(["tar", "--zstd", "-cf", tar, "-C", tmp_path, "d"], check=True)
+
+    raw = bytearray(tar.read_bytes())
+    raw[len(raw) // 2] ^= 0xFF
+    tar.write_bytes(raw)
+
+    out = tmp_path / "out"
+    out.mkdir()
+    r = subprocess.run(["tar", "--zstd", "-xf", tar, "-C", out],
+                       capture_output=True, text=True)
+    assert r.returncode != 0, "a flipped byte extracted cleanly; zstd has no checksum"

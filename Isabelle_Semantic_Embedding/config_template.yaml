@@ -4,14 +4,21 @@
 # is optional: what is not set here falls back to a default written in code.
 # Environment variables win over this file.
 #
-# NO SECRETS HERE.  The R2 credentials have no defaults and are read only from
-# the environment:
+# NO SECRETS HERE.  Downloading needs no credentials at all.  Only `push` does,
+# and those have no defaults -- they are read only from the environment:
 #
 #     export R2_ACCESS_KEY_ID=...
 #     export R2_SECRET_ACCESS_KEY=...
 
 r2:
   # The remote is a single object.  Unset keys use the built-in defaults.
+  #
+  # public_url is where `pull` / `status` read from: an anonymous HTTPS origin,
+  # no signing, no credentials.  Set it to "" to force reads through the signed
+  # S3 endpoint instead (which then needs the keys above).
+  # public_url: https://data.mlml.qiyuan.me
+  #
+  # account_id / bucket / endpoint are the signed S3 side, used only by `push`.
   # account_id: 532d99283b5aa1e02486ee3fdcb163d5
   # bucket: mlml
   # endpoint: https://<account_id>.r2.cloudflarestorage.com   # derived from account_id

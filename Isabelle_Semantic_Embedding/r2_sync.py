@@ -2,9 +2,22 @@
 
 The remote is ONE object: a ``tar.zst`` holding a consistent, compacted copy of
 ``semantics.lmdb`` and of every ``vector_<model>.lmdb``, plus a ``MANIFEST.json``.
-Its ``ETag`` is the version token; a HEAD request (no transfer) is enough to tell
-whether the local copy is current, and the custom ``x-amz-meta-*`` fields let an
-incompatible snapshot be rejected *before* the download.
+Its ``ETag`` is the version token, so one HEAD request tells you whether the local
+copy is current, with no transfer.
+
+READING IS ANONYMOUS, WRITING IS NOT.  The bucket is served publicly at
+``public_url``, so ``pull`` / ``status`` / ``check_update`` are plain HTTPS and need
+no credentials at all.  Only ``push`` speaks S3, and only ``push`` needs keys.
+(The S3 endpoint signs *every* request, GET included, so it cannot be used for the
+anonymous half; and the public endpoint returns no ``x-amz-meta-*``, which is why
+what a snapshot declares about itself lives in its ``MANIFEST.json`` instead.)
+
+A snapshot is validated after it is unpacked, not before it is fetched: the
+manifest, a scan for legacy records, and a measurement of the actual vector byte
+lengths.  Rejecting early would need metadata the anonymous endpoint will not
+serve, and would buy only the ten seconds the (free) download takes.  A corrupt
+download never reaches any of this — ``tar --zstd`` carries an XXH64 content
+checksum and fails to extract.
 
 The two directions are deliberately asymmetric:
 
@@ -29,7 +42,7 @@ Failure semantics split by caller:
   * ``push_snapshot`` / ``pull_snapshot`` raise. ``semantics_manage.py`` exits non-zero.
   * ``check_update`` swallows everything and logs one line.
 
-Credentials come only from the environment and have no defaults:
+The push credentials come only from the environment and have no defaults:
 
     export R2_ACCESS_KEY_ID=...
     export R2_SECRET_ACCESS_KEY=...
@@ -38,8 +51,8 @@ Everything else is read as env > ``config.yaml`` > the ``DEFAULT_*`` below.
 """
 from __future__ import annotations
 
+import email.utils
 import fcntl
-import hashlib
 import json
 import os
 import pathlib
@@ -47,6 +60,8 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -65,6 +80,8 @@ VECTOR_FORMAT = "q15"
 DEFAULT_ACCOUNT_ID = "532d99283b5aa1e02486ee3fdcb163d5"
 DEFAULT_BUCKET = "mlml"
 DEFAULT_OBJECT_KEY = "Isabelle_Semantic_Embedding.tar.zst"
+# The bucket's public custom domain: anonymous reads, no signing, no credentials.
+DEFAULT_PUBLIC_URL = "https://data.mlml.qiyuan.me"
 DEFAULT_CHECK_INTERVAL_HOURS = 168      # weekly
 
 CACHE_DIR = platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", "Qiyuan")
@@ -111,10 +128,15 @@ _CONFIG = User_Config(
 class Settings(NamedTuple):
     account_id: str
     bucket: str
-    endpoint: str
+    endpoint: str          # S3 endpoint; signed, used only by push
     object_key: str
+    public_url: str        # anonymous read origin; "" forces reads through S3 too
     auto_check: bool
     check_interval_hours: int
+
+    @property
+    def public_object_url(self) -> str:
+        return f"{self.public_url.rstrip('/')}/{self.object_key}"
 
 
 def settings() -> Settings:
@@ -132,6 +154,12 @@ def settings() -> Settings:
     account_id = pick("R2_ACCOUNT_ID", "account_id", DEFAULT_ACCOUNT_ID)
     endpoint = pick("R2_ENDPOINT", "endpoint",
                     f"https://{account_id}.r2.cloudflarestorage.com")
+    # Empty is meaningful: it says "no public origin", so reads fall back to the
+    # signed S3 endpoint.  `pick` treats "" as unset, hence the explicit lookup.
+    public_url = os.getenv("R2_PUBLIC_URL")
+    if public_url is None:
+        public_url = r2["public_url"] if "public_url" in r2 else DEFAULT_PUBLIC_URL
+    public_url = str(public_url or "")
 
     def flag(env: str, key: str, default: bool) -> bool:
         from_env = env_bool(env)
@@ -145,6 +173,7 @@ def settings() -> Settings:
         bucket=pick("R2_BUCKET", "bucket", DEFAULT_BUCKET),
         endpoint=endpoint,
         object_key=pick("R2_OBJECT_KEY", "object_key", DEFAULT_OBJECT_KEY),
+        public_url=public_url,
         auto_check=flag("R2_AUTO_CHECK", "auto_check", True),
         check_interval_hours=int(hours if hours is not None else DEFAULT_CHECK_INTERVAL_HOURS),
     )
@@ -167,11 +196,10 @@ def config_path() -> str:
 
 
 def _client(s: Settings):
-    """A boto3 S3 client for R2.
+    """A boto3 S3 client for R2.  Only `push` needs one; reads go over HTTPS.
 
-    Short timeouts and few retries: `auto_check` runs during another process's
-    startup, and botocore's defaults would stall it for tens of seconds whenever
-    R2 is unreachable.
+    Importing boto3 and building this costs ~0.4s of pure Python, so it stays
+    behind the read paths rather than in front of them.
 
     No `request_checksum_calculation="when_required"` here.  botocore >= 1.36
     computes a CRC32 flexible checksum per request, which is widely reported to
@@ -184,15 +212,44 @@ def _client(s: Settings):
     key_id = os.getenv("R2_ACCESS_KEY_ID")
     secret = os.getenv("R2_SECRET_ACCESS_KEY")
     if not key_id or not secret:
+        hint = ("`pull` and `status` need none of this — an unset public_url is "
+                "what routed this one through the signed endpoint."
+                if not s.public_url else
+                "`pull` and `status` need no credentials; only `push` does.")
         raise R2Error(
             "R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are not set. They have no "
-            "defaults; export them (e.g. from secret.sh) before syncing.")
+            f"defaults; export them (e.g. from secret.sh). {hint}")
     return boto3.client(
         "s3", endpoint_url=s.endpoint,
         aws_access_key_id=key_id, aws_secret_access_key=secret,
         region_name="auto",
         config=Config(signature_version="s3v4", connect_timeout=5,
                       read_timeout=10, retries={"max_attempts": 2}))
+
+
+# Short, because `check_update` runs during another process's startup and must
+# not stall it: urllib has no default timeout at all, which would hang forever.
+_HTTP_TIMEOUT = 15
+
+# Cloudflare answers 403 to urllib's default `Python-urllib/3.x` User-Agent, and
+# 200 to anything else -- including no User-Agent at all. Measured against this
+# very domain; without this header every anonymous read fails.
+_USER_AGENT = "Isabelle_Semantic_Embedding/r2_sync"
+
+
+def _http(url: str, method: str):
+    """Open `url`, or return None on 404.  Anonymous; no signing, no credentials."""
+    req = urllib.request.Request(url, method=method,
+                                 headers={"User-Agent": _USER_AGENT})
+    try:
+        return urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT)
+    except urllib.error.HTTPError as e:
+        e.close()
+        if e.code == 404:
+            return None
+        raise R2Error(f"{method} {url} -> HTTP {e.code} {e.reason}") from e
+    except urllib.error.URLError as e:
+        raise R2Error(f"{method} {url} -> {e.reason}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -221,18 +278,31 @@ class Remote_Head(NamedTuple):
     etag: str
     size: int
     last_modified: datetime
-    metadata: dict[str, str]        # the x-amz-meta-* fields, keys lowercased
 
 
 def remote_head(s: 'Settings | None' = None, client=None) -> 'Remote_Head | None':
     """One HEAD request.  None when the object does not exist yet.
 
+    Anonymous over `public_url` when there is one, so `status` and `check_update`
+    need no credentials.  `client` forces the signed S3 path (push already has one).
+
     The ETag is an opaque version token, NOT a content hash: a multipart upload
     yields `<md5-of-part-md5s>-<nparts>`, which also shifts with the chunk size.
-    Content is verified against the `sha256` metadata field instead.
+    Only ever compare it for equality.
     """
-    from botocore.exceptions import ClientError
     s = s or settings()
+    if client is None and s.public_url:
+        r = _http(s.public_object_url, "HEAD")
+        if r is None:
+            return None
+        with r:
+            h = r.headers
+        return Remote_Head(
+            etag=(h.get("ETag") or "").strip('"'),
+            size=int(h.get("Content-Length") or 0),
+            last_modified=email.utils.parsedate_to_datetime(h["Last-Modified"]))
+
+    from botocore.exceptions import ClientError
     client = client or _client(s)
     try:
         r = client.head_object(Bucket=s.bucket, Key=s.object_key)
@@ -248,7 +318,7 @@ def remote_head(s: 'Settings | None' = None, client=None) -> 'Remote_Head | None
                           f"token's permissions on this bucket.") from e
         raise
     return Remote_Head(etag=r["ETag"].strip('"'), size=r["ContentLength"],
-                       last_modified=r["LastModified"], metadata=r.get("Metadata") or {})
+                       last_modified=r["LastModified"])
 
 
 # ---------------------------------------------------------------------------
@@ -374,14 +444,6 @@ def _local_dimension(model: str) -> 'int | None':
         return None
 
 
-def _sha256(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 22), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _human(n: float) -> str:
     return f"{n / 1024 ** 3:.2f} GiB" if n >= 1 << 30 else f"{n / 1024 ** 2:.1f} MiB"
 
@@ -398,47 +460,40 @@ def _progress(label: str, total: int):
     return cb
 
 
-# ---------------------------------------------------------------------------
-# Compatibility gates
-# ---------------------------------------------------------------------------
+def _download(url: str, dest: str, expected: int) -> None:
+    """Fetch `url` to `dest` anonymously, with progress.
 
-def _parse_dimensions(md: dict) -> dict[str, int]:
-    """`models` and `dimension` are parallel comma-separated metadata fields."""
-    models = [m for m in (md.get("models") or "").split(",") if m]
-    dims = [d for d in (md.get("dimension") or "").split(",") if d]
-    if len(dims) == 1 and len(models) > 1:
-        dims = dims * len(models)
-    return {m: int(d) for m, d in zip(models, dims)}
+    One stream, deliberately.  The origin does serve `Range`, so ranged GETs in a
+    thread pool look tempting; measured against it, they are slower (40 MB/s on
+    one stream, 20 on four, 10 on eight — the link, not the client, is the
+    bottleneck), and one eight-way run was answered with the *whole object* for
+    some parts, having quietly ignored the Range header.  Do not "optimize" this.
 
+    Throughput swings between roughly 3 and 40 MB/s minute to minute, so a slow
+    pull is the network, not a regression: the snapshot is far past Cloudflare's
+    512 MB cacheable-file limit, so every read goes to the origin, uncached.
 
-def _check_metadata(md: dict) -> None:
-    """Reject an unusable snapshot before downloading it (§4.4, rows 1-3).
-
-    Metadata can be absent — someone may have uploaded with `aws s3 cp`.  Then we
-    have to download and fall back on the manifest inside the tarball.
+    A short read means a truncated transfer, which `tar --zstd` would also catch
+    (its XXH64 fails to extract) — but saying so here names the cause.
     """
-    if not md:
-        _log("WARNING: the remote object carries no metadata; compatibility can "
-             "only be checked after downloading, against the tarball's manifest.")
-        return
-    if md.get("schema-version") != SCHEMA_VERSION:
-        raise R2Error(
-            f"remote snapshot has schema-version {md.get('schema-version')!r}, "
-            f"this client speaks {SCHEMA_VERSION!r}. Upgrade before pulling.")
-    if md.get("vector-format", VECTOR_FORMAT) != VECTOR_FORMAT:
-        raise R2Error(
-            f"remote vectors are {md['vector-format']!r}, not {VECTOR_FORMAT!r}. "
-            f"Merging them would silently misdecode every vector.")
-    for model, dim in _parse_dimensions(md).items():
-        local = _local_dimension(model)
-        if local is None:
-            _log(f"NOTE: no local 'dimension' entry for {model}; its vectors "
-                 f"cannot be dimension-checked before the merge.")
-        elif local != dim:
-            raise R2Error(
-                f"remote {model} vectors are {dim}-dimensional, this machine "
-                f"expects {local}. Refusing to merge.")
+    r = _http(url, "GET")
+    if r is None:
+        raise R2Error(f"GET {url} -> 404; the object vanished between HEAD and GET")
+    cb = _progress("download", expected)
+    got = 0
+    with r, open(dest, "wb") as f:
+        while chunk := r.read(1 << 20):
+            f.write(chunk)
+            got += len(chunk)
+            cb(len(chunk))
+    if expected and got != expected:
+        raise R2Error(f"truncated download: got {got} of {expected} bytes")
 
+
+# ---------------------------------------------------------------------------
+# Compatibility gates.  All of them read the unpacked snapshot: what a snapshot
+# says about itself is written by whoever pushed it, but its bytes are not.
+# ---------------------------------------------------------------------------
 
 def _check_manifest(manifest: dict) -> None:
     if manifest.get("schema_version") != SCHEMA_VERSION:
@@ -623,7 +678,7 @@ def _warn_on_map_size() -> None:
 # push
 # ---------------------------------------------------------------------------
 
-def _pack_snapshot(tmp: str) -> tuple[str, dict]:
+def _pack_snapshot(tmp: str) -> str:
     """Write a consistent, compacted copy of every store into `tmp`, tar it up.
 
     `env.copy(compact=True)` is a hot backup: it takes a read transaction, so it
@@ -662,24 +717,7 @@ def _pack_snapshot(tmp: str) -> tuple[str, dict]:
     _log("  packing tar.zst...")
     subprocess.run(["tar", "--zstd", "-cf", tarball, "-C", tmp, MANIFEST_NAME,
                     *stores.keys()], check=True)
-    return tarball, manifest
-
-
-def _metadata_of(manifest: dict, sha: str) -> dict[str, str]:
-    """The x-amz-meta-* fields.  `head_object` returns them without a download,
-    which is what lets `pull` reject an incompatible snapshot for free.
-    Values must be strings; keys come back lowercased."""
-    vec = {n: s for n, s in manifest["stores"].items() if "model" in s}
-    return {
-        "schema-version": manifest["schema_version"],
-        "vector-format": manifest["vector_format"],
-        "created-at": manifest["created_at"],
-        "created-by": manifest["created_by"],
-        "sha256": sha,
-        "models": ",".join(s["model"] for s in vec.values()),
-        "dimension": ",".join(str(s["dimension"]) for s in vec.values()),
-        "entries": ",".join(f"{n}={s['entries']}" for n, s in manifest["stores"].items()),
-    }
+    return tarball
 
 
 def push_snapshot(*, force: bool = False, dry_run: bool = False) -> None:
@@ -713,26 +751,25 @@ def push_snapshot(*, force: bool = False, dry_run: bool = False) -> None:
 
     tmp = tempfile.mkdtemp(prefix=".r2_push_", dir=os.path.dirname(CACHE_DIR))
     try:
-        tarball, manifest = _pack_snapshot(tmp)
+        tarball = _pack_snapshot(tmp)
         size = os.path.getsize(tarball)
-        _log(f"  hashing {_human(size)}...")
-        sha = _sha256(tarball)
 
         from boto3.s3.transfer import TransferConfig
         _log(f"  uploading to s3://{s.bucket}/{s.object_key}")
         client.upload_file(
             tarball, s.bucket, s.object_key,
-            ExtraArgs={"Metadata": _metadata_of(manifest, sha)},
             Config=TransferConfig(multipart_threshold=_MULTIPART_THRESHOLD,
                                   multipart_chunksize=_MULTIPART_CHUNKSIZE),
             Callback=_progress("upload", size))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+    # Signed HEAD, not the public one: the CDN may not see the new object yet,
+    # and the marker must record what we actually uploaded.
     head = remote_head(s, client)
-    _write_marker(etag=head.etag if head else None, sha256=sha,
+    _write_marker(etag=head.etag if head else None,
                   pushed_at=time.time(), last_checked_at=time.time())
-    _log(f"Pushed {_human(size)} ({sha[:16]}…).")
+    _log(f"Pushed {_human(size)}.")
 
 
 # ---------------------------------------------------------------------------
@@ -766,19 +803,19 @@ def pull_snapshot(*, backup: bool = True, force: bool = False,
                   dry_run: bool = False) -> bool:
     """Download the remote snapshot and merge it into the local stores.
 
-    Returns False when the local copy is already current.  Everything that can
+    Anonymous when `public_url` is set, which it is by default: no credentials.
+    Returns False when the local copy is already current.  Every check that can
     reject the snapshot runs before the merge writes its first key; past that
     point the backup is the only way back.
     """
     _require_tools()
     s = settings()
     with _pull_lock():
-        client = _client(s)
+        where = s.public_object_url if s.public_url else f"s3://{s.bucket}/{s.object_key}"
+        client = None if s.public_url else _client(s)
         head = remote_head(s, client)
         if head is None:
-            raise R2Error(f"s3://{s.bucket}/{s.object_key} does not exist. "
-                          f"Nothing to pull — `push` first.")
-        _check_metadata(head.metadata)
+            raise R2Error(f"{where} does not exist. Nothing to pull — `push` first.")
 
         marker = read_marker()
         if head.etag == marker.get("etag") and not force:
@@ -800,25 +837,22 @@ def pull_snapshot(*, backup: bool = True, force: bool = False,
 
         tmp = tempfile.mkdtemp(prefix=".r2_pull_", dir=os.path.dirname(CACHE_DIR))
         try:
-            from boto3.s3.transfer import TransferConfig
             tarball = os.path.join(tmp, "snapshot.tar.zst")
-            _log(f"  downloading {_human(head.size)} from s3://{s.bucket}/{s.object_key}")
-            client.download_file(
-                s.bucket, s.object_key, tarball,
-                Config=TransferConfig(multipart_threshold=_MULTIPART_THRESHOLD,
-                                      multipart_chunksize=_MULTIPART_CHUNKSIZE),
-                Callback=_progress("download", head.size))
-
-            expected = head.metadata.get("sha256")
-            if expected:
-                _log("  verifying sha256...")
-                got = _sha256(tarball)
-                if got != expected:
-                    raise R2Error(f"sha256 mismatch: got {got}, metadata says {expected}. "
-                                  f"The download is corrupt; nothing was merged.")
+            _log(f"  downloading {_human(head.size)} from {where}")
+            if client is None:
+                _download(s.public_object_url, tarball, head.size)
+            else:
+                from boto3.s3.transfer import TransferConfig
+                client.download_file(
+                    s.bucket, s.object_key, tarball,
+                    Config=TransferConfig(multipart_threshold=_MULTIPART_THRESHOLD,
+                                          multipart_chunksize=_MULTIPART_CHUNKSIZE),
+                    Callback=_progress("download", head.size))
 
             root = os.path.join(tmp, "snapshot")
             os.makedirs(root)
+            # tar --zstd verifies the frame's XXH64 content checksum, so a corrupt
+            # or truncated download fails here rather than reaching the merge.
             _log("  extracting...")
             subprocess.run(["tar", "--zstd", "-xf", tarball, "-C", root], check=True)
             os.remove(tarball)                    # ~0.7 GiB back before the merge
@@ -839,8 +873,8 @@ def pull_snapshot(*, backup: bool = True, force: bool = False,
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-        _write_marker(etag=head.etag, sha256=head.metadata.get("sha256"),
-                      pulled_at=time.time(), last_checked_at=time.time())
+        _write_marker(etag=head.etag, pulled_at=time.time(),
+                      last_checked_at=time.time())
         _log(f"Pulled and merged (ETag {head.etag}).")
         return True
 
@@ -850,10 +884,12 @@ def pull_snapshot(*, backup: bool = True, force: bool = False,
 # ---------------------------------------------------------------------------
 
 def status() -> None:
+    """Compare the local database with the remote.  Needs no credentials."""
     s = settings()
     marker = read_marker()
     _log(f"config      : {config_path()}")
-    _log(f"remote      : s3://{s.bucket}/{s.object_key}  ({s.endpoint})")
+    _log(f"read from   : {s.public_object_url if s.public_url else '(no public URL)'}")
+    _log(f"push to     : s3://{s.bucket}/{s.object_key}  ({s.endpoint})")
     _log(f"auto_check  : {s.auto_check}, every {s.check_interval_hours}h "
          f"(checks and warns; never merges)")
     _log("")
@@ -872,8 +908,7 @@ def status() -> None:
         return
     _log(f"remote ETag  : {head.etag}")
     _log(f"remote size  : {_human(head.size)}, uploaded "
-         f"{head.last_modified:%Y-%m-%d %H:%M} by "
-         f"{head.metadata.get('created-by', '?')}")
+         f"{head.last_modified:%Y-%m-%d %H:%M}")
     _log("")
     _log("Up to date." if head.etag == marker.get("etag")
          else f"A newer Semantic-Embedding DB is available. "
@@ -885,12 +920,12 @@ _checked_this_process = False
 
 def check_update(log: 'Callable[[str], None] | None' = None) -> None:
     """Probe the remote at most once per `check_interval_hours` and, if it holds a
-    newer database, say so.  Never downloads, never merges, never raises.
+    newer database, say so.  Anonymous: no credentials.  Never downloads, never
+    merges, never raises.
 
-    Blocking, on purpose: `remote_head` is blocking boto3.  A caller on an event
-    loop — the Isabelle RPC host runs several coroutines on one — must wrap this
-    in `asyncio.to_thread`, or an unreachable R2 stalls all of them for as long
-    as the timeouts allow.
+    Blocking, on purpose: it is one synchronous HTTPS HEAD.  A caller on an event
+    loop — the Isabelle RPC host runs several coroutines on one — should know it
+    stalls that loop for the request, and for `_HTTP_TIMEOUT` when unreachable.
 
     `log` defaults to printing, which is right for a terminal and useless inside
     the RPC host: `fork_and_launch__` (Isabelle_RPC's rpc.py) daemonizes and

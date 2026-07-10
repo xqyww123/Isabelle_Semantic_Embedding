@@ -444,6 +444,8 @@ def _r2():
     snapshot or a busy database must stop the run with a non-zero exit — unlike
     r2_sync.check_update, which runs inside somebody else's process and only
     ever logs.
+
+    Of these, only `push` needs R2 credentials; reads are anonymous.
     """
     from Isabelle_Semantic_Embedding import r2_sync
     return r2_sync
@@ -487,8 +489,7 @@ def cmd_push(args: argparse.Namespace) -> None:
                 print("  there is no object there yet.")
             else:
                 print(f"  the object there now is {head.size / 1024 ** 3:.2f} GiB, "
-                      f"uploaded {head.last_modified:%Y-%m-%d %H:%M} by "
-                      f"{head.metadata.get('created-by', '?')}")
+                      f"uploaded {head.last_modified:%Y-%m-%d %H:%M}")
             if not _confirm():
                 print("Aborted.")
                 return
@@ -500,17 +501,18 @@ def cmd_pull(args: argparse.Namespace) -> None:
     def go() -> None:
         r2 = _r2()
         s = r2.settings()
+        where = (s.public_object_url if s.public_url
+                 else f"s3://{s.bucket}/{s.object_key}")
         if not args.yes and not args.dry_run:
             head = r2.remote_head(s)
             if head is None:
-                print(f"s3://{s.bucket}/{s.object_key} does not exist. Nothing to pull.",
-                      file=sys.stderr)
+                print(f"{where} does not exist. Nothing to pull.", file=sys.stderr)
                 sys.exit(1)
             if head.etag == r2.read_marker().get("etag") and not args.force:
                 print(f"Already up to date (ETag {head.etag}).")
                 return
             print(f"pull MERGES {head.size / 1024 ** 3:.2f} GiB from "
-                  f"s3://{s.bucket}/{s.object_key} into the local database.")
+                  f"{where} into the local database.")
             print("  Remote records win, except that a theory finished locally "
                   "stays finished.")
             print("  A backup is taken first." if not args.no_backup
@@ -680,7 +682,8 @@ p_status = sub.add_parser("status",
 
 # push
 p_push = sub.add_parser("push",
-    help="Upload the local database to R2, OVERWRITING the remote snapshot")
+    help="Upload the local database to R2, OVERWRITING the shared remote "
+         "(human-only; needs credentials)")
 p_push.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
 p_push.add_argument("--dry-run", action="store_true", help="Say what would happen")
 p_push.add_argument("--force", action="store_true",
