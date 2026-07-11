@@ -23,7 +23,7 @@ signature SEMANTIC_STORE = sig
      plus the current proof context if applicable. Calls Python via RPC
      to generate plain-English translations using a Claude agent. *)
   val interpret : bool -> Context.generic -> unit
-  val interpret_with_parallel : int option -> bool -> Context.generic -> unit
+  val interpret_with_parallel : int option -> bool -> Context.generic list -> unit
 
   (* Remove all LMDB entries whose theory hashes are non-persistent
      (i.e., from non-loaded theories). Returns the number of entries deleted. *)
@@ -66,17 +66,6 @@ signature SEMANTIC_STORE = sig
      theories_include: string list, name_contains: string list,
      target_type: string} ->
     (real * Universal_Key.entity) list * string list
-
-  (* Embed semantic interpretations into vectors for the given theories
-     and all their unembedded ancestors, under the specified embedding model
-     (empty string = use default). *)
-  val embed_all_entities_in_theories : bool -> Context.generic -> theory list * string -> unit
-
-  (* Embed a list of entities, skipping those already embedded. *)
-  val embed_entities : Context.generic -> Universal_Key.entity list -> unit
-
-  (* Check whether a theory's entities are all embedded under the given model. *)
-  val is_thy_embedded : Context.generic -> string * string -> bool
 
   (* Interpret a list of entities, skipping those already interpreted. *)
   val interpret_entities : Context.generic -> Universal_Key.entity list -> unit
@@ -1325,7 +1314,12 @@ fun interpret' (context : Context.generic) : usage * usage =
     end
   end
 
-fun collect_uninterpreted (force : bool) thy =
+(* Ancestor closure of `roots`, in topological order (parents first), with a
+   shared `seen` so a theory common to several roots appears exactly once.
+   Descends into ancestors even past a skipped theory, so an uncollected ancestor
+   of a finished theory is never missed (we no longer assume "interpreted" implies
+   all ancestors interpreted); the skipped theory itself is not re-collected. *)
+fun collect_cone (skip : theory -> bool) (roots : theory list) : theory list =
   let
     val seen = Inthashtab.empty 64
     val _ = List.app (Inthashtab.update seen o rpair ()) base_theory_ids
@@ -1336,14 +1330,12 @@ fun collect_uninterpreted (force : bool) thy =
         then acc
         else
           let val _ = Inthashtab.update seen (id, ())
-              (* Always descend into ancestors, even past an already-interpreted
-                 theory, so an uninterpreted ancestor is never skipped (we no
-                 longer assume "interpreted" implies all ancestors interpreted).
-                 The interpreted theory itself is still not re-collected. *)
               val acc' = fold collect (Theory.parents_of thy) acc
-          in if not force andalso is_interpreted thy then acc' else acc' @ [thy] end
+          in if skip thy then acc' else acc' @ [thy] end
       end
-  in collect thy [] end
+  in fold collect roots [] end
+
+fun skip_interpreted (force : bool) thy = not force andalso is_interpreted thy
 
 (* Scheduler state for DAG-parallel interpretation (one Isabelle session).
    Default width N = Multithreading.max_threads (), optionally overridden by
@@ -1428,15 +1420,18 @@ fun interpret_parallel (n : int) (theories : theory list) : usage * usage =
     val _ = case failed of SOME e => Exn.reraise e | NONE => ()
   in (total, hist) end
 
-fun interpret_with_parallel parallel (force : bool) (context : Context.generic) : unit =
+(* Interpret the merged ancestor cone of `roots` under one bounded-width DAG.
+   A `Context.Proof` root additionally has its own proof-local entities interpreted,
+   last and sequentially, and is never marked (a proof context has no theory hash). *)
+fun interpret_with_parallel parallel (force : bool) (roots : Context.generic list) : unit =
   let
-    val thy = Context.theory_of context
-    val theories = collect_uninterpreted force thy
-    val contexts = map Context.Theory theories
-      @ (case context of Context.Proof _ => [context] | _ => [])
-    val _ = if null contexts then () else
-      tracing ("[Semantic_Store] interpreting " ^
-               Int.toString (length contexts) ^ " theories")
+    val theories = collect_cone (skip_interpreted force) (map Context.theory_of roots)
+    val proofs = filter (fn Context.Proof _ => true | _ => false) roots
+    (* count includes the proof contexts, matching the old guard which folded them
+       into `contexts` *)
+    val n_units = length theories + length proofs
+    val _ = if n_units = 0 then () else
+      tracing ("[Semantic_Store] interpreting " ^ Int.toString n_units ^ " theories")
 
     val n =
       (case parallel of
@@ -1444,25 +1439,25 @@ fun interpret_with_parallel parallel (force : bool) (context : Context.generic) 
       | SOME n =>
           if n >= 1 then n
           else error "Semantic_Store.interpret: parallel worker count must be positive")
-    val (total, hist) =
+    val (ttotal, thist) =
       if n <= 1
       then
         fold (fn ctx => fn (acc, hacc) =>
           let val (cur, cum) = interpret' ctx
               val _ = Context.cases mark_interpreted (K ()) ctx
           in (add_usage (acc, cur), add_usage (hacc, cum)) end)
-        contexts (zero_usage, zero_usage)
-      else
-        let
-          val (ttotal, thist) = interpret_parallel n theories
-          (* A trailing Proof context (if any) runs last, sequentially; like the
-             sequential path it is interpreted but not marked. *)
-          val (ptotal, phist) =
-            case context of
-              Context.Proof _ => interpret' context
-            | _ => (zero_usage, zero_usage)
-        in (add_usage (ttotal, ptotal), add_usage (thist, phist)) end
+        (map Context.Theory theories) (zero_usage, zero_usage)
+      else interpret_parallel n theories
 
+    (* Proof contexts run LAST and sequentially; interpreted but never marked. *)
+    val (ptotal, phist) =
+      fold (fn ctx => fn (acc, hacc) =>
+        let val (cur, cum) = interpret' ctx
+        in (add_usage (acc, cur), add_usage (hacc, cum)) end)
+      proofs (zero_usage, zero_usage)
+
+    val total = add_usage (ttotal, ptotal)
+    val hist = add_usage (thist, phist)
     val _ = tracing (String.concat [
         "[Semantic_Store] total: ", fmt_usage total,
         " (historical: ", fmt_usage hist, ")"])
@@ -1470,7 +1465,7 @@ fun interpret_with_parallel parallel (force : bool) (context : Context.generic) 
     ()
   end
 
-fun interpret force context = interpret_with_parallel NONE force context
+fun interpret force context = interpret_with_parallel NONE force [context]
 
 fun mk_interpret_theory (context : Context.generic) (names : string list) : unit =
   let
@@ -1647,76 +1642,6 @@ fun query_knn (context : Context.generic) =
         (query_text, k, kinds, domain, term_patterns, type_patterns,
          theories_include, name_contains, target_type)
   end
-
-fun is_thy_embedded (context : Context.generic) (theory_name : string, model : string) : bool =
-  let
-    val su = Context_Callbacks.static_context_unpacker context
-    val cmd : (string * string, bool) Remote_Procedure_Calling.command = {
-      name = "Semantic_Embedding.is_thy_embedded",
-      arg_schema = packPair (packString, packString),
-      ret_schema = unpackBool,
-      callback = [Universal_Key.make_universal_key_callback su,
-                  Config.make_config_lookup_callback su],
-      timeout = NONE
-    }
-  in Remote_Procedure_Calling.call_command cmd (theory_name, model) end
-
-fun embed_all_entities_in_theories (force : bool) (context : Context.generic) (theories : theory list, model : string) : unit =
-  let
-    val seen = Inthashtab.empty 64
-    val _ = List.app (Inthashtab.update seen o rpair ()) base_theory_ids
-    fun collect thy acc =
-      let val id = Context.theory_identifier thy
-      in
-        if Inthashtab.defined seen id orelse is_infra_session thy then acc
-        else
-          let val _ = Inthashtab.update seen (id, ())
-              val name = Context.theory_long_name thy
-              val acc' = fold collect (Theory.parents_of thy) acc
-          in if not force andalso is_thy_embedded context (name, model) then acc'
-             else acc' @ [name]
-          end
-      end
-    val unembedded = fold collect theories []
-  in
-    if null unembedded then ()
-    else
-      let
-        val _ = tracing ("[Semantic_Store] embed_all_entities_in_theories: " ^
-                   Int.toString (length unembedded) ^ " theories to embed")
-        val su = Context_Callbacks.static_context_unpacker context
-        val {constants, theorems, types, classes, locales, named_theorems, methods,
-             introduction_rules, elimination_rules,
-             induction_rules, case_split_rules} = make_entity_callbacks context su
-        val callbacks = [
-          constants, theorems, types, classes, locales, named_theorems, methods,
-          introduction_rules, elimination_rules,
-          induction_rules, case_split_rules,
-          Universal_Key.make_universal_key_callback su,
-          Config.make_config_lookup_callback su
-        ]
-        val cmd : (string list * string * bool, unit) Remote_Procedure_Calling.command = {
-          name = "Semantic_Embedding.embed_all_entities_in_theories",
-          arg_schema = packTuple3 (packList packString, packString, packBool),
-          ret_schema = unpackUnit,
-          callback = callbacks,
-          timeout = NONE
-        }
-      in Remote_Procedure_Calling.call_command cmd (unembedded, model, force) end
-  end
-
-fun embed_entities (context : Context.generic) (entities : Universal_Key.entity list) : unit =
-  let
-    val su = Context_Callbacks.static_context_unpacker context
-    val keys = map (Universal_Key.key_of NONE context) entities
-    val cmd : (Universal_Key.universal_key list, unit) Remote_Procedure_Calling.command = {
-      name = "Semantic_Embedding.embed_entities",
-      arg_schema = packList Universal_Key.pack_universal_key,
-      ret_schema = unpackUnit,
-      callback = [Config.make_config_lookup_callback su],
-      timeout = NONE
-    }
-  in Remote_Procedure_Calling.call_command cmd keys end
 
 end (*local MessagePack*)
 

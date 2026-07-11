@@ -288,6 +288,29 @@ class _Semantic_DB:
         with self._ensure_env().begin() as txn:
             return [txn.get(k) is not None for k in keys]
 
+    def iter_entity_records(self) -> 'Iterator[tuple[universal_key, Record]]':
+        """Yield ``(key, Record)`` for every non-status record, in ONE read txn.
+
+        Decodes each value inline so the caller never has to re-open the env — the
+        env's default per-thread read slot allows only one live read txn, so opening
+        a second (e.g. via ``query``/``__getitem__``) while iterating would fail.
+        Build any text you need from the yielded Record, not by re-querying.
+
+        Skips the 16-byte theory-status keys and any value that does not decode as a
+        Record (legacy / non-entity). This is the whole-DB enumeration the offline
+        embed drives off — using the singleton env, NEVER a second ``lmdb.open`` of
+        semantics.lmdb (which py-lmdb refuses in-process)."""
+        with self._ensure_env().begin() as txn:
+            for k, v in txn.cursor():
+                k = bytes(k)
+                if len(k) == 16:
+                    continue
+                try:
+                    rec = self._decode(v)
+                except Exception:
+                    continue
+                yield k, rec
+
     def __setitem__(self, key: universal_key, record: 'Record') -> None:
         with self._ensure_env().begin(write=True) as txn:
             txn.put(key, self._encode(record))

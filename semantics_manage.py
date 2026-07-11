@@ -7,6 +7,7 @@ Subcommands:
   remove    Remove specific theories from the database (offline)
   reindex   Rebuild experience_index.lmdb from semantics.lmdb (offline)
   fsck      Check semantics.lmdb invariants; --fix repairs the derived ones (offline)
+  embed     Embed interpreted entities lacking a vector for MODEL, whole DB (offline)
   status    Compare the local database with the Cloudflare R2 snapshot
   push      Upload the local database to R2 (overwrites the remote snapshot)
   pull      Download the R2 snapshot and merge it into the local database
@@ -579,13 +580,15 @@ def cmd_collect(args: argparse.Namespace) -> None:
         async with Client(args.repl_addr, args.session, timeout=None) as c:
             await c.set_register_thy(False)
             print("Loading theories...", flush=True)
-            fullnames = await c.load_theory([args.theory, "Semantic_Embedding.Semantic_Collection_App"])
+            fullnames = await c.load_theory(
+                list(args.theory) + ["Semantic_Embedding.Semantic_Collection_App"])
             print(f"Loaded: {fullnames}", flush=True)
+            targets = fullnames[:-1]   # drop the Semantic_Collection_App entry
 
             print("Running app...", flush=True)
             await c.run_app("Semantic_Store.collect")
-            models = [m.strip() for m in args.embed_models.split(",") if m.strip()] if args.embed_models else []
-            await c._write(args.theory, models, args.reinterpret, args.re_embed, args.parallel)
+            # Interpret-only protocol: (theory_names, force, parallel).
+            await c._write(targets, args.reinterpret, args.parallel)
 
             has_error = False
             try:
@@ -623,9 +626,104 @@ def cmd_collect(args: argparse.Namespace) -> None:
                 print("Failed.", file=sys.stderr)
                 sys.exit(1)
             else:
-                print("Done.")
+                print("Interpretation done.")
 
+    # --re-embed still runs the app, but interpret is a no-op (skip_interpreted
+    # skips already-finished theories). TODO: skip the REPL entirely for --re-embed.
     asyncio.run(main())
+
+    # Embed phase (option D): Python-side whole-DB completeness, same process.
+    # Reuses the Semantic_DB singleton opened during interpret (no second env open).
+    models = [m.strip() for m in args.embed_models.split(",") if m.strip()] \
+        if args.embed_models else []
+    if models:
+        asyncio.run(_embed_models(models, driver="", base_url="",
+                                  force=args.re_embed, yes=args.yes_embed))
+
+
+# ---------------------------------------------------------------------------
+# embed
+# ---------------------------------------------------------------------------
+
+def _collect_embed_candidates() -> list[tuple[bytes, str]]:
+    """Every interpreted, non-WIP entity as (key, embedding-text), in one read txn.
+
+    Experiences embed their goal_description (rec.interpretation) alone; other
+    entities embed the pretty signature + interpretation (matching
+    Semantic_DB.query(with_pretty=True)). Text is built from the record in hand —
+    never a nested query() (see Semantic_DB.iter_entity_records)."""
+    from Isabelle_Semantic_Embedding.semantics import Semantic_DB, persist_wip
+    from Isabelle_RPC_Host.universal_key import EntityKind, is_WIP
+    out: list[tuple[bytes, str]] = []
+    for key, rec in Semantic_DB.iter_entity_records():
+        if rec.interpretation is None:
+            continue
+        if is_WIP(key) and not persist_wip:
+            continue
+        if rec.kind == EntityKind.EXPERIENCE:
+            text = rec.interpretation
+        else:
+            text = rec.pretty_print + "\n" + rec.interpretation
+        out.append((key, text))
+    return out
+
+
+async def _embed_models(models: list[str], *, driver: str, base_url: str,
+                        force: bool, yes: bool) -> None:
+    """Make vector_MODEL complete w.r.t. semantics.lmdb, for each model.
+
+    Drives the scan off the Semantic_DB singleton (never a second lmdb.open of
+    semantics.lmdb). Non-interactive without ``yes`` and with real work to do is a
+    hard error, never a silent skip or an input() hang."""
+    from Isabelle_Semantic_Embedding.semantics import (
+        Semantic_Vector_Store, _resolve_embedding_config_env)
+    from Isabelle_Semantic_Embedding.semantic_embedding import make_embedding_provider
+    env_driver, env_base_url, _ = _resolve_embedding_config_env()
+    driver = driver or env_driver
+    base_url = base_url or env_base_url
+
+    candidates = _collect_embed_candidates()
+    for model in models:
+        provider = make_embedding_provider(driver, base_url, model)
+        store = Semantic_Vector_Store(emb_provider=provider, connection=None)
+
+        if force:
+            todo = candidates
+        else:
+            present = store.contains([k for k, _ in candidates])
+            todo = [kt for kt, p in zip(candidates, present) if not p]
+
+        n = len(todo)
+        if n == 0:
+            print(f"{model}: already complete ({len(candidates)} entities).")
+            continue
+        print(f"{model}: {n} of {len(candidates)} entities need vectors "
+              f"({sum(len(t) for _, t in todo)} chars).")
+
+        if not yes:
+            if sys.stdin.isatty():
+                if input("Proceed? [y/N] ").strip().lower() != "y":
+                    print("Aborted.")
+                    continue
+            else:
+                print(f"Refusing to embed {n} entities non-interactively; pass --yes "
+                      f"(or --yes-embed to `collect`).", file=sys.stderr)
+                sys.exit(1)
+
+        BATCH = 256
+        total_tokens = 0
+        for i in range(0, n, BATCH):
+            total_tokens += await store.embed(todo[i:i + BATCH])
+            print(f"  {model}: embedded {min(i + BATCH, n)}/{n}", flush=True)
+        print(f"{model}: done ({n} embedded, {total_tokens} tokens).")
+
+
+def cmd_embed(args: argparse.Namespace) -> None:
+    """Make vector_MODEL complete w.r.t. semantics.lmdb, offline (no Isabelle)."""
+    _require_db()
+    import asyncio
+    asyncio.run(_embed_models(args.models, driver=args.driver, base_url=args.base_url,
+                              force=args.force, yes=args.yes))
 
 
 # ---------------------------------------------------------------------------
@@ -637,8 +735,10 @@ parser = argparse.ArgumentParser(
 sub = parser.add_subparsers(dest="command", required=True)
 
 # collect
-p_collect = sub.add_parser("collect", help="Collect semantic interpretations for a theory")
-p_collect.add_argument("theory", help="Theory name to interpret (e.g., HOL.List)")
+p_collect = sub.add_parser("collect", help="Collect semantic interpretations for theories")
+p_collect.add_argument("theory", nargs="+",
+    help="Theory name(s) to interpret (e.g., HOL.List HOL.Map). Their ancestor cones "
+         "are merged and interpreted under one DAG.")
 p_collect.add_argument("--repl-addr", default="127.0.0.1:6666", help="Isa-REPL server address")
 p_collect.add_argument("--rpc-addr", default="127.0.0.1:27182", help="RPC host address")
 p_collect.add_argument("--session", default="HOL", help="Session qualifier for theory name resolution")
@@ -654,9 +754,12 @@ p_collect.add_argument("--reinterpret", action="store_true",
 p_collect.add_argument("--migrate-on-hash-change", action="store_true",
     help="Copy old data to new hash instead of re-interpreting when hash changes")
 p_collect.add_argument("--re-embed", action="store_true",
-    help="Re-embed vectors without re-interpreting (requires --embed-models)")
+    help="Re-embed vectors for --embed-models (force, whole DB), not just the missing ones")
+p_collect.add_argument("--yes-embed", action="store_true",
+    help="Proceed with the chained embed without confirmation (needed when stdin is not a "
+         "TTY, e.g. in a fleet).")
 p_collect.add_argument("--parallel", type=_positive_int, metavar="N",
-    help="Override semantic interpretation parallelism (default: Isabelle worker count)")
+    help="Override interpretation parallelism / DAG width (default: Isabelle worker count)")
 
 # list
 p_list = sub.add_parser("list", help="List all theories in the semantic database")
@@ -676,6 +779,22 @@ p_fsck = sub.add_parser("fsck", help="Check semantics.lmdb invariants")
 p_fsck.add_argument("--fix", action="store_true",
     help="Repair the derived artefacts: rebuild the experience index, and re-key "
          "records whose XOR prefix disagrees with their constituent list.")
+
+# embed
+p_embed = sub.add_parser("embed",
+    help="Embed every interpreted entity that lacks a vector for MODEL, over the whole "
+         "database (offline; no Isabelle). Incremental.")
+p_embed.add_argument("models", nargs="+", metavar="MODEL",
+    help="Canonical (HuggingFace) embedding model name(s), e.g. 'Qwen/Qwen3-Embedding-8B'. "
+         "All are served by the one active driver+base_url.")
+p_embed.add_argument("--yes", action="store_true",
+    help="Proceed without the confirmation prompt (required when stdin is not a TTY).")
+p_embed.add_argument("--force", action="store_true",
+    help="Re-embed even entities that already have a vector for the model.")
+p_embed.add_argument("--driver", default="",
+    help="Override the embedding driver class (else env EMBEDDING_DRIVER / default).")
+p_embed.add_argument("--base-url", dest="base_url", default="",
+    help="Override the embedding endpoint base_url (else env EMBEDDING_BASE_URL / default).")
 
 # status
 p_status = sub.add_parser("status",
@@ -704,5 +823,5 @@ p_pull.add_argument("--force", action="store_true",
 
 args = parser.parse_args()
 {"collect": cmd_collect, "list": cmd_list, "remove": cmd_remove,
- "reindex": cmd_reindex, "fsck": cmd_fsck,
+ "reindex": cmd_reindex, "fsck": cmd_fsck, "embed": cmd_embed,
  "status": cmd_status, "push": cmd_push, "pull": cmd_pull}[args.command](args)

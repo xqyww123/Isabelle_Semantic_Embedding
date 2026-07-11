@@ -1,14 +1,14 @@
 (*
-  Isa-REPL App for collecting semantic interpretations and optionally
-  embedding them into vectors.
+  Isa-REPL App for collecting semantic interpretations.
+
+  Interpret-only: embedding is done Python-side by semantics_manage.py (offline
+  `embed`, or the `collect --embed-models` chain), never here.
 
   Protocol:
-    Client sends: theory_name (msgpack string)
-                  models (msgpack string list, may be empty)
+    Client sends: theory_names (msgpack string list — the roots to interpret)
                   force (msgpack bool – when true, re-interpret already-finished theories)
-                  re_embed_only (msgpack bool – when true, skip interpretation and only re-embed)
                   parallel (msgpack int option – NONE uses Isabelle worker count)
-    Server streams: packString messages during interpretation/embedding (from tracing)
+    Server streams: packString messages during interpretation (from tracing)
     Server sends:   packUnit when done successfully
     On error:       sends packString "ERROR: ..." then packUnit
 *)
@@ -35,13 +35,11 @@ val _ = REPL_Server.register_app "Semantic_Store.collect" (fn (cin, cout, state)
   in
     \<^try>\<open>
       let
-        val thy_name = read unpackString
-        val models = read (unpackList unpackString)
+        val thy_names = read (unpackList unpackString)
         val force = read unpackBool
-        val re_embed_only = read unpackBool
         val parallel = read (unpackOption unpackInt)
-        val thy = Thy_Info.get_theory thy_name
-        val _ = Theory_Hash.store_theory_hash thy
+        val thys = map Thy_Info.get_theory thy_names
+        val _ = List.app Theory_Hash.store_theory_hash thys
         val _ = Remote_Procedure_Calling.load ["Isabelle_Semantic_Embedding"]
 
         (* Hijack output channels to stream messages over the socket *)
@@ -70,16 +68,10 @@ val _ = REPL_Server.register_app "Semantic_Store.collect" (fn (cin, cout, state)
            Private_Output.error_message_fn := old_error_message)
         val _ = set_channels (fn msgs => List.app send msgs)
 
-        val context = Context.Theory thy
-        val theories = thy :: Theory.ancestors_of thy
-        val _ = if re_embed_only then ()
-                else \<^try>\<open>Semantic_Store.interpret_with_parallel parallel force context
-                       catch exn => (restore_channels (); Exn.reraise exn)\<close>
-        val embed_force = force orelse re_embed_only
-        val _ = List.app (fn model =>
-          (send ("[Embedding] model: " ^ model);
-           \<^try>\<open>Semantic_Store.embed_all_entities_in_theories embed_force context (theories, model)
-             catch exn => (restore_channels (); Exn.reraise exn)\<close>)) models
+        val _ = \<^try>\<open>
+                  Semantic_Store.interpret_with_parallel parallel force
+                    (map Context.Theory thys)
+                  catch exn => (restore_channels (); Exn.reraise exn)\<close>
         val _ = restore_channels ()
         val _ = done ()
       in state end
