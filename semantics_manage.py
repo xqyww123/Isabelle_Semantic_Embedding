@@ -548,92 +548,92 @@ def cmd_collect(args: argparse.Namespace) -> None:
         print("Error: --re-embed requires --embed-models.", file=sys.stderr)
         sys.exit(1)
 
-    import threading
-    import time
     import asyncio
-    import Isabelle_RPC_Host
-    import Isabelle_Semantic_Embedding
-    import Isabelle_Semantic_Embedding.semantic_interpretation as si
-    si.interpretation_model = args.model
     import Isabelle_Semantic_Embedding.semantics as sem
     sem.migrate_on_hash_change = args.migrate_on_hash_change
-    from IsaREPL import Client
 
-    import socket
-    host, port = args.rpc_addr.split(":")
-    port = int(port)
-    rpc_already_running = False
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        rpc_already_running = s.connect_ex((host, port)) == 0
+    # Interpretation phase (needs the REPL + RPC host). --re-embed skips it entirely
+    # and goes straight to the offline embed below — no Isabelle required.
+    if not args.re_embed:
+        import threading
+        import time
+        import Isabelle_RPC_Host
+        import Isabelle_Semantic_Embedding.semantic_interpretation as si
+        si.interpretation_model = args.model
+        from IsaREPL import Client
 
-    if rpc_already_running:
-        print(f"RPC server already running on {args.rpc_addr}, reusing.", flush=True)
-    else:
-        logger = Isabelle_RPC_Host.mk_logger_(args.rpc_addr, None)
-        rpc_thread = threading.Thread(
-            target=Isabelle_RPC_Host.launch_server_,
-            args=(args.rpc_addr, logger), daemon=True)
-        rpc_thread.start()
-        time.sleep(1)
+        import socket
+        host, port = args.rpc_addr.split(":")
+        port = int(port)
+        rpc_already_running = False
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            rpc_already_running = s.connect_ex((host, port)) == 0
 
-    async def main():
-        async with Client(args.repl_addr, args.session, timeout=None) as c:
-            await c.set_register_thy(False)
-            print("Loading theories...", flush=True)
-            fullnames = await c.load_theory(
-                list(args.theory) + ["Semantic_Embedding.Semantic_Collection_App"])
-            print(f"Loaded: {fullnames}", flush=True)
-            targets = fullnames[:-1]   # drop the Semantic_Collection_App entry
+        if rpc_already_running:
+            print(f"RPC server already running on {args.rpc_addr}, reusing.", flush=True)
+        else:
+            logger = Isabelle_RPC_Host.mk_logger_(args.rpc_addr, None)
+            rpc_thread = threading.Thread(
+                target=Isabelle_RPC_Host.launch_server_,
+                args=(args.rpc_addr, logger), daemon=True)
+            rpc_thread.start()
+            time.sleep(1)
 
-            print("Running app...", flush=True)
-            await c.run_app("Semantic_Store.collect")
-            # Interpret-only protocol: (theory_names, force, parallel).
-            await c._write(targets, args.reinterpret, args.parallel)
+        async def main():
+            async with Client(args.repl_addr, args.session, timeout=None) as c:
+                await c.set_register_thy(False)
+                print("Loading theories...", flush=True)
+                fullnames = await c.load_theory(
+                    list(args.theory) + ["Semantic_Embedding.Semantic_Collection_App"])
+                print(f"Loaded: {fullnames}", flush=True)
+                targets = fullnames[:-1]   # drop the Semantic_Collection_App entry
 
-            has_error = False
-            try:
-                while True:
-                    raw = await c._feed_and_unpack()
-                    if isinstance(raw, (list, tuple)) and len(raw) == 2:
-                        msg, err = raw
-                        if err is not None and err != ():
-                            err_str = err.decode("utf-8") if isinstance(err, bytes) else str(err)
-                            print(err_str, file=sys.stderr, flush=True)
-                            has_error = True
-                            continue
-                        if msg is None or msg == ():
-                            if (msg is None or msg == ()) and (err is None or err == ()):
-                                break
-                            continue
-                        if isinstance(msg, bytes):
-                            msg = msg.decode("utf-8", errors="replace")
-                        if isinstance(msg, str):
-                            if msg.startswith("ERROR:"):
-                                print(msg, file=sys.stderr, flush=True)
+                print("Running app...", flush=True)
+                await c.run_app("Semantic_Store.collect")
+                # Interpret-only protocol: (theory_names, force, parallel).
+                await c._write(targets, args.reinterpret, args.parallel)
+
+                has_error = False
+                try:
+                    while True:
+                        raw = await c._feed_and_unpack()
+                        if isinstance(raw, (list, tuple)) and len(raw) == 2:
+                            msg, err = raw
+                            if err is not None and err != ():
+                                err_str = err.decode("utf-8") if isinstance(err, bytes) else str(err)
+                                print(err_str, file=sys.stderr, flush=True)
                                 has_error = True
-                            else:
-                                print(msg, flush=True)
-                    elif raw is None:
-                        break
-                    else:
-                        print(f"[unexpected: {raw!r}]", flush=True)
-            except Exception as e:
-                print(f"Connection error: {e}", file=sys.stderr, flush=True)
-                has_error = True
-                raise
+                                continue
+                            if msg is None or msg == ():
+                                if (msg is None or msg == ()) and (err is None or err == ()):
+                                    break
+                                continue
+                            if isinstance(msg, bytes):
+                                msg = msg.decode("utf-8", errors="replace")
+                            if isinstance(msg, str):
+                                if msg.startswith("ERROR:"):
+                                    print(msg, file=sys.stderr, flush=True)
+                                    has_error = True
+                                else:
+                                    print(msg, flush=True)
+                        elif raw is None:
+                            break
+                        else:
+                            print(f"[unexpected: {raw!r}]", flush=True)
+                except Exception as e:
+                    print(f"Connection error: {e}", file=sys.stderr, flush=True)
+                    has_error = True
+                    raise
 
-            if has_error:
-                print("Failed.", file=sys.stderr)
-                sys.exit(1)
-            else:
-                print("Interpretation done.")
+                if has_error:
+                    print("Failed.", file=sys.stderr)
+                    sys.exit(1)
+                else:
+                    print("Interpretation done.")
 
-    # --re-embed still runs the app, but interpret is a no-op (skip_interpreted
-    # skips already-finished theories). TODO: skip the REPL entirely for --re-embed.
-    asyncio.run(main())
+        asyncio.run(main())
 
-    # Embed phase (option D): Python-side whole-DB completeness, same process.
-    # Reuses the Semantic_DB singleton opened during interpret (no second env open).
+    # Embed phase (option D): Python-side whole-DB completeness, offline.
     models = [m.strip() for m in args.embed_models.split(",") if m.strip()] \
         if args.embed_models else []
     if models:
@@ -648,23 +648,26 @@ def cmd_collect(args: argparse.Namespace) -> None:
 def _collect_embed_candidates() -> list[tuple[bytes, str]]:
     """Every interpreted, non-WIP entity as (key, embedding-text), in one read txn.
 
-    Experiences embed their goal_description (rec.interpretation) alone; other
-    entities embed the pretty signature + interpretation (matching
+    Entities embed the pretty signature + interpretation (matching
     Semantic_DB.query(with_pretty=True)). Text is built from the record in hand —
-    never a nested query() (see Semantic_DB.iter_entity_records)."""
+    never a nested query() (see Semantic_DB.iter_entity_records).
+
+    EXPERIENCE records are deliberately EXCLUDED: their document vector uses a
+    framing text (patterns + situation) produced by the AoA layer
+    (IsaMini.AoA.mcp_http_server._experience_document_text), which this offline,
+    layering-below tool must not reconstruct. Experience vectors are (re)written by
+    the AoA write-memory path, not here."""
     from Isabelle_Semantic_Embedding.semantics import Semantic_DB, persist_wip
     from Isabelle_RPC_Host.universal_key import EntityKind, is_WIP
     out: list[tuple[bytes, str]] = []
     for key, rec in Semantic_DB.iter_entity_records():
         if rec.interpretation is None:
             continue
+        if rec.kind == EntityKind.EXPERIENCE:
+            continue
         if is_WIP(key) and not persist_wip:
             continue
-        if rec.kind == EntityKind.EXPERIENCE:
-            text = rec.interpretation
-        else:
-            text = rec.pretty_print + "\n" + rec.interpretation
-        out.append((key, text))
+        out.append((key, rec.pretty_print + "\n" + rec.interpretation))
     return out
 
 
