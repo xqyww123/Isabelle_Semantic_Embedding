@@ -370,3 +370,69 @@ def test_a_corrupt_download_never_reaches_the_merge(tmp_path):
     r = subprocess.run(["tar", "--zstd", "-xf", tar, "-C", out],
                        capture_output=True, text=True)
     assert r.returncode != 0, "a flipped byte extracted cleanly; zstd has no checksum"
+
+
+# ---------------------------------------------------------------------------
+# the pull lock, the empty-DB probe, and the auto-pull idle-gate bypass
+# ---------------------------------------------------------------------------
+
+def test_the_pull_lock_serialises_pulls_and_raises_r2busy(monkeypatch, tmp_path):
+    """filelock replaces the hand-rolled flock; a second acquirer (any process,
+    or even another coroutine in this one) fails fast rather than queueing."""
+    monkeypatch.setattr(r2_sync, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(r2_sync, "LOCK_PATH", str(tmp_path / ".r2_pull.lock"))
+    with r2_sync._pull_lock():
+        with pytest.raises(r2_sync.R2Busy):
+            with r2_sync._pull_lock():
+                pass
+    with r2_sync._pull_lock():          # released after the block -> reacquirable
+        pass
+
+
+def test_r2busy_is_an_r2error_so_the_manual_cli_still_catches_it():
+    assert issubclass(r2_sync.R2Busy, r2_sync.R2Error)
+
+
+def test_semantic_db_is_empty_when_the_store_is_absent(monkeypatch, tmp_path):
+    monkeypatch.setattr(r2_sync, "CACHE_DIR", str(tmp_path))   # no semantics.lmdb here
+    assert r2_sync.semantic_db_is_empty() is True
+    assert r2_sync.semantic_db_record_count() == 0
+
+
+def _stub_pull_until_download(monkeypatch, tmp_path, idle):
+    """Stub pull_snapshot's heavy steps and stop it the instant the download would
+    begin, so a test can observe the idle gate and the first on_phase call."""
+    monkeypatch.setattr(r2_sync, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(r2_sync, "LOCK_PATH", str(tmp_path / ".r2_pull.lock"))
+    monkeypatch.setattr(r2_sync, "_require_tools", lambda: None)
+    monkeypatch.setattr(r2_sync, "remote_head",
+                        lambda s, client=None: r2_sync.Remote_Head(
+                            "new", 10, datetime(2026, 7, 9, 12, 0)))
+    monkeypatch.setattr(r2_sync, "read_marker", lambda: {})
+    monkeypatch.setattr(r2_sync, "_require_disk", lambda *a: None)
+    monkeypatch.setattr(r2_sync, "_require_idle", lambda force: idle.append(1))
+
+    class _Stop(RuntimeError):
+        pass
+
+    def stop_download(url, dest, expected):
+        raise _Stop()
+    monkeypatch.setattr(r2_sync, "_download", stop_download)
+    return _Stop
+
+
+def test_auto_pull_skips_the_idle_gate_and_announces_the_download_phase(cfg, monkeypatch, tmp_path):
+    idle, phases = [], []
+    Stop = _stub_pull_until_download(monkeypatch, tmp_path, idle)
+    with pytest.raises(Stop):
+        r2_sync.pull_snapshot(require_idle=False, backup=False, on_phase=phases.append)
+    assert idle == [], "require_idle=False must skip the lsof gate for the auto path"
+    assert phases == ["downloading"], "on_phase should fire as the download begins"
+
+
+def test_a_manual_pull_keeps_the_idle_gate(cfg, monkeypatch, tmp_path):
+    idle = []
+    Stop = _stub_pull_until_download(monkeypatch, tmp_path, idle)
+    with pytest.raises(Stop):
+        r2_sync.pull_snapshot(require_idle=True, backup=False)
+    assert idle == [1], "the default path must still run the idle gate"

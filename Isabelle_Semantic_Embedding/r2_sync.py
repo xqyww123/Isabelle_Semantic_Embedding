@@ -52,7 +52,6 @@ Everything else is read as env > ``config.yaml`` > the ``DEFAULT_*`` below.
 from __future__ import annotations
 
 import email.utils
-import fcntl
 import json
 import os
 import pathlib
@@ -70,6 +69,7 @@ from typing import Any, NamedTuple
 import lmdb
 import platformdirs
 from ._paths import semantic_DB_dir
+from filelock import FileLock, Timeout as _LockTimeout
 
 from ._user_config import User_Config, env_bool
 
@@ -107,6 +107,12 @@ _MULTIPART_CHUNKSIZE = 128 << 20
 class R2Error(RuntimeError):
     """Anything that should stop a sync: misconfiguration, an incompatible
     snapshot, a busy database, a full disk."""
+
+
+class R2Busy(R2Error):
+    """Raised when another process already holds the pull lock.  A subclass so the
+    manual CLI's `except R2Error` still catches it, while the auto path can tell
+    'someone else is downloading' apart from a genuine failure."""
 
 
 def _log(msg: str) -> None:
@@ -402,17 +408,26 @@ def _report_blockers(need: int, *paths: str) -> None:
 
 @contextmanager
 def _pull_lock():
-    """Keep two processes from auto-pulling into the same stores at once."""
+    """Serialise every pull -- auto or manual, same process or not -- against each
+    other, so two never merge into the same stores at once.
+
+    `filelock` is a cross-platform advisory lock (fcntl on POSIX, msvcrt on
+    Windows); like flock it is an OS-held lock the kernel drops when the holder
+    closes the handle OR dies, so a crashed puller never leaves a stale lock -- no
+    TTL, no manual recovery.  `timeout=0` is non-blocking: a second puller fails
+    fast with R2Busy rather than queueing.  Even two coroutines in one process
+    exclude each other (verified: the default FileLock is not re-entrant across
+    instances)."""
     os.makedirs(CACHE_DIR, exist_ok=True)
-    fd = os.open(LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o644)
+    lock = FileLock(LOCK_PATH, timeout=0)
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise R2Error("another process is already pulling (holds .r2_pull.lock)")
+        lock.acquire()
+    except _LockTimeout:
+        raise R2Busy("another process is already pulling (holds .r2_pull.lock)")
+    try:
         yield
     finally:
-        os.close(fd)
+        lock.release()
 
 
 # ---------------------------------------------------------------------------
@@ -801,14 +816,28 @@ def _backup(keep: int = 2) -> str:
 
 
 def pull_snapshot(*, backup: bool = True, force: bool = False,
-                  dry_run: bool = False) -> bool:
+                  dry_run: bool = False, require_idle: bool = True,
+                  on_phase: 'Callable[[str], None] | None' = None) -> bool:
     """Download the remote snapshot and merge it into the local stores.
 
     Anonymous when `public_url` is set, which it is by default: no credentials.
     Returns False when the local copy is already current.  Every check that can
     reject the snapshot runs before the merge writes its first key; past that
     point the backup is the only way back.
+
+    `require_idle=False` skips the "is another process holding the DB open?" gate.
+    The auto-pull path passes it: that gate was written for push/pack (whose hot
+    copy wants a quiescent DB), but a merge is safe under concurrent readers and
+    writers -- LMDB serialises the writers and the merge is idempotent -- so on a
+    machine running several RPC hosts off one cache, keeping the gate would only
+    wedge cold-start (each host holds the empty env, so every pull refuses).
+
+    `on_phase`, if given, is called with 'downloading' / 'extracting' / 'merging'
+    as each stage begins, so a caller on an event loop can report progress.
     """
+    def _phase(name: str) -> None:
+        if on_phase:
+            on_phase(name)
     _require_tools()
     s = settings()
     with _pull_lock():
@@ -831,13 +860,15 @@ def pull_snapshot(*, backup: bool = True, force: bool = False,
             return True
 
         _require_disk(PULL_MIN_FREE, CACHE_DIR, os.path.expanduser("~"))
-        _require_idle(force)
+        if require_idle:
+            _require_idle(force)
 
         if backup:
             _backup()
 
         tmp = tempfile.mkdtemp(prefix=".r2_pull_", dir=os.path.dirname(CACHE_DIR))
         try:
+            _phase("downloading")
             tarball = os.path.join(tmp, "snapshot.tar.zst")
             _log(f"  downloading {_human(head.size)} from {where}")
             if client is None:
@@ -854,6 +885,7 @@ def pull_snapshot(*, backup: bool = True, force: bool = False,
             os.makedirs(root)
             # tar --zstd verifies the frame's XXH64 content checksum, so a corrupt
             # or truncated download fails here rather than reaching the merge.
+            _phase("extracting")
             _log("  extracting...")
             subprocess.run(["tar", "--zstd", "-xf", tarball, "-C", root], check=True)
             os.remove(tarball)                    # ~0.7 GiB back before the merge
@@ -868,7 +900,9 @@ def pull_snapshot(*, backup: bool = True, force: bool = False,
             _check_no_legacy(os.path.join(root, "semantics.lmdb"))
             # Re-check: minutes passed downloading, and a collection run may have
             # started since. Nothing has been written yet, so refusing here is free.
-            _require_idle(force)
+            if require_idle:
+                _require_idle(force)
+            _phase("merging")
             _log("  merging...")
             _merge_snapshot(root)
         finally:
@@ -883,6 +917,25 @@ def pull_snapshot(*, backup: bool = True, force: bool = False,
 # ---------------------------------------------------------------------------
 # status / the automatic path
 # ---------------------------------------------------------------------------
+
+def semantic_db_is_empty() -> bool:
+    """True when there is no local semantic database worth speaking of: the
+    `semantics.lmdb` store is absent, or present but holds zero records.  Cheap --
+    an O(1) LMDB stat, never a scan -- so the AoA hook can call it every `by aoa`.
+    """
+    if not os.path.isdir(os.path.join(CACHE_DIR, "semantics.lmdb")):
+        return True
+    from .semantics import Semantic_DB
+    return Semantic_DB._ensure_env().stat()["entries"] == 0
+
+
+def semantic_db_record_count() -> int:
+    """How many records the local `semantics.lmdb` holds (0 if absent)."""
+    if not os.path.isdir(os.path.join(CACHE_DIR, "semantics.lmdb")):
+        return 0
+    from .semantics import Semantic_DB
+    return Semantic_DB._ensure_env().stat()["entries"]
+
 
 def status() -> None:
     """Compare the local database with the remote.  Needs no credentials."""
