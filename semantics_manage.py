@@ -699,7 +699,20 @@ def _parse_kinds(spec: str) -> 'set | None':
 
 
 def _collect_embed_candidates(kinds: 'set | None' = None) -> 'list[tuple[bytes, object]]':
-    """Every interpreted, non-WIP record as (key, record), in one read txn.
+    """Every interpreted record as (key, record), in one read txn.
+
+    WIP records are INCLUDED, exactly like persistent ones. Every other path in the
+    pipeline already treats them alike -- Semantic_DB[k] = rec and put_experience write
+    them with no WIP guard, _auto_embed embeds them with no WIP guard, and the migration
+    purge deletes their vectors with no WIP guard -- so this function skipping them made
+    it the one outlier, and an actively harmful one: the purge would delete a WIP
+    experience's vector that the re-embed then refused to rewrite (93 of 181 experiences
+    on the cluster). Symmetry here is what makes purge-then-re-embed correct BY
+    CONSTRUCTION.
+    Dropping WIP vectors is still available, but only as an EXPLICIT act
+    (clean_wip / clean_all_wip_in_created_dbs), never as an implicit side effect of
+    embedding. (The WIP guards in mark_interpreted / mark_thy_embedded stay: those record
+    that a theory is FINISHED, and a WIP theory will still change.)
 
     Records are handed to ``Semantic_Vector_Store.embed_records``, which derives the
     document text via ``document_text_of`` (the single authority, dispatched on kind).
@@ -711,15 +724,12 @@ def _collect_embed_candidates(kinds: 'set | None' = None) -> 'list[tuple[bytes, 
 
     ``kinds``: if given, restrict to these EntityKinds (e.g. {EXPERIENCE} for the §5
     experience-vector migration); default None = all kinds."""
-    from Isabelle_Semantic_Embedding.semantics import Semantic_DB, persist_wip
-    from Isabelle_RPC_Host.universal_key import is_WIP
+    from Isabelle_Semantic_Embedding.semantics import Semantic_DB
     out: list[tuple[bytes, object]] = []
     for key, rec in Semantic_DB.iter_entity_records():
         if rec.interpretation is None:
             continue
         if kinds is not None and rec.kind not in kinds:
-            continue
-        if is_WIP(key) and not persist_wip:
             continue
         out.append((key, rec))
     return out
@@ -756,7 +766,27 @@ async def _embed_models(models: list[str], *, driver: str, base_url: str,
         if n == 0:
             print(f"{model}: already complete ({len(candidates)} entities).")
             continue
-        chars = sum(len(document_text_of(rec) or "") for _, rec in todo)
+        # embed_records SKIPS any record document_text_of cannot render (no
+        # interpretation, or an unparseable experience expr). Say so out loud: a silent
+        # skip after a purge would leave the record with no vector in any store and no
+        # hint that it happened.
+        chars, unrenderable, renderable = 0, [], []
+        for k, rec in todo:
+            t = document_text_of(rec)
+            if t is None:
+                unrenderable.append(k)
+            else:
+                chars += len(t)
+                renderable.append((k, rec))
+        todo, n = renderable, len(renderable)   # keep todo and n in step for the batching
+        if unrenderable:
+            print(f"{model}: WARNING -- {len(unrenderable)} record(s) have no embeddable "
+                  f"document text and will be SKIPPED (they will have no vector): "
+                  + ", ".join(k.hex()[:16] for k in unrenderable[:5])
+                  + (" ..." if len(unrenderable) > 5 else ""), file=sys.stderr)
+        if n == 0:
+            print(f"{model}: nothing embeddable.")
+            continue
         print(f"{model}: {n} of {len(candidates)} entities need vectors ({chars} chars).")
 
         if not yes:
