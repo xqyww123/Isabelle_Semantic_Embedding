@@ -78,7 +78,16 @@ from ._user_config import User_Config, env_bool
 
 # The snapshot format.  Bump when the tarball layout or a stored record's shape
 # changes, so an older client refuses a snapshot it would silently misread.
-SCHEMA_VERSION = "1"
+#
+# "2": an EXPERIENCE's goal patterns moved out of `expr` (where they were JSON-packed)
+# into the real `goal_patterns` field, 8th in the record tuple.  msgpack tuples are
+# positional and length-tolerant, so a pre-"2" client does not crash on such a record --
+# it takes vals[:7], drops the patterns, reads expr=None, and ends up with an experience
+# that has NO goal patterns: a pattern-less document text, hit_rate 0 for every
+# experience (so they all vanish from retrieval), and an _auto_embed that would overwrite
+# the vector with that wrong text.  Silent, and it propagates if that DB is pushed back.
+# The manifest check is the only thing that turns that silent misread into a refusal.
+SCHEMA_VERSION = "2"
 VECTOR_FORMAT = "q15"
 
 DEFAULT_ACCOUNT_ID = "532d99283b5aa1e02486ee3fdcb163d5"

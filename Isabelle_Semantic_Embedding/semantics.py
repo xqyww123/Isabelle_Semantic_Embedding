@@ -177,8 +177,16 @@ class _Semantic_DB:
         # strategy for a general class of goals; see AoA/docs/EXPERIENCE_MEMORY.md)
         # is stored as a Record of kind EXPERIENCE, REUSING the entity fields:
         #   name                -> agent-provided experience name (short, stable id)
-        #   expr                -> the goal_patterns, joined (the term patterns the
-        #                          strategy applies to)
+        #   goal_patterns       -> the term patterns the strategy applies to (ASCII).
+        #                          A REAL list field: they used to be JSON-packed into
+        #                          `expr` (the entity single-expression field), which
+        #                          forced every reader to json.loads it, each with its
+        #                          own try/except and its own divergent failure policy,
+        #                          and made "corrupt expr" a failure class that existed
+        #                          only because of the packing.  `expr` is None for
+        #                          experiences now (so pretty_print no longer renders
+        #                          raw JSON).  Legacy records are unpacked in _decode --
+        #                          the storage boundary, where format evolution belongs.
         #   interpretation      -> goal_description (the WHEN-to-use text; this is
         #                          what gets embedded for semantic retrieval)
         #   theory_constituents -> minimal antichain of constituent theories of the
@@ -202,6 +210,10 @@ class _Semantic_DB:
         # EXPERIENCE-only: the how-to-prove payload (natural language).  Not
         # embedded (only interpretation is).  None for all other kinds.
         experience: 'str | None' = None
+        # EXPERIENCE-only: the goal patterns the strategy applies to, in Isabelle's
+        # ASCII notation (the form the inner lexer re-parses).  None for every other
+        # kind, and None for a legacy experience record that _decode could not unpack.
+        goal_patterns: 'list[str] | None' = None
 
         @property
         def pretty_print(self) -> str:
@@ -235,13 +247,27 @@ class _Semantic_DB:
 
     @staticmethod
     def _decode(raw: bytes) -> 'Record':
-        """Decode a stored record.  Records with fewer than 7 fields read with
-        the missing trailing fields (locale_provenance, theory_constituents,
-        experience) = None."""
+        """Decode a stored record.  Records with fewer than 8 fields read with the
+        missing trailing fields (locale_provenance, theory_constituents, experience,
+        goal_patterns) = None.
+
+        LEGACY (experiences written before goal_patterns became a real field): their
+        patterns are a JSON list packed into ``expr``.  Unpack them HERE, at the storage
+        boundary, so no consumer ever parses a record again -- format evolution belongs
+        in the codec, not in every reader.  Once every store is migrated
+        (migrate_experience_patterns.py) this branch is dead and can be deleted."""
         vals = list(msgpack.unpackb(raw))
-        vals += [None] * (7 - len(vals))
-        kind, name, expr, sem, prov_raw, consts_raw, experience = vals[:7]
+        vals += [None] * (8 - len(vals))
+        kind, name, expr, sem, prov_raw, consts_raw, experience, pats_raw = vals[:8]
         d = _Semantic_DB._dec
+        pats = [d(p) for p in pats_raw] if pats_raw is not None else None
+        if pats is None and kind == int(EntityKind.EXPERIENCE) and expr is not None:
+            try:
+                parsed = json.loads(d(expr))
+                if isinstance(parsed, list):
+                    pats = [d(p) for p in parsed]
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pats = None          # genuinely corrupt: leave None, callers skip it
         prov = None
         if isinstance(prov_raw, dict):
             def g(k: str):
@@ -255,7 +281,8 @@ class _Semantic_DB:
         if consts_raw is not None:
             consts = [(d(n), bytes(h)) for n, h in consts_raw]
         return _Semantic_DB.Record(EntityKind(kind), d(name), d(expr), d(sem), prov,
-                                   consts, d(experience) if experience is not None else None)
+                                   consts, d(experience) if experience is not None else None,
+                                   pats)
 
     @staticmethod
     def _encode(record: 'Record') -> bytes:
@@ -271,7 +298,8 @@ class _Semantic_DB:
         return msgpack.packb((int(record.kind), record.name, record.expr,
                               record.interpretation, prov_map,
                               record.theory_constituents,
-                              record.experience))  # type: ignore[return-value]
+                              record.experience,
+                              record.goal_patterns))  # type: ignore[return-value]
 
     def __getitem__(self, key: universal_key) -> 'Record | None':
         with self._ensure_env().begin() as txn:
@@ -1255,11 +1283,7 @@ class Semantic_Vector_Store(Vector_Store):
             if rec is None or rec.theory_constituents is None:
                 continue
             if all(h in loaded for _, h in rec.theory_constituents):
-                try:
-                    pats = json.loads(rec.expr) if rec.expr else []
-                except (json.JSONDecodeError, TypeError):
-                    pats = []
-                available.append((uk, pats))
+                available.append((uk, rec.goal_patterns or []))
         if not available:
             return {}
         if not term_patterns:
