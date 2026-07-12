@@ -1,6 +1,6 @@
 """Unit tests for the single "record -> embedding document text" authority.
 
-These pin the invariant the EMBED_TEXT_LAYERING_REFACTOR exists to establish:
+These pin the invariant the single-authority layering exists to establish:
 
     the embedding document text is a PURE FUNCTION OF THE STORED RECORD
 
@@ -14,6 +14,7 @@ Isabelle symbol table, i.e. ISABELLE_HOME or `isabelle` on PATH.)
 
 import json
 
+import msgpack
 import pytest
 
 from Isabelle_RPC_Host.universal_key import EntityKind
@@ -31,8 +32,9 @@ def _entity(name: str = "foo.bar", expr: str = "a = b",
 def _experience(name: str = "exp1", pats: 'list[str] | None' = None,
                 desc: 'str | None' = "When the goal is over a finite set"):
     pats = ["\\<forall>x. P x \\<longrightarrow> Q x", "finite S"] if pats is None else pats
-    return SemanticRecord(EntityKind.EXPERIENCE, name, json.dumps(pats), desc,
-                          None, [("Some_Theory", b"h" * 16)], "how to prove it")
+    # expr is None: goal_patterns is a real list field (it used to be JSON-packed in expr)
+    return SemanticRecord(EntityKind.EXPERIENCE, name, None, desc,
+                          None, [("Some_Theory", b"h" * 16)], "how to prove it", pats)
 
 
 # --- the two conventions -----------------------------------------------------
@@ -81,8 +83,34 @@ def test_no_interpretation_is_not_embeddable():
     assert document_text_of(_experience(desc=None)) is None
 
 
-def test_corrupt_experience_expr_is_skipped_not_raised():
-    """A malformed/legacy expr must not abort a whole embed batch (it is one record
-    among thousands in the offline embed / migration)."""
+def test_experience_without_patterns_is_skipped_not_raised():
+    """A record whose patterns could not be recovered (a legacy expr that does not parse)
+    must not abort a whole embed batch -- it is one record among thousands in the offline
+    embed / the migration."""
     rec = SemanticRecord(EntityKind.EXPERIENCE, "bad", "not json{", "desc")
+    assert rec.goal_patterns is None
+    assert document_text_of(rec) is None
+
+
+# --- legacy records: the JSON-in-expr packing is unpacked by the codec ---------
+
+def test_legacy_json_in_expr_is_unpacked_by_the_decoder():
+    """Experiences written before goal_patterns existed packed their patterns as JSON
+    into `expr`. _decode must recover them AT THE STORAGE BOUNDARY, so no consumer ever
+    parses a record -- and such a record must embed exactly like a migrated one."""
+    pats = ["\\<forall>x. P x", "finite S"]
+    legacy_blob = msgpack.packb((int(EntityKind.EXPERIENCE), "old", json.dumps(pats),
+                                 "desc", None, None, "how-to"))   # 7 fields, no goal_patterns
+    rec = _Semantic_DB._decode(legacy_blob)
+    assert rec.goal_patterns == pats                      # recovered by the codec
+    migrated = SemanticRecord(EntityKind.EXPERIENCE, "old", None, "desc",
+                              None, None, "how-to", pats)
+    assert document_text_of(rec) == document_text_of(migrated)   # identical document text
+
+
+def test_legacy_corrupt_expr_decodes_without_raising():
+    blob = msgpack.packb((int(EntityKind.EXPERIENCE), "bad", "not json{", "desc",
+                          None, None, None))
+    rec = _Semantic_DB._decode(blob)
+    assert rec.goal_patterns is None
     assert document_text_of(rec) is None

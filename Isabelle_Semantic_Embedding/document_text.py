@@ -8,13 +8,19 @@ helper and ``EntityKind`` -- never ``semantics`` (that would cycle, since
 what stops the EXPERIENCE and entity conventions from drifting apart across the
 several call sites that turn records into vectors.
 
-See ``EMBED_TEXT_LAYERING_REFACTOR.md`` for the defect this supersedes, and
-``Isa-Mini/AoA/docs/EXPERIENCE_MEMORY.md`` (§8.1) for the experience document text.
+The defect this supersedes: the text used to be assembled by each caller, so an
+EXPERIENCE embedded by AoA's write_memory (framing + goal patterns + description)
+and the same key re-embedded by ``_auto_embed`` or the offline tool (which reached
+for the kind-blind ``pretty_print + interpretation``) landed in one vector store
+under two conventions -- silently mis-ranking experiences after any embedding-model
+change.  Dispatching once, here, on the stored record is what makes write and
+re-embed byte-identical by construction.
+
+See ``Isa-Mini/AoA/docs/EXPERIENCE_MEMORY.md`` (§8.1) for the experience document text.
 """
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 from Isabelle_RPC_Host.unicode import pretty_unicode
@@ -57,11 +63,12 @@ def document_text_of(rec: 'SemanticRecord') -> str | None:
     if rec.interpretation is None:
         return None
     if rec.kind == EntityKind.EXPERIENCE:
-        # Patterns are stored ASCII (rec.expr = JSON of the .ascii forms); rebuild
-        # the unicode "semantic form" from them so write and re-embed agree.
-        try:
-            patterns = [pretty_unicode(p) for p in json.loads(rec.expr or "[]")]
-        except (json.JSONDecodeError, TypeError):
-            return None
-        return experience_document_text(patterns, rec.interpretation)
+        # goal_patterns is a real list field, stored in ASCII (the form Isabelle's inner
+        # lexer re-parses); rebuild the unicode "semantic form" from it so write and
+        # re-embed agree.  No parsing here: _decode unpacks legacy JSON-in-expr records
+        # at the storage boundary, so a record either HAS its patterns or is corrupt.
+        if not rec.goal_patterns:
+            return None                      # no patterns (corrupt/legacy) -> not embeddable
+        return experience_document_text(
+            [pretty_unicode(p) for p in rec.goal_patterns], rec.interpretation)
     return entity_document_text(rec)
