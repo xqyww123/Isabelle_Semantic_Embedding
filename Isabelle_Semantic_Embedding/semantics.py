@@ -266,6 +266,14 @@ class _Semantic_DB:
                 parsed = json.loads(d(expr))
                 if isinstance(parsed, list):
                     pats = [d(p) for p in parsed]
+                    expr = None      # NORMALIZE: the patterns now live in goal_patterns
+                                     # and expr must be empty for an experience. Leaving
+                                     # the JSON in expr would hand every caller a record
+                                     # with the same data twice -- and _migrate_constituent_
+                                     # records (_decode -> _replace -> _encode) would write
+                                     # that back to disk, so pretty_print would go on
+                                     # rendering `experience foo: ["\<forall>x. ...", ...]`.
+                                     # Normalizing HERE makes every _encode canonical.
             except (json.JSONDecodeError, TypeError, ValueError):
                 pats = None          # genuinely corrupt: leave None, callers skip it
         prov = None
@@ -1531,7 +1539,7 @@ class Semantic_Vector_Store(Vector_Store):
         store's bound (model, provider).  Text comes only from ``document_text_of`` --
         the one authority, dispatched on kind -- so every write path shares one
         convention.  Records with no embeddable text (interpretation missing, or a
-        corrupt experience ``expr``) are skipped.  With ``force=False`` skips keys
+        an experience with no goal_patterns) are skipped.  With ``force=False`` skips keys
         already present in this store.  Returns tokens consumed.
 
         Works on in-memory records (no DB round-trip needed), which is what lets

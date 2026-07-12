@@ -37,7 +37,7 @@ async def put_experience(store: 'Semantic_Vector_Store', key: 'universal_key',
     ``embed_records``, i.e. reconstructed from ``rec`` itself.
 
     Raises ValueError when ``rec`` has no embeddable document text (no interpretation,
-    or an unparseable experience ``expr``).  ``embed_records`` merely SKIPS such records
+    or no ``goal_patterns``).  ``embed_records`` merely SKIPS such records
     -- correct inside a batch, but here it would leave a record + index entry with no
     vector: exactly the orphan this ordering exists to prevent.  So enforce it, rather
     than trust the caller.  (Do NOT test embed_records' return value instead: that is a
@@ -45,7 +45,7 @@ async def put_experience(store: 'Semantic_Vector_Store', key: 'universal_key',
     if document_text_of(rec) is None:
         raise ValueError(
             f"refusing to store experience {rec.name!r}: it has no embeddable document "
-            f"text (missing interpretation, or unparseable goal patterns in expr)")
+            f"text (no interpretation, or no goal_patterns)")
     await store.embed_records([(key, rec)], force=True)
     Semantic_DB[key] = rec
     Experience_Index.add(key, [h for _, h in (rec.theory_constituents or [])])

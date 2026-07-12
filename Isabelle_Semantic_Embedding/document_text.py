@@ -54,7 +54,8 @@ def document_text_of(rec: 'SemanticRecord') -> str | None:
     """The single authority: the embedding document text for ``rec``, dispatched on
     ``rec.kind``.  Returns ``None`` when the record has no interpretation yet (not
     embeddable), or -- for an experience -- when its stored patterns fail to parse
-    (corrupt/legacy ``expr``); either way the caller skips embedding it.
+    (a corrupt/legacy record whose patterns could not be recovered); either way the
+    caller skips embedding it.
 
     Pure function of the record's fields: no DB, no connection.  It works on an
     in-memory record before it is stored, which is what lets ``write_memory`` embed

@@ -103,6 +103,10 @@ def test_legacy_json_in_expr_is_unpacked_by_the_decoder():
                                  "desc", None, None, "how-to"))   # 7 fields, no goal_patterns
     rec = _Semantic_DB._decode(legacy_blob)
     assert rec.goal_patterns == pats                      # recovered by the codec
+    assert rec.expr is None                               # AND normalized: the stale
+    # JSON must not survive in expr. Otherwise the record carries the same data twice,
+    # and _migrate_constituent_records (_decode -> _replace -> _encode) writes that
+    # hybrid back to disk -- so pretty_print goes on rendering the raw JSON.
     migrated = SemanticRecord(EntityKind.EXPERIENCE, "old", None, "desc",
                               None, None, "how-to", pats)
     assert document_text_of(rec) == document_text_of(migrated)   # identical document text

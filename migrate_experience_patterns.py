@@ -25,6 +25,8 @@ NOT over `expr` -- so keys do NOT change and no vector or index entry is invalid
 import argparse
 import sys
 
+import msgpack
+
 from Isabelle_Semantic_Embedding.semantics import Semantic_DB, SemanticRecord
 from Isabelle_RPC_Host.universal_key import EntityKind
 
@@ -36,17 +38,34 @@ def main() -> int:
                     help="Report what would change; write nothing.")
     args = ap.parse_args()
 
+    # `_decode` NORMALIZES a legacy record (it recovers goal_patterns and clears expr), so
+    # a legacy record and a migrated one are INDISTINGUISHABLE once decoded. Whether a
+    # record is still legacy is a fact about the BYTES ON DISK: does its msgpack tuple
+    # actually carry the 8th field? Ask that directly -- testing the decoded record would
+    # class every legacy record as "already migrated" and silently turn this into a no-op.
     todo: list[tuple[bytes, SemanticRecord]] = []
     already = corrupt = 0
-    for key, rec in Semantic_DB.iter_entity_records():
-        if rec.kind != EntityKind.EXPERIENCE:
-            continue
-        if rec.expr is None and rec.goal_patterns is not None:
-            already += 1                       # migrated
-        elif rec.goal_patterns:
-            todo.append((key, rec))            # _decode unpacked it; persist + clear expr
-        else:
-            corrupt += 1                       # expr present but unparseable, or no patterns
+    with Semantic_DB._ensure_env().begin() as txn:      # one read txn; write after it closes
+        for key, raw in txn.cursor():
+            key = bytes(key)
+            if len(key) == 16:                          # theory-status key, not a record
+                continue
+            try:
+                vals = msgpack.unpackb(raw)
+                if not isinstance(vals, (list, tuple)) or not vals:
+                    continue
+                if vals[0] != int(EntityKind.EXPERIENCE):
+                    continue
+                rec = Semantic_DB._decode(raw)
+            except Exception:
+                continue
+            on_disk = len(vals) >= 8 and vals[7] is not None    # the 8th field is really there
+            if on_disk:
+                already += 1
+            elif rec.goal_patterns:
+                todo.append((key, rec))       # legacy: _decode recovered it; persist for real
+            else:
+                corrupt += 1                  # expr unparseable, or no patterns at all
 
     print(f"EXPERIENCE records: {already + len(todo) + corrupt}")
     print(f"  already migrated : {already}")
