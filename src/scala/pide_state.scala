@@ -269,7 +269,8 @@ object DB_Snapshots {
     store.try_open_database(session_name, server_mode = false) match {
       case Some(db) =>
         try {
-          // (1) Query only name and digest columns for .thy files — skip reading file bodies.
+          // (1) Source .thy rows: full symbolic path (a Sources primary key, hence UNIQUE)
+          // plus content digest.  Only name+digest columns — skip reading file bodies.
           val src_rows = db.execute_query_statement(
             Store.private_data.Sources.table.select(
               List(Store.private_data.Sources.name, Store.private_data.Sources.digest),
@@ -280,42 +281,49 @@ object DB_Snapshots {
             res => (res.string(Store.private_data.Sources.name),
                     res.string(Store.private_data.Sources.digest)))
 
-          // (2) Real theory long-names from THIS session's exports (one index-covered query).
-          // A flat session (e.g. MathBench_ProverBase) compiles theories of other AFP entries
-          // directly via $AFP/<Entry>/*.thy; their exports keep the ORIGINAL prefix
-          // (Hermite_Lindemann.More_Polynomial_HLW), NOT <this session>.<base>.  Fabricating
-          // session_name + "." + base would mis-address load_snapshot and yield an empty
-          // snapshot (goto/hover/entity = NONE), so resolve the genuine long-name here.
-          val by_base = Export.read_theory_names(db, session_name).groupBy(Long_Name.base_name)
+          // (2) Genuine theory long-names of THIS session.  A flat session compiles theories
+          // of other AFP entries directly via $AFP/<Entry>/*.thy; their exports keep the
+          // ORIGINAL prefix (Transitive_Models.Renaming), NOT <this session>.<base>.
+          val theory_names = Export.read_theory_names(db, session_name)
 
-          // (3) Source-side base counts: a base shared by >1 source row cannot be resolved by
-          // base alone (the unique-export branch would misroute the unexported twin), so skip it.
+          // (3) source-path -> genuine long-name, via each theory's own PIDE/files export.
+          // files0-head is byte-identical to a Sources.name (Isabelle's own theory_source
+          // round-trips it through read_sources — verified on AFP-DEP1-0: 411/411 theories,
+          // including all 13 duplicate bases).  A full path is UNIQUE, so theories that merely
+          // share a base name (Transitive_Models.Renaming vs Forcing.Renaming compiled in one
+          // flat session) each resolve to their own long-name — no ambiguity, nothing skipped.
+          val long_by_path: Map[String, String] =
+            using(Export.open_session_context0(store, session_name)) { ctx =>
+              (for {
+                tn <- theory_names.iterator
+                (path, _) <- ctx.theory(tn).files(permissive = true).iterator
+              } yield path -> tn).toMap
+            }
+
+          // (4) Base counts — used ONLY to keep the name-based FALLBACK conservative; the
+          // digest mapping below is precise regardless of any base-name collision.
           val src_base_counts =
             src_rows.groupBy { case (name, _) =>
               Library.try_unsuffix(".thy", Path.explode(name).file_name).getOrElse("")
             }.view.mapValues(_.size).toMap
 
-          // (4) Resolve each source .thy to its genuine long-name; warn+skip on any ambiguity
-          // (degrades to NONE, logged) rather than guessing or throwing.
+          // (5) Join each source .thy to its long-name by FULL PATH (collision-free).
           for ((name, digest) <- src_rows) {
-            val base = Library.try_unsuffix(".thy", Path.explode(name).file_name).getOrElse("")
-            if (base.nonEmpty) {
-              if (src_base_counts.getOrElse(base, 0) > 1)
-                Output.warning("DB_Snapshots.index_session: skipping source-duplicate theory base " +
-                  quote(base) + " in session " + quote(session_name) + " (goto/hover degrade to NONE)")
-              else by_base.getOrElse(base, Nil) match {
-                case Nil =>
-                  // No export for this source (e.g. export_theory=false): it was NONE before and
-                  // stays NONE — do not populate a known-unloadable mapping.
-                  ()
-                case List(theory_name) =>
-                  digest_index += (digest -> (session_name, theory_name))
+            long_by_path.get(name) match {
+              case Some(theory_name) =>
+                // Primary lookup: precise for every theory, duplicate-base included.
+                digest_index += (digest -> (session_name, theory_name))
+                // Fallback (used only when a file was edited since the build, so its digest no
+                // longer matches): base-keyed, hence trustworthy only when the base is unique in
+                // this session — otherwise an edited file can't be told apart by base, so leave
+                // it to degrade to NONE rather than misroute to the wrong twin.
+                val base = Library.try_unsuffix(".thy", Path.explode(name).file_name).getOrElse("")
+                if (base.nonEmpty && src_base_counts.getOrElse(base, 0) == 1)
                   name_index += (base -> (session_name, theory_name))
-                case cands =>
-                  Output.warning("DB_Snapshots.index_session: skipping ambiguous theory base " +
-                    quote(base) + " in session " + quote(session_name) + " among " +
-                    commas_quote(cands) + " (goto/hover degrade to NONE)")
-              }
+              case None =>
+                // Source with no PIDE/files export (e.g. export_theory=false): it was NONE
+                // before and stays NONE — do not populate a known-unloadable mapping.
+                ()
             }
           }
         }
