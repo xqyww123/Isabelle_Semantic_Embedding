@@ -162,7 +162,15 @@ fun gen_infra_filters (context : Context.generic)
 
     (* Preserved constant names: datatype constructors/selectors/case, BNF map/pred/rel/sets,
        record selectors/updaters/make/fields/extend/truncate *)
-    val const_name = fst o Term.dest_Const
+    (* BNF map/pred/rel/set (and ctr/case/co_rec) functions are NOT always bare
+       Consts: a composed or custom-registered BNF -- e.g. the BNF_Operations /
+       BNF_CC meta-theories (Compose.H, GFP.JF1/JF2, LFP.IF1/IF2, Lift.F',
+       Permute.F', Subtypes.S) -- has a map that is a composition term, on which
+       Term.dest_Const raises TERM.  So field extraction must tolerate non-Const
+       terms, exactly like the guarded twin (safe_const_name) used for
+       bnf_origin_pos_set below.  There is no const name to preserve for a
+       non-Const field, so map_filter simply drops it. *)
+    val safe_const_name = try (fst o Term.dest_Const)
     val thy = Context.theory_of context
     val (preserved_names, adt_record_prefixes) =
       let
@@ -170,17 +178,16 @@ fun gen_infra_filters (context : Context.generic)
           case Context.cases Ctr_Sugar.ctr_sugar_of_global Ctr_Sugar.ctr_sugar_of context T of
             NONE => []
           | SOME cs =>
-              map const_name (#ctrs cs)
-              @ maps (map const_name) (#selss cs)
-              @ [const_name (#casex cs)]
+              map_filter safe_const_name (#ctrs cs)
+              @ maps (map_filter safe_const_name) (#selss cs)
+              @ map_filter safe_const_name [#casex cs]
         fun bnf_names T =
           case Context.cases BNF_Def.bnf_of_global BNF_Def.bnf_of context T of
             NONE => []
           | SOME bnf =>
-              [const_name (BNF_Def.map_of_bnf bnf),
-               const_name (BNF_Def.pred_of_bnf bnf),
-               const_name (BNF_Def.rel_of_bnf bnf)]
-              @ map const_name (BNF_Def.sets_of_bnf bnf)
+              map_filter safe_const_name
+                ([BNF_Def.map_of_bnf bnf, BNF_Def.pred_of_bnf bnf, BNF_Def.rel_of_bnf bnf]
+                 @ BNF_Def.sets_of_bnf bnf)
         fun record_names T =
           case Record.get_info thy T of
             NONE => []
@@ -199,7 +206,7 @@ fun gen_infra_filters (context : Context.generic)
           | SOME fp =>
               (case #fp_co_induct_sugar fp of
                 NONE => []
-              | SOME sugar => [const_name (#co_rec sugar)])
+              | SOME sugar => map_filter safe_const_name [#co_rec sugar])
         val (all_names, prefixes) = fold (fn T => fn (names, pfxs) =>
           let val ns = ctr_sugar_names T @ bnf_names T @ record_names T @ co_rec_names T
           in (ns @ names, if null ns then pfxs else (T ^ ".") :: pfxs) end)
@@ -211,23 +218,21 @@ fun gen_infra_filters (context : Context.generic)
        Used to distinguish auto-generated ADT constants from lift_definition/user constants. *)
     val bnf_origin_pos_set =
       let
-        fun safe_const_name t = try (fst o Term.dest_Const) t
         fun collect_bnf_names T =
           let
             val from_ctr = case Context.cases Ctr_Sugar.ctr_sugar_of_global Ctr_Sugar.ctr_sugar_of context T of
                 NONE => []
               | SOME cs =>
-                  map const_name (#ctrs cs)
-                  @ maps (map const_name) (#selss cs)
-                  @ [const_name (#casex cs)]
+                  map_filter safe_const_name (#ctrs cs)
+                  @ maps (map_filter safe_const_name) (#selss cs)
+                  @ map_filter safe_const_name [#casex cs]
                   @ map_filter safe_const_name (#discs cs)
             val from_bnf = case Context.cases BNF_Def.bnf_of_global BNF_Def.bnf_of context T of
                 NONE => []
               | SOME bnf =>
-                  [const_name (BNF_Def.map_of_bnf bnf),
-                   const_name (BNF_Def.pred_of_bnf bnf),
-                   const_name (BNF_Def.rel_of_bnf bnf)]
-                  @ map const_name (BNF_Def.sets_of_bnf bnf)
+                  map_filter safe_const_name
+                    ([BNF_Def.map_of_bnf bnf, BNF_Def.pred_of_bnf bnf, BNF_Def.rel_of_bnf bnf]
+                     @ BNF_Def.sets_of_bnf bnf)
             val from_fp = case Context.cases BNF_FP_Def_Sugar.fp_sugar_of_global BNF_FP_Def_Sugar.fp_sugar_of context T of
                 NONE => []
               | SOME fp =>
@@ -290,8 +295,9 @@ fun gen_infra_filters (context : Context.generic)
       case Context.cases BNF_FP_Def_Sugar.fp_sugar_of_global BNF_FP_Def_Sugar.fp_sugar_of context T of
         NONE => NONE
       | SOME fp =>
-          let val map_name = fst (Term.dest_Const (BNF_Def.map_of_bnf (#pre_bnf fp)))
-          in SOME (Long_Name.qualifier map_name ^ ".") end)
+          (case safe_const_name (BNF_Def.map_of_bnf (#pre_bnf fp)) of
+             SOME map_name => SOME (Long_Name.qualifier map_name ^ ".")
+           | NONE => NONE))
       type_names
 
     (* Class instance constant infixes *)
