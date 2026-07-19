@@ -341,10 +341,29 @@ fun lookup_reeval_cache file_path symbol_offset =
                 else find rest
       in find entries end;
 
-(* Find the loaded theory whose master file matches the given path *)
+(* Find the loaded theory whose master file matches the given path.
+
+   `file_path` arrives from OUTSIDE ML: Python sends it back as the `context_at` hint,
+   having received it from us as Theory_Structure.get_theory_file_path, which is
+   deliberately a PLATFORM path because Python does native file I/O.  On Windows that is
+   `C:\...`, and Path.explode rejects `:` and `\` (Path.check_elem).  On Linux and macOS
+   ML_System.standard_path is the identity, so the round trip was invisible.
+
+   SCOPE, precisely: this fixes the callers that reach theory_of_file -- the
+   position_context_unpacker / context_at_position route, and build_reeval_cache, which
+   calls theory_of_file OUTSIDE its own \<^try> and so genuinely crashed.  It does NOT
+   fix hover_message, goto_definition, entity_at_position or command_at_position: those
+   reach the same platform string through `expand_path`, which explodes it separately and
+   is a distinct fix.  Do not read this comment as covering them.
+
+   ML_System.standard_path is the sanctioned normalisation for a string that came from
+   outside Isabelle's path world -- Isabelle itself uses it in exactly that role at
+   Pure/General/file.ML:76 (the OS cwd) and Pure/ML/exn_properties.ML:27 (PolyML's
+   compiler messages).  It is shape-agnostic: C:\x, C:/x and /cygdrive/c/x all normalise,
+   and on non-Windows it is `fn path => path`. *)
 fun theory_of_file file_path =
   let
-    val target = Path.explode file_path
+    val target = Path.explode (ML_System.standard_path file_path)
     fun matches name =
       \<^try>\<open>
         let val thy = Thy_Info.get_theory name
