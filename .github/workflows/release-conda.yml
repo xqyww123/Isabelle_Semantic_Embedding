@@ -403,10 +403,14 @@ jobs:
             || { echo "::error::ISABELLE_SEMANTIC_EMBEDDING_HOME carries a carriage return"; od -c /tmp/seh; exit 1; }
           # No -c.  A clean build would delete session images; this is an incremental
           # build in a throwaway runner environment.
-          isabelle build -v Semantic_Embedding
+          # "$ISA", not bare `isabelle`: under Git-Bash on Windows the env exposes only
+          # Scripts/isabelle.bat, so the bare name is command-not-found there.  It worked
+          # on the four unix legs because this step had never run on Windows -- the same
+          # skip that let the CRLF defect ship.
+          "$ISA" build -v Semantic_Embedding
           # A control: an invented session name must ERROR.  Without it, a `build` that
           # silently did nothing would read as a pass.
-          if isabelle build -v Semantic_Embedding_No_Such_Session 2>/dev/null; then
+          if "$ISA" build -v Semantic_Embedding_No_Such_Session 2>/dev/null; then
             echo '::error::the control passed -- isabelle build is not proving anything'
             exit 1
           fi
