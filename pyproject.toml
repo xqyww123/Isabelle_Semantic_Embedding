@@ -21,16 +21,18 @@ license = "LGPL-2.1-or-later"
 # because LGPL-2.1 section 3 lets a recipient convert any copy to the plain GPL,
 # and they cannot exercise that right without its text.
 license-files = ["COPYING", "COPYING.LIB"]
-# _vecgather is compiled against the limited API, and Py_buffer / PyObject_GetBuffer
-# entered it in 3.11, not before ("Limited API and stable ABI since Python 3.11",
-# pybuffer.h) -- so an abi3 build cannot go lower. 3.10 reaches end of life on
-# 2026-10-31 in any case. (desugar, hover, premise_selection and semantics also
-# annotate with `X | Y` without importing `annotations` from __future__, which
-# already required 3.10; that constraint is now subsumed.)
-# The .4 floor: r2_sync's tar.zst extraction passes tarfile's `filter="data"`, the
-# PEP 706 extraction-filter arg, which was only backported to CPython 3.11.4 --
-# on 3.11.0-3.11.3 it is a TypeError, failing every pull.
-requires-python = ">=3.11.4"
+# 3.12, and the binding constraint is the SOURCE, not the extension module.
+# base.py, experience_index.py, premise_selection.py and semantic_embedding.py use the
+# PEP 695 `type X = ...` alias statement in ten places, which is a SyntaxError before
+# 3.12. This floor used to read ">=3.11.4" and was simply wrong: the cp311-abi3 wheel
+# installed happily on 3.11 and then died at import. Caught by conda's byte-compilation
+# step while packaging 0.1.1, not by anything here -- the abi3 job proved the BINARY
+# imports on 3.11, which was true and beside the point.
+#
+# The older constraints are all subsumed: _vecgather's limited API needs 3.11
+# (Py_buffer / PyObject_GetBuffer, pybuffer.h), and r2_sync's tar.zst extraction passes
+# tarfile's `filter="data"`, the PEP 706 arg backported only to 3.11.4.
+requires-python = ">=3.12"
 authors = [
     { name="Qiyuan Xu", email="xqyww123@gmail.com" },
 ]

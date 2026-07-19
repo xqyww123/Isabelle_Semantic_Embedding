@@ -48,9 +48,11 @@ build:
   number: 0
   python:
     # ABI3 / CEP 20.  wheels.yml builds cp311-abi3 (setup.py, py_limited_api = cp311), so
-    # ONE artifact per subdir serves CPython 3.11 through 3.14 -- a claim wheels.yml's
-    # `abi3` job proves by importing this exact binary under all four.  Without this the
-    # matrix would be 5 subdirs x 4 pythons = 20 builds differing only in a python_abi pin.
+    # ONE artifact per subdir serves every CPython from the package floor up -- 3.12
+    # through 3.14, exercised by wheels.yml's `abi3` job.  (The ABI floor is 3.11; the
+    # PACKAGE floor is 3.12, set by PEP 695 syntax in the pure-Python half.)  Without this
+    # the matrix would be 5 subdirs x 3 pythons = 15 builds differing only in a
+    # python_abi pin.
     version_independent: true
   # Do not rewrite the compiled artifacts' load commands.  rattler-build relinks binaries
   # by default so their rpaths point into the conda prefix; on macOS that fails outright
@@ -236,16 +238,16 @@ build:
 
 requirements:
   host:
-    # 3.11 is the abi3 floor (Py_buffer / PyObject_GetBuffer entered the limited API there
-    # and not earlier -- pybuffer.h).  Pinned exactly: with version_independent, the host
-    # python is what the abi3 tag is minted against.
-    - python 3.11.*
+    # 3.12, not 3.11, and NOT for an ABI reason: the abi3 floor really is 3.11, but four
+    # modules use the PEP 695 `type X = ...` alias statement, a SyntaxError before 3.12.
+    # conda byte-compiles at install time, so a 3.11 host does not merely mis-declare the
+    # floor -- the build itself fails on every leg.  That is how the mis-declared
+    # requires-python (">=3.11.4") was finally caught.
+    - python 3.12.*
     - pip
     - setuptools >=77   # first setuptools reading `license` as an SPDX expression
   run:
-    # .4, not .0: r2_sync's tar.zst extraction passes tarfile's `filter="data"`, the PEP
-    # 706 arg backported only to CPython 3.11.4.
-    - python >=3.11.4
+    - python >=3.12
     # Bounded to the Isabelle SERIES this session and this Scala component are built
     # against.  The base package keeps a constant name at a per-release version, so
     # unbounded lets conda's newest-wins resolution pair this with a future Isabelle it
@@ -322,7 +324,12 @@ about:
     without it -- retrieval simply returns nothing -- and it is fetched with
     `isabelle-semantics pull`.
   license: LGPL-2.1-or-later
+  # Paths RELATIVE TO $SRC_DIR, not to this recipe directory.  `../COPYING` resolved
+  # outside the source root and rattler-build failed the build with the flat message
+  # "No license files were copied" -- it does not name the path it could not find.
+  # LGPL-2.1 section 3 lets a recipient convert any copy to the plain GPL, so both texts
+  # must travel.
   license_file:
-    - ../COPYING
-    - ../COPYING.LIB
+    - COPYING
+    - COPYING.LIB
   repository: https://github.com/xqyww123/Isabelle_Semantic_Embedding

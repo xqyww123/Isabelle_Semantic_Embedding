@@ -351,6 +351,12 @@ jobs:
   # The wheel says cp311-abi3: one binary for every CPython from 3.11 on. That is a
   # claim about the limited API, and it is cheap enough to test rather than assume --
   # the extension is built once, against 3.12, and must import on all of them.
+  #
+  # The matrix starts at 3.12 even though the ABI floor is 3.11, because the PACKAGE's
+  # floor is 3.12 (PEP 695 `type` aliases in four modules; see pyproject's
+  # requires-python) and pip rightly refuses to install it on 3.11. Testing the binary
+  # alone at 3.11 is what let the real 3.11 breakage go unnoticed: the extension
+  # imported fine there, and the pure-Python half never got compiled.
   abi3:
     name: abi3 on ${{ matrix.python }}
     needs: wheel
@@ -358,7 +364,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12", "3.13", "3.14"]
+        python: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
