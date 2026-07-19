@@ -204,6 +204,11 @@ build:
       #     invocation is precisely the one that cannot run a Scala tool -- and
       #     `components` IS a Scala tool.  That matters doubly here: this component's
       #     whole reason to be registered includes a Scala service.
+      # Write to $PREFIX/bin and $PREFIX/Scripts as usual.  build.python.version_independent
+      # makes rattler-build relocate BOTH into `python-scripts/` in the artifact, and conda
+      # maps that back to bin/ or Scripts/ by the RUNNING platform at link time -- which is
+      # exactly the dispatch these two hook sets want.  Anything inspecting the built
+      # artifact must therefore look under python-scripts/, not bin/.
       (PREFIX / "bin").mkdir(parents=True, exist_ok=True)
       (PREFIX / "Scripts").mkdir(parents=True, exist_ok=True)
 

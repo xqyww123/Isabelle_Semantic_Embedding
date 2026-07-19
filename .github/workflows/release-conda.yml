@@ -196,17 +196,31 @@ jobs:
           # capitalised, case-sensitive form could never match, on any platform.
           find "$work" -iname 'isabelle_semantic_embedding-*.dist-info' -type d | grep -q . \
             || { echo "::error::no dist-info -- pip would not see this package"; exit 1; }
-          # The hooks: both sets, and the .bat really is CRLF.  The CRLF check is python
-          # rather than `grep -U` (-U is GNU-only and this step also runs on macOS), and
-          # it is ON ONE LINE: a multi-line -c body would have to start at column 0,
-          # which ends the enclosing YAML block scalar and makes the whole workflow
-          # unparseable.
+          # The hooks live in python-scripts/, NOT in bin/ and Scripts/.
+          # build.python.version_independent applies the same path relocation as
+          # `noarch: python`: rattler-build rewrites BOTH $PREFIX/bin and $PREFIX/Scripts
+          # to python-scripts/, and conda maps that back to bin/ or Scripts/ by the
+          # RUNNING platform at link time.  So the recipe writing to $PREFIX/bin and
+          # $PREFIX/Scripts is correct and this check was the thing that was wrong --
+          # measured on run 29674124406, where the build and every rattler-build test
+          # passed and only this assertion failed.  (site-packages/ is relocated the same
+          # way, which is why nothing here may assume lib/pythonX.Y/.)
+          #
+          # The CRLF check is python rather than `grep -U` (-U is GNU-only and this step
+          # also runs on macOS), and it is ON ONE LINE: a multi-line -c body would have to
+          # start at column 0, which ends the enclosing YAML block scalar and makes the
+          # whole workflow unparseable.
           for h in .isabelle-semantic-embedding-post-link .isabelle-semantic-embedding-pre-unlink; do
-            [ -f "$work/bin/$h.sh" ] || { echo "::error::missing bin/$h.sh"; exit 1; }
-            [ -f "$work/Scripts/$h.bat" ] || { echo "::error::missing Scripts/$h.bat"; exit 1; }
-            python3 -c "import sys; b=open(sys.argv[1],'rb').read(); sys.exit(0 if b'\r\n' in b else 1)" "$work/Scripts/$h.bat" \
-              || { echo "::error::Scripts/$h.bat is not CRLF"; exit 1; }
+            [ -f "$work/python-scripts/$h.sh" ] \
+              || { echo "::error::missing python-scripts/$h.sh"; ls "$work/python-scripts" || true; exit 1; }
+            [ -f "$work/python-scripts/$h.bat" ] \
+              || { echo "::error::missing python-scripts/$h.bat"; ls "$work/python-scripts" || true; exit 1; }
+            python3 -c "import sys; b=open(sys.argv[1],'rb').read(); sys.exit(0 if b'\r\n' in b else 1)" "$work/python-scripts/$h.bat" \
+              || { echo "::error::python-scripts/$h.bat is not CRLF"; exit 1; }
           done
+          # The console script must ship too -- it is the documented way to fetch the DB.
+          [ -f "$work/python-scripts/isabelle-semantics" ] \
+            || { echo "::error::the isabelle-semantics entry point did not ship"; exit 1; }
           echo "  OK  both halves, both hook sets"
 
       - uses: actions/upload-artifact@v4
