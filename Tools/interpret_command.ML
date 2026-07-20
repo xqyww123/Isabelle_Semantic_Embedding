@@ -19,8 +19,13 @@ struct
    real source position can be threaded through: Theory.check then highlights the offending
    name in jEdit and lists the candidates.  resolve_theory hard-codes Position.none.
 
-   Theory.check's candidate set is `ancestors_of thy` (theory.ML:163-167), which does NOT
-   include thy itself -- hence the self case, exactly as in resolve_theory. *)
+   The self case is NOT about the candidate set: Theory.check (theory.ML:163) resolves via
+   Context.get_theory, which does handle name = thy itself (context.ML:353-359) -- but only
+   by falling through to `theory_id_final (theory_id thy)`, and erroring "Unfinished theory"
+   otherwise.  This command is interactive, so the theory under the cursor is still being
+   constructed and hence not final; without the bypass, naming the theory you are sitting in
+   would be rejected.  (`ancestors_of thy` feeds only `all ()`, the completion list used to
+   build the error report -- not the lookup.)  Same bypass as resolve_theory. *)
 fun resolve_root ctxt (name, pos) =
   let
     val thy = Proof_Context.theory_of ctxt

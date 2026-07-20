@@ -20,7 +20,8 @@ from claude_agent_sdk import SdkMcpTool, tool
 
 from .semantic_embedding import (Vector_Store, Embedding_Provider, make_embedding_provider,
                                  sanitize_model, unsanitize_model,
-                                 Reranker_Provider, reranker_provider, key)
+                                 Reranker_Provider, reranker_provider, key,
+                                 settings_file_path, _http_error_detail)
 from ._vecarith import library_path as _vector_library_path
 
 from .base import ToolCall_ret, mk_ret as _mk_ret
@@ -1535,8 +1536,21 @@ class Semantic_Vector_Store(Vector_Store):
                             reranked.append((score, rec))
                     return reranked[:k], warnings, total
                 except Exception as e:
+                    # Report to Isabelle, not just to the host log file. The fallback
+                    # is silent by design -- results still come back, ranked by the
+                    # embedding scores alone -- so without this the user sees only
+                    # quietly worse retrieval and no reason for it. The commonest
+                    # cause is precisely that: the reranker has its OWN key variable
+                    # (QWEN3_RERANKER_API_KEY), so setting EMBEDDING_API_KEY alone
+                    # leaves it 401 forever while everything else works.
+                    detail = _http_error_detail(e)
+                    msg = ("[Semantic_Embedding] Reranker failed, falling back to "
+                           "embedding scores: " + (detail or f"{type(e).__name__}: {e}")
+                           + (reranker._http_error_hint(e) if detail else ""))
                     import logging
-                    logging.getLogger(__name__).warning("Reranker failed, falling back to embedding scores: %s", e)
+                    logging.getLogger(__name__).warning("%s", msg)
+                    if self.connection is not None:
+                        await self.connection.warning(msg)
         # Non-reranker path: merge embedded entities (real KNN score) with
         # no-embedding entities (provider default score by locality), then sort by
         # final score and take top-k ("全量按最终分重排"). Embedded entities keep their
@@ -1693,13 +1707,73 @@ def _resolve_embedding_config_env() -> tuple[str, str, str]:
             os.getenv("EMBEDDING_MODEL", _DEFAULT_EMBEDDING_MODEL))
 
 
+def _settings_file_hint() -> str:
+    """Step 3 of the setup message."""
+    path = settings_file_path()
+    if not path:
+        # Neither the environment nor `isabelle getenv` could answer: no Isabelle on
+        # PATH at all. Nothing true can be printed for the path, so tell the user how
+        # to obtain it rather than inventing one.
+        return ("  3. Add the line below to  etc/settings  inside the directory that\n"
+                "     `isabelle getenv ISABELLE_HOME_USER` prints:\n\n"
+                "         EMBEDDING_API_KEY=fw_your_key_here\n\n"
+                "     Then restart Isabelle.")
+    return ("  3. Add it to your Isabelle settings file\n\n"
+            f"         {path}\n\n"
+            "     by adding the line\n\n"
+            "         EMBEDDING_API_KEY=fw_your_key_here\n\n"
+            "     Then restart Isabelle.")
+
+
+def _missing_api_key_message() -> str:
+    return (
+        "Semantic retrieval needs an embedding model to work, but no embedding\n"
+        "service is configured. The system cannot continue.\n"
+        "\n"
+        "The author strongly recommends the hosted Qwen3-Embedding-8B service from\n"
+        "Fireworks AI: it performs well in general, and it is very cheap. To set it up:\n"
+        "\n"
+        "  1. Open https://fireworks.ai, create an account, and top up some funds.\n"
+        "     $5 is generally enough for half a year of use.\n"
+        "\n"
+        "  2. Go to https://fireworks.ai/account/api-keys and create an API key.\n"
+        "\n"
+        + _settings_file_hint() + "\n"
+        "\n"
+        "To configure a different embedding provider, see\n"
+        "https://github.com/xqyww123/Isabelle_Semantic_Embedding/blob/master/doc/"
+        "embedding_provider.md")
+
+
 async def _resolve_embedding_config(connection: Connection | None) -> tuple[str, str, str]:
-    """Resolve (driver, base_url, model), each by: ML config -> env -> default."""
+    """Resolve (driver, base_url, model), each by: ML config -> env -> default.
+
+    Also the one place that can tell a user who has configured NOTHING from one who
+    chose their endpoint deliberately, so it is where the missing-key check lives.
+    """
     driver, base_url, model = _resolve_embedding_config_env()
     if connection is not None:
         driver = (await connection.config_lookup("Semantic_Embedding.embedding_driver")) or driver
         base_url = (await connection.config_lookup("Semantic_Embedding.embedding_base_url")) or base_url
         model = (await connection.config_lookup("Semantic_Embedding.embedding_model")) or model
+    # Default configuration means the Fireworks endpoint, which cannot work without
+    # a key -- so failing here is certain, not a guess, and failing NOW beats
+    # failing after ~17 minutes of 401 retries with nothing to show for it.
+    # Deliberately gated on the WHOLE triple being untouched: anyone pointing at a
+    # local, unauthenticated embedding server (vLLM, Ollama, TEI) necessarily set
+    # EMBEDDING_BASE_URL, so this check can never lock them out.
+    if ((driver, base_url, model) == (_DEFAULT_EMBEDDING_DRIVER,
+                                      _DEFAULT_EMBEDDING_BASE_URL,
+                                      _DEFAULT_EMBEDDING_MODEL)
+            and not os.getenv("EMBEDDING_API_KEY")):
+        msg = _missing_api_key_message()
+        # Warn BEFORE raising, with the same text: the exception's own rendering
+        # depends on who catches it (an ML Remote_Calling_Failure escapes it as a
+        # single-line string literal with \n printed literally), whereas the
+        # warning arrives readable. One of the two always gets through.
+        if connection is not None:
+            await connection.warning(msg)
+        raise RuntimeError(msg)
     return driver, base_url, model
 
 

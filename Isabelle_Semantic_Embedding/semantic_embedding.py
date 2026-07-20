@@ -21,6 +21,189 @@ from ._vecarith import encode_q15, gather_addrs, top_k_q15_gather, Q15_SCALE
 
 _EMBED_CACHE_TTL = 3 * 86400  # 3 days
 
+_MAX_ERROR_BODY = 500  # chars of provider response body kept in a warning
+
+
+def settings_file_path() -> str:
+    """Absolute path of the user's Isabelle settings file, or "" if unobtainable.
+
+    Resolved at runtime, never hardcoded: two Isabelle installations on one machine
+    have different ISABELLE_HOME_USER directories (a stock one and a conda-provided
+    one, say), so a fixed path would send half the users to a file Isabelle never
+    reads.
+
+    Uses Isabelle_RPC_Host.paths.resolve_isabelle_var rather than an env lookup,
+    because it does not stop at the environment: when ISABELLE_HOME_USER is unset --
+    routine for an RPC host launched by hand from a plain shell -- it asks Isabelle
+    itself via `isabelle getenv -b`, which is authoritative and available by
+    construction wherever these messages can appear.
+
+    Deliberately NOT Isabelle_RPC_Host.rpc.isabelle_home_user(), the wrapper one level up:
+    that one calls sys.exit(1) when the variable cannot be resolved. Every caller
+    here is composing a diagnostic, so taking the whole (shared, single-process) host
+    down because the advice line could not name a file would be far worse than the
+    problem being reported. Returning "" and letting the caller word around it is the
+    point. unicode.py calls the same lower layer for the same kind of reason.
+    """
+    from Isabelle_RPC_Host.paths import resolve_isabelle_var
+    try:
+        home = resolve_isabelle_var("ISABELLE_HOME_USER")
+    except Exception:
+        return ""
+    return os.path.join(home, "etc", "settings") if home else ""
+
+
+def _redacted_url(resp) -> str:
+    """The endpoint a response came from, with the query string stripped, or "".
+
+    ALWAYS use this instead of str(request.url) when a URL is about to be shown to
+    a user or written to a log. Gemini_Embedding passes the API key as
+    params={"key": ...} and httpx's str(URL) does not redact it, so the raw form
+    would put a live credential into Isabelle's warning channel and into the RPC
+    host's log file on disk. No driver here puts anything diagnostic in the query
+    string, so nothing is lost by dropping it.
+    """
+    url = getattr(getattr(resp, "request", None), "url", None)
+    if url is None:
+        return ""
+    try:
+        return str(url.copy_with(query=None) if url.query else url)
+    except Exception:
+        return ""
+
+
+def _http_error_detail(e: BaseException) -> str | None:
+    """Human-readable detail for any HTTP status error, or None for everything else.
+
+    Every 4xx AND 5xx is reported. Only connection-layer failures (DNS, refused,
+    timeout) stay on the quiet tracing channel: those are the ones where "it will
+    probably fix itself" actually holds, and where there is nothing for the user to
+    act on anyway.
+
+    429 is included deliberately. Fireworks returns 429 for BOTH ordinary rate
+    limiting and `quota_exceeded`, and does not distinguish them by status code
+    (docs.fireworks.ai/guides/quotas_usage/rate-limits), so excluding it would make
+    quota exhaustion silent -- the exact failure mode this reporting exists for.
+
+    5xx is included even though it is nominally transient, because "5xx = transient"
+    is a heuristic, not a fact: a 500 provoked deterministically by our own payload
+    (a text the provider cannot parse, an over-long input, an empty string in the
+    batch) fails all 10 attempts identically, and the user is the only one who can
+    recognise that from the message. 502/503/504/529 really are capacity blips and
+    will look noisy -- that is the accepted cost of not hiding the other case.
+
+    httpx's HTTPStatusError message carries only the status line and an MDN link; the
+    provider's own text (e.g. "You must provide an API key. See https://docs...") is
+    in the body and is the only actionable part, so it is spliced in here.
+    """
+    if not isinstance(e, httpx.HTTPStatusError):
+        return None
+    resp = getattr(e, "response", None)
+    if resp is None:
+        return None
+    try:
+        body = (resp.text or "").strip()
+    except Exception:          # body already consumed / undecodable
+        body = ""
+    if len(body) > _MAX_ERROR_BODY:
+        body = body[:_MAX_ERROR_BODY] + " ...(truncated)"
+    detail = f"HTTP {resp.status_code}"
+    url = _redacted_url(resp)
+    if url:
+        detail += f" from {url}"
+    return detail + (f": {body}" if body else "")
+
+
+class HTTP_Provider(ABC):
+    """Shared diagnostics for anything that talks to a hosted model over HTTP.
+
+    Both provider hierarchies inherit this: embedding providers and rerankers hit
+    the same endpoints with the same credentials and fail the same ways, so the
+    classification and the advice belong in one place rather than being written
+    twice and drifting.
+    """
+    model: str
+    base_url: str = ""
+    api_key: str | None = None
+    # Environment variables this provider accepts a key from, in the order it
+    # consults them. Per-provider because it is NOT uniform -- Gemini takes a
+    # second one, the reranker uses an entirely different one -- and naming the
+    # wrong variable in an error message sends the user to edit a setting that
+    # has no effect. Subclass __init__ must implement the same order.
+    API_KEY_ENV_VARS: ClassVar[tuple[str, ...]] = ("EMBEDDING_API_KEY",)
+
+    def _is_auth_error(self, resp) -> bool:
+        """Whether *resp* means "you are not authenticated", not "your request was bad".
+
+        The four OpenAI-compatible endpoints served here (Fireworks, OpenAI,
+        Mistral, DashScope) all answer 401 for BOTH a missing and an invalid key --
+        measured against the live APIs, not assumed. Gemini does not, which is why
+        this is a method rather than a constant; see the override there.
+        """
+        return getattr(resp, "status_code", None) in (401, 403)
+
+    def _set_api_key_hint(self) -> str:
+        """Where to put the key, naming the file rather than just the variable.
+
+        An `export` in a shell profile is not reliably visible to Isabelle -- a
+        desktop-launched jEdit inherits a different environment -- so the settings
+        file, which Isabelle always reads, is the answer that actually works.
+        """
+        var = self.API_KEY_ENV_VARS[0]
+        alt = self.API_KEY_ENV_VARS[1:]
+        path = settings_file_path()
+        where = path or "etc/settings in the directory `isabelle getenv ISABELLE_HOME_USER` prints"
+        hint = f"  Add  {var}=<your-key>  in {where}, then restart Isabelle."
+        if alt:
+            hint += ("\n  (" + " / ".join(alt) + " also works, but only while "
+                     f"{var} is unset.)")
+        return hint
+
+    def _http_error_hint(self, e: BaseException) -> str:
+        """What the user can do about this status, when there is anything."""
+        resp = getattr(e, "response", None)
+        status = getattr(resp, "status_code", None)
+        # Auth is tested FIRST, and by predicate rather than by status: Gemini
+        # reports an invalid key as 400, the same status as an unknown model, so a
+        # status-ordered check would hand that user the "check your model name"
+        # advice while the body right above it says the key is invalid.
+        if resp is not None and self._is_auth_error(resp):
+            if not self.api_key:
+                return "\n  No API key is configured.\n" + self._set_api_key_hint()
+            return ("\n  The endpoint rejected the configured API key. Check that it "
+                    "is current, was copied in full, and belongs to this endpoint.")
+        if status in (400, 404, 422):
+            # The endpoint actually contacted, not self.base_url: Gemini_Embedding
+            # requests against _endpoint_base, which falls back to the Google host
+            # whenever base_url lacks "generativelanguage" -- and the default
+            # base_url is the Fireworks one, so it ALWAYS falls back. Interpolating
+            # the configured field would name a host that was never contacted.
+            endpoint = _redacted_url(resp) or self.base_url
+            return (f"\n  Check that model {self.model!r} is served by {endpoint} "
+                    "(Isabelle config Semantic_Embedding.embedding_model / embedding_base_url).")
+        if status == 429:
+            # The "will wait and retry" sentence is the point of this branch, not a
+            # detail: without it a user watching a stalled proof concludes it has
+            # hung and kills the process, when waiting would have got them through.
+            # Hence no exact figure -- the backoff is 2**attempt (1s, 2s, ... 512s),
+            # so any single number would be wrong most of the time.
+            #
+            # TODO(reranker): this sentence is currently FALSE on the reranker path.
+            # OpenAI_Reranker_Provider.rerank has no retry loop at all -- it raises on
+            # the first failure and Semantic_Vector_Store.lookup degrades to embedding
+            # scores. Give the reranker the same retry treatment as _embed_cached, or
+            # make this sentence conditional on the caller actually retrying.
+            return ("\n  You have hit either a rate limit or an exhausted quota. The "
+                    "system will wait several seconds and retry, so there is no need "
+                    "to interrupt it. This provider reports both the same way, so if "
+                    "it never clears, check your account balance.")
+        # No 5xx branch on purpose. Every hint here earns its place by telling the
+        # user something they could not work out from the warning itself -- which
+        # file the key goes in, which config names the model, that 429 is ambiguous.
+        # For a 5xx the status line and the provider's own body already say all we
+        # know; anything further would be speculation about their infrastructure.
+        return ""
+
 
 class EmbedResult(NamedTuple):
     """Result of an embedding call: vectors + total tokens used."""
@@ -28,7 +211,7 @@ class EmbedResult(NamedTuple):
     total_tokens: int = 0
 
 
-class Embedding_Provider(ABC):
+class Embedding_Provider(HTTP_Provider):
     type name = str
     canonical_model: str  # identity: HuggingFace name where one exists, else canonical id
     model: str            # model id actually sent to the API
@@ -129,8 +312,17 @@ class Embedding_Provider(ABC):
                     break
                 except Exception as e:
                     last_err = e
-                    await self._log(f"[Embedding] {self.model}: chunk {ci // chunk_size + 1}/{total_chunks} "
-                              f"attempt {attempt + 1}/10 failed: {e}")
+                    where = (f"[Embedding] {self.model}: chunk "
+                             f"{ci // chunk_size + 1}/{total_chunks} attempt {attempt + 1}/10")
+                    detail = _http_error_detail(e)
+                    if detail is None:
+                        await self._log(f"{where} failed: {e}")
+                    else:
+                        # We keep retrying regardless -- the point of the warning is
+                        # that the user finds out NOW rather than after the full
+                        # ~17min of backoff (1+2+...+512s) that precedes the raise.
+                        await self._warn(f"{where} failed: {detail}"
+                                         + self._http_error_hint(e))
                     await asyncio.sleep(2 ** attempt)
             else:
                 raise RuntimeError(
@@ -201,6 +393,21 @@ class Embedding_Provider(ABC):
         conn = Connection.current()
         if conn is not None:
             await conn.tracing(msg)
+
+    async def _warn(self, msg: str) -> None:
+        """Report to Isabelle's warning channel (yellow, uncapped).
+
+        Deliberately `warning`, not an error channel: Isabelle_Log's wire enum is
+        TRACING|WARNING|WRITELN (Isabelle_RPC/Tools/tracing.ML:2) with no ERROR, and
+        adding one would need a lockstep upgrade of both sides of a separate repo --
+        an old ML peer hits `raise Unpack` on an unknown tag. `warning` is also the
+        right *semantics* here: ML's `error` raises and would abort the retry loop.
+        """
+        from Isabelle_RPC_Host.rpc import Connection
+        conn = Connection.current()
+        if conn is not None:
+            await conn.warning(msg)
+
 
     async def embed(self, text: list[str], *, role: str = "document",
                     kinds_phrase: str | None = None,
@@ -469,12 +676,39 @@ class Gemini_Embedding(Embedding_Provider):
     endpoint is used (the default base_url is the OpenAI-compatible one, which
     does not apply here). api_key falls back to ``GEMINI_API_KEY``.
     """
+    # EMBEDDING_API_KEY still wins -- __init__ only consults GEMINI_API_KEY when the
+    # base class found nothing. Order matters in the message: a user who has both set
+    # (EMBEDDING_API_KEY for some OpenAI-compatible endpoint, GEMINI_API_KEY for this
+    # one) and switches driver sends the WRONG key to Google, and would otherwise be
+    # told to check the variable that is not being used.
+    API_KEY_ENV_VARS: ClassVar[tuple[str, ...]] = ("EMBEDDING_API_KEY", "GEMINI_API_KEY")
+
     def __init__(self, base_url: str, model: str, api_key: str | None = None) -> None:
         super().__init__(base_url, model, api_key)
         if self.api_key is None:
             self.api_key = os.getenv("GEMINI_API_KEY")
         self._endpoint_base = (base_url if base_url and "generativelanguage" in base_url
                                else _GEMINI_DEFAULT_ENDPOINT)
+
+    def _is_auth_error(self, resp) -> bool:
+        """Google does not use 401 for a rejected key. Measured against the live API:
+
+            no key at all   -> 403 PERMISSION_DENIED ("unregistered callers")
+            invalid key     -> 400 INVALID_ARGUMENT, reason API_KEY_INVALID
+
+        That 400 collides with the status for an unknown model, so the status alone
+        cannot separate the two cases and the body has to be consulted. Matching on
+        the machine-readable `reason` rather than the prose keeps this stable across
+        message rewording.
+        """
+        if super()._is_auth_error(resp):
+            return True
+        if getattr(resp, "status_code", None) != 400:
+            return False
+        try:
+            return "API_KEY_INVALID" in (resp.text or "")
+        except Exception:
+            return False
 
     async def _embed(self, text: list[str]) -> EmbedResult:
         url = f"{self._endpoint_base.rstrip('/')}/models/{self.model}:batchEmbedContents"
@@ -500,7 +734,7 @@ class RerankResult(NamedTuple):
     scores: list[float]
 
 
-class Reranker_Provider(ABC):
+class Reranker_Provider(HTTP_Provider):
     type name = str
     _registration_name: ClassVar[str]
     model: str
@@ -562,6 +796,12 @@ class OpenAI_Reranker_Provider(Reranker_Provider):
             [r["index"] for r in results[:top_n]],
             [r["relevance_score"] for r in results[:top_n]],
         )
+
+
+    # NOT the embedding key: this provider reads its own variable, so a user who set
+    # only EMBEDDING_API_KEY has a working embedder and a 401 reranker. Naming the
+    # embedding variable here would send them to edit a setting that changes nothing.
+    API_KEY_ENV_VARS: ClassVar[tuple[str, ...]] = ("QWEN3_RERANKER_API_KEY",)
 
 
 @register_reranker_provider("qwen3-reranker-8b")

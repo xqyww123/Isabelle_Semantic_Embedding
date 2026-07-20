@@ -1,3 +1,38 @@
+"""Premise selection over a TEI/OpenAI-compatible embedding endpoint.
+
+    ############################################################################
+    ##  BROKEN ON PURPOSE, AND CURRENTLY DORMANT -- READ BEFORE USING ANYTHING ##
+    ############################################################################
+
+All three RPC procedures below (`embed_goal`, `embed_premises`,
+`embed_goal_and_premises`) end in an unconditional
+
+    raise Exception("Intentional Error")
+
+placed immediately before their `return`, so EVERY call fails, always. This was
+committed deliberately (a27490d, "WIP") and is not an accident to be quietly
+patched out: the module is dormant while the live embedding path went to
+semantic_embedding.py / semantics.py, and it is scheduled to be revived
+deliberately (owner's estimate as of 2026-07-20: a few weeks out).
+
+If you are here because something called one of these and blew up, that is the
+designed behaviour telling you this module is not ready -- do not "fix" it by
+deleting the raises. Revival is a separate, planned piece of work.
+
+Two things worth knowing before that revival, both found while making the
+embedding path report its failures properly (2026-07-20):
+
+  * This module is a SECOND, independent implementation of embedding: its own
+    httpx call, its own RocksDB cache, its own `raise_for_status`, and its own
+    API-key variable (`API_KEY`, not `EMBEDDING_API_KEY`). It shares nothing
+    with Embedding_Provider.
+  * It has no retry and no error reporting. None of the work that made HTTP
+    failures visible in Isabelle (HTTP_Provider._http_error_hint, the auth
+    classifier, the missing-key guidance) reaches this code.
+
+Reviving it is therefore also an opportunity to fold it into Embedding_Provider
+rather than to restore a parallel stack.
+"""
 from typing import cast
 from Isabelle_RPC_Host import Connection, isabelle_remote_procedure
 from Isabelle_RPC_Host.unicode import pretty_unicode as _pretty_unicode
@@ -292,6 +327,9 @@ async def embed_goal(arg: tuple[goal, ctxt, config, int], connection : Connectio
             "embed_goal: token_limit=%s, token_count 25th=50th=75th=max=%s total=%d, over_1000=%d over_2000=%d over_3000=%d, elapsed=%.3fs",
             token_limit, n, n, (1 if n > 1000 else 0), (1 if n > 2000 else 0), (1 if n > 3000 else 0), elapsed,
         )
+    # DELIBERATE, NOT A BUG -- see the module docstring. This procedure is dead
+    # until premise selection is revived; the raise makes that loud instead of
+    # letting a caller silently use a stack nobody is maintaining.
     raise Exception("Intentional Error")
     return result
 
@@ -315,6 +353,9 @@ async def embed_premises(arg: tuple[list[tuple[premise, ctxt]], config, int], co
             "embed_premises: %d premises, token_limit=%s, token_count 25th=%.0f 50th=%.0f 75th=%.0f max=%d total=%d, over_1000=%d over_2000=%d over_3000=%d, elapsed=%.3fs",
             len(premises), token_limit, q25, q50, q75, max(counts), token_total, n_over_1000, n_over_2000, n_over_3000, elapsed,
         )
+    # DELIBERATE, NOT A BUG -- see the module docstring. This procedure is dead
+    # until premise selection is revived; the raise makes that loud instead of
+    # letting a caller silently use a stack nobody is maintaining.
     raise Exception("Intentional Error")
     return result
 
@@ -341,6 +382,9 @@ async def embed_goal_and_premises(arg: tuple[goal, ctxt, list[tuple[premise, ctx
             "embed_goal_and_premises: %d premises+goal, token_limit=%s, token_count 25th=%.0f 50th=%.0f 75th=%.0f max=%d total=%d, over_1000=%d over_2000=%d over_3000=%d, elapsed=%.3fs",
             len(codes), token_limit, q25, q50, q75, max(counts), token_total, n_over_1000, n_over_2000, n_over_3000, elapsed,
         )
+    # DELIBERATE, NOT A BUG -- see the module docstring. This procedure is dead
+    # until premise selection is revived; the raise makes that loud instead of
+    # letting a caller silently use a stack nobody is maintaining.
     raise Exception("Intentional Error")
     return (goal_vec, prem_vecs)
 
