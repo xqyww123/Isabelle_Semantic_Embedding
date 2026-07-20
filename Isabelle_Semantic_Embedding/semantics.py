@@ -1183,7 +1183,6 @@ class Semantic_Vector_Store(Vector_Store):
         if self.connection is None:
             return []
         gate = await self.connection.config_lookup("auto_interpret_for_embedding")
-        confirmed = False
         theory_hashes: set[bytes] = set()
         # (1) When the gate permits it, auto-interpret the uninterpreted theories of the
         # non-xor missing entities so they become embeddable.  XOR-prefixed keys
@@ -1221,7 +1220,6 @@ class Semantic_Vector_Store(Vector_Store):
                         ["Yes", "No"])
                     if answer != "Yes":
                         return []
-                    confirmed = True
                 await self.connection.tracing(
                     f"[Semantic_Embedding] {len(uninterpreted_theories)} of {len(theory_hashes)} theories "
                     f"not yet interpreted, running interpretation for: "
@@ -1291,14 +1289,13 @@ class Semantic_Vector_Store(Vector_Store):
                 await self.connection.tracing(
                     f"[Semantic_Embedding] no semantic interpretations found for the missing entities, skipping")
             return []
-        if len(ready) > 42 and not confirmed:
-            import Isabelle_RPC_Host.dialogue
-            answer = await self.connection.dialogue(
-                f"[Semantic Embedding] {len(ready)} entities to embed. "
-                f"This may consume a significant amount of API tokens. Proceed?",
-                ["Yes", "No"])
-            if answer != "Yes":
-                return []
+        # Embed unconditionally.  This used to ask "N entities to embed, proceed?"
+        # whenever N > 42, which made every ordinary lookup a prompt: answering No
+        # returns [] without embedding, so the very next query finds the same missing
+        # vectors and asks again -- permanently.  And the question was about the wrong
+        # thing: this step spends EMBEDDING tokens on interpretations that already
+        # exist, not LLM tokens (that is step (1), and it has its own confirmation
+        # above).  The tracing line below reports the count.
         await self.connection.tracing(
             f"[Semantic_Embedding] embedding {len(ready)} of {len(missing)} missing entities into vectors")
         tokens = await self.embed_records(ready, force=True)
