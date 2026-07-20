@@ -33,7 +33,7 @@ fun is_infra_session thy =
    (TAG/GOAL/PROTECT/ISO_* constants + their _def lemmas, and helper lemmas
    like Ball_*_comm); `hide_const (open)` only hides their short names, so the
    fully-qualified `Minilang.*` names still leak — matched here by prefix.
-   `"Minilang."` does not match sibling theories like `Minilang_Agent.` (the
+   `"Minilang."` does not match sibling theories like `Minilang_AoA.` (the
    char after `Minilang` is `.` vs `_`). *)
 val infra_base_theory_names = ["Minilang"]
 
