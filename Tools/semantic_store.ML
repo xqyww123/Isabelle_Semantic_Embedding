@@ -70,8 +70,11 @@ signature SEMANTIC_STORE = sig
      Empty string means disabled (use env var RERANKER_MODEL or no reranking). *)
   val reranker_model : string Config.T
 
-  (* Config option: echo interpretation-progress / token-usage chatter to the
-     output panel.  Off by default; `declare [[Semantic_Store_verbose]]`. *)
+  (* Config option: echo Semantic_Store's OPT-IN INTERNAL DIAGNOSTICS to the output
+     panel -- the per-entity interpret_entities detail and the Thm_Cache delta
+     timings.  Off by default; `declare [[Semantic_Store_verbose]]`.
+     It does NOT gate interpretation progress or per-theory token usage: those are
+     reported unconditionally via writeln, so that a run cannot fail silently. *)
   val Semantic_Store_verbose : bool Config.T
 
   (* Search k nearest entities by semantic similarity to a query string.
@@ -150,8 +153,12 @@ fun fmt_usage ({input, cache_write, cache_read, output, cost} : usage) =
     " output=", Int.toString output,
     " cost=$", Real.fmt (StringCvt.FIX (SOME 4)) cost]
 
+(* Default FALSE: interpreting a theory cone is a long, paid LLM run, so it must be an
+   explicit act, not something a query silently triggers.  When it is off and entities
+   are missing, _auto_embed says which theories are unusable and points at
+   `run_semantic_interpretation`. *)
 val auto_interpret_for_embedding = Attrib.setup_config_bool
-  \<^binding>\<open>auto_interpret_for_embedding\<close> (K true)
+  \<^binding>\<open>auto_interpret_for_embedding\<close> (K false)
 val _ = Config.register_rpc_option "auto_interpret_for_embedding"
           (Config.bool_value auto_interpret_for_embedding)
 
@@ -175,10 +182,15 @@ val reranker_model = Attrib.setup_config_string
 val _ = Config.register_rpc_option "Semantic_Embedding.reranker_model"
           (Config.string_value reranker_model)
 
-(* Whether Semantic_Store echoes its interpretation-progress / token-usage
-   chatter to the output panel.  false (default) — quiet, which is what callers
-   embedding this in a larger run (notably the `aoa` method) want; enable with
-   `declare [[Semantic_Store_verbose]]` when diagnosing the store itself. *)
+(* Whether Semantic_Store echoes its opt-in internal diagnostics to the output panel.
+   false (default) — quiet, which is what callers embedding this in a larger run
+   (notably the `aoa` method) want; enable with `declare [[Semantic_Store_verbose]]`
+   when diagnosing the store itself.
+   SCOPE: only the two `vtracing` sites remain behind this flag (the per-entity
+   interpret_entities detail and the Thm_Cache delta timing).  Run-level
+   interpretation progress, the per-theory token/cost line and the closing summary
+   are unconditional `writeln` — a run that spends money must say so whether or not
+   anyone opted into diagnostics. *)
 val Semantic_Store_verbose = Attrib.setup_config_bool
   \<^binding>\<open>Semantic_Store_verbose\<close> (K false)
 
