@@ -146,6 +146,12 @@ jobs:
       - name: Build
         env:
           ISA_COMPONENT_VERSION: ${{ needs.version.outputs.version }}
+          # The post-link hook best-effort pulls the ~0.7 GB semantic DB; whether
+          # rattler-build's test environments execute link hooks or not, the BUILD
+          # legs must not spend that download.  Belt-and-braces either way.  The
+          # verify job deliberately does NOT set this: its real `conda create`
+          # exercises the pull end-to-end and then asserts the DB arrived.
+          SEMANTIC_EMBEDDING_SKIP_POSTLINK_PULL: "1"
         run: |
           set -euo pipefail
           ls -l conda/wheelhouse/
@@ -351,6 +357,23 @@ jobs:
             | tee /tmp/pipout || true
           grep -qi 'already satisfied' /tmp/pipout \
             || { echo "::error::pip does not see the conda-installed package"; cat /tmp/pipout; exit 1; }
+
+      # `conda create` above ran the post-link hook, which pulls the semantic DB
+      # from R2 -- best-effort BY DESIGN: the hook exits 0 and stays silent even
+      # when the pull fails, so no earlier step would notice a regression there.
+      # This step is what turns a silently-broken pull into a release blocker,
+      # and it is the one end-to-end proof that a user's install really ends
+      # with the DB in place (the .exe entry-point path in the .bat hook, the
+      # anonymous R2 read, the merge, the marker -- all of it).  It reads the
+      # DEFAULT per-user cache dir, the same one the hook wrote: no
+      # SEMANTIC_DB_DIR override here.
+      - name: "The semantic DB was PULLED by the post-link hook"
+        run: |
+          set -euo pipefail
+          eval "$(conda shell.bash hook)"; conda activate v
+          cd "$RUNNER_TEMP"
+          # ON ONE LINE -- same YAML block-scalar trap as the kernel check above.
+          python -c "from Isabelle_Semantic_Embedding.r2_sync import semantic_db_record_count, pull_was_interrupted, read_marker; n = semantic_db_record_count(); assert not pull_was_interrupted(), 'a pull started but never finished'; assert n > 0, 'the post-link hook left no semantic DB'; m = read_marker(); assert m.get('etag'), 'no ETag in the sync marker'; print('semantic DB pulled:', n, 'records, ETag', m['etag'])"
 
       - name: "A fresh environment with NO semantic DB does not hard-fail"
         run: |

@@ -110,6 +110,8 @@ INCOMPLETE_PATH = os.path.join(CACHE_DIR, ".pull_incomplete")
 # Peak transient usage, measured 2026-07-09: push needs the compacted copy
 # (~1.5 GB) plus the tarball (~0.7 GB); pull adds the backup and the merge's
 # growth (~4.4 GB total).  Both thresholds leave roughly a factor of two.
+# PULL_MIN_FREE applies to CACHE_DIR always, and to $HOME only when the pull
+# will write a backup there — the backup is $HOME's sole writer.
 PUSH_MIN_FREE = 4 << 30
 PULL_MIN_FREE = 6 << 30
 
@@ -900,13 +902,19 @@ def pull_snapshot(*, backup: bool = True, force: bool = False,
             _write_marker(last_checked_at=time.time())
             return False
 
+        # $HOME is written only by _backup, so only a backing-up pull may refuse
+        # over it: with SEMANTIC_DB_DIR on a large local disk and a small
+        # (quota'd NFS) $HOME — the cluster layout _paths.py recommends — a
+        # $HOME check on a backup-less pull would fail every pull path over a
+        # filesystem the merge never touches.
+        disk_paths = (CACHE_DIR, os.path.expanduser("~")) if backup else (CACHE_DIR,)
         if dry_run:
             _log(f"dry run: would download {_human(head.size)} "
                  f"(ETag {head.etag}, {head.last_modified:%Y-%m-%d %H:%M}) and merge it")
-            _report_blockers(PULL_MIN_FREE, CACHE_DIR, os.path.expanduser("~"))
+            _report_blockers(PULL_MIN_FREE, *disk_paths)
             return True
 
-        _require_disk(PULL_MIN_FREE, CACHE_DIR, os.path.expanduser("~"))
+        _require_disk(PULL_MIN_FREE, *disk_paths)
         if require_idle:
             _require_idle(force)
 

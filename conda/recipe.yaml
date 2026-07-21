@@ -255,18 +255,65 @@ build:
       (PREFIX / "bin").mkdir(parents=True, exist_ok=True)
       (PREFIX / "Scripts").mkdir(parents=True, exist_ok=True)
 
+      # The post-link hook ALSO fetches the semantic database from R2, best-effort,
+      # so an install ends with the DB in place rather than stalling the first
+      # `by aoa` for minutes.  Load-bearing details:
+      #   * --yes: link hooks have no TTY, and cmd_pull's confirmation input() would
+      #     EOFError -- the hook would "fail" on every single install.
+      #   * --no-backup: a first install has nothing worth saving -- the backup would
+      #     only tar the just-created empty cache dir into a useless archive in $HOME
+      #     (pull_snapshot's _pull_lock makedirs CACHE_DIR before _backup runs, so a
+      #     missing dir is not a case) -- and it lifts the $HOME disk preflight,
+      #     which only the backup needs.  (Consequence on RE-installs: a merge over
+      #     an existing DB runs unbacked -- accepted, the merge only adds/overwrites.)
+      #   * --no-require-idle: the idle gate exists for pack/push; a merge is safe
+      #     under concurrent readers and writers, which is why r2_sync's own
+      #     auto-pull path disables it too.  Without it, any live RPC host holding
+      #     the LMDB env would deterministically fail the hook exactly when the
+      #     remote moved -- the only case where the hook has work to do.
+      #   * one hint line before, ONE warning line on failure, nothing on success.
+      #     The pull's own progress goes to /dev/null: conda does not stream link-
+      #     hook stdout, and success must stay silent.  The failure line ALSO goes
+      #     to $PREFIX/.messages.txt, the one channel conda/mamba reliably print
+      #     after the transaction.
+      #   * every path still exits 0: a nonzero post-link rolls the install back
+      #     (see above), and a missing DB is never worth that -- an EMPTY DB is
+      #     re-pulled at the first `by aoa` (_ensure_semantic_db); a stale one
+      #     falls back to check_update's weekly nag plus a manual pull.
+      #   * SEMANTIC_EMBEDDING_SKIP_POSTLINK_PULL=1 skips it.  The conda-build
+      #     job sets it (rattler-build's test envs must not spend ~0.7 GB each);
+      #     the verify job deliberately does NOT, and then asserts the DB arrived.
+      #   * re-linking on a machine that already holds the DB is cheap: pull is
+      #     ETag-gated and idempotent ("Already up to date", no transfer).
+      #   * pre-unlink gets NONE of this (asserted below).
+      PULL_WARN = ("warning: 'isabelle-semantics pull' failed; the semantic database "
+                   "was not fetched. An empty database is fetched automatically at the "
+                   "first 'by aoa'; otherwise run 'isabelle-semantics pull' yourself.")
+      PULL_HINT = "fetching the semantic database (~0.7 GB); this can take a few minutes..."
+
       for action, verb in [("post-link", "-u"), ("pre-unlink", "-x")]:
-          sh = PREFIX / "bin" / f".{NAME}-{action}.sh"
-          sh.write_text(
-              '#!/bin/bash\n'
-              f'"$PREFIX/isa/bin/isabelle" components {verb} "$PREFIX/share/{NAME}" 2>/dev/null \\\n'
+          sh_lines = [
+              '#!/bin/bash',
+              f'"$PREFIX/isa/bin/isabelle" components {verb} "$PREFIX/share/{NAME}" 2>/dev/null \\',
               f'  || echo "warning: \'isabelle components {verb} {NAME}\' failed; '
-              'the session may be unavailable"\n'
-              'exit 0\n', newline="\n")
+              'the session may be unavailable"',
+          ]
+          if action == "post-link":
+              sh_lines += [
+                  'if [ -z "$SEMANTIC_EMBEDDING_SKIP_POSTLINK_PULL" ]; then',
+                  f'  echo "{PULL_HINT}"',
+                  '  "$PREFIX/bin/isabelle-semantics" pull --yes --no-backup --no-require-idle >/dev/null 2>&1 || {',
+                  f'    echo "{PULL_WARN}"',
+                  f'    echo "{PULL_WARN}" >> "$PREFIX/.messages.txt"',
+                  '  }',
+                  'fi',
+              ]
+          sh_lines.append('exit 0')
+          sh = PREFIX / "bin" / f".{NAME}-{action}.sh"
+          sh.write_text("\n".join(sh_lines) + "\n", newline="\n")
           sh.chmod(0o755)
 
-          bat = PREFIX / "Scripts" / f".{NAME}-{action}.bat"
-          bat.write_text("\r\n".join([
+          bat_lines = [
               '@echo off',
               f'set "COMP=%PREFIX%\\share\\{NAME}"',
               'set "DL=%COMP:~0,1%"',
@@ -275,12 +322,29 @@ build:
               'set "CYG=/cygdrive/%DL%%REST%"',
               'call "%PREFIX%\\isa\\bin\\isabelle.bat" getenv -b ISABELLE_HOME >nul 2>&1',
               f'call "%PREFIX%\\isa\\bin\\isabelle.bat" components {verb} "%CYG%" >nul 2>&1',
-              'exit /b 0',
-              '']), newline="")
+          ]
+          if action == "post-link":
+              # No if-( )-block: the messages hold parentheses, which close a cmd
+              # block early.  Two flat `if errorlevel 1` lines instead -- echo does
+              # not reset errorlevel, so the second still fires.
+              bat_lines += [
+                  'if defined SEMANTIC_EMBEDDING_SKIP_POSTLINK_PULL exit /b 0',
+                  f'echo {PULL_HINT}',
+                  'call "%PREFIX%\\Scripts\\isabelle-semantics.exe" pull --yes --no-backup --no-require-idle >nul 2>&1',
+                  f'if errorlevel 1 echo {PULL_WARN}',
+                  f'if errorlevel 1 echo {PULL_WARN} >> "%PREFIX%\\.messages.txt"',
+              ]
+          bat_lines += ['exit /b 0', '']
+          bat = PREFIX / "Scripts" / f".{NAME}-{action}.bat"
+          bat.write_text("\r\n".join(bat_lines), newline="")
 
       post = (PREFIX / "bin" / f".{NAME}-post-link.sh").read_text()
       if f"share/{NAME}" not in post:
           die("the post-link hook does not name the component directory")
+      if "isabelle-semantics" not in post:
+          die("the post-link hook does not fetch the semantic database")
+      if "pull" in (PREFIX / "bin" / f".{NAME}-pre-unlink.sh").read_text():
+          die("the pre-unlink hook must not touch the semantic database")
       if b"\r\n" not in (PREFIX / "Scripts" / f".{NAME}-post-link.bat").read_bytes():
           die("the .bat hook is not CRLF")
 
@@ -389,9 +453,10 @@ about:
     Python side loads, so neither half is useful alone.
 
     The ~1.5 GB semantic database is NOT part of this package.  It is per-user data with
-    its own lifecycle, distributed over Cloudflare R2.  Everything degrades gracefully
-    without it -- retrieval simply returns nothing -- and it is fetched with
-    `isabelle-semantics pull`.
+    its own lifecycle, distributed over Cloudflare R2.  The post-link hook fetches it,
+    best-effort (set SEMANTIC_EMBEDDING_SKIP_POSTLINK_PULL=1 to skip, e.g. in CI);
+    failing that, everything degrades gracefully -- retrieval simply returns nothing --
+    and it is fetched at the first `by aoa`, or manually with `isabelle-semantics pull`.
   license: LGPL-2.1-or-later
   # Paths RELATIVE TO $SRC_DIR, not to this recipe directory.  `../COPYING` resolved
   # outside the source root and rattler-build failed the build with the flat message

@@ -514,7 +514,8 @@ def cmd_pull(args: argparse.Namespace) -> None:
                 print("Aborted.")
                 return
         r2.pull_snapshot(backup=not args.no_backup, force=args.force,
-                         dry_run=args.dry_run)
+                         dry_run=args.dry_run,
+                         require_idle=not args.no_require_idle)
     _run_r2(go)
 
 
@@ -940,6 +941,11 @@ def main() -> None:
     p_pull.add_argument("--dry-run", action="store_true", help="Say what would happen")
     p_pull.add_argument("--no-backup", action="store_true",
         help="Skip the pre-merge backup. The merge then has no way back.")
+    p_pull.add_argument("--no-require-idle", action="store_true",
+        help="Do not refuse when another process holds the database open. A merge is "
+             "safe under concurrent readers and writers (the idle gate exists for "
+             "pack/push); for hooks and other automatic callers. Unlike --force, this "
+             "keeps the already-up-to-date short-circuit and the staleness checks.")
     p_pull.add_argument("--force", action="store_true",
         help="Merge even when the local copy is already current, or the database is "
              "open in another process.")
