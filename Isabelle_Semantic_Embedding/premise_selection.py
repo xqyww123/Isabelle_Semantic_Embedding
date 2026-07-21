@@ -32,6 +32,12 @@ embedding path report its failures properly (2026-07-20):
 
 Reviving it is therefore also an opportunity to fold it into Embedding_Provider
 rather than to restore a parallel stack.
+
+One more (2026-07-21): read the key through Connection.getenv /
+semantic_embedding._resolve_env, NOT this process's env. The RPC host is a
+long-lived daemon whose os.environ is frozen at server start; the live
+embedding path already resolves all its config through the connected
+Isabelle for exactly that reason (see RPC_GETENV_PLAN.md in MLML).
 """
 from typing import cast
 from Isabelle_RPC_Host import Connection, isabelle_remote_procedure

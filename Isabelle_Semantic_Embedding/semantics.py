@@ -19,9 +19,10 @@ from Isabelle_RPC_Host.universal_key import EntityKind, UndefinedEntity, univers
 from claude_agent_sdk import SdkMcpTool, tool
 
 from .semantic_embedding import (Vector_Store, Embedding_Provider, make_embedding_provider,
+                                 resolve_embedding_driver_class,
                                  sanitize_model, unsanitize_model,
                                  Reranker_Provider, reranker_provider, key,
-                                 settings_file_path, _http_error_detail)
+                                 settings_file_path, _http_error_detail, _resolve_env)
 from ._vecarith import library_path as _vector_library_path
 
 from .base import ToolCall_ret, mk_ret as _mk_ret
@@ -1146,7 +1147,7 @@ class Semantic_Vector_Store(Vector_Store):
         reranker_name = await _resolve_reranker_model(self.connection)
         if reranker_name is None:
             return None
-        return reranker_provider(reranker_name)
+        return await reranker_provider(reranker_name, self.connection)
 
     def is_thy_embedded(self, theory_key: universal_key) -> bool:
         """Check whether a theory's entities are all embedded in this vector store."""
@@ -1716,12 +1717,12 @@ def _settings_file_hint() -> str:
         # to obtain it rather than inventing one.
         return ("  3. Add the line below to  etc/settings  inside the directory that\n"
                 "     `isabelle getenv ISABELLE_HOME_USER` prints:\n\n"
-                "         EMBEDDING_API_KEY=fw_your_key_here\n\n"
+                "         EMBEDDING_API_KEY=<your_key_here>\n\n"
                 "     Then restart Isabelle.")
-    return ("  3. Add it to your Isabelle settings file\n\n"
+    return ("  3. Open your Isabelle settings file\n\n"
             f"         {path}\n\n"
-            "     by adding the line\n\n"
-            "         EMBEDDING_API_KEY=fw_your_key_here\n\n"
+            "     and add the following line\n\n"
+            "         EMBEDDING_API_KEY=<your_key_here>\n\n"
             "     Then restart Isabelle.")
 
 
@@ -1736,7 +1737,7 @@ def _missing_api_key_message() -> str:
         "  1. Open https://fireworks.ai, create an account, and top up some funds.\n"
         "     $5 is generally enough for half a year of use.\n"
         "\n"
-        "  2. Go to https://fireworks.ai/account/api-keys and create an API key.\n"
+        "  2. Go to https://app.fireworks.ai/settings/users/api-keys and create an API key.\n"
         "\n"
         + _settings_file_hint() + "\n"
         "\n"
@@ -1745,17 +1746,49 @@ def _missing_api_key_message() -> str:
         "embedding_provider.md")
 
 
-async def _resolve_embedding_config(connection: Connection | None) -> tuple[str, str, str]:
-    """Resolve (driver, base_url, model), each by: ML config -> env -> default.
+async def _resolve_one(connection: Connection | None, config_name: str,
+                       env_name: str, default: str) -> str:
+    """One config item: ML config option > Isabelle env > this process's env > default.
+
+    The two env layers are Connection.getenv's fallback chain (via _resolve_env):
+    the RPC host is a long-lived daemon whose own os.environ is frozen at server
+    start, so the connected Isabelle -- which re-sources etc/settings at every
+    restart -- is the fresh view, and "add the line to etc/settings, then restart
+    Isabelle" actually works without the user having to find and bounce the host.
+    """
+    if connection is not None:
+        v = await connection.config_lookup(config_name)
+        if v:
+            return v
+    return (await _resolve_env(connection, env_name)) or default
+
+
+async def _resolve_embedding_config(
+        connection: Connection | None) -> tuple[str, str, str, str | None]:
+    """Resolve (driver, base_url, model, api_key); items per _resolve_one's cascade.
 
     Also the one place that can tell a user who has configured NOTHING from one who
     chose their endpoint deliberately, so it is where the missing-key check lives.
+
+    The api_key has no ML config option on purpose -- config options are set from
+    theory text, and secrets do not belong in .thy files -- so its cascade starts
+    at the Isabelle-side environment. The variables consulted, in order, are the
+    resolved driver's API_KEY_ENV_VARS (var-major: the alternate variable only
+    matters while the primary is unset everywhere, matching the hint copy).
     """
-    driver, base_url, model = _resolve_embedding_config_env()
-    if connection is not None:
-        driver = (await connection.config_lookup("Semantic_Embedding.embedding_driver")) or driver
-        base_url = (await connection.config_lookup("Semantic_Embedding.embedding_base_url")) or base_url
-        model = (await connection.config_lookup("Semantic_Embedding.embedding_model")) or model
+    driver = await _resolve_one(connection, "Semantic_Embedding.embedding_driver",
+                                "EMBEDDING_DRIVER", _DEFAULT_EMBEDDING_DRIVER)
+    base_url = await _resolve_one(connection, "Semantic_Embedding.embedding_base_url",
+                                  "EMBEDDING_BASE_URL", _DEFAULT_EMBEDDING_BASE_URL)
+    model = await _resolve_one(connection, "Semantic_Embedding.embedding_model",
+                               "EMBEDDING_MODEL", _DEFAULT_EMBEDDING_MODEL)
+    cls = resolve_embedding_driver_class(driver)
+    key_vars = cls.API_KEY_ENV_VARS if cls is not None else ("EMBEDDING_API_KEY",)
+    api_key: str | None = None
+    for var in key_vars:
+        api_key = await _resolve_env(connection, var)
+        if api_key:
+            break
     # Default configuration means the Fireworks endpoint, which cannot work without
     # a key -- so failing here is certain, not a guess, and failing NOW beats
     # failing after ~17 minutes of 401 retries with nothing to show for it.
@@ -1765,7 +1798,7 @@ async def _resolve_embedding_config(connection: Connection | None) -> tuple[str,
     if ((driver, base_url, model) == (_DEFAULT_EMBEDDING_DRIVER,
                                       _DEFAULT_EMBEDDING_BASE_URL,
                                       _DEFAULT_EMBEDDING_MODEL)
-            and not os.getenv("EMBEDDING_API_KEY")):
+            and not api_key):
         msg = _missing_api_key_message()
         # Warn BEFORE raising, with the same text: the exception's own rendering
         # depends on who catches it (an ML Remote_Calling_Failure escapes it as a
@@ -1774,17 +1807,17 @@ async def _resolve_embedding_config(connection: Connection | None) -> tuple[str,
         if connection is not None:
             await connection.warning(msg)
         raise RuntimeError(msg)
-    return driver, base_url, model
+    return driver, base_url, model, api_key
 
 
 async def _resolve_reranker_model(connection: Connection | None) -> str | None:
-    """Resolve reranker model name from config, env, or None (disabled)."""
+    """Resolve reranker model name from config, Isabelle env, this process's env,
+    or None (disabled)."""
     if connection is not None:
         name = await connection.config_lookup("Semantic_Embedding.reranker_model")
         if name:
             return name
-    model = os.getenv("RERANKER_MODEL", "")
-    return model if model else None
+    return await _resolve_env(connection, "RERANKER_MODEL") or None
 
 
 async def _conn_semantic_vector_store(self: Connection, embedding_model: str | None = None) -> Semantic_Vector_Store:
@@ -1799,14 +1832,14 @@ async def _conn_semantic_vector_store(self: Connection, embedding_model: str | N
     models served by that same endpoint (fireworks-hosted qwen3/harrier/nv-embed
     are fine; mixing e.g. fireworks + mistral in one run is not supported).
     """
-    driver, base_url, model = await _resolve_embedding_config(self)
+    driver, base_url, model, api_key = await _resolve_embedding_config(self)
     if embedding_model is not None:
         model = embedding_model
     with _svs_lock:
         stores = getattr(self, '_semantic_vector_stores', None)
         if stores is not None and model in stores:
             return stores[model]
-    provider = make_embedding_provider(driver, base_url, model)
+    provider = make_embedding_provider(driver, base_url, model, api_key)
     return Semantic_Vector_Store(emb_provider=provider, connection=self)
 
 Connection.semantic_vector_store = _conn_semantic_vector_store  # type: ignore

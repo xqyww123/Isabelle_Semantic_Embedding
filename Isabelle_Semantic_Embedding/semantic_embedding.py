@@ -53,6 +53,26 @@ def settings_file_path() -> str:
     return os.path.join(home, "etc", "settings") if home else ""
 
 
+async def _resolve_env(connection, name: str) -> str | None:
+    """One env variable: Isabelle-side env -> this process's env -> None.
+
+    The RPC host is a long-lived daemon whose os.environ is frozen at server
+    start; the connected Isabelle re-sources etc/settings at every restart, so
+    its view is the fresh one (Connection.getenv implements the fallback chain).
+
+    Lives here rather than in semantics.py so provider classes below can use it
+    without a circular import (same reason as settings_file_path above).
+
+    getattr, not a plain method call: an already-running server that imported
+    this new code but still holds a pre-getenv Connection class must degrade to
+    the old os.getenv behaviour, not AttributeError on every semantic operation.
+    """
+    conn_getenv = getattr(connection, "getenv", None) if connection is not None else None
+    if conn_getenv is not None:
+        return await conn_getenv(name)   # falls back to os.environ internally
+    return os.getenv(name)
+
+
 def _redacted_url(resp) -> str:
     """The endpoint a response came from, with the query string stripped, or "".
 
@@ -454,22 +474,54 @@ def register_embedding_driver(name: str):
         return cls
     return decorator
 
-def make_embedding_provider(driver: str, base_url: str, model: str) -> Embedding_Provider:
-    """Instantiate an embedding driver class with the (base_url, model) parameters.
-    Checks the DRIVERS registry first, then dynamically loads drivers/{driver}.py
-    (whose module must expose an ``Embedding_Provider`` driver class)."""
+def resolve_embedding_driver_class(driver: str) -> type[Embedding_Provider] | None:
+    """Driver class by name: the DRIVERS registry, then drivers/{driver}.py
+    (whose module must expose an ``Embedding_Provider`` driver class).
+
+    Returns None for an *unknown* name (no registry entry, no file) so that key
+    resolution can fall back to generic advice while make_embedding_provider
+    keeps its hard ImportError at the construction site; genuine load failures
+    (unreadable spec, module errors) still raise.
+
+    A dynamically loaded class is memoized into DRIVERS: config resolution runs
+    on every retrieval, before the per-connection store cache, so an unmemoized
+    load would re-execute the driver module's top level per query.
+    """
     cls = Embedding_Provider.DRIVERS.get(driver)
+    if cls is not None:
+        return cls
+    path = pathlib.Path(__file__).parent / "drivers" / f"{driver}.py"
+    if not path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location(driver, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load embedding driver {driver!r} from {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    cls = mod.Embedding_Provider
+    Embedding_Provider.DRIVERS[driver] = cls
+    return cls
+
+
+def make_embedding_provider(driver: str, base_url: str, model: str,
+                            api_key: str | None = None) -> Embedding_Provider:
+    """Instantiate an embedding driver class with the (base_url, model) parameters.
+
+    api_key, when given, is assigned AFTER construction rather than passed
+    positionally: out-of-tree drivers are written against the historical
+    two-argument call shape, and the base __init__ only stores api_key anyway
+    (no consumption during construction), so post-assignment is equivalent for
+    in-tree classes and non-breaking for external ones. When api_key is None
+    the constructor's own env fallbacks (EMBEDDING_API_KEY, Gemini's
+    GEMINI_API_KEY) stay in charge, keeping connection-less scripts unchanged."""
+    cls = resolve_embedding_driver_class(driver)
     if cls is None:
         path = pathlib.Path(__file__).parent / "drivers" / f"{driver}.py"
-        if not path.exists():
-            raise ImportError(f"Embedding driver {driver!r} not found in DRIVERS or at {path}")
-        spec = importlib.util.spec_from_file_location(driver, path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Cannot load embedding driver {driver!r} from {path}")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        cls = mod.Embedding_Provider
-    return cls(base_url, model)
+        raise ImportError(f"Embedding driver {driver!r} not found in DRIVERS or at {path}")
+    provider = cls(base_url, model)
+    if api_key:
+        provider.api_key = api_key
+    return provider
 
 @register_embedding_driver("OpenAI_Embedding_Provider")
 class OpenAI_Embedding_Provider(Embedding_Provider):
@@ -746,6 +798,14 @@ class Reranker_Provider(HTTP_Provider):
         """Rerank documents by relevance to query. Returns top_n results sorted by relevance."""
         ...
 
+    async def bind_connection_env(self, connection) -> None:
+        """Re-resolve env-derived fields through the connected Isabelle.
+
+        Called by reranker_provider right after construction when a connection
+        is live. Default is a no-op so providers with no env-derived config
+        need to do nothing."""
+        return None
+
 
 def register_reranker_provider(name: str):
     """Class decorator to register a Reranker_Provider subclass by name."""
@@ -756,20 +816,29 @@ def register_reranker_provider(name: str):
     return decorator
 
 
-def reranker_provider(name: Reranker_Provider.name) -> Reranker_Provider:
+async def reranker_provider(name: Reranker_Provider.name,
+                            connection=None) -> Reranker_Provider:
     """Instantiate a Reranker_Provider by name.
-    Checks PROVIDERS registry first, then dynamically loads from drivers/{name}.py."""
+    Checks PROVIDERS registry first, then dynamically loads from drivers/{name}.py.
+    With a live connection, the provider re-resolves its env-derived config
+    through the connected Isabelle (bind_connection_env)."""
     if name in Reranker_Provider.PROVIDERS:
-        return Reranker_Provider.PROVIDERS[name]()
-    path = pathlib.Path(__file__).parent / "drivers" / f"{name}.py"
-    if not path.exists():
-        raise ImportError(f"Reranker driver {name!r} not found in PROVIDERS or at {path}")
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load reranker driver {name!r} from {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.Reranker_Provider()
+        provider = Reranker_Provider.PROVIDERS[name]()
+    else:
+        path = pathlib.Path(__file__).parent / "drivers" / f"{name}.py"
+        if not path.exists():
+            raise ImportError(f"Reranker driver {name!r} not found in PROVIDERS or at {path}")
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load reranker driver {name!r} from {path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        provider = mod.Reranker_Provider()
+    if connection is not None and isinstance(provider, Reranker_Provider):
+        # isinstance guard: the dynamic path never enforced subclassing, so a
+        # duck-typed out-of-tree class is skipped rather than AttributeError'd.
+        await provider.bind_connection_env(connection)
+    return provider
 
 
 class OpenAI_Reranker_Provider(Reranker_Provider):
@@ -803,13 +872,34 @@ class OpenAI_Reranker_Provider(Reranker_Provider):
     # embedding variable here would send them to edit a setting that changes nothing.
     API_KEY_ENV_VARS: ClassVar[tuple[str, ...]] = ("QWEN3_RERANKER_API_KEY",)
 
+    async def bind_connection_env(self, connection) -> None:
+        # A non-empty Isabelle-side value overrides whatever the constructor
+        # read from this process's frozen env; when the variable is set
+        # nowhere, _resolve_env yields None and the constructor's default
+        # (e.g. the fireworks base_url) stays in charge.
+        for attr, var in (("api_key", "QWEN3_RERANKER_API_KEY"),
+                          ("base_url", "QWEN3_RERANKER_BASE_URL"),
+                          ("model", "QWEN3_RERANKER_MODEL")):
+            val = await _resolve_env(connection, var)
+            if val:
+                setattr(self, attr, val)
+
 
 @register_reranker_provider("qwen3-reranker-8b")
 class Qwen3_Reranker_8B(OpenAI_Reranker_Provider):
-    base_url = os.getenv("QWEN3_RERANKER_BASE_URL", "https://api.fireworks.ai/inference")
-    api_key: str | None = os.getenv("QWEN3_RERANKER_API_KEY")
-    model = os.getenv("QWEN3_RERANKER_MODEL", "fireworks/qwen3-reranker-8b")
     max_documents = 200
+
+    def __init__(self, base_url: str | None = None, api_key: str | None = None,
+                 model: str | None = None) -> None:
+        # These used to be class attributes, i.e. frozen at module IMPORT time --
+        # even earlier than the server's env snapshot. Resolving at construction
+        # lets a fresh provider see the current process env, and
+        # bind_connection_env then goes one step fresher via the connection.
+        self.base_url = base_url or os.getenv("QWEN3_RERANKER_BASE_URL",
+                                              "https://api.fireworks.ai/inference")
+        self.api_key = api_key or os.getenv("QWEN3_RERANKER_API_KEY")
+        self.model = model or os.getenv("QWEN3_RERANKER_MODEL",
+                                        "fireworks/qwen3-reranker-8b")
 
 
 type key = bytes
