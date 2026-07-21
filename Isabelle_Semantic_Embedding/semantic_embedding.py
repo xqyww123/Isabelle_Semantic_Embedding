@@ -933,22 +933,30 @@ class OpenAI_Reranker_Provider(Reranker_Provider):
     # embedding variable here would send them to edit a setting that changes nothing.
     API_KEY_ENV_VARS: ClassVar[tuple[str, ...]] = ("QWEN3_RERANKER_API_KEY",)
 
+
+@register_reranker_provider("qwen3-reranker-8b")
+class Qwen3_Reranker_8B(OpenAI_Reranker_Provider):
+    max_documents = 200
+
     async def bind_connection_env(self, connection) -> None:
-        # A non-empty Isabelle-side value overrides whatever the constructor
-        # read from this process's frozen env; when the variable is set
-        # nowhere, _resolve_env yields None and the constructor's default
-        # (e.g. the fireworks base_url) stays in charge.
+        # A non-empty value overrides what the constructor read from this
+        # process's frozen env; when the variable is set nowhere, _resolve_env
+        # yields None and the constructor's default (e.g. the fireworks
+        # base_url) stays in charge.
+        #
+        # Deliberately on THIS class, not on the generic
+        # OpenAI_Reranker_Provider base: the QWEN3_* variables describe this
+        # provider's endpoint. On the base they would clobber every
+        # descendant -- an out-of-tree subclass with a hardcoded localhost
+        # base_url would be silently redirected to fireworks by residual
+        # QWEN3_* values (even stale host-env ones, via _resolve_env's
+        # fallback). Custom providers opt in by overriding this hook.
         for attr, var in (("api_key", "QWEN3_RERANKER_API_KEY"),
                           ("base_url", "QWEN3_RERANKER_BASE_URL"),
                           ("model", "QWEN3_RERANKER_MODEL")):
             val = await _resolve_env(connection, var)
             if val:
                 setattr(self, attr, val)
-
-
-@register_reranker_provider("qwen3-reranker-8b")
-class Qwen3_Reranker_8B(OpenAI_Reranker_Provider):
-    max_documents = 200
 
     def __init__(self, base_url: str | None = None, api_key: str | None = None,
                  model: str | None = None) -> None:

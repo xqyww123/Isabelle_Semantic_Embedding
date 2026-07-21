@@ -200,6 +200,12 @@ def test_make_embedding_provider_post_assignment():
 
 
 async def test_reranker_bind_connection_env():
+    # The api_key/model assertions are immune to a polluted shell (the fake
+    # connection's values win), but the base_url one asserts the constructor
+    # DEFAULT -- a shell-exported QWEN3_RERANKER_BASE_URL would flow through
+    # FakeIsaConn's os.environ fallback and fail it misleadingly.
+    assert "QWEN3_RERANKER_BASE_URL" not in os.environ, \
+        "QWEN3_RERANKER_BASE_URL set in this shell; unset it to test"
     conn = FakeIsaConn({"QWEN3_RERANKER_API_KEY": "isa-rk",
                         "QWEN3_RERANKER_MODEL": "isa-model"})
     p = await SE.reranker_provider("qwen3-reranker-8b", conn)

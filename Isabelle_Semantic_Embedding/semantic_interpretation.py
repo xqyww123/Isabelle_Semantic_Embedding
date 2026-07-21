@@ -1114,7 +1114,11 @@ async def interpret_file(
             from .semantic_embedding import _resolve_env
             cli_env = {"MAX_MCP_OUTPUT_TOKENS": "100000"}
             for _var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-                         "ANTHROPIC_BASE_URL", "HTTP_PROXY", "HTTPS_PROXY",
+                         "ANTHROPIC_BASE_URL",
+                         # Consumed by the CLI for background/fast-path calls;
+                         # options.model pins only the main model.
+                         "ANTHROPIC_SMALL_FAST_MODEL",
+                         "HTTP_PROXY", "HTTPS_PROXY",
                          "ALL_PROXY", "NO_PROXY"):
                 _val = await _resolve_env(connection, _var)
                 if _val:
