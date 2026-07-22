@@ -5,7 +5,9 @@ Exercises: ML -> Python RPC -> ML callback -> Python -> ML
 
 Prerequisites:
   - REPL server on 127.0.0.1:6666 with Semantic_Embedding loaded
-  - RPC server on 127.0.0.1:27182
+  - RPC server on 127.0.0.1:27182 (start it yourself AND export RPC_Host=127.0.0.1:27182
+    to the Isabelle side -- since Isabelle_RPC 0.4.0 there is no shared default address;
+    without the export, Isabelle silently talks to its own ephemeral host instead)
 
 Usage:
   python Test/test_desugar_e2e.py

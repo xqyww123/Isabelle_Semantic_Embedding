@@ -55,6 +55,12 @@ class _Experience_Index:
                     os.makedirs(cache_dir, exist_ok=True)
                     _Experience_Index._env = lmdb.open(
                         os.path.join(cache_dir, "experience_index.lmdb"), map_size=1 << 27)
+                    try:
+                        # Reap dead readers at every open (attached RPC hosts die by
+                        # os._exit by design).  See RPC_EPHEMERAL_HOST_PLAN.md, H0.
+                        _Experience_Index._env.reader_check()
+                    except lmdb.Error:
+                        pass
                     atexit.register(_Experience_Index._close)
         return self._env  # type: ignore
 

@@ -941,6 +941,12 @@ def _get_lmdb_env(path: str) -> lmdb.Environment:
         env = _lmdb_envs.get(path)
         if env is None:
             env = lmdb.open(path, map_size=VECTOR_MAP_SIZE)
+            try:
+                # Reap dead readers at every open (attached RPC hosts die by
+                # os._exit by design).  See RPC_EPHEMERAL_HOST_PLAN.md, H0.
+                env.reader_check()
+            except lmdb.Error:
+                pass
             _lmdb_envs[path] = env
         return env
 

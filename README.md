@@ -129,9 +129,28 @@ The directory consists of the semantic database (`semantics.lmdb`), one vector s
 ```
 SEMANTIC_DB_DIR=<PATH_ON_A_LOCAL_DISK>
 ```
-to `$(isabelle getenv -b ISABELLE_HOME_USER)/etc/settings`. After changing this setting, you **must kill the background RPC process** and fully restart Isabelle. The RPC process can be found by looking for a process whose command line contains `Isabelle_RPC_Host.fork_and_launch__()`, e.g.:
+to `$(isabelle getenv -b ISABELLE_HOME_USER)/etc/settings`. After changing this setting,
+fully restart Isabelle. With `RPC_Host` unset (the default since Isabelle_RPC 0.4.0), the
+RPC host is a per-session *attached* process that dies with its Isabelle automatically
+and inherits the restarted Isabelle's environment — restarting Isabelle is all it takes.
+
+If you run a shared **external** host (you set `RPC_Host` and started the host
+yourself), you must kill and relaunch it too. Kill it however you started it:
+
+- a daemon launched via `Isabelle_RPC_Host.fork_and_launch__()`:
+  `pkill -f 'Isabelle_RPC_Host\.fork_and_launch__'`
+- a host started with the `isabelle-rpc-host` console script: `pkill -f isabelle-rpc-host`
+- a foreground host (e.g. `debug_launcher.py`): just Ctrl-C it.
+
+(None of these patterns match the per-session attached hosts, whose command line says
+`run_attached__` — those need no manual cleanup.)
+
+Then relaunch it so that the **host's own process environment** carries the new
+`SEMANTIC_DB_DIR`: the host reads it from `os.environ` only, and a plain shell does not
+source `etc/settings`. Either export it in the launching shell, or launch through
+Isabelle's environment, e.g.:
 ```bash
-pkill -f 'Isabelle_RPC_Host\.fork_and_launch__'
+isabelle env isabelle-rpc-host 127.0.0.1:27182 /tmp/rpc.log
 ```
 
 **Update checks.** At most once a week, the library probes the prebuilt database with a single HEAD request, and prints a notice when a newer version exists. It never downloads anything on its own — updating is always an explicit isabelle-semantics pull. The check can be turned off by setting
