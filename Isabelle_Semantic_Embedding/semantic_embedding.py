@@ -972,6 +972,27 @@ def _get_lmdb_env_readonly(path: str) -> lmdb.Environment:
         return env
 
 
+def _try_system_store_env(path: str) -> 'lmdb.Environment | None':
+    """THE guarded open for a system-layer vector store: None when the
+    directory is absent or the store cannot be opened, with ONE warning per
+    bad path per process (the §8 discipline — an unopenable system store
+    degrades to "the system DB ships no store for this model", never a crash).
+    Every system-vector-store consumer (the L23 resolver, fsck's shadowed
+    count, export's embed-status merge) must come through here rather than
+    calling _get_lmdb_env_readonly bare."""
+    if path in _bad_system_stores or not os.path.isdir(path):
+        return None
+    try:
+        return _get_lmdb_env_readonly(path)
+    except lmdb.Error as e:
+        import sys
+        print(f"[Semantic_Embedding] WARNING: cannot open the system vector "
+              f"store at {path}: {e}; running without it",
+              file=sys.stderr, flush=True)
+        _bad_system_stores.add(path)
+        return None
+
+
 def _close_all_lmdb_envs() -> None:
     with _lmdb_lock:
         for env in _lmdb_envs.values():
@@ -1030,18 +1051,8 @@ class Vector_Store(ABC):
         sysdb = validated_system_db()
         if sysdb is None:
             return None
-        path = os.path.join(sysdb.path, os.path.basename(self.path))
-        if path in _bad_system_stores or not os.path.isdir(path):
-            return None
-        try:
-            return _get_lmdb_env_readonly(path)
-        except lmdb.Error as e:
-            import sys
-            print(f"[Semantic_Embedding] WARNING: cannot open the system vector "
-                  f"store at {path}: {e}; running without it",
-                  file=sys.stderr, flush=True)
-            _bad_system_stores.add(path)
-            return None
+        return _try_system_store_env(
+            os.path.join(sysdb.path, os.path.basename(self.path)))
 
     def _raw_getter(self, stack: contextlib.ExitStack, *,
                     buffers: bool = False) -> 'Callable[[key], bytes | memoryview | None]':

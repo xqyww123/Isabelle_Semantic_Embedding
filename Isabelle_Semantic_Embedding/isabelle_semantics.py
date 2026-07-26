@@ -368,6 +368,11 @@ def cmd_remove(args: argparse.Namespace) -> None:
     def visit(key: bytes, val: bytes, in_system: bool) -> None:
         nonlocal any_system_resident
         if key in keys_to_tomb:
+            # Already collected from the user layer — but a system-resident
+            # copy at the same key IS still being masked, and the §14 Note
+            # must say so (a user copy shadowing it does not change that).
+            if in_system:
+                any_system_resident = True
             return
         matched: set[bytes] = set()
         consts: 'set[bytes] | None' = None
@@ -505,7 +510,7 @@ def _count_shadowed_user_vectors() -> int:
     import contextlib
     from Isabelle_Semantic_Embedding.semantics import Semantic_DB, is_tombstone
     from Isabelle_Semantic_Embedding.semantic_embedding import (
-        _get_lmdb_env, _get_lmdb_env_readonly)
+        _get_lmdb_env, _try_system_store_env)
     from Isabelle_Semantic_Embedding.snapshot_sync import validated_system_db
     sysdb = validated_system_db()
     sys_sem = Semantic_DB._ensure_system_env() if sysdb is not None else None
@@ -513,13 +518,13 @@ def _count_shadowed_user_vectors() -> int:
         return 0
     total = 0
     for path in _vector_store_paths():
-        sys_store = os.path.join(sysdb.path, os.path.basename(path))
+        sys_env = _try_system_store_env(os.path.join(sysdb.path, os.path.basename(path)))
         with contextlib.ExitStack() as stack:
             vtxn = stack.enter_context(_get_lmdb_env(path).begin())
             utxn = stack.enter_context(Semantic_DB._ensure_env().begin())
             stxn = stack.enter_context(sys_sem.begin())
-            svtxn = (stack.enter_context(_get_lmdb_env_readonly(sys_store).begin())
-                     if os.path.isdir(sys_store) else None)
+            svtxn = (stack.enter_context(sys_env.begin())
+                     if sys_env is not None else None)
             for k, _v in vtxn.cursor():
                 k = bytes(k)
                 if len(k) == 16:
@@ -749,9 +754,20 @@ def cmd_release(args: argparse.Namespace) -> None:
     The release publishes the HF state, so the ONLY local check is freshness:
     when the local stores look newer than the last HF upload, warn (wording
     §14) and let the user confirm; when the comparison is unverifiable, say so
-    and ask the same confirmation."""
+    and ask the same confirmation.
+
+    INTERACTIVE-ONLY, deliberately with no --yes escape hatch: the prompt
+    count varies with environment state (the freshness question is
+    conditional), so a piped answer binds positionally to whichever question
+    happens to come first — `echo y |` could answer "Publish for real?" and
+    fire an unattended REAL release.  Publishing is a human's call."""
     import datetime as _dt
     import subprocess
+
+    if not sys.stdin.isatty():
+        print("Error: release is interactive-only — run it from a terminal.",
+              file=sys.stderr)
+        sys.exit(1)
 
     local = _local_db_last_modified()
     try:

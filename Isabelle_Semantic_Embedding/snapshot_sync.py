@@ -761,13 +761,15 @@ def export(outdir: str) -> dict:
                         _flush(out_vec)
             _flush(out_vec)
         # embed-status keys (16-byte), user wins over system.  The system store
-        # goes through the process-wide read-only cache: _raw_getter above has
-        # already opened this very path, and py-lmdb refuses a second open.
+        # goes through the guarded process-wide read-only open: _raw_getter
+        # above has already opened this very path (py-lmdb refuses a second
+        # open), and an unopenable store degrades instead of crashing export.
         status: dict[bytes, bytes] = {}
-        sys_store = (os.path.join(sysdb.path, store) if sysdb is not None else None)
-        if sys_store is not None and os.path.isdir(sys_store):
-            from .semantic_embedding import _get_lmdb_env_readonly
-            with _get_lmdb_env_readonly(sys_store).begin() as txn:
+        from .semantic_embedding import _try_system_store_env
+        sys_env = (_try_system_store_env(os.path.join(sysdb.path, store))
+                   if sysdb is not None else None)
+        if sys_env is not None:
+            with sys_env.begin() as txn:
                 for k, v in txn.cursor():
                     if len(bytes(k)) == 16:
                         status[bytes(k)] = bytes(v)

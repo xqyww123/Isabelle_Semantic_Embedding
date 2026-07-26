@@ -52,7 +52,7 @@ before.
 |---|---|---|
 | L1 | User wins on key collision; **no per-record timestamps** | in a layered world local work is never destroyed; the residual failure mode ("a key you touched never receives upstream improvements") was explicitly accepted |
 | L2 | No merge on user machines; **no post-link hook at all** in the data package | the package ships extracted LMDB stores; reads open them in place; nothing to do at link time |
-| L3 | Data package name **`isabelle-semantic-data`** (revised 2026-07-26), payload at **`share/isabelle-semantic-data/`** (the directory follows the package name, matching the `share/isabelle-semantic-embedding` convention) | hard `run` dependency of the `isabelle-ai` metapackage; NOT a dependency of `isabelle-semantic-embedding` (the library stays lean) |
+| L3 | Data package name **`isabelle-semantic-data`** (revised 2026-07-26), payload at **`share/isabelle-semantic-data/`** (the directory follows the package name, matching the `share/isabelle-semantic-embedding` convention). **The data package carries exactly ONE run dependency: `isabelle-semantic-embedding >=0.3.0`** (user decision 2026-07-26, amending the earlier dependency-less wording) — a pre-layered library never probes the payload's location, so installing the data must pull a reader that can see it | hard `run` dependency of the `isabelle-ai` metapackage; NOT a dependency of `isabelle-semantic-embedding` (the library stays lean; the data→library edge is one-way, so no cycle) |
 | L4 | Payload = **extracted** stores + `manifest.json` (not a tarball) | conda's own archive compression makes the download size the same; extracted stores are directly openable and hardlink-shared across envs |
 | L5 | `r2_sync.py` → **`snapshot_sync.py`**; `R2Error`/`R2Busy` → **`SnapshotError`/`SnapshotBusy`**; `test_r2_sync.py` → `test_snapshot_sync.py` | scope outgrew R2. Clean break, no shim; AoA import sites updated in the same wave |
 | L6 | `check_update` deleted, with its `auto_check` / `check_interval_hours` config and the `SEMANTIC_EMBEDDING_AUTO_UPDATE` env var | freshness is explicit: conda users update the package; others re-run `isabelle-semantics pull` |
@@ -306,7 +306,8 @@ call site deleted; imports renamed (L5).
 - **New workflow `release-semantic-db.yml`** (isabelle-packaging-ci,
   `workflow_dispatch`): download the HF cache tarball (HF token in GitHub
   secrets) → run the library's `export` (L18) → rattler-build the
-  `noarch: generic`, hook-less, dependency-less data package (version from
+  `noarch: generic`, hook-less data package (sole run dependency: the
+  `isabelle-semantic-embedding >=0.3.0` reader floor, L3; version from
   the manifest, L15) → verify → publish to conda.qiyuan.me (`CONDA_R2_*`
   secrets, as every other package).
 - `isabelle-ai`: add `- isabelle-semantic-data >=<first YYYY.MM.DD>` to
@@ -474,6 +475,11 @@ atomic-swap/lock details (L13)**; **package renamed
 deleted (L13); recipe changes + L2 no-hooks finalized; `export` named,
 scoped, and homed in `snapshot_sync.py`; `pull` conda-guard + L19
 `conda-meta` probe approved.
+2026-07-26 (post-review): library release 0.3.0 approved; **the data package
+gains its single run dependency `isabelle-semantic-embedding >=0.3.0`** (user
+decision — closes the silent-skew hole where a pre-layered library ignores an
+installed payload; supersedes the "dependency-less" wording in L3/§7);
+`release` asks real-or-dry and passes the explicit `dry_run` flag (§14).
 2026-07-26, adversarial-review amendments (32-agent two-turn debate; 27
 concerns, 16 killed, 7 survived — all fixed as plan amendments, none
 reversing a locked decision): tombstone guards for raw readers and
