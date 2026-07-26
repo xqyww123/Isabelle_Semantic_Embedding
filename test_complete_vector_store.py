@@ -197,7 +197,7 @@ def test_handler_marks_config_errors(exc, monkeypatch):
 
 
 def test_cli_embed_models_output(doc_text, monkeypatch, capsys):
-    import Isabelle_Semantic_Embedding.semantics_manage as M
+    import Isabelle_Semantic_Embedding.isabelle_semantics as M
 
     class _FakeStore:
         # Stands in for Semantic_Vector_Store: the real constructor would

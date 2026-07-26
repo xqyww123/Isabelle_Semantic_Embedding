@@ -68,6 +68,21 @@ def render_kinds(kinds: list) -> str:
     return ", ".join(phrases[:-1]) + " and " + phrases[-1]
 
 
+# The deletion marker of the layered semantic DB (plan L8): a deletion -- of any
+# record kind, resident in either layer -- writes an EMPTY value at the key in
+# the (writable) user layer.  The read facade treats it as "absent, do NOT fall
+# through to the system layer".  b"" cannot collide with valid data: entity
+# records are msgpack tuples and theory-status records are msgpack maps, both
+# non-empty when packed (and ``msgpack.unpackb(b"")`` raises).
+TOMBSTONE: bytes = b""
+
+
+def is_tombstone(raw) -> bool:
+    """True when a stored value is the L8 deletion marker (works on bytes and
+    on the memoryviews a ``buffers=True`` transaction yields)."""
+    return len(raw) == 0
+
+
 def unpack_thy_status(raw: bytes) -> dict:
     """Unpack a 16-byte theory-status record, normalizing every key to ``bytes``.
 
@@ -81,7 +96,13 @@ def unpack_thy_status(raw: bytes) -> dict:
     dict rewrites the record with clean bytes keys on its next write.
 
     NOTE: entity/interpretation records are positional msgpack tuples, NOT keyed
-    dicts, so they are unaffected by the key type and never pass through here."""
+    dicts, so they are unaffected by the key type and never pass through here.
+
+    A TOMBSTONE (``b""``) reads as absent -- the empty dict -- so a status
+    consumer that reaches this without the facade's guard still sees "no status"
+    rather than a msgpack crash."""
+    if is_tombstone(raw):
+        return {}
     d = msgpack.unpackb(raw)
     return {(k.encode() if isinstance(k, str) else k): v for k, v in d.items()}
 
@@ -119,8 +140,8 @@ persist_wip: bool = os.getenv("SEMANTIC_PERSIST_WIP", "") != ""
 # limit for *writes* by that process (exceeding it raises MapFullError).
 # Read-only openers are unaffected — lmdb adopts the file's actual size.
 # Keep every writer of semantics.lmdb on this one constant.  Raised from 1<<30
-# because `r2_sync` merges a remote snapshot into this store, and 1 GiB was the
-# lowest ceiling anywhere in the tree (semantics_manage's `remove` used 1<<33).
+# because `snapshot_sync` merges a remote snapshot into this store, and 1 GiB was the
+# lowest ceiling anywhere in the tree (isabelle_semantics's `remove` used 1<<33).
 SEMANTICS_MAP_SIZE: int = 1 << 32   # 4 GiB
 
 # How many theory names the "not interpreted" warning spells out before eliding.
@@ -177,6 +198,11 @@ class _Semantic_DB:
     ``asyncio.Lock`` around the write path instead of relying on this property.
     """
     _env: lmdb.Environment | None = None
+    # The read-only system layer (plan §2/§3.1): probed once per process from
+    # snapshot_sync.validated_system_db().  None both before the probe and when
+    # no system DB exists; _system_env_checked tells the two states apart.
+    _system_env: lmdb.Environment | None = None
+    _system_env_checked: bool = False
     _lock = threading.Lock()
 
     class Record(NamedTuple):
@@ -249,12 +275,41 @@ class _Semantic_DB:
                     atexit.register(_Semantic_DB._close)
         return self._env  # type: ignore
 
+    def _ensure_system_env(self) -> 'lmdb.Environment | None':
+        """The system layer's ``semantics.lmdb``, or None when no (valid) system
+        DB is installed.  ``readonly=True, lock=False``: the store is immutable
+        for its whole installed life (updates replace the directory wholesale),
+        so no reader table and no writer coordination exist for it."""
+        if not self._system_env_checked:
+            with self._lock:
+                if not _Semantic_DB._system_env_checked:
+                    from .snapshot_sync import validated_system_db
+                    sysdb = validated_system_db()
+                    if sysdb is not None:
+                        try:
+                            import atexit
+                            _Semantic_DB._system_env = lmdb.open(
+                                os.path.join(sysdb.path, "semantics.lmdb"),
+                                readonly=True, lock=False)
+                            atexit.register(_Semantic_DB._close)
+                        except lmdb.Error as e:
+                            import sys
+                            print(f"[Semantic_Embedding] WARNING: cannot open the "
+                                  f"system DB at {sysdb.path}: {e}",
+                                  file=sys.stderr, flush=True)
+                    _Semantic_DB._system_env_checked = True
+        return self._system_env
+
     @staticmethod
     def _close() -> None:
         with _Semantic_DB._lock:
             if _Semantic_DB._env is not None:
                 _Semantic_DB._env.close()
                 _Semantic_DB._env = None
+            if _Semantic_DB._system_env is not None:
+                _Semantic_DB._system_env.close()
+                _Semantic_DB._system_env = None
+            _Semantic_DB._system_env_checked = False
 
     @staticmethod
     def _dec(v: Any) -> str:
@@ -324,40 +379,120 @@ class _Semantic_DB:
                               record.experience,
                               record.goal_patterns))  # type: ignore[return-value]
 
-    def __getitem__(self, key: universal_key) -> 'Record | None':
+    def _system_get(self, key: universal_key) -> 'bytes | None':
+        """Raw value of ``key`` in the system layer, or None.  Safe to call while
+        holding a user-env write transaction: the two environments are distinct,
+        and the system one takes no locks at all."""
+        env = self._ensure_system_env()
+        if env is None:
+            return None
+        with env.begin() as txn:
+            raw = txn.get(key)
+        return bytes(raw) if raw is not None else None
+
+    def _get_raw(self, key: universal_key) -> 'bytes | None':
+        """THE layered point read (plan §3.1): user first -- where a TOMBSTONE
+        reports absent without falling through -- then the system layer."""
         with self._ensure_env().begin() as txn:
             raw = txn.get(key)
+        if raw is not None:
+            return None if is_tombstone(raw) else bytes(raw)
+        return self._system_get(key)
+
+    def _get_raw_many(self, keys: list[universal_key]) -> 'list[bytes | None]':
+        """Batch counterpart of ``_get_raw``: ONE read transaction per layer for
+        the whole batch (see get_many for why per-key transactions are ruinous)."""
+        out: 'list[bytes | None]' = []
+        sys_env = self._ensure_system_env()
+        with self._ensure_env().begin() as utxn:
+            if sys_env is None:
+                for k in keys:
+                    raw = utxn.get(k)
+                    out.append(None if raw is None or is_tombstone(raw)
+                               else bytes(raw))
+            else:
+                with sys_env.begin() as stxn:
+                    for k in keys:
+                        raw = utxn.get(k)
+                        if raw is None:
+                            raw = stxn.get(k)
+                        elif is_tombstone(raw):
+                            raw = None
+                        out.append(bytes(raw) if raw is not None else None)
+        return out
+
+    def __getitem__(self, key: universal_key) -> 'Record | None':
+        raw = self._get_raw(key)
         if raw is None:
             return None
         return self._decode(raw)
 
     def __contains__(self, key: universal_key) -> bool:
-        with self._ensure_env().begin() as txn:
-            return txn.get(key) is not None
+        return self._get_raw(key) is not None
 
     def contains(self, keys: list[universal_key]) -> list[bool]:
-        """Check existence for a batch of keys in a single transaction."""
-        with self._ensure_env().begin() as txn:
-            return [txn.get(k) is not None for k in keys]
+        """Check existence for a batch of keys in a single transaction per layer."""
+        return [raw is not None for raw in self._get_raw_many(keys)]
 
     def get_many(self, keys: list[universal_key]) -> 'list[Record | None]':
-        """Fetch a batch of records in a SINGLE read transaction -- the batch counterpart
-        of ``__getitem__``, mirroring ``contains``.  Result is positionally aligned with
-        ``keys``; a key with no record yields None.
+        """Fetch a batch of records in a SINGLE read transaction per layer -- the
+        batch counterpart of ``__getitem__``, mirroring ``contains``.  Result is
+        positionally aligned with ``keys``; a key with no record yields None.
 
         ``[self[k] for k in keys]`` would open (and commit) one txn PER key.  Callers
         like ``_auto_embed`` run on the event loop with a ``missing`` list that can be
         10^5 long when a library has not been embedded for the active model yet, so the
         per-key form turns one cheap scan into 10^5 synchronous begin/commit pairs."""
-        with self._ensure_env().begin() as txn:
-            out: 'list[_Semantic_DB.Record | None]' = []
-            for k in keys:
-                raw = txn.get(k)
-                out.append(self._decode(raw) if raw is not None else None)
-            return out
+        return [self._decode(raw) if raw is not None else None
+                for raw in self._get_raw_many(keys)]
+
+    @staticmethod
+    def _bounded_cursor(txn: Any, prefix: bytes) -> 'Iterator[tuple[bytes, bytes]]':
+        """Sorted ``(key, value)`` walk of one transaction, restricted to keys
+        starting with ``prefix`` (b"" walks everything)."""
+        cur = txn.cursor()
+        ok = cur.set_range(prefix)
+        while ok:
+            k = bytes(cur.key())
+            if prefix and not k.startswith(prefix):
+                return
+            yield k, bytes(cur.value())
+            ok = cur.next()
+
+    def iter_items(self, prefix: bytes = b"") -> 'Iterator[tuple[bytes, bytes]]':
+        """THE merged layered iteration (plan §3.1): a two-way sorted merge of the
+        user and system layers, in key order.  On equal keys the user value wins,
+        and a user TOMBSTONE emits nothing -- shadowing and deletion ride the same
+        merge.  Raw values; callers decode.  Both read transactions stay open for
+        the whole walk, so the usual iter_entity_records caveat applies: build
+        what you need from the yielded values, do not re-enter the store."""
+        sys_env = self._ensure_system_env()
+        with self._ensure_env().begin() as utxn:
+            if sys_env is None:
+                for k, v in self._bounded_cursor(utxn, prefix):
+                    if not is_tombstone(v):
+                        yield k, v
+                return
+            with sys_env.begin() as stxn:
+                uiter = self._bounded_cursor(utxn, prefix)
+                siter = self._bounded_cursor(stxn, prefix)
+                u = next(uiter, None)
+                s = next(siter, None)
+                while u is not None or s is not None:
+                    if u is not None and (s is None or u[0] <= s[0]):
+                        if s is not None and u[0] == s[0]:   # shadowed system entry
+                            s = next(siter, None)
+                        if not is_tombstone(u[1]):
+                            yield u
+                        u = next(uiter, None)
+                    elif s is not None:
+                        yield s
+                        s = next(siter, None)
 
     def iter_entity_records(self) -> 'Iterator[tuple[universal_key, Record]]':
-        """Yield ``(key, Record)`` for every non-status record, in ONE read txn.
+        """Yield ``(key, Record)`` for every non-status record visible in the
+        LAYERED store (user shadows system; tombstones yield nothing), in ONE
+        read txn per layer.
 
         Decodes each value inline so the caller never has to re-open the env — the
         env's default per-thread read slot allows only one live read txn, so opening
@@ -366,35 +501,58 @@ class _Semantic_DB:
 
         Skips the 16-byte theory-status keys and any value that does not decode as a
         Record (legacy / non-entity). This is the whole-DB enumeration the offline
-        embed drives off — using the singleton env, NEVER a second ``lmdb.open`` of
+        embed drives off — using the singleton envs, NEVER a second ``lmdb.open`` of
         semantics.lmdb (which py-lmdb refuses in-process)."""
-        with self._ensure_env().begin() as txn:
-            for k, v in txn.cursor():
-                k = bytes(k)
-                if len(k) == 16:
-                    continue
-                try:
-                    rec = self._decode(v)
-                except Exception:
-                    continue
-                yield k, rec
+        for k, v in self.iter_items():
+            if len(k) == 16:
+                continue
+            try:
+                rec = self._decode(v)
+            except Exception:
+                continue
+            yield k, rec
 
     def __setitem__(self, key: universal_key, record: 'Record') -> None:
         with self._ensure_env().begin(write=True) as txn:
             txn.put(key, self._encode(record))
 
     def delete(self, key: universal_key) -> bool:
-        """Delete a record by key. Returns True if a record existed and was removed.
+        """Delete a record by key: write a TOMBSTONE (plan L8) -- uniform, with no
+        residency check, so a system-resident record is masked and a user-resident
+        one stops being visible, through the same single mechanism.  Returns True
+        if a record was visible in the layered store beforehand.
+
+        L8's other half -- dropping the key's user-layer vectors and user-index
+        entries -- stays with the caller (see experience_store.delete_experience,
+        which already owns the tri-store deletion order).
         Used e.g. to overwrite an experience memory (see write_memory)."""
         with self._ensure_env().begin(write=True) as txn:
-            return txn.delete(key)
+            raw = txn.get(key)
+            if raw is not None:
+                existed = not is_tombstone(raw)
+            else:
+                existed = self._system_get(key) is not None
+            txn.put(key, TOMBSTONE)
+        return existed
 
     def update_expr(self, key: universal_key, new_expr: str) -> None:
-        """Update the expr field of an existing record, leaving all other fields intact."""
+        """Update the expr field of an existing record, leaving all other fields
+        intact.
+
+        Read-modify-write, so it follows the copy-up-then-modify rule (plan §3.1):
+        the read half is layered (user first, tombstone = absent, then system);
+        the write half lands in the user env carrying every untouched field with
+        it.  On a system-resident record that means the FULL record is copied up
+        with the new expr -- the old silent early-return on a user-env miss would
+        drop the update.  A tombstoned key reads as absent: no-op."""
         with self._ensure_env().begin(write=True) as txn:
             raw = txn.get(key)
-            if raw is None:
+            if raw is not None and is_tombstone(raw):
                 return
+            if raw is None:
+                raw = self._system_get(key)
+                if raw is None:
+                    return
             vals = list(msgpack.unpackb(raw))
             vals[2] = new_expr
             txn.put(key, msgpack.packb(vals))  # type: ignore
@@ -416,21 +574,30 @@ class _Semantic_DB:
         return rec.interpretation
 
     def is_thy_interpreted(self, key: universal_key) -> bool:
-        """Check whether a theory has been fully interpreted."""
-        with self._ensure_env().begin() as txn:
-            raw = txn.get(key)
-        if raw is None:
+        """Check whether a theory has been fully interpreted (layered read: a
+        theory finished in the system layer counts, unless tombstoned)."""
+        raw = self._get_raw(key)
+        if not raw:
             return False
         return unpack_thy_status(raw).get(b"finished", False)
 
     def mark_interpreted(self, key: universal_key) -> None:
         """Mark a theory as interpreted (finished) in the semantic store.
-        Skips WIP (non-persistent) theories unless persist_wip is enabled."""
+        Skips WIP (non-persistent) theories unless persist_wip is enabled.
+
+        Read-modify-write: copy-up-then-modify (plan §3.1).  The status is read
+        through the layers so a system-resident status is continued (its
+        cost/token/model fields carry forward into the user copy) rather than
+        restarted from the zeroed template; a tombstoned status starts fresh."""
         if is_WIP(key) and not persist_wip:
             return
         with self._ensure_env().begin(write=True) as txn:
             raw = txn.get(key)
-            if raw is not None:
+            if raw is not None and is_tombstone(raw):
+                raw = None                       # tombstoned: start fresh
+            elif raw is None:
+                raw = self._system_get(key)      # copy-up: continue system status
+            if raw:
                 data = unpack_thy_status(raw)
                 data[b"finished"] = True
                 txn.put(key, msgpack.packb(data))  # type: ignore
@@ -459,13 +626,20 @@ class _Semantic_DB:
         """``(key, constituent theory hashes)`` for every EXPERIENCE record seen by txn.
 
         Experience keys are XOR-prefixed (32 bytes, kind tag at byte 16), so they
-        are recognized from the key alone; only the matches are decoded."""
+        are recognized from the key alone; only the matches are decoded.
+
+        A USER-layer-only scan, deliberately (plan §3.1): it feeds the rebuild of
+        the user experience index, and the system index ships pre-built with the
+        system DB (L16).  Tombstones are skipped before decoding -- which also
+        correctly drops a tombstoned uk from the rebuilt user index."""
         from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
         tag = int(EntityKind.EXPERIENCE)
         entries: list[tuple[bytes, list[bytes]]] = []
         for key, val in txn.cursor():
             key = bytes(key)
             if not is_xor_prefixed_key(key) or key[16] != tag:
+                continue
+            if is_tombstone(val):
                 continue
             rec = _Semantic_DB._decode(bytes(val))
             entries.append((key, [h for _, h in (rec.theory_constituents or [])]))
@@ -503,7 +677,7 @@ class _Semantic_DB:
             return Experience_Index.rebuild(self._scan_experiences(txn))
 
     class Consistency(NamedTuple):
-        """What a whole-store consistency scan found.  See semantics_manage fsck."""
+        """What a whole-store consistency scan found.  See isabelle_semantics fsck."""
         n_records: int                       # entity records (theory status excluded)
         experience_keys: set[bytes]
         legacy_xor: int                      # XOR-prefixed records with no constituent list
@@ -511,24 +685,29 @@ class _Semantic_DB:
         # xor_theory_prefix(their constituent list)
         xor_mismatches: 'list[tuple[bytes, bytes]]'
 
-    def check_consistency(self) -> 'Consistency':
+    def check_consistency(self, env: 'lmdb.Environment | None' = None) -> 'Consistency':
         """Scan the store once and report the invariants that can break silently.
 
         Only genuine invariants: a *missing vector* is NOT one of them.  Vectors are
         a lazily-filled derived cache — topk hands unknown keys to _auto_embed, which
         embeds anything whose interpretation is already stored.  Reporting a cold
-        cache as damage would be noise."""
+        cache as damage would be noise.
+
+        ``env`` overrides the scanned environment (default: the user layer);
+        `fsck --system` passes the read-only system env for its report."""
         from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key, xor_theory_prefix
         tag = int(EntityKind.EXPERIENCE)
         n_records = 0
         experience_keys: set[bytes] = set()
         legacy_xor = 0
         xor_mismatches: list[tuple[bytes, bytes]] = []
-        with self._ensure_env().begin() as txn:
+        with (env if env is not None else self._ensure_env()).begin() as txn:
             for key, val in txn.cursor():
                 key = bytes(key)
                 if len(key) == 16:
                     continue                      # theory status record, not an entity
+                if is_tombstone(val):
+                    continue                      # deletion marker, not an entity
                 n_records += 1
                 if not is_xor_prefixed_key(key):
                     continue
@@ -565,8 +744,8 @@ class _Semantic_DB:
         with self._ensure_env().begin(write=True) as txn:
             for bad, good in mismatches:
                 val = txn.get(bad)
-                if val is None:
-                    continue                      # vanished since the scan
+                if val is None or is_tombstone(val):
+                    continue                      # vanished (or deleted) since the scan
                 val = bytes(val)
                 existing = txn.get(good)
                 if existing is None:
@@ -574,7 +753,12 @@ class _Semantic_DB:
                 elif bytes(existing) != val:
                     conflicts.append(bad)
                     continue
-                txn.delete(bad)
+                # TOMBSTONE, not txn.delete (L8: every deletion, re-keying
+                # included, writes b"").  A raw delete would UNMASK a system
+                # copy sitting at the bad key -- the record would then be
+                # visible under both keys, undetectably (fsck scans the user
+                # layer, which looks clean).
+                txn.put(bad, TOMBSTONE)
                 moved.append((bad, good))
         for env in _iter_vector_store_envs():
             with env.begin(write=True) as vtxn:
@@ -621,18 +805,19 @@ class _Semantic_DB:
         namespace entities), plus XOR-prefixed keys (theorem/rule AND experience
         keys) — whose prefix is an XOR pseudo-theory — whose stored constituent
         list mentions one of them (mention-based membership).  Legacy thm/rule
-        records without a constituent list are never matched."""
+        records without a constituent list are never matched.
+
+        A merged-layer read (iter_items): system-resident records belong to their
+        theories just as user-resident ones do — deletion (§4) must reach them."""
         from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
         result: list[bytes] = []
-        with self._ensure_env().begin() as txn:
-            for key, val in txn.cursor():
-                key = bytes(key)
-                if is_xor_prefixed_key(key):
-                    consts = self._decode(bytes(val)).theory_constituents
-                    if consts is not None and any(h in theory_hashes for _, h in consts):
-                        result.append(key)
-                elif key[:16] in theory_hashes:
+        for key, val in self.iter_items():
+            if is_xor_prefixed_key(key):
+                consts = self._decode(val).theory_constituents
+                if consts is not None and any(h in theory_hashes for _, h in consts):
                     result.append(key)
+            elif key[:16] in theory_hashes:
+                result.append(key)
         return result
 
     def _migrate_constituent_records(self, old_hash: bytes, new_hash: bytes) -> int:
@@ -657,6 +842,8 @@ class _Semantic_DB:
                 key = bytes(key)
                 if not is_xor_prefixed_key(key):
                     continue
+                if is_tombstone(val):
+                    continue          # a deleted record is not a migration source
                 rec = self._decode(bytes(val))
                 if rec.theory_constituents is None:
                     raise ValueError(
@@ -725,7 +912,11 @@ class _Semantic_DB:
         for candidate_hash, _ in candidates:
             with sem_env.begin() as txn:
                 raw = txn.get(candidate_hash)
-            if raw is not None and unpack_thy_status(raw).get(b"finished", False):
+            # `if raw` not `is not None`: a TOMBSTONE thy-status reads as "not
+            # finished" -- a tombstoned theory is never a migration source.
+            # (Deliberately a USER-layer read: migration copies within the user
+            # env, so a system-resident source would have nothing to copy.)
+            if raw and unpack_thy_status(raw).get(b"finished", False):
                 old_hash = candidate_hash
                 break
 
@@ -1158,30 +1349,52 @@ class Semantic_Vector_Store(Vector_Store):
             return None
         return reranker_provider(reranker_name)
 
-    def is_thy_embedded(self, theory_key: universal_key) -> bool:
-        """Check whether a theory's entities are all embedded in this vector store."""
+    def _thy_embed_status_raw(self, theory_key: universal_key) -> 'bytes | None':
+        """The embed-status record for a theory, layered: this model's user
+        store first, then its system store.  Embed-status keys are 16-byte
+        theory hashes inside the VECTOR stores; they carry no tombstones
+        (vector-store deletions are real, see Vector_Store.delete)."""
         with self._env.begin() as txn:
             raw = txn.get(theory_key)
-        if raw is None:
+        if raw is not None:
+            return bytes(raw)
+        senv = self._system_env
+        if senv is None:
+            return None
+        with senv.begin() as txn:
+            raw = txn.get(theory_key)
+        return bytes(raw) if raw is not None else None
+
+    def is_thy_embedded(self, theory_key: universal_key) -> bool:
+        """Check whether a theory's entities are all embedded in this vector
+        store (layered: embedded-in-the-system-layer counts)."""
+        raw = self._thy_embed_status_raw(theory_key)
+        if not raw:
             return False
         return unpack_thy_status(raw).get(b"finished", False)
 
     def thy_embed_tokens(self, theory_key: universal_key) -> int | None:
-        """Look up the total tokens used to embed a theory. Returns None if not found."""
-        with self._env.begin() as txn:
-            raw = txn.get(theory_key)
-        if raw is None:
+        """Look up the total tokens used to embed a theory. Returns None if not
+        found (layered read, like is_thy_embedded)."""
+        raw = self._thy_embed_status_raw(theory_key)
+        if not raw:
             return None
         return unpack_thy_status(raw).get(b"total_tokens", 0)
 
     def mark_thy_embedded(self, theory_key: universal_key, total_tokens: int = 0) -> None:
         """Mark a theory as fully embedded in this vector store, recording token usage.
-        Skips WIP (non-persistent) theories unless persist_wip is enabled."""
+        Skips WIP (non-persistent) theories unless persist_wip is enabled.
+
+        Read-modify-write: copy-up-then-modify (plan §3.1) -- a system-layer
+        status is continued (its token count accumulates onward), the updated
+        status lands in this model's user store."""
         if is_WIP(theory_key) and not persist_wip:
             return
         with self._env.begin(write=True) as txn:
             raw = txn.get(theory_key)
-            if raw is not None:
+            if raw is None:
+                raw = self._thy_embed_status_raw(theory_key)   # copy-up (system)
+            if raw:
                 data = unpack_thy_status(raw)
             else:
                 data = {}
@@ -1936,7 +2149,7 @@ async def _conn_semantic_vector_store(self: Connection, embedding_model: str | N
     reusing the active driver + base_url.
 
     LIMITATION: a single run has exactly one active driver + base_url, so embedding
-    several models in one run (e.g. semantics_manage --embed-models) only works for
+    several models in one run (e.g. isabelle_semantics --embed-models) only works for
     models served by that same endpoint (fireworks-hosted qwen3/harrier/nv-embed
     are fine; mixing e.g. fireworks + mistral in one run is not supported).
     """

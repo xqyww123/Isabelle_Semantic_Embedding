@@ -12,8 +12,8 @@ a LOCAL disk (e.g. ``/var/tmp/<user>/Isabelle_Semantic_Embedding``) to avoid tha
 The databases are a rebuildable cache (restorable from the published snapshot), so a
 node-local, non-shared location is fine — the only writer is the single RPC host.
 
-Every cache-path site in this package (and the offline tools `semantics_manage.py`,
-`r2_sync`, the `migrate_*` scripts) routes through `semantic_DB_dir()`, so the
+Every cache-path site in this package (and the offline tools `isabelle_semantics.py`,
+`snapshot_sync`, the `migrate_*` scripts) routes through `semantic_DB_dir()`, so the
 override moves the whole database set together; nothing may call
 `platformdirs.user_cache_dir("Isabelle_Semantic_Embedding", ...)` directly.
 """

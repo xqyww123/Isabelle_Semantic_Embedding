@@ -310,11 +310,10 @@ class InterpretationTask:
             entry.locale_provenance, entry.theory_constituents)
 
     def historical_cost(self) -> tuple[int, int, int, int, float]:
-        """Read cumulative cost from LMDB (without modifying it)."""
-        env = Semantic_DB._ensure_env()
-        with env.begin() as txn:
-            raw = txn.get(self.theory_key)
-        if raw is None:
+        """Read cumulative cost from LMDB (without modifying it).  A layered
+        read: a system-resident status counts, a tombstoned one reads as zero."""
+        raw = Semantic_DB._get_raw(self.theory_key)
+        if not raw:
             return (0, 0, 0, 0, 0.0)
         prev = unpack_thy_status(raw)
         return (prev.get(b"input_tokens", 0),
@@ -324,34 +323,38 @@ class InterpretationTask:
                 prev.get(b"cost_usd", 0.0))
 
     def write_cost(self) -> tuple[int, int, int, int, float]:
-        """Accumulate cost into the LMDB store. Returns updated cumulative totals."""
+        """Accumulate cost into the LMDB store. Returns updated cumulative totals.
+
+        Read-modify-write: copy-up-then-modify (plan §3.1).  The previous status
+        is read through the layers (user first, tombstone = start fresh, then
+        system), the updated one lands in the user env with every untouched
+        field carried forward -- so system-layer cost/tokens accumulate onward
+        and ``finished`` is never defaulted to False over a layered True."""
         import msgpack
         env = Semantic_DB._ensure_env()
         with env.begin(write=True) as txn:
             raw = txn.get(self.theory_key)
-            prev_in, prev_cw, prev_cr, prev_out, prev_cost, finished = 0, 0, 0, 0, 0.0, False
-            if raw is not None:
-                prev = unpack_thy_status(raw)
-                prev_in = prev.get(b"input_tokens", 0)
-                prev_cw = prev.get(b"cache_creation_tokens", 0)
-                prev_cr = prev.get(b"cache_read_tokens", 0)
-                prev_out = prev.get(b"output_tokens", 0)
-                prev_cost = prev.get(b"cost_usd", 0.0)
-                finished = prev.get(b"finished", False)
-            total = (prev_in + self.total_input_tokens,
-                     prev_cw + self.total_cache_creation_tokens,
-                     prev_cr + self.total_cache_read_tokens,
-                     prev_out + self.total_output_tokens,
-                     prev_cost + self.total_cost_usd)
-            packed: bytes = msgpack.packb({  # type: ignore[assignment]
+            if raw is not None and len(raw) == 0:
+                raw = None                                # tombstoned: start fresh
+            elif raw is None:
+                raw = Semantic_DB._system_get(self.theory_key)   # copy-up
+            prev = unpack_thy_status(raw) if raw else {}
+            total = (prev.get(b"input_tokens", 0) + self.total_input_tokens,
+                     prev.get(b"cache_creation_tokens", 0) + self.total_cache_creation_tokens,
+                     prev.get(b"cache_read_tokens", 0) + self.total_cache_read_tokens,
+                     prev.get(b"output_tokens", 0) + self.total_output_tokens,
+                     prev.get(b"cost_usd", 0.0) + self.total_cost_usd)
+            data = dict(prev)      # preserve every field this write does not touch
+            data.update({
                 b"input_tokens": total[0],
                 b"cache_creation_tokens": total[1],
                 b"cache_read_tokens": total[2],
                 b"output_tokens": total[3],
                 b"cost_usd": total[4],
-                b"finished": finished,
+                b"finished": prev.get(b"finished", False),
                 b"model": interpretation_model,
             })
+            packed: bytes = msgpack.packb(data)  # type: ignore[assignment]
             txn.put(self.theory_key, packed)
         self.total_input_tokens = 0
         self.total_cache_creation_tokens = 0

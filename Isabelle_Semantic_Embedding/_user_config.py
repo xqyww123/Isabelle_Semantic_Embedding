@@ -5,7 +5,7 @@ Two configs use it, and they deliberately live in different places:
   * ``embedding_config``  -- ``$ISABELLE_HOME_USER/etc/embedding_config``, because
     the embedding provider is only ever driven from inside Isabelle.
   * ``config.yaml``       -- ``platformdirs.user_config_dir(...)``, because the R2
-    sync runs offline too (``semantics_manage.py`` needs no Isabelle environment),
+    sync runs offline too (``isabelle_semantics.py`` needs no Isabelle environment),
     and because it must not sit next to the database it synchronizes.
 
 Both are seeded from a template bundled in the package on first use, then cached
@@ -13,7 +13,7 @@ for the life of the process.
 
 SEEDING ONLY EVER CREATES A MISSING FILE.  A key added to a template later does
 not reach a user who already has the file, so a template is not a defaults layer.
-Read every optional key through a default written in code (see ``r2_sync``'s
+Read every optional key through a default written in code (see ``snapshot_sync``'s
 ``DEFAULT_*``); the template exists to show a new user what is settable.
 """
 from __future__ import annotations

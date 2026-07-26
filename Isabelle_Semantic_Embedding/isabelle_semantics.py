@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Manage the Isabelle semantic interpretation database.
 
+The database is LAYERED (SEMANTIC_DB_LAYERED_PLAN.md): a read-only system DB
+(the `isabelle-semantic-data` conda package, or a copy installed by `pull`)
+under a writable user DB; deletions are tombstones in the user layer.
+
 Subcommands:
   collect   Collect semantic interpretations for a theory (requires Isa-REPL)
-  list      List all theories in the semantic database (offline)
-  remove    Remove specific theories from the database (offline)
-  reindex   Rebuild experience_index.lmdb from semantics.lmdb (offline)
+  list      List all theories in the layered database (offline)
+  remove    Remove theories: tombstone their records, any residency (offline)
+  reindex   Rebuild the user experience index from semantics.lmdb (offline)
   fsck      Check semantics.lmdb invariants; --fix repairs the derived ones (offline)
   embed     Embed interpreted entities lacking a vector for MODEL, whole DB (offline)
-  status    Compare the local database with the Cloudflare R2 snapshot
-  push      Upload the local database to R2 (overwrites the remote snapshot)
-  pull      Download the R2 snapshot and merge it into the local database
+  status    Show the system and user layers (offline)
+  pull      Install/update the system DB from the conda channel (manual, explicit)
+  release   Dispatch the CI release workflow (soft HF-freshness check first)
+  export    Rewrite the store into a publishable payload (CI/offline)
 """
 import argparse
 import os
@@ -132,78 +137,163 @@ def _resolve_identifiers(identifiers: list[str],
 # list
 # ---------------------------------------------------------------------------
 
+def _parse_thy_status(val: bytes) -> dict:
+    data = msgpack.unpackb(val)
+    finished = data.get(b"finished", data.get("finished", False))
+    cost = data.get(b"cost_usd", data.get("cost_usd", 0.0))
+    model = data.get(b"model", data.get("model", b""))
+    if isinstance(model, bytes):
+        model = model.decode("utf-8", errors="replace")
+    return {"finished": finished, "cost_usd": cost, "model": model}
+
+
 def cmd_list(args: argparse.Namespace) -> None:
-    if not os.path.exists(SEMANTICS_DB_PATH):
+    """List the theories of the LAYERED database.
+
+    The `Layer` column reads `system` / `user` / `system+user` / `removed`
+    (all records tombstoned); entities are counted at their VISIBLE layer (a
+    user record shadowing a system one counts as user).  Status is
+    `complete` / `partial` (the b"finished" flag; a removed theory shows —).
+    """
+    from Isabelle_Semantic_Embedding.snapshot_sync import validated_system_db
+    from Isabelle_Semantic_Embedding.semantics import record_constituent_hashes
+    sysdb = validated_system_db()
+    if not os.path.exists(SEMANTICS_DB_PATH) and sysdb is None:
         print(f"No semantic database found at {SEMANTICS_DB_PATH}")
         return
-
-    from Isabelle_Semantic_Embedding.semantics import record_constituent_hashes
     hash_to_name = _load_theory_names()
 
-    # Scan semantics.lmdb
-    env = lmdb.open(SEMANTICS_DB_PATH, readonly=True, lock=False)
-    theory_meta: dict[bytes, dict] = {}  # theory_hash -> {finished, cost_usd}
-    entity_counts: dict[bytes, int] = defaultdict(int)
+    def attr_of(key: bytes, val: bytes) -> 'set[bytes] | None':
+        """The theories a record belongs to; None for a legacy XOR record."""
+        if is_xor_prefixed_key(key):
+            return record_constituent_hashes(val)
+        if len(key) > 16:
+            return {key[:16]}
+        return set()
 
+    usr_status: dict[bytes, dict] = {}
+    usr_status_tomb: set[bytes] = set()
+    usr_keys: set[bytes] = set()          # entity keys visible in the user layer
+    user_tombs: set[bytes] = set()        # entity keys tombstoned in the user layer
+    usr_count: dict[bytes, int] = defaultdict(int)
     legacy_thm_count = 0
-    with env.begin() as txn:
-        for key, val in txn.cursor():
-            key = bytes(key)
-            if len(key) == 16:
-                data = msgpack.unpackb(val)
-                finished = data.get(b"finished", data.get("finished", False))
-                cost = data.get(b"cost_usd", data.get("cost_usd", 0.0))
-                model = data.get(b"model", data.get("model", b""))
-                if isinstance(model, bytes):
-                    model = model.decode("utf-8", errors="replace")
-                theory_meta[key] = {"finished": finished, "cost_usd": cost, "model": model}
-            elif is_xor_prefixed_key(key):
-                # XOR pseudo-theory prefix: attribute to each constituent
-                # theory (a record mentioning N theories is counted N times)
-                consts = record_constituent_hashes(bytes(val))
-                if consts is None:
-                    legacy_thm_count += 1
+
+    if os.path.exists(SEMANTICS_DB_PATH):
+        env = lmdb.open(SEMANTICS_DB_PATH, readonly=True, lock=False)
+        with env.begin() as txn:
+            for key, val in txn.cursor():
+                key, val = bytes(key), bytes(val)
+                if len(key) == 16:
+                    if val == b"":
+                        usr_status_tomb.add(key)
+                    else:
+                        usr_status[key] = _parse_thy_status(val)
+                elif val == b"":
+                    user_tombs.add(key)
                 else:
-                    for h in consts:
-                        entity_counts[h] += 1
-            elif len(key) > 16:
-                entity_counts[key[:16]] += 1
-    env.close()
+                    attr = attr_of(key, val)
+                    if attr is None:
+                        legacy_thm_count += 1
+                        continue
+                    usr_keys.add(key)
+                    for h in attr:
+                        usr_count[h] += 1
+        env.close()
+
+    sys_status: dict[bytes, dict] = {}
+    sys_count: dict[bytes, int] = defaultdict(int)
+    tomb_count: dict[bytes, int] = defaultdict(int)
+    if sysdb is not None:
+        env = lmdb.open(os.path.join(sysdb.path, "semantics.lmdb"),
+                        readonly=True, lock=False)
+        with env.begin() as txn:
+            for key, val in txn.cursor():
+                key, val = bytes(key), bytes(val)
+                if len(key) == 16:
+                    sys_status[key] = _parse_thy_status(val)
+                    continue
+                attr = attr_of(key, val)
+                if attr is None:
+                    legacy_thm_count += 1
+                    continue
+                if key in user_tombs:
+                    for h in attr:
+                        tomb_count[h] += 1       # a masked system record
+                elif key not in usr_keys:        # not shadowed by a user record
+                    for h in attr:
+                        sys_count[h] += 1
+        env.close()
+    # Inert-or-user-only tombstones: attribution is only possible for
+    # prefix-addressed keys (an XOR tombstone's constituents died with its value).
+    for key in user_tombs:
+        if not is_xor_prefixed_key(key) and len(key) > 16:
+            tomb_count[key[:16]] += 1
 
     all_hashes = sorted(
-        set(theory_meta) | set(entity_counts),
+        set(usr_status) | set(usr_status_tomb) | set(sys_status)
+        | set(usr_count) | set(sys_count) | set(tomb_count),
         key=lambda h: hash_to_name.get(h, h.hex()),
     )
-
     if not all_hashes:
         print("Database is empty.")
         return
 
-    # Print table
     name_w = max(max((len(hash_to_name.get(h, "?")) for h in all_hashes), default=6), 6)
     name_w = min(name_w, 60)
 
-    print(f"{'Theory':<{name_w}}  {'Entities':>8}  {'Status':<8}  {'Cost':>9}  {'Model':<20}  Universal Key")
-    print("─" * (name_w + 8 + 8 + 9 + 20 + 16 + 12))
+    print(f"{'Theory':<{name_w}}  {'Entities':>8}  {'Layer':<12}  {'Status':<10}  "
+          f"{'Cost':>9}  {'Model':<20}  Universal Key")
+    print("─" * (name_w + 8 + 12 + 10 + 9 + 20 + 16 + 14))
 
+    n_complete = n_partial = n_removed = 0
+    from Isabelle_RPC_Host.theory_hash import is_persistent
     for h in all_hashes:
         name = hash_to_name.get(h, "?")
-        count = entity_counts.get(h, 0)
-        meta = theory_meta.get(h, {})
-        finished = meta.get("finished", False)
-        cost = meta.get("cost_usd", 0.0)
-        model = meta.get("model", "")
-        status = "done" if finished else "WIP"
-        from Isabelle_RPC_Host.theory_hash import is_persistent
+        usr, syc, tmb = usr_count.get(h, 0), sys_count.get(h, 0), tomb_count.get(h, 0)
+        # LIVE evidence (visible entities, then a live status record) decides
+        # the layer BEFORE any tombstone evidence: a masked XOR record is
+        # attributed to ALL its constituent theories, so `removed` on tombstone
+        # counts alone would mislabel a live zero-direct-entity co-constituent
+        # (the common "theory complete, 0 entities" case).  `removed` = no
+        # visible entities AND no live status record, per §14's "all records
+        # tombstoned".
+        status_tombed = h in usr_status_tomb
+        live_status = (usr_status.get(h) if not status_tombed else None) \
+            or (sys_status.get(h) if not status_tombed else None)
+        if usr and syc:
+            layer = "system+user"
+        elif syc:
+            layer = "system"
+        elif usr:
+            layer = "user"
+        elif live_status is not None:
+            layer = "user" if h in usr_status and not status_tombed else "system"
+        else:
+            layer = "removed"
+        if layer == "removed":
+            status = "—"
+            meta: dict = {}
+            n_removed += 1
+        else:
+            # A tombstoned status key must NOT fall through to the system
+            # status (the tombstone masks it, same as every other read).
+            meta = live_status or {}
+            status = "complete" if meta.get("finished", False) else "partial"
+            if meta.get("finished", False):
+                n_complete += 1
+            else:
+                n_partial += 1
         if not is_persistent(h):
             status += " *"
-        print(f"{name:<{name_w}}  {count:>8}  {status:<8}  ${cost:>8.4f}  {model:<20}  {h.hex()}")
+        cost = meta.get("cost_usd", 0.0)
+        model = meta.get("model", "")
+        print(f"{name:<{name_w}}  {usr + syc:>8}  {layer:<12}  {status:<10}  "
+              f"${cost:>8.4f}  {model:<20}  {h.hex()}")
 
     print()
-    total_entities = sum(entity_counts.values())
-    n_done = sum(1 for h in all_hashes if theory_meta.get(h, {}).get("finished", False))
-    print(f"{len(all_hashes)} theories ({n_done} done, {len(all_hashes) - n_done} WIP), "
-          f"{total_entities} entities total "
+    total_entities = sum(usr_count.values()) + sum(sys_count.values())
+    print(f"{len(all_hashes)} theories ({n_complete} complete, {n_partial} partial, "
+          f"{n_removed} removed), {total_entities} entities total "
           f"(theorem/rule records are counted once per constituent theory)")
     if legacy_thm_count:
         print(f"WARNING: {legacy_thm_count} legacy theorem/rule records without "
@@ -215,53 +305,106 @@ def cmd_list(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_remove(args: argparse.Namespace) -> None:
-    if not os.path.exists(SEMANTICS_DB_PATH):
-        print(f"No semantic database found at {SEMANTICS_DB_PATH}", file=sys.stderr)
-        sys.exit(1)
+    """Remove theories from the LAYERED database (§4 of the plan, per L8).
 
+    Every record of each requested theory -- ANY residency -- is tombstoned in
+    the user layer (`put(key, b"")`); user-layer vectors and user-index entries
+    are really dropped.  A system-resident record is thereby masked locally and
+    drops out of the published snapshot at the next release."""
+    from Isabelle_Semantic_Embedding.snapshot_sync import validated_system_db
     from Isabelle_Semantic_Embedding.semantics import (
         record_constituent_hashes, SEMANTICS_MAP_SIZE)
     from Isabelle_Semantic_Embedding.semantic_embedding import VECTOR_MAP_SIZE
+    sysdb = validated_system_db()
+    if not os.path.exists(SEMANTICS_DB_PATH) and sysdb is None:
+        print(f"No semantic database found at {SEMANTICS_DB_PATH}", file=sys.stderr)
+        sys.exit(1)
     hash_to_name = _load_theory_names()
+    system_sem_path = (os.path.join(sysdb.path, "semantics.lmdb")
+                       if sysdb is not None else None)
 
-    # Discover all theory hashes present in semantics DB.  Theorem/rule keys
-    # carry XOR pseudo-theory prefixes: their theories come from the record's
-    # constituent list, never from the key prefix.
-    env = lmdb.open(SEMANTICS_DB_PATH, readonly=True, lock=False)
+    # Discover all theory hashes present in EITHER layer (user tombstones are
+    # not records).  Theorem/rule keys carry XOR pseudo-theory prefixes: their
+    # theories come from the record's constituent list, never from the prefix.
     thy_hashes_in_db: set[bytes] = set()
-    with env.begin() as txn:
-        for key, val in txn.cursor():
-            key = bytes(key)
-            if is_xor_prefixed_key(key):
-                thy_hashes_in_db |= record_constituent_hashes(bytes(val)) or set()
-            else:
-                thy_hashes_in_db.add(key[:16])
-    env.close()
+    tombstoned_keys: set[bytes] = set()
+    if os.path.exists(SEMANTICS_DB_PATH):
+        env = lmdb.open(SEMANTICS_DB_PATH, readonly=True, lock=False)
+        with env.begin() as txn:
+            for key, val in txn.cursor():
+                key, val = bytes(key), bytes(val)
+                if val == b"":
+                    tombstoned_keys.add(key)
+                elif is_xor_prefixed_key(key):
+                    thy_hashes_in_db |= record_constituent_hashes(val) or set()
+                else:
+                    thy_hashes_in_db.add(key[:16])
+        env.close()
+    if system_sem_path is not None:
+        env = lmdb.open(system_sem_path, readonly=True, lock=False)
+        with env.begin() as txn:
+            for key, val in txn.cursor():
+                key = bytes(key)
+                if key in tombstoned_keys:
+                    continue                     # already masked
+                if is_xor_prefixed_key(key):
+                    thy_hashes_in_db |= record_constituent_hashes(bytes(val)) or set()
+                else:
+                    thy_hashes_in_db.add(key[:16])
+        env.close()
 
     resolved = _resolve_identifiers(args.identifiers, thy_hashes_in_db, hash_to_name)
     if not resolved:
         sys.exit(1)
     resolved_set = set(resolved)
 
-    # Count what will be deleted from semantics DB; collect the theorem/rule
-    # keys to delete (membership = the constituent list mentions a target).
-    env = lmdb.open(SEMANTICS_DB_PATH, readonly=True, lock=False)
+    # Collect what to tombstone, over BOTH layers.  For experience keys keep
+    # the constituent hashes so the user-index entries can be dropped too.
     del_counts: dict[bytes, int] = defaultdict(int)
-    thm_keys_to_delete: set[bytes] = set()
-    with env.begin() as txn:
-        for key, val in txn.cursor():
-            key = bytes(key)
-            if is_xor_prefixed_key(key):
-                consts = record_constituent_hashes(bytes(val))
-                if consts:
-                    matched = consts & resolved_set
-                    if matched:
-                        thm_keys_to_delete.add(key)
-                        for thy in matched:
-                            del_counts[thy] += 1
-            elif key[:16] in resolved_set and len(key) > 16:
-                del_counts[key[:16]] += 1
-    env.close()
+    keys_to_tomb: set[bytes] = set()
+    exp_removals: dict[bytes, list[bytes]] = {}
+    any_system_resident = False
+
+    def visit(key: bytes, val: bytes, in_system: bool) -> None:
+        nonlocal any_system_resident
+        if key in keys_to_tomb:
+            return
+        matched: set[bytes] = set()
+        consts: 'set[bytes] | None' = None
+        if is_xor_prefixed_key(key):
+            consts = record_constituent_hashes(val)
+            if consts:
+                matched = consts & resolved_set
+        elif key[:16] in resolved_set:
+            matched = {key[:16]}                 # incl. the 16-byte status key
+        if not matched:
+            return
+        keys_to_tomb.add(key)
+        if in_system:
+            any_system_resident = True
+        for thy in matched:
+            if len(key) > 16:
+                del_counts[thy] += 1
+        from Isabelle_RPC_Host.universal_key import EntityKind
+        if len(key) == 32 and key[16] == int(EntityKind.EXPERIENCE):
+            exp_removals[key] = sorted(consts or set())
+
+    if os.path.exists(SEMANTICS_DB_PATH):
+        env = lmdb.open(SEMANTICS_DB_PATH, readonly=True, lock=False)
+        with env.begin() as txn:
+            for key, val in txn.cursor():
+                key, val = bytes(key), bytes(val)
+                if val != b"":
+                    visit(key, val, in_system=False)
+        env.close()
+    if system_sem_path is not None:
+        env = lmdb.open(system_sem_path, readonly=True, lock=False)
+        with env.begin() as txn:
+            for key, val in txn.cursor():
+                key = bytes(key)
+                if key not in tombstoned_keys:
+                    visit(key, bytes(val), in_system=True)
+        env.close()
 
     # Print summary
     print("Will remove:")
@@ -284,43 +427,46 @@ def cmd_remove(args: argparse.Namespace) -> None:
             print("Aborted.")
             return
 
-    # Delete from semantics DB: prefix-addressed keys by prefix, theorem/rule
-    # keys from the constituent-matched set collected above.
-    total_deleted = 0
-    env = lmdb.open(SEMANTICS_DB_PATH, map_size=SEMANTICS_MAP_SIZE)
-    with env.begin(write=True) as txn:
-        to_delete: list[bytes] = []
-        for key, _ in txn.cursor():
-            key = bytes(key)
-            if key in thm_keys_to_delete or \
-               (not is_xor_prefixed_key(key) and key[:16] in resolved_set):
-                to_delete.append(key)
-        for key in to_delete:
-            txn.delete(key)
-        total_deleted += len(to_delete)
-    env.close()
+    # ORDER: derived data first, the tombstones LAST -- the exact dual of the
+    # discipline in experience_store.delete_experience.  The tombstone is what
+    # makes a key invisible to the discovery scans above, so writing it first
+    # would leave an interruption unrecoverable: a re-run could no longer
+    # derive keys_to_tomb, and the stale user vectors would keep serving
+    # (the L23 shortcut relies on "tombstoned => user vector already gone").
+    # Interrupted THIS way, a re-run just re-derives everything and converges.
 
-    # Delete from vector stores (keyed by the same universal keys; theorem/
-    # rule vectors are matched via the semantic-DB key set since vector
-    # stores hold no constituent lists)
-    vec_deleted = 0
+    # Really drop the user-layer vectors (vectors carry no tombstones).
     for path in vec_paths:
         venv = lmdb.open(path, map_size=VECTOR_MAP_SIZE)
         with venv.begin(write=True) as txn:
-            to_delete = []
-            for key, _ in txn.cursor():
-                key = bytes(key)
-                if key in thm_keys_to_delete or \
-                   (not is_xor_prefixed_key(key) and key[:16] in resolved_set):
-                    to_delete.append(key)
-            for key in to_delete:
+            for key in keys_to_tomb:
                 txn.delete(key)
-            vec_deleted += len(to_delete)
         venv.close()
 
+    # Drop the user-index entries of removed experiences.
+    if exp_removals:
+        from Isabelle_Semantic_Embedding.experience_index import Experience_Index
+        for uk, consts in exp_removals.items():
+            if consts:
+                Experience_Index.remove(uk, consts)
+            else:
+                Experience_Index.remove_scanning(uk)
+
+    # Tombstone in the user layer (L8: uniform, no residency check).  The user
+    # store may not exist yet on a system-DB-only machine: create it.
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    env = lmdb.open(SEMANTICS_DB_PATH, map_size=SEMANTICS_MAP_SIZE)
+    with env.begin(write=True) as txn:
+        for key in keys_to_tomb:
+            txn.put(key, b"")
+    env.close()
+
     theories_word = "theory" if len(resolved) == 1 else "theories"
-    print(f"Removed {len(resolved)} {theories_word} ({total_deleted} entries from semantics DB"
-          f", {vec_deleted} from vector stores).")
+    print(f"Removed {len(resolved)} {theories_word} ({len(keys_to_tomb)} records "
+          f"tombstoned; vectors and index entries dropped).")
+    if any_system_resident:
+        print("Note: system-resident records are now masked locally; they drop "
+              "out of the\npublished snapshot at the next release.")
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +486,55 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     print(f"Rebuilt the experience index from {n} EXPERIENCE record(s) in semantics.lmdb.")
 
 
+def _count_user_tombstones() -> int:
+    """One cursor scan of the user semantics env, counting b'' values (the
+    same single-scan mechanism `status` uses)."""
+    from Isabelle_Semantic_Embedding.semantics import Semantic_DB, is_tombstone
+    n = 0
+    with Semantic_DB._ensure_env().begin() as txn:
+        for _k, v in txn.cursor():
+            if is_tombstone(v):
+                n += 1
+    return n
+
+
+def _count_shadowed_user_vectors() -> int:
+    """User-layer vectors the L23 binding rule currently does not serve: the
+    key is tombstoned, or its visible record is system-resident and the system
+    store ships a vector for it.  Disk-usage diagnostics only."""
+    import contextlib
+    from Isabelle_Semantic_Embedding.semantics import Semantic_DB, is_tombstone
+    from Isabelle_Semantic_Embedding.semantic_embedding import (
+        _get_lmdb_env, _get_lmdb_env_readonly)
+    from Isabelle_Semantic_Embedding.snapshot_sync import validated_system_db
+    sysdb = validated_system_db()
+    sys_sem = Semantic_DB._ensure_system_env() if sysdb is not None else None
+    if sysdb is None or sys_sem is None:
+        return 0
+    total = 0
+    for path in _vector_store_paths():
+        sys_store = os.path.join(sysdb.path, os.path.basename(path))
+        with contextlib.ExitStack() as stack:
+            vtxn = stack.enter_context(_get_lmdb_env(path).begin())
+            utxn = stack.enter_context(Semantic_DB._ensure_env().begin())
+            stxn = stack.enter_context(sys_sem.begin())
+            svtxn = (stack.enter_context(_get_lmdb_env_readonly(sys_store).begin())
+                     if os.path.isdir(sys_store) else None)
+            for k, _v in vtxn.cursor():
+                k = bytes(k)
+                if len(k) == 16:
+                    continue                     # embed status, not a vector
+                ur = utxn.get(k)
+                if ur is not None:
+                    if is_tombstone(ur):
+                        total += 1               # tombstoned: nothing is served
+                    continue                     # user record: this vector serves
+                if (stxn.get(k) is not None and svtxn is not None
+                        and svtxn.get(k) is not None):
+                    total += 1                   # the system vector wins (L23)
+    return total
+
+
 def cmd_fsck(args: argparse.Namespace) -> None:
     """Check the invariants of semantics.lmdb that can break silently.
 
@@ -353,12 +548,49 @@ def cmd_fsck(args: argparse.Namespace) -> None:
       * the experience index is a derived view of the EXPERIENCE records -> rebuild
       * an XOR key prefix is derived from the record's constituent list -> re-key
     """
-    _require_db()
     from Isabelle_Semantic_Embedding.semantics import Semantic_DB, SEMANTICS_MAP_SIZE
     from Isabelle_Semantic_Embedding.experience_index import Experience_Index
 
+    if args.system:
+        # Read-only report on the system layer; nothing here is repairable
+        # locally (the payload is immutable), so --fix is refused.
+        if args.fix:
+            print("Error: --fix cannot repair the read-only system DB.", file=sys.stderr)
+            sys.exit(1)
+        sys_env = Semantic_DB._ensure_system_env()
+        if sys_env is None:
+            print("No system DB is installed.", file=sys.stderr)
+            sys.exit(1)
+        c = Semantic_DB.check_consistency(env=sys_env)
+        print(f"system semantics.lmdb : {c.n_records} records, of which "
+              f"{len(c.experience_keys)} experiences")
+        print(f"  legacy XOR record (no constituent list)      {c.legacy_xor:>7}")
+        print(f"  XOR key prefix disagrees with constituents   {len(c.xor_mismatches):>7}")
+        if c.legacy_xor or c.xor_mismatches:
+            print(
+                "\nThe system DB is the published read-only snapshot: nothing on this\n"
+                "machine can legitimately produce the problems above, and --fix cannot\n"
+                "repair a read-only layer. First rule out a corrupted install by\n"
+                "reinstalling it:\n"
+                "    conda install --force-reinstall isabelle-semantic-data"
+                "   (conda-managed)\n"
+                "    isabelle-semantics pull --force"
+                "                          (pulled copy)\n"
+                "If the problems persist, the published snapshot itself is defective —\n"
+                "please report it at https://github.com/xqyww123/Premise_Embedding/issues\n"
+                "so the next release can be fixed. Retrieval keeps working meanwhile;\n"
+                "the affected records only misbehave for theory attribution\n"
+                "(`list` / `remove`).")
+            sys.exit(1)
+        print("All checks passed.")
+        return
+
+    _require_db()
     c = Semantic_DB.check_consistency()
-    indexed = Experience_Index.all_keys()
+    # USER index only: check_consistency scanned the user layer, so both sides
+    # of the two set differences below must be user-scoped -- the system index
+    # is immutable and legitimately lists uks the user layer lacks (L17).
+    indexed = Experience_Index.all_keys(include_system=False)
     missing_from_index = c.experience_keys - indexed
     stale_in_index = indexed - c.experience_keys
 
@@ -388,6 +620,12 @@ def cmd_fsck(args: argparse.Namespace) -> None:
 
     print("\n[report only]")
     row("legacy XOR record (no constituent list)", c.legacy_xor, "(run migrate_xor_thm_keys.py)")
+    n_tombstones = _count_user_tombstones()
+    row("tombstones in the user DB", n_tombstones)
+    n_shadowed = _count_shadowed_user_vectors()
+    if n_shadowed:
+        row("user-layer vectors shadowed by the system DB", n_shadowed,
+            "(safe to ignore; disk only)")
 
     db_bytes = os.path.getsize(os.path.join(SEMANTICS_DB_PATH, "data.mdb"))
     pct = 100.0 * db_bytes / SEMANTICS_MAP_SIZE
@@ -427,31 +665,17 @@ def cmd_fsck(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
-# status / push / pull  (Cloudflare R2)
+# status / pull / release / export  (the snapshot artifact surfaces)
 # ---------------------------------------------------------------------------
 
-def _r2():
-    """Import r2_sync and adapt its errors to this script's fail-fast contract.
-
-    Every R2 subcommand is typed by a human at a terminal, so an incompatible
-    snapshot or a busy database must stop the run with a non-zero exit — unlike
-    r2_sync.check_update, which runs inside somebody else's process and only
-    ever logs.
-
-    Of these, only `push` needs R2 credentials; reads are anonymous.
-    """
-    from Isabelle_Semantic_Embedding import r2_sync
-    return r2_sync
-
-
-def _run_r2(fn, *a, **kw) -> None:
-    from Isabelle_Semantic_Embedding.r2_sync import R2Error
+def _run_fail_fast(fn, *a, **kw) -> None:
+    """Run a snapshot_sync entry point under this script's fail-fast contract:
+    every subcommand is typed by a human at a terminal, so an incompatible
+    snapshot or a busy installer must stop the run with a non-zero exit."""
+    from Isabelle_Semantic_Embedding.snapshot_sync import SnapshotError
     try:
         fn(*a, **kw)
-    except R2Error as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except ValueError as e:            # a malformed boolean env var
+    except SnapshotError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -465,58 +689,129 @@ def _confirm() -> bool:
 
 
 def cmd_status(args: argparse.Namespace) -> None:
-    _run_r2(lambda: _r2().status())
-
-
-def cmd_push(args: argparse.Namespace) -> None:
-    _require_db()
-
-    def go() -> None:
-        r2 = _r2()
-        s = r2.settings()
-        if not args.yes and not args.dry_run:
-            head = r2.remote_head(s)
-            print(f"push OVERWRITES the entire remote snapshot at "
-                  f"s3://{s.bucket}/{s.object_key}.")
-            if head is None:
-                print("  there is no object there yet.")
-            else:
-                print(f"  the object there now is {head.size / 1024 ** 3:.2f} GiB, "
-                      f"uploaded {head.last_modified:%Y-%m-%d %H:%M}")
-            if not _confirm():
-                print("Aborted.")
-                return
-        r2.push_snapshot(force=args.force, dry_run=args.dry_run)
-    _run_r2(go)
+    from Isabelle_Semantic_Embedding import snapshot_sync
+    _run_fail_fast(snapshot_sync.status)
 
 
 def cmd_pull(args: argparse.Namespace) -> None:
-    def go() -> None:
-        r2 = _r2()
-        s = r2.settings()
-        where = (s.public_object_url if s.public_url
-                 else f"s3://{s.bucket}/{s.object_key}")
-        if not args.yes and not args.dry_run:
-            head = r2.remote_head(s)
-            if head is None:
-                print(f"{where} does not exist. Nothing to pull.", file=sys.stderr)
-                sys.exit(1)
-            if head.etag == r2.read_marker().get("etag") and not args.force:
-                print(f"Already up to date (ETag {head.etag}).")
-                return
-            print(f"pull MERGES {head.size / 1024 ** 3:.2f} GiB from "
-                  f"{where} into the local database.")
-            print("  Remote records win, except that a theory finished locally "
-                  "stays finished.")
-            print("  A backup is taken first." if not args.no_backup
-                  else "  --no-backup: THE MERGE WILL NOT BE REVERSIBLE.")
-            if not _confirm():
+    from Isabelle_Semantic_Embedding import snapshot_sync
+    _run_fail_fast(snapshot_sync.install_system_db, force=args.force)
+
+
+def cmd_export(args: argparse.Namespace) -> None:
+    _require_db()
+    from Isabelle_Semantic_Embedding import snapshot_sync
+    _run_fail_fast(snapshot_sync.export, args.outdir)
+
+
+# The HF dev-sync source of the published snapshot (see manage_data.py at the
+# repo root; the release workflow downloads exactly this file).
+HF_DATASET = "ANTPG/MLML-data"
+HF_DB_FILE = "contrib/Semantic_Embedding/Isabelle_Semantic_Embedding.tar.zst"
+RELEASE_WORKFLOW = "release-semantic-db"
+RELEASE_REPO = "xqyww123/isabelle-packaging-ci"
+
+
+def _hf_db_last_modified():
+    """When the HF copy of the semantic DB last changed, or None if unknowable."""
+    from huggingface_hub import HfApi
+    api = HfApi()
+    try:
+        [info] = api.get_paths_info(HF_DATASET, [HF_DB_FILE],
+                                    repo_type="dataset", expand=True)
+        if info.last_commit is not None:
+            return info.last_commit.date
+    except Exception:
+        pass
+    return api.repo_info(HF_DATASET, repo_type="dataset").last_modified
+
+
+def _local_db_last_modified() -> 'float | None':
+    """Max mtime over the local stores' data files, or None with no store."""
+    latest = None
+    if not os.path.isdir(CACHE_DIR):
+        return None
+    for entry in os.listdir(CACHE_DIR):
+        if not (entry.endswith(".lmdb")
+                and (entry == "semantics.lmdb" or entry.startswith("vector_")
+                     or entry == "experience_index.lmdb")):
+            continue
+        data = os.path.join(CACHE_DIR, entry, "data.mdb")
+        if os.path.isfile(data):
+            mtime = os.path.getmtime(data)
+            latest = mtime if latest is None else max(latest, mtime)
+    return latest
+
+
+def cmd_release(args: argparse.Namespace) -> None:
+    """The soft checklist (L13), then the workflow dispatch.
+
+    The release publishes the HF state, so the ONLY local check is freshness:
+    when the local stores look newer than the last HF upload, warn (wording
+    §14) and let the user confirm; when the comparison is unverifiable, say so
+    and ask the same confirmation."""
+    import datetime as _dt
+    import subprocess
+
+    local = _local_db_last_modified()
+    try:
+        remote = _hf_db_last_modified()
+    except Exception as e:
+        remote = None
+        reason = str(e)
+    else:
+        reason = None
+
+    if local is not None and remote is not None:
+        local_dt = _dt.datetime.fromtimestamp(local, tz=_dt.timezone.utc)
+        if local_dt > remote:
+            print(f"The local database looks NEWER than the last Hugging Face upload\n"
+                  f"(local last modified {local_dt:%Y-%m-%d %H:%M}; "
+                  f"HF revision from {remote:%Y-%m-%d %H:%M}).\n"
+                  f"The release publishes the HF state — your local changes would "
+                  f"NOT be included.\n"
+                  f"Run `manage_data.py update` first to include them.")
+            print("\nRelease the HF state anyway? [y/N] ", end="")
+            if input().strip().lower() != "y":
                 print("Aborted.")
                 return
-        r2.pull_snapshot(backup=not args.no_backup, force=args.force,
-                         dry_run=args.dry_run,
-                         require_idle=not args.no_require_idle)
-    _run_r2(go)
+    elif remote is None:
+        print(f"Could not check the Hugging Face upload date"
+              f"{f' ({reason})' if reason else ''} — the freshness of the "
+              f"release input is unverified.")
+        print("\nRelease the HF state anyway? [y/N] ", end="")
+        if input().strip().lower() != "y":
+            print("Aborted.")
+            return
+
+    # Real release or dry run?  The workflow's dry_run input DEFAULTS TO TRUE
+    # (a bare dispatch publishes nothing), so the flag must be explicit either
+    # way -- a green dry run reading as a completed release was the failure
+    # mode this question exists to prevent.
+    print("\nPublish for real? [y/N]  (N = dry run: CI builds and validates, "
+          "nothing is published)", end=" ")
+    try:
+        real = input().strip().lower() == "y"
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted.")
+        return
+    flag = "dry_run=false" if real else "dry_run=true"
+
+    import shutil as _shutil
+    if _shutil.which("gh") is None:
+        print("`gh` is not available; dispatch manually:\n"
+              f"    gh workflow run {RELEASE_WORKFLOW} --repo {RELEASE_REPO} -f {flag}\n"
+              "(dry_run=true builds and validates on CI without publishing)")
+        return
+    print(f"Dispatching the release workflow ({RELEASE_WORKFLOW}"
+          f"{'' if real else ', dry run'})...")
+    r = subprocess.run(["gh", "workflow", "run", RELEASE_WORKFLOW,
+                        "--repo", RELEASE_REPO, "-f", flag])
+    if r.returncode != 0:
+        print(f"Error: `gh workflow run` exited {r.returncode}.", file=sys.stderr)
+        sys.exit(1)
+    print("Dispatched." if real
+          else "Dispatched (dry run; nothing will be published).")
 
 
 # ---------------------------------------------------------------------------
@@ -779,7 +1074,7 @@ def main() -> None:
     """Console entry point (``isabelle-semantics``).
 
     The parser and dispatch used to run at import time, which is fine for
-    ``python semantics_manage.py`` and impossible for an entry point: importing
+    ``python isabelle_semantics.py`` and impossible for an entry point: importing
     the module would parse argv and exit.  Wrapped so it can be both.
     """
     parser = argparse.ArgumentParser(
@@ -832,6 +1127,8 @@ def main() -> None:
     p_fsck.add_argument("--fix", action="store_true",
         help="Repair the derived artefacts: rebuild the experience index, and re-key "
              "records whose XOR prefix disagrees with their constituent list.")
+    p_fsck.add_argument("--system", action="store_true",
+        help="Report on the read-only system DB instead of the user DB (no --fix).")
 
     # embed
     p_embed = sub.add_parser("embed",
@@ -856,38 +1153,32 @@ def main() -> None:
 
     # status
     p_status = sub.add_parser("status",
-        help="Compare the local database with the Cloudflare R2 snapshot (one HEAD request)")
-
-    # push
-    p_push = sub.add_parser("push",
-        help="Upload the local database to R2, OVERWRITING the shared remote "
-             "(human-only; needs credentials)")
-    p_push.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
-    p_push.add_argument("--dry-run", action="store_true", help="Say what would happen")
-    p_push.add_argument("--force", action="store_true",
-        help="Push even when the database is open elsewhere, or when the remote has "
-             "moved since this machine last synced (which would discard the difference).")
+        help="Show the system and user layers of the semantic database (offline)")
 
     # pull
     p_pull = sub.add_parser("pull",
-        help="Download the R2 snapshot and merge it into the local database")
-    p_pull.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
-    p_pull.add_argument("--dry-run", action="store_true", help="Say what would happen")
-    p_pull.add_argument("--no-backup", action="store_true",
-        help="Skip the pre-merge backup. The merge then has no way back.")
-    p_pull.add_argument("--no-require-idle", action="store_true",
-        help="Do not refuse when another process holds the database open. A merge is "
-             "safe under concurrent readers and writers (the idle gate exists for "
-             "pack/push); for hooks and other automatic callers. Unlike --force, this "
-             "keeps the already-up-to-date short-circuit and the staleness checks.")
+        help="Install or update the read-only system DB from the conda channel "
+             "into <cache>/system (manual, explicit; atomic swap)")
     p_pull.add_argument("--force", action="store_true",
-        help="Merge even when the local copy is already current, or the database is "
-             "open in another process.")
+        help="Install even when the installed snapshot already matches the channel.")
+
+    # release
+    p_release = sub.add_parser("release",
+        help="Dispatch the CI release workflow (publishes the Hugging Face state "
+             "as the isabelle-semantic-data conda package); soft freshness check first")
+
+    # export
+    p_export = sub.add_parser("export",
+        help="Rewrite the store at SEMANTIC_DB_DIR into a publishable system-DB "
+             "payload: tombstones dropped, experience index rebuilt, manifest "
+             "stamped, gates run. Used by CI; offline.")
+    p_export.add_argument("outdir", help="Output directory (must be empty or absent)")
 
     args = parser.parse_args()
     {"collect": cmd_collect, "list": cmd_list, "remove": cmd_remove,
      "reindex": cmd_reindex, "fsck": cmd_fsck, "embed": cmd_embed,
-     "status": cmd_status, "push": cmd_push, "pull": cmd_pull}[args.command](args)
+     "status": cmd_status, "pull": cmd_pull, "release": cmd_release,
+     "export": cmd_export}[args.command](args)
 
 
 if __name__ == "__main__":

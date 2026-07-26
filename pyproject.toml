@@ -30,7 +30,7 @@ license-files = ["COPYING", "COPYING.LIB"]
 # imports on 3.11, which was true and beside the point.
 #
 # The older constraints are all subsumed: _vecgather's limited API needs 3.11
-# (Py_buffer / PyObject_GetBuffer, pybuffer.h), and r2_sync's tar.zst extraction passes
+# (Py_buffer / PyObject_GetBuffer, pybuffer.h), and snapshot_sync's tar.zst extraction passes
 # tarfile's `filter="data"`, the PEP 706 arg backported only to 3.11.4.
 requires-python = ">=3.12"
 authors = [
@@ -66,15 +66,13 @@ dependencies = [
     "diskcache",
     "claude-agent-sdk",
     "pyyaml",
-    # r2_sync: the semantic DB is synced with a Cloudflare R2 bucket over S3.
-    "boto3",
-    # r2_sync's pull lock: a cross-platform advisory file lock (fcntl on POSIX,
-    # msvcrt on Windows). Arrives transitively via huggingface-hub, but r2_sync
+    # snapshot_sync's install lock: a cross-platform advisory file lock (fcntl on POSIX,
+    # msvcrt on Windows). Arrives transitively via huggingface-hub, but snapshot_sync
     # imports it directly, so it is declared here.
     "filelock",
-    # r2_sync packs/unpacks the snapshot .tar.zst in pure Python (stdlib tarfile +
-    # this), so the sync needs no tar/zstd binary on PATH -- the one thing that
-    # kept pull from working on a bare Windows box.
+    # snapshot_sync unpacks the .conda payload (and the HF dev-sync .tar.zst) in pure
+    # Python (stdlib zipfile/tarfile + this), so the install needs no tar/zstd binary
+    # on PATH -- the one thing that kept it from working on a bare Windows box.
     "zstandard",
 ]
 
@@ -89,9 +87,10 @@ include = ["Isabelle_Semantic_Embedding", "Isabelle_Semantic_Embedding.*"]
 exclude = ["contrib", "contrib.*"]
 
 [project.scripts]
-# semantics_manage used to be a top-level script, so it never shipped in the wheel and
-# the documented `semantics_manage.py pull` was not runnable after an install.
-isabelle-semantics = "Isabelle_Semantic_Embedding.semantics_manage:main"
+# isabelle_semantics (formerly named semantics_manage) used to be a top-level script,
+# so it never shipped in the wheel and the documented `semantics_manage.py pull` was
+# not runnable after an install.
+isabelle-semantics = "Isabelle_Semantic_Embedding.isabelle_semantics:main"
 
 [tool.setuptools.package-data]
 # libisabelle_vector.so is compiled by CMake and staged into the build tree by

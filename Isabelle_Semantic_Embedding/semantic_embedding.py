@@ -1,6 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 import asyncio
+import contextlib
 import contextvars
 import importlib.util
 import json
@@ -950,11 +951,36 @@ def _get_lmdb_env(path: str) -> lmdb.Environment:
             _lmdb_envs[path] = env
         return env
 
+# Read-only system-layer stores, cached separately from the writable user
+# stores above: the same process never opens one path both ways (system store
+# directories live under the system DB, user ones under the cache dir).
+_lmdb_ro_envs: dict[str, lmdb.Environment] = {}
+
+# System vector stores that failed to open: warned once, then treated as
+# absent for the life of the process (cleared with the env caches).
+_bad_system_stores: set[str] = set()
+
+
+def _get_lmdb_env_readonly(path: str) -> lmdb.Environment:
+    """Process-cached ``readonly=True, lock=False`` open (the system layer's
+    discipline: the store is immutable for its whole installed life)."""
+    with _lmdb_lock:
+        env = _lmdb_ro_envs.get(path)
+        if env is None:
+            env = lmdb.open(path, readonly=True, lock=False)
+            _lmdb_ro_envs[path] = env
+        return env
+
+
 def _close_all_lmdb_envs() -> None:
     with _lmdb_lock:
         for env in _lmdb_envs.values():
             env.close()
         _lmdb_envs.clear()
+        for env in _lmdb_ro_envs.values():
+            env.close()
+        _lmdb_ro_envs.clear()
+        _bad_system_stores.clear()
 
 atexit.register(_close_all_lmdb_envs)
 
@@ -990,6 +1016,78 @@ class Vector_Store(ABC):
     def _env(self) -> lmdb.Environment:
         return _get_lmdb_env(self.path)
 
+    @property
+    def _system_env(self) -> 'lmdb.Environment | None':
+        """The system layer's store for THIS model (same directory basename
+        under the system DB), or None -- the system DB ships vector stores for
+        zero or more models (plan L14); alignment is store-by-store on name.
+
+        An unopenable system store degrades to "the system DB ships no store
+        for this model" with ONE warning (the §8 discipline, mirroring
+        _Semantic_DB._ensure_system_env) -- never a crash loop: this property
+        fronts every read, so raising here would fail every single lookup."""
+        from .snapshot_sync import validated_system_db
+        sysdb = validated_system_db()
+        if sysdb is None:
+            return None
+        path = os.path.join(sysdb.path, os.path.basename(self.path))
+        if path in _bad_system_stores or not os.path.isdir(path):
+            return None
+        try:
+            return _get_lmdb_env_readonly(path)
+        except lmdb.Error as e:
+            import sys
+            print(f"[Semantic_Embedding] WARNING: cannot open the system vector "
+                  f"store at {path}: {e}; running without it",
+                  file=sys.stderr, flush=True)
+            _bad_system_stores.add(path)
+            return None
+
+    def _raw_getter(self, stack: contextlib.ExitStack, *,
+                    buffers: bool = False) -> 'Callable[[key], bytes | memoryview | None]':
+        """A per-key raw vector lookup obeying the vector-record binding
+        invariant (plan L23): the vector served for ``k`` comes from the same
+        layer as the record currently visible for ``k``; the user-layer lazy
+        cache stands in only when that layer ships no vector for this model.
+
+            user record visible?   -> user vector   (missing => _auto_embed)
+            tombstone?             -> None          (no vector for an absent record)
+            system record visible? -> system vector (absent => user cache stands in)
+            no record at all       -> user cache    (pre-layer cache behavior)
+
+        Every transaction is entered on ``stack``, so the caller's ``with``
+        block bounds their lifetime -- gathered buffers stay valid inside it.
+
+        With no system layer this degrades to a plain user-store ``txn.get``
+        with ZERO record-layer consulting.  That shortcut also holds when only
+        this model's system STORE is missing: deletion drops user vectors at
+        tombstone time (L8), so a tombstoned key has no user vector to leak,
+        and a system-resident record correctly falls back to the user cache
+        (its L14 stand-in) -- the record layers need consulting only to pick
+        BETWEEN a system vector and the user cache."""
+        utxn = stack.enter_context(self._env.begin(buffers=buffers))
+        senv = self._system_env
+        if senv is None:
+            return utxn.get
+        from .semantics import Semantic_DB
+        svtxn = stack.enter_context(senv.begin(buffers=buffers))
+        urtxn = stack.enter_context(Semantic_DB._ensure_env().begin())
+        sys_sem_env = Semantic_DB._ensure_system_env()
+        srtxn = (stack.enter_context(sys_sem_env.begin())
+                 if sys_sem_env is not None else None)
+
+        def get(k: key):
+            ur = urtxn.get(k)
+            if ur is not None:
+                if len(ur) == 0:                 # tombstone: absent, serve nothing
+                    return None
+                return utxn.get(k)               # user record -> user vector
+            if srtxn is not None and srtxn.get(k) is not None:
+                v = svtxn.get(k)                 # system record -> system vector
+                return v if v is not None else utxn.get(k)   # L14 stand-in
+            return utxn.get(k)                   # no record: plain cache read
+        return get
+
     def __getitem__(self, k: key) -> np.ndarray | None:
         """Return the vector for key k, dequantized to float32, or None.
 
@@ -997,16 +1095,16 @@ class Vector_Store(ABC):
         TARGET_NORM, not the provider's raw output. Nothing reads magnitudes back
         out of the store today; a caller that needs the original must re-embed.
         """
-        with self._env.begin(buffers=True) as txn:
-            raw = txn.get(k)
+        with contextlib.ExitStack() as stack:
+            raw = self._raw_getter(stack, buffers=True)(k)
             if raw is None:
                 return None
             return _decode_q15(raw, self.dimension, k)
 
     def __contains__(self, k: key) -> bool:
-        """Check if key k has a stored vector."""
-        with self._env.begin() as txn:
-            return txn.cursor().set_key(k)
+        """Check if key k has a stored vector (in the layer L23 designates)."""
+        with contextlib.ExitStack() as stack:
+            return self._raw_getter(stack)(k) is not None
 
     def __setitem__(self, k: key, vector: np.ndarray) -> None:
         """Store a vector for key k, quantized to Q1.15."""
@@ -1019,15 +1117,19 @@ class Vector_Store(ABC):
 
     def delete(self, k: key) -> bool:
         """Delete the stored vector for key k. Returns True if it existed.
+        A real deletion of the user-layer vector, not a tombstone -- vectors are
+        a derived cache; record-level absence is what masks a system vector.
         Used e.g. to overwrite an experience memory (see write_memory)."""
         with self._env.begin(write=True) as txn:
             return txn.delete(k)
 
     def contains(self, keys: list[key]) -> list[bool]:
-        """Check existence for a batch of keys in a single transaction."""
-        with self._env.begin() as txn:
-            cursor = txn.cursor()
-            return [cursor.set_key(k) for k in keys]
+        """Check existence for a batch of keys in a single transaction per layer.
+        Follows L23: a system-resident key with a system vector counts as
+        present, so completion runs never re-embed what the system DB ships."""
+        with contextlib.ExitStack() as stack:
+            get = self._raw_getter(stack)
+            return [get(k) is not None for k in keys]
 
     async def embed(self, kv_pairs: list[tuple[key, str]]) -> int:
         """Embed texts via emb_provider and store the resulting vectors. Returns total tokens used."""
@@ -1098,10 +1200,14 @@ class Vector_Store(ABC):
         # than the ~48ms a set() of 10^5 keys takes.
         ordered = sorted(domain)
         keys = [dk for i, dk in enumerate(ordered) if i == 0 or dk != ordered[i - 1]]
-        with self._env.begin(buffers=True) as txn:
-            # The memoryviews must outlive the kernel call: their addresses point
-            # into this transaction's snapshot of the mmap, and nothing is copied.
-            buffers = [txn.get(dk) for dk in keys]
+        # Per-key resolution follows the L23 binding invariant (_raw_getter);
+        # with no system layer it is exactly the old single-store gather.  The
+        # ExitStack keeps every layer's read transaction open past the kernel
+        # call: the memoryviews' addresses point into those transactions'
+        # snapshots of the mmaps, and nothing is copied.
+        with contextlib.ExitStack() as stack:
+            get = self._raw_getter(stack, buffers=True)
+            buffers = [get(dk) for dk in keys]
             addrs, kept, missing_at, skipped = gather_addrs(buffers, expected)
             if skipped:
                 print(f"[Semantic_Embedding] topk skipped {skipped} record(s) whose size "
