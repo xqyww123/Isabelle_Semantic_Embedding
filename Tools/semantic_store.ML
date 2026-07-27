@@ -50,8 +50,9 @@ signature SEMANTIC_STORE = sig
      (i.e., from non-loaded theories). Returns the number of entries deleted. *)
   val clean_wip : unit -> int
 
-  (* Create a callback that Python can invoke to interpret a list of theories
-     by name (short or long). Resolves names, skips already-interpreted ones. *)
+  (* Create a callback that Python can invoke to interpret theories by name
+     (short or long): interprets the whole ancestor cone of the named theories
+     (via interpret_with_parallel), skipping already-interpreted ones. *)
   val make_interpret_theory_callback : Context_Callbacks.context_unpacker -> Remote_Procedure_Calling.callback'
 
   (* Config option: when true, Semantic_Vector_Store._auto_embed will
@@ -1574,29 +1575,21 @@ fun interpret_with_parallel (force : bool) (roots : Context.generic list) : unit
 
 fun interpret force context = interpret_with_parallel force [context]
 
-fun mk_interpret_theory (context : Context.generic) (names : string list) : unit =
-  let
-    val theories = map (Theory_Hash.resolve_theory context) names
-    val uninterpreted = filter (not o is_interpreted) theories
-    val contexts = map Context.Theory uninterpreted
-    val _ = if null contexts then () else
-      writeln ("[Semantic_Store] mk_interpret_theory: interpreting " ^
-               Int.toString (length contexts) ^ " theories")
-  in
-    List.app (fn ctx =>
-      let val _ = interpret' ctx
-          val _ = Context.cases mark_interpreted (K ()) ctx
-      in () end)
-    contexts
-  end
-
 fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpacker)
     : Remote_Procedure_Calling.callback' =
   Remote_Procedure_Calling.mk_callback {
     name = "Semantic_Store.interpret_theories",
     arg_schema = MessagePackBinIO.Unpack.unpackPair (ctxt_unpack, MessagePackBinIO.Unpack.unpackList MessagePackBinIO.Unpack.unpackString),
     ret_schema = MessagePackBinIO.Pack.packUnit,
-    function = fn (context, names) => mk_interpret_theory context names,
+    function = fn (context, names) =>
+      let
+        val roots = map (Theory_Hash.resolve_theory context) names
+        (* As in interpret_command.ML:63 and semantic_interpretation_app.ML: push the
+           hash->name map to Python before interpreting, or Python cannot resolve the
+           ancestor theories the cone sweeps in.  store_theory_hash walks
+           Theory.nodes_of, so the roots cover the whole cone. *)
+        val _ = List.app Theory_Hash.store_theory_hash roots
+      in interpret_with_parallel false (map Context.Theory roots) end,
     timeout = NONE
   }
 

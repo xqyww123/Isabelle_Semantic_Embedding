@@ -1250,8 +1250,9 @@ def mk_query_by_name_tool(
 # --- Other utilities ---
 
 async def interpret_theories_by_names(connection: Connection, names: list[str]) -> None:
-    """Interpret theories by name (short or long).
-    Resolves names, skips already-interpreted theories, and interprets the rest.
+    """Interpret the ancestor cones of the named theories (short or long names).
+    The ML side expands the names to their whole ancestor cone, skips
+    already-interpreted theories, and interprets the rest in dependency order.
     Calls back into Isabelle ML via the Semantic_Store.interpret_theories callback."""
     await connection.callback("Semantic_Store.interpret_theories", (None, names))
 
