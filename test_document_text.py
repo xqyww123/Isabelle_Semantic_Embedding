@@ -118,3 +118,31 @@ def test_legacy_corrupt_expr_decodes_without_raising():
     rec = _Semantic_DB._decode(blob)
     assert rec.goal_patterns is None
     assert document_text_of(rec) is None
+
+
+# --- incremental invalidation codec (CHECK_OUTDATE_PLAN §3.1) -----------------
+
+def test_codec_12_fields_roundtrip():
+    """The four incremental-invalidation fields ride the positional tail
+    (8 -> 12) and survive an encode/decode roundtrip."""
+    rec = SemanticRecord(EntityKind.CONSTANT, "Test.c", "nat", "a number",
+                         None, None, None, None,
+                         semantic_digest=b"\x01" * 16,
+                         deps=[b"\x02" * 17, b"\x03" * 33],
+                         version=3, interpreted_at=5)
+    out = _Semantic_DB._decode(_Semantic_DB._encode(rec))
+    assert out == rec
+
+
+def test_codec_8_field_record_reads_new_fields_as_none():
+    """A record written by the 8-field codec decodes with all four
+    incremental-invalidation fields None (positional tail-append)."""
+    legacy = msgpack.packb((int(EntityKind.CONSTANT), "Test.c", "nat", "sem",
+                            None, None, None, None))
+    old = _Semantic_DB._decode(legacy)
+    assert old.semantic_digest is None and old.deps is None
+    assert old.version is None and old.interpreted_at is None
+    # and re-encoding it appends the four (None) fields without disturbing
+    # the original eight
+    again = _Semantic_DB._decode(_Semantic_DB._encode(old))
+    assert again == old

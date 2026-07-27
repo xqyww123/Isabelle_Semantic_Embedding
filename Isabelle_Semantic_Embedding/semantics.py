@@ -247,6 +247,30 @@ class _Semantic_DB:
         # ASCII notation (the form the inner lexer re-parses).  None for every other
         # kind, and None for a legacy experience record that _decode could not unpack.
         goal_patterns: 'list[str] | None' = None
+        # --- incremental invalidation (CHECK_OUTDATE_PLAN.md §3.1) ---
+        # The four fields live on WIP records only; on persistent records all
+        # four stay None (a persistent key is content-addressed, so the key
+        # itself is the change signal).  Among WIP records:
+        #   * the four name-addressed kinds (constant/type/class/locale) carry
+        #     all four;
+        #   * theorem-alike records carry deps/version/interpreted_at but no
+        #     semantic_digest (their key's thm128 is the digest);
+        #   * collections and methods never expire: all four None.
+        # 16-byte digest of the entity's own semantic content (ML-side
+        # Semantic_Digest; alpha-canonical).
+        semantic_digest: 'bytes | None' = None
+        # Dependency edge targets as their full universal keys, resolved at
+        # scan time -- the uk doubles as the edge's moment-in-time imprint for
+        # the unified dep criterion (§4.3).
+        deps: 'list[bytes] | None' = None
+        # Global-counter value assigned when the digest last changed (§4.1);
+        # the ε-epoch baseline (a positive counter snapshot) on first write.
+        # A literal 0 must never be stored (§4.4: None/0 read as "unknown,
+        # re-judge").
+        version: 'int | None' = None
+        # eff(E) snapshot taken BEFORE the interpreting agent started, stored
+        # when its answer lands (write-back discipline 4).
+        interpreted_at: 'int | None' = None
 
         @property
         def pretty_print(self) -> str:
@@ -317,9 +341,15 @@ class _Semantic_DB:
 
     @staticmethod
     def _decode(raw: bytes) -> 'Record':
-        """Decode a stored record.  Records with fewer than 8 fields read with the
+        """Decode a stored record.  Records with fewer than 12 fields read with the
         missing trailing fields (locale_provenance, theory_constituents, experience,
-        goal_patterns) = None.
+        goal_patterns, semantic_digest, deps, version, interpreted_at) = None.
+
+        The codec is positional tail-append (8 -> 12 with the incremental
+        invalidation fields, CHECK_OUTDATE_PLAN.md §3.1).  NB code from before
+        the 12-field codec truncates at [:8] and would DROP the four new fields
+        on its next write of the record -- do not run a pre-§3.1 build against
+        a store that has them.
 
         LEGACY (experiences written before goal_patterns became a real field): their
         patterns are a JSON list packed into ``expr``.  Unpack them HERE, at the storage
@@ -327,8 +357,9 @@ class _Semantic_DB:
         in the codec, not in every reader.  Once every store is migrated
         (migrate_experience_patterns.py) this branch is dead and can be deleted."""
         vals = list(msgpack.unpackb(raw))
-        vals += [None] * (8 - len(vals))
-        kind, name, expr, sem, prov_raw, consts_raw, experience, pats_raw = vals[:8]
+        vals += [None] * (12 - len(vals))
+        (kind, name, expr, sem, prov_raw, consts_raw, experience, pats_raw,
+         digest_raw, deps_raw, version, interpreted_at) = vals[:12]
         d = _Semantic_DB._dec
         pats = [d(p) for p in pats_raw] if pats_raw is not None else None
         if pats is None and kind == int(EntityKind.EXPERIENCE) and expr is not None:
@@ -360,7 +391,10 @@ class _Semantic_DB:
             consts = [(d(n), bytes(h)) for n, h in consts_raw]
         return _Semantic_DB.Record(EntityKind(kind), d(name), d(expr), d(sem), prov,
                                    consts, d(experience) if experience is not None else None,
-                                   pats)
+                                   pats,
+                                   bytes(digest_raw) if digest_raw is not None else None,
+                                   [bytes(u) for u in deps_raw] if deps_raw is not None else None,
+                                   version, interpreted_at)
 
     @staticmethod
     def _encode(record: 'Record') -> bytes:
@@ -377,7 +411,48 @@ class _Semantic_DB:
                               record.interpretation, prov_map,
                               record.theory_constituents,
                               record.experience,
-                              record.goal_patterns))  # type: ignore[return-value]
+                              record.goal_patterns,
+                              record.semantic_digest,
+                              record.deps,
+                              record.version,
+                              record.interpreted_at))  # type: ignore[return-value]
+
+    # --- the global version counter (CHECK_OUTDATE_PLAN.md §3.3) ---
+    # One single-byte key, NOT a Record.  Length keeps it apart from everything
+    # else in the store (entity keys are >= 17 bytes, theory-status keys are
+    # exactly 16); the CI export filter drops it, and full-store cursor walks
+    # skip it by `len(key) < 16`.
+    #
+    # READS AND WRITES GO TO THE USER ENV DIRECTLY, NEVER THROUGH THE LAYERED
+    # FACADE (§9, defence in depth): even if a historical system snapshot were
+    # to contain a 0xF0 key, the publishing machine's counter value must never
+    # be read on a consumer machine -- version numbers are meaningful only
+    # within the domain that minted them.
+
+    COUNTER_KEY = b"\xf0"
+
+    def counter_value(self, txn) -> int:
+        """Current counter value, inside the caller's USER-env transaction.
+
+        A fresh store reads (and, in a write txn, persists) 1: the counter
+        snapshot is the ε-epoch baseline of first-written records (§4.4), and a
+        literal 0 is forbidden as a stored version/interpreted_at value."""
+        raw = txn.get(self.COUNTER_KEY)
+        if raw is None or is_tombstone(raw):
+            txn.put(self.COUNTER_KEY, msgpack.packb(1))
+            return 1
+        return msgpack.unpackb(raw)
+
+    def counter_next(self, txn) -> int:
+        """Increment the counter and return the new value.
+
+        MUST run inside the SAME write transaction as the Record put that
+        stores the returned value as a version (§3.3: the same-transaction
+        rule is what makes monotonicity crash-safe -- a bump that commits
+        without its record, or vice versa, would break I1)."""
+        nxt = self.counter_value(txn) + 1
+        txn.put(self.COUNTER_KEY, msgpack.packb(nxt))
+        return nxt
 
     def _system_get(self, key: universal_key) -> 'bytes | None':
         """Raw value of ``key`` in the system layer, or None.  Safe to call while
@@ -704,6 +779,8 @@ class _Semantic_DB:
         with (env if env is not None else self._ensure_env()).begin() as txn:
             for key, val in txn.cursor():
                 key = bytes(key)
+                if len(key) < 16:
+                    continue                      # 0xF0 global counter, not an entity
                 if len(key) == 16:
                     continue                      # theory status record, not an entity
                 if is_tombstone(val):

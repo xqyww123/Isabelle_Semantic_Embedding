@@ -293,3 +293,30 @@ def test_legacy_records_are_reported_not_repaired(isolated_cache):
     c = Semantic_DB.check_consistency()
     assert c.legacy_xor == 1
     assert c.xor_mismatches == [], "a record with no constituent list has nothing to compare"
+
+# --- incremental invalidation storage (CHECK_OUTDATE_PLAN §3.1/§3.3) ----------
+
+def test_counter_key_is_not_an_entity_and_12_field_records_check(isolated_cache):
+    """The 0xF0 global counter is a single-byte key, not a Record: it must not
+    distort the consistency scan's record count.  A 12-field record (with the
+    incremental-invalidation tail) still participates in the XOR check."""
+    from Isabelle_Semantic_Embedding.semantics import Semantic_DB
+    _reset(isolated_cache)
+
+    key = _key(xor_theory_prefix([H1]), THM, b"\x07")
+    rec12 = msgpack.packb((THM, "e12", "[]", "interp", None, [("T", H1)],
+                           None, None, b"\x01" * 16, [b"\x02" * 17], 2, 3))
+    with Semantic_DB._ensure_env().begin(write=True) as txn:
+        txn.put(key, rec12)
+        assert Semantic_DB.counter_next(txn) == 2   # fresh store: value 1, bump -> 2
+        assert Semantic_DB.counter_value(txn) == 2
+
+    c = Semantic_DB.check_consistency()
+    assert c.n_records == 1, "the counter key must not be counted as a record"
+    assert c.xor_mismatches == []
+
+    rec = Semantic_DB[key]
+    assert rec is not None
+    assert rec.semantic_digest == b"\x01" * 16
+    assert rec.deps == [b"\x02" * 17]
+    assert (rec.version, rec.interpreted_at) == (2, 3)

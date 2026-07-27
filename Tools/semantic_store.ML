@@ -310,9 +310,14 @@ local
     fn {file_path, theory_longname, theory_key, driver, entries} =>
     packTuple5
       (packString, packString, packBytes, packString,
-       packList (packTuple8 (pack_entry_kind, packString, packString, packInt, packBytes, packString,
-                             packOption (packTuple3 (packOption packBytes, packOption packBytes, packString)),
-                             packList (packPair (packString, packBytes)))))
+       (* The last two fields are the incremental-invalidation payload
+          (CHECK_OUTDATE_PLAN.md §3.2, step 9): the entity's semantic digest
+          (NONE for theorem-alike entities and for persistent theories) and its
+          dependency edges as the targets' CURRENT universal keys ([] likewise). *)
+       packList (packTuple10 (pack_entry_kind, packString, packString, packInt, packBytes, packString,
+                              packOption (packTuple3 (packOption packBytes, packOption packBytes, packString)),
+                              packList (packPair (packString, packBytes)),
+                              packOption packBytes, packList packBytes)))
       (file_path, theory_longname, theory_key, driver, entries)
 
   fun unpackUsage src =
@@ -334,7 +339,8 @@ fun make_interpret_file_cmd callbacks :
       driver: string,
       entries: (Universal_Key.entity * string * string * int * Word8Vector.vector * string
                 * (Word8Vector.vector option * Word8Vector.vector option * string) option
-                * Universal_Key.constituent list) list},
+                * Universal_Key.constituent list
+                * Word8Vector.vector option * Word8Vector.vector list) list},
      semantics option list * string list * usage * usage)
     Remote_Procedure_Calling.command = {
   name = "Semantic_Store.interpret_file",
@@ -357,7 +363,8 @@ val interpret_file_dry_run_cmd :
       driver: string,
       entries: (Universal_Key.entity * string * string * int * Word8Vector.vector * string
                 * (Word8Vector.vector option * Word8Vector.vector option * string) option
-                * Universal_Key.constituent list) list},
+                * Universal_Key.constituent list
+                * Word8Vector.vector option * Word8Vector.vector list) list},
      int) Remote_Procedure_Calling.command = {
   name = "Semantic_Store.interpret_file_dry_run",
   arg_schema = pack_arg,
@@ -1402,9 +1409,46 @@ fun enumerate_entries (context : Context.generic) =
              | NONE => Strhashtab.update seen (label, uk)
           end) entries
       end
+    (* --- semantic digest / deps (CHECK_OUTDATE_PLAN.md §3.2, step 9) ---
+       Computed ONLY for WIP theories: a persistent theory's keys are content-
+       addressed (Merkle prefix), so the key itself is the change signal and the
+       incremental fields stay absent (§2).  For a WIP theory, every entry gets
+       its dependency edges (as the targets' CURRENT universal keys -- the uk
+       doubles as the edge's moment-in-time imprint, §4.3), and the four
+       name-addressed kinds additionally get their semantic digest.  The entity
+       is read off the entry itself, so no positional alignment with any other
+       list is assumed. *)
+    val wip = not (Theory_Hash.is_persistent (Theory_Hash.hash_of thy))
+    val entries' =
+      if not wip then
+        map (fn (k, nm, prop, line, uk, hint, prov, consts) =>
+               (k, nm, prop, line, uk, hint, prov, consts, NONE, [])) entries
+      else
+        let
+          val env = Semantic_Digest.make_env thy
+          fun dep_target (Universal_Key.ConstantK, n) = SOME (Universal_Key.Constant n)
+            | dep_target (Universal_Key.TypeK, n) = SOME (Universal_Key.Type n)
+            | dep_target (Universal_Key.ClassK, n) = SOME (Universal_Key.Class n)
+            | dep_target (Universal_Key.LocaleK, n) = SOME (Universal_Key.Locale n)
+            | dep_target _ = NONE
+          (* A dep whose current uk cannot be computed (name no longer resolves)
+             is dropped: there is no target to compare against, and Python reads
+             a missing record as effective version 0 anyway (§4.4). *)
+          fun dep_uk d =
+            case dep_target d of
+              NONE => NONE
+            | SOME e => try (Universal_Key.key_of NONE context) e
+          fun attach (ent, nm, prop, line, uk, hint, prov, consts) =
+            case Semantic_Digest.semantics_of env ent of
+              NONE => (ent, nm, prop, line, uk, hint, prov, consts, NONE, [])
+            | SOME (dopt, deps) =>
+                (ent, nm, prop, line, uk, hint, prov, consts,
+                 Option.map (Word8Array.vector o Term_Digest.digest128_to_array) dopt,
+                 map_filter dep_uk deps)
+        in map attach entries end
   in
     {file_path = thy_file_path, theory_longname = thy_name,
-     theory_key = Universal_Key.key_of_theory' thy, entries = entries}
+     theory_key = Universal_Key.key_of_theory' thy, entries = entries'}
   end
 
 (* The send half of interpret': build the tool callbacks and hand the enumerated

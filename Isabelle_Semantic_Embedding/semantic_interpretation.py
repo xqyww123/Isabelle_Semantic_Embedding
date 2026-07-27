@@ -236,6 +236,15 @@ class Entry(NamedTuple):
     # name, 16-byte theory hash) list whose XOR is the key's theory prefix;
     # None for non-theorem kinds.  Stored in the semantic DB record.
     theory_constituents: "list[tuple[str, bytes]] | None" = None
+    # --- incremental invalidation (CHECK_OUTDATE_PLAN.md §3.2, step 9) ---
+    # 16-byte semantic digest of the entity's own content; None for
+    # theorem-alike entries (their key's thm128 is the digest) and for every
+    # entry of a persistent theory (content-addressed keys need no digest).
+    semantic_digest: "bytes | None" = None
+    # dependency edges as the targets' CURRENT universal keys, resolved at
+    # scan time on the ML side; empty for entries of persistent theories.
+    # An entry is increment-tracked iff it carries a digest or any edges.
+    deps: "list[bytes] | None" = None
 
 
 class CostSummary(NamedTuple):
@@ -259,12 +268,20 @@ class InterpretationTask:
     def __init__(self, connection: Connection, file_path: str,
                  theory_longname: str, theory_key: universal_key,
                  entries: list[Entry], driver: str = _DEFAULT_DRIVER,
-                 model: str = ""):
+                 model: str = "",
+                 inv_fields: 'list[tuple[int | None, int | None]] | None' = None):
         self.connection = connection
         self.file_path = file_path
         self.theory_longname = theory_longname
         self.theory_key = theory_key
         self.entries = entries
+        # Per-entry (version, interpreted_at) computed by the todo-set scan,
+        # 1:1 with `entries`; None for a run that did not scan (all four
+        # incremental fields then stay None on write).  version is the value
+        # phase 1 assigned (a bump, the stored value, or the ε baseline);
+        # interpreted_at is the pre-agent eff snapshot (write-back
+        # discipline 4).  write_answer stores them with the answer.
+        self.inv_fields = inv_fields
         # Which backend and model produced these interpretations, both already
         # resolved (no empty halves).  write_cost records them, so a theory's
         # provenance stays readable after the config that chose them has changed.
@@ -327,11 +344,23 @@ class InterpretationTask:
         pass
 
     def write_answer(self, task_idx: int, sem: str) -> None:
-        """Write a single answer to the LMDB store."""
+        """Write a single answer to the LMDB store.
+
+        The incremental fields ride the SAME put as the interpretation
+        (write-back discipline 1: digest, deps and version must never land in
+        separate writes): digest and deps come off the wire entry, version and
+        the pre-agent eff snapshot (discipline 4) from the scan.  An untracked
+        entry (persistent theory: version None) keeps all four fields None."""
         entry = self.entries[task_idx]
+        version, interpreted_at = (self.inv_fields[task_idx]
+                                   if self.inv_fields is not None else (None, None))
+        tracked = version is not None
         Semantic_DB[entry.universal_key] = SemanticRecord(
             EntityKind(entry.kind), entry.name, entry.prop_str, sem,
-            entry.locale_provenance, entry.theory_constituents)
+            entry.locale_provenance, entry.theory_constituents,
+            semantic_digest=entry.semantic_digest if tracked else None,
+            deps=(entry.deps or []) if tracked else None,
+            version=version, interpreted_at=interpreted_at)
 
     def historical_cost(self) -> tuple[int, int, int, int, float]:
         """Read cumulative cost from LMDB (without modifying it).  A layered
@@ -819,17 +848,147 @@ async def interpret_file(
     _log.info("interpret_file%s: %s (%s), %d entries",
               " (dry run)" if dry_run else "", theory_longname, file_path, n)
 
-    # Check LMDB cache.  This loop doubles as the dry run's workload count: the
-    # entries it leaves uncached are exactly the ones an ordinary run sends to
-    # the LLM.  The expr refresh is a scan-time write that the write-back
-    # discipline allows on a dry run too (CHECK_OUTDATE_PLAN.md discipline 3).
+    # --- the todo-set scan (CHECK_OUTDATE_PLAN.md §4/§8) ---
+    # todo = uncached ∪ stale, stale = digest mismatch ∨ eff > interpreted_at.
+    # This scan doubles as the dry run's workload count: the entries it leaves
+    # in `uncached` are exactly the ones an ordinary run sends to the LLM.  The
+    # writes it makes (version bumps, expr refresh) are scan-time writes the
+    # write-back discipline allows on a dry run too (discipline 3).
     results: list[str | None] = [None] * n
-    for i, e in enumerate(entries):
-        rec = Semantic_DB[e.universal_key]
-        if rec is not None and rec.interpretation is not None:
+    recs = Semantic_DB.get_many([e.universal_key for e in entries])
+
+    # Phase 1 -- first-visit digest comparison (§4.1).  A genuinely changed
+    # digest is bumped ON THE SPOT: digest + version + deps in ONE Record put
+    # (discipline 1), the counter increment in the same write transaction
+    # (§3.3).  Which digests changed is a fixed fact of this batch, so the eff
+    # memo built afterwards never goes stale.
+    #
+    # A record that never had a digest (fresh entity, or one interpreted before
+    # digests existed) is NOT stamped here: its stored interpretation was
+    # written for content nobody can reconstruct, so stamping today's digest
+    # onto it would freshly certify possibly-outdated text.  Such an entry goes
+    # to the todo set (digest-None reads as stale, §4.4) and gets digest, deps
+    # and its ε-epoch version together with the fresh interpretation at
+    # write_answer.  No bump either way: nothing can have depended on a digest
+    # that never existed.
+    version_to_write: dict[int, int] = {}
+    with Semantic_DB._ensure_env().begin(write=True) as txn:
+        epsilon = Semantic_DB.counter_value(txn)
+        for i, (e, rec) in enumerate(zip(entries, recs)):
+            if e.semantic_digest is None:
+                # theorem-alike / untracked: never bumped (invariant I2); the
+                # ε baseline still applies if this entry gets written later.
+                if e.deps:
+                    version_to_write[i] = (rec.version if rec is not None and
+                                           rec.version else epsilon)
+                continue
+            if rec is None or rec.semantic_digest is None:
+                version_to_write[i] = (rec.version if rec is not None and
+                                       rec.version else epsilon)
+                continue
+            if rec.semantic_digest != e.semantic_digest:
+                v = Semantic_DB.counter_next(txn)
+                txn.put(e.universal_key, Semantic_DB._encode(rec._replace(
+                    semantic_digest=e.semantic_digest, deps=e.deps or [],
+                    version=v)))
+                recs[i] = rec = rec._replace(semantic_digest=e.semantic_digest,
+                                             deps=e.deps or [], version=v)
+                version_to_write[i] = v
+            else:
+                version_to_write[i] = rec.version if rec.version else epsilon
+
+    # Phase 2 -- effective version: eff(E) = max version over E's dependency
+    # closure (E itself included), evaluated by iterative DFS with one numeric
+    # memo over batch ∪ store (§4.1).  A missing record contributes 0 (§4.4:
+    # infrastructure targets carry no record by design).  Cycles fold to the
+    # on-stack member's own version -- SCC members are defined by one command
+    # and bump together, so the truncation loses no signal.
+    memo: dict[bytes, int] = {}
+    rec_cache: 'dict[bytes, SemanticRecord | None]' = {
+        e.universal_key: r for e, r in zip(entries, recs)}
+
+    def _rec_of(k: bytes) -> 'SemanticRecord | None':
+        if k not in rec_cache:
+            rec_cache[k] = Semantic_DB[k]
+        return rec_cache[k]
+
+    def eff_uk(root: bytes) -> int:
+        if root in memo:
+            return memo[root]
+        r0 = _rec_of(root)
+        if r0 is None:
+            memo[root] = 0
+            return 0
+        on_stack = {root}
+        # frame = [uk, best-so-far, deps iterator]
+        stack = [[root, r0.version or 0, iter(r0.deps or [])]]
+        while stack:
+            frame = stack[-1]
+            pushed = False
+            for d in frame[2]:
+                if d in memo:
+                    if memo[d] > frame[1]:
+                        frame[1] = memo[d]
+                    continue
+                if d in on_stack:
+                    r = _rec_of(d)
+                    v = (r.version or 0) if r is not None else 0
+                    if v > frame[1]:
+                        frame[1] = v
+                    continue
+                r = _rec_of(d)
+                if r is None:
+                    memo[d] = 0
+                    continue
+                stack.append([d, r.version or 0, iter(r.deps or [])])
+                on_stack.add(d)
+                pushed = True
+                break
+            if not pushed:
+                stack.pop()
+                on_stack.discard(frame[0])
+                memo[frame[0]] = frame[1]
+                if stack and frame[1] > stack[-1][1]:
+                    stack[-1][1] = frame[1]
+        return memo[root]
+
+    def eff_value(version: int, deps: 'list[bytes] | None') -> int:
+        best = version
+        for d in deps or []:
+            v = eff_uk(d)
+            if v > best:
+                best = v
+        return best
+
+    # Phase 3 -- fill results with cached AND fresh interpretations; everything
+    # else is the todo set.  A stale entry is treated exactly like an uncached
+    # one: no prefill, no expr shortcut.  For every todo entry the
+    # interpreted_at snapshot is taken NOW, before any agent starts
+    # (discipline 4: a concurrent bump between snapshot and answer must land
+    # ABOVE the stored snapshot, so the entity is re-judged stale next scan
+    # instead of the change being silently absorbed).
+    ia_snapshot: dict[int, int] = {}
+    for i, (e, rec) in enumerate(zip(entries, recs)):
+        tracked = e.semantic_digest is not None or bool(e.deps)
+        cached = rec is not None and rec.interpretation is not None
+        stale = False
+        if cached and tracked:
+            assert rec is not None
+            if e.semantic_digest is not None and (
+                    rec.semantic_digest is None or
+                    rec.semantic_digest != e.semantic_digest):
+                stale = True    # never-digested record: stale by §4.4
+            else:
+                eff_v = eff_value(version_to_write.get(i, rec.version or 0),
+                                  e.deps)
+                stale = eff_v > (rec.interpreted_at or 0)
+        if cached and not stale:
+            assert rec is not None
             results[i] = rec.interpretation
             if e.prop_str and rec.expr != e.prop_str:
                 Semantic_DB.update_expr(e.universal_key, e.prop_str)
+        elif tracked:
+            ia_snapshot[i] = eff_value(version_to_write.get(i, epsilon), e.deps)
 
     uncached = [i for i, r in enumerate(results) if r is None]
     n_cached = n - len(uncached)
@@ -860,11 +1019,11 @@ async def interpret_file(
     # interpret" means nothing to someone watching from a theory buffer.
     if not uncached:
         await _report(f"{theory_longname}: all {n} entities are already described "
-                      f"in the database, nothing to ask.")
+                      f"in the database and up to date, nothing to ask.")
     elif n_cached:
         await _report(f"{theory_longname}: found {n} entities to describe; "
-                      f"{n_cached} are already in the database, asking the LLM for the "
-                      f"remaining {len(uncached)}.")
+                      f"{n_cached} are already described and up to date, asking the "
+                      f"LLM for the remaining {len(uncached)} (new or outdated).")
     else:
         await _report(f"{theory_longname}: found {n} entities to describe; none are in "
                       f"the database yet, asking the LLM for all {n}.")
@@ -882,6 +1041,8 @@ async def interpret_file(
             connection, file_path, theory_longname, theory_key,
             entries=[entries[i] for i in uncached],
             driver=driver_name, model=model,
+            inv_fields=[(version_to_write.get(i), ia_snapshot.get(i))
+                        for i in uncached],
         ) as task:
             _local_task.set(task)
 
@@ -1007,8 +1168,11 @@ def _entries_of_wire(raw_entries: Any) -> list[Entry]:
             theory_constituents=(
                 [(n, bytes(h)) for n, h in consts]
                 if EntityKind(kind) in THM_RULE_KINDS else None),
+            semantic_digest=bytes(digest) if digest is not None else None,
+            deps=[bytes(u) for u in deps],
         )
-        for kind, name, prop, lineno, uk, hint, prov, consts in raw_entries
+        for kind, name, prop, lineno, uk, hint, prov, consts, digest, deps
+        in raw_entries
     ]
 
 

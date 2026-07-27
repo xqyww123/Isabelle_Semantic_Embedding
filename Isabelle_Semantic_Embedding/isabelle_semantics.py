@@ -345,7 +345,7 @@ def cmd_remove(args: argparse.Namespace) -> None:
                     tombstoned_keys.add(key)
                 elif is_xor_prefixed_key(key):
                     thy_hashes_in_db |= record_constituent_hashes(val) or set()
-                else:
+                elif len(key) >= 16:             # < 16 = the 0xF0 counter key
                     thy_hashes_in_db.add(key[:16])
         env.close()
     if system_sem_path is not None:
@@ -357,7 +357,7 @@ def cmd_remove(args: argparse.Namespace) -> None:
                     continue                     # already masked
                 if is_xor_prefixed_key(key):
                     thy_hashes_in_db |= record_constituent_hashes(bytes(val)) or set()
-                else:
+                elif len(key) >= 16:             # < 16 = the 0xF0 counter key
                     thy_hashes_in_db.add(key[:16])
         env.close()
 
