@@ -10,6 +10,9 @@ Isabelle marked the whole cone interpreted with nothing in it.
 import pytest
 from claude_agent_sdk.types import AssistantMessage, ResultMessage, SystemMessage
 
+from Isabelle_Semantic_Embedding.interpretation_driver.claude_code import (
+    _handle_message,
+)
 from Isabelle_Semantic_Embedding.semantic_interpretation import (
     FatalAgentError,
     RateLimitError,
@@ -17,7 +20,6 @@ from Isabelle_Semantic_Embedding.semantic_interpretation import (
     PoisonedSessionError,
     TransientAgentError,
     USER_ERROR_MARKER,
-    _handle_message,
 )
 
 
