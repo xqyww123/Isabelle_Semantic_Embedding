@@ -54,7 +54,13 @@ Be aware that interpretation and embedding together can take a long time; please
 
 ## 5. Configuring the embedding provider
 
-By default, the system uses Claude Code with `claude-opus-4-8[1m]` for semantic interpretation, and `Qwen/Qwen3-Embedding-8B` for embedding. A Codex-based interpreter, along with the ability to switch the interpretation LLM, is under development.
+By default, the system uses Claude Code with `claude-opus-4-8[1m]` for semantic interpretation, and `Qwen/Qwen3-Embedding-8B` for embedding.
+
+The interpreter is chosen with a single setting naming the backend and, optionally, its model:
+```isabelle
+declare [[Semantic_Embedding.interpretation_driver = "ClaudeCode.claude-opus-4-8[1m]"]]
+```
+Written without a model (just `"ClaudeCode"`), the backend's own default model is used. The same value can be given as the `INTERPRETATION_DRIVER` environment variable, or, for a batch run, as `semantics_manage collect --driver`; the command line takes precedence over the Isabelle option, which takes precedence over the environment variable. `ClaudeCode` is currently the only backend; a Codex-based one is under development.
 
 The embedding model can be changed through three settings — the driver, the endpoint, and the model name:
 ```isabelle
