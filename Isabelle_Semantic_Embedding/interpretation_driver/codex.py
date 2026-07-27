@@ -34,6 +34,7 @@ from openai_codex.generated.v2_all import (
     TokenUsageBreakdown,
     TurnCompletedNotification,
     TurnError,
+    TurnStatus,
 )
 
 from ..semantic_interpretation import (
@@ -92,6 +93,27 @@ _TRANSIENT_VALUES = frozenset({
 _ZERO_USAGE = TokenUsageBreakdown(
     cached_input_tokens=0, input_tokens=0, output_tokens=0,
     reasoning_output_tokens=0, total_tokens=0)
+
+
+def _advance(before: TokenUsageBreakdown,
+             reported: TokenUsageBreakdown) -> TokenUsageBreakdown:
+    """The cumulative usage after a report, componentwise non-decreasing.
+
+    `usage.total` is a running total, so it can only climb -- but a small share
+    of reports carry all four component counts as zero while `total_tokens` is
+    not.  Taken at face value such a report moves the billing baseline BACKWARDS,
+    and the next turn is then charged the whole thread's cumulative usage a
+    second time.  (The per-component floor in `_record_turn_cost` hides the
+    anomalous turn at zero, so nothing looks wrong until the following one.)
+    Keeping the baseline monotone drops the anomaly instead of paying for it."""
+    return TokenUsageBreakdown(
+        inputTokens=max(before.input_tokens, reported.input_tokens),
+        cachedInputTokens=max(before.cached_input_tokens,
+                              reported.cached_input_tokens),
+        outputTokens=max(before.output_tokens, reported.output_tokens),
+        reasoningOutputTokens=max(before.reasoning_output_tokens,
+                                  reported.reasoning_output_tokens),
+        totalTokens=max(before.total_tokens, reported.total_tokens))
 
 
 def _http_status_of(root: Any) -> "int | None":
@@ -292,24 +314,43 @@ class CodexDriver(InterpretationDriver):
 
     async def run_turn(self, prompt: str) -> None:
         before = self._total
+        err: TurnError | None = None
+        status: Any = None
         try:
             handle = await self._thread.turn(prompt)
-            err: TurnError | None = None
             async for note in handle.stream():
                 payload = note.payload
                 if isinstance(payload, ThreadTokenUsageUpdatedNotification):
-                    self._total = payload.token_usage.total
+                    self._total = _advance(self._total, payload.token_usage.total)
                 elif isinstance(payload, TurnCompletedNotification):
-                    # Read the error HERE.  The convenience `run()` raises a
-                    # bare RuntimeError carrying only the message, discarding
-                    # the classification this driver needs.
+                    # Read these HERE.  The convenience `run()` raises a bare
+                    # RuntimeError carrying only the message, discarding the
+                    # classification this driver needs.
                     err = payload.turn.error
+                    status = payload.turn.status
                 _log.debug("codex: %s", note.method)
         except TransportClosedError as e:
             raise TransientAgentError(f"codex transport closed: {e}") from e
-        self._record_turn_cost(before)
+        finally:
+            # In a `finally` because the answers are already in LMDB by now: the
+            # answer tool writes each one as it arrives, so a turn that dies
+            # mid-stream has still produced -- and been charged for -- work.
+            # Leaving the cost out would understate the run, and the recycled
+            # driver starts a new thread whose counters begin at zero, so the
+            # tokens would be unrecoverable.  Safe on the paths where nothing
+            # was consumed: the delta is then zero.
+            self._record_turn_cost(before)
         if err is not None:
             raise await self._classify(err)
+        # A turn can fail WITHOUT an error object: `Turn.error` is optional even
+        # for a failed turn, and an interrupted one carries none at all.  Judged
+        # by the error alone, such a turn reads exactly like a successful one --
+        # and then `_run_agent` blames the model for the entries it never got,
+        # burning ten stalled retry rounds before killing the cone with a
+        # message about a failure that never reached the model.
+        if status is not TurnStatus.completed:
+            raise TransientAgentError(
+                f"codex turn ended {getattr(status, 'value', status)!r} with no error")
 
     async def _classify(self, err: TurnError) -> Exception:
         exc = classify_turn_error(err)

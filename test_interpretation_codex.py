@@ -12,6 +12,7 @@ import yaml
 pytest.importorskip("openai_codex", reason="the Codex backend is an optional extra")
 
 from openai_codex.models import Notification                       # noqa: E402
+from openai_codex import TransportClosedError                       # noqa: E402
 from openai_codex.generated.v2_all import (                        # noqa: E402
     ActiveTurnNotSteerable,
     ActiveTurnNotSteerableCodexErrorInfo,
@@ -84,11 +85,11 @@ def _breakdown(input_tokens=0, cached=0, output=0):
         reasoningOutputTokens=0, totalTokens=input_tokens + output)
 
 
-def _completed(error=None):
+def _completed(error=None, status="completed"):
     return Notification(
         method="turn/completed",
         payload=TurnCompletedNotification(
-            threadId="t", turn=Turn(id="u", items=[], status="completed",
+            threadId="t", turn=Turn(id="u", items=[], status=status,
                                     error=error)))
 
 
@@ -164,6 +165,55 @@ def test_a_turn_bills_only_its_own_advance(priced):
     assert [f[0] for f in task.cost_flushes] == [100, 150]
 
 
+def test_an_all_zero_usage_report_does_not_reset_the_baseline(priced):
+    """`usage.total` is cumulative, but a small share of reports carry all four
+    components as zero.  Taken at face value the baseline moves BACKWARDS, and
+    the next turn is billed for the whole thread's cumulative usage again -- a
+    large number, since that total counts the resent prefix of every request."""
+    task = _make_task(1, batch_size=1)
+    driver = _driver(task)
+    _run_turn(driver, [_usage(_breakdown(input_tokens=10_000), _breakdown()), _completed()])
+    # The anomaly: components zero, total_tokens not.
+    _run_turn(driver, [
+        Notification(method="thread/tokenUsage/updated",
+                     payload=ThreadTokenUsageUpdatedNotification(
+                         threadId="t", turnId="u",
+                         tokenUsage=ThreadTokenUsage(
+                             last=_breakdown(),
+                             total=TokenUsageBreakdown(
+                                 inputTokens=0, cachedInputTokens=0, outputTokens=0,
+                                 reasoningOutputTokens=0, totalTokens=12_000)))),
+        _completed()])
+    _run_turn(driver, [_usage(_breakdown(input_tokens=13_000), _breakdown()), _completed()])
+
+    assert [f[0] for f in task.cost_flushes] == [10_000, 0, 3_000], \
+        "the third turn must be billed 13000-10000, not 13000"
+
+
+def test_a_turn_that_dies_mid_stream_still_records_what_it_spent(priced):
+    """Its answers are already in LMDB -- the answer tool writes each one as it
+    arrives -- so leaving the cost out understates the run.  The recycled driver
+    starts a new thread whose counters begin at zero, so it is unrecoverable."""
+    task = _make_task(1, batch_size=1)
+    driver = _driver(task)
+
+    class _DyingHandle:
+        async def stream(self):
+            yield _usage(_breakdown(input_tokens=50_000), _breakdown())
+            raise TransportClosedError("stdio transport dropped")
+
+    class _DyingThread:
+        id = "thread-1"
+
+        async def turn(self, prompt, **kw):
+            return _DyingHandle()
+
+    driver._thread = _DyingThread()
+    with pytest.raises(TransientAgentError):
+        asyncio.run(driver.run_turn("go"))
+    assert task.cost_flushes == [(50_000, 0, 0, 0, 500_000.0)]
+
+
 # --- what a failed turn means ----------------------------------------------
 
 def _obj(cls, inner_cls, field, status=None):
@@ -228,6 +278,22 @@ def test_an_unrecognisable_failure_is_transient():
         ActiveTurnNotSteerableCodexErrorInfo(
             activeTurnNotSteerable=ActiveTurnNotSteerable(turnKind="review"))))
     assert isinstance(classify_turn_error(err), TransientAgentError)
+
+
+@pytest.mark.parametrize("status", ["failed", "interrupted"])
+def test_a_turn_that_did_not_complete_raises_even_with_no_error_object(priced, status):
+    """`Turn.error` is optional even for a failed turn, and an interrupted one
+    carries none at all.  Judged by the error alone such a turn reads exactly
+    like a successful one -- and then the shared loop blames the model for the
+    entries it never received, burning ten stalled retry rounds before killing
+    the whole theory cone over a failure that never reached the model."""
+    task = _make_task(1, batch_size=1)
+    driver = _driver(task)
+    with pytest.raises(TransientAgentError) as e:
+        _run_turn(driver, [_usage(_breakdown(input_tokens=10), _breakdown()),
+                           _completed(status=status)])
+    assert status in str(e.value)
+    assert task.cost_flushes == [(10, 0, 0, 0, 100.0)], "and it still bills the turn"
 
 
 def test_a_failed_turn_raises_out_of_run_turn(priced):

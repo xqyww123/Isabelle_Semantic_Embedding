@@ -1118,11 +1118,14 @@ def main() -> None:
     p_collect.add_argument("--session", default="HOL", help="Session qualifier for theory name resolution")
     p_collect.add_argument("--driver", default="",
         help="Agent backend and model for semantic interpretation, as "
-             "'<Driver>[.<model>]' (e.g. 'ClaudeCode', 'Codex.gpt-5.5'); the model "
-             "part is optional and defaults to that backend's own. Outranks the "
-             "Isabelle config option Semantic_Embedding.interpretation_driver and "
-             "the INTERPRETATION_DRIVER environment variable; unset means let those "
-             "decide (default: ClaudeCode).")
+             "'<Driver>[.<model>]' (e.g. 'ClaudeCode', 'Codex.gpt-5.6-sol'); the "
+             "model part is optional and defaults to that backend's own. Outranks "
+             "the Isabelle config option Semantic_Embedding.interpretation_driver "
+             "and the INTERPRETATION_DRIVER environment variable; unset means let "
+             "those decide (default: ClaudeCode). REQUIRES the REPL server to have "
+             "been started with RPC_Host set to this --rpc-addr: this setting is "
+             "delivered in-process, and with RPC_Host unset Isabelle starts an RPC "
+             "host of its own, which never sees it.")
     p_collect.add_argument("--embed-models", default="",
         help="Comma-separated canonical (HuggingFace) embedding model names "
              "(e.g., 'Qwen/Qwen3-Embedding-8B'). NOTE: all listed models are embedded "
