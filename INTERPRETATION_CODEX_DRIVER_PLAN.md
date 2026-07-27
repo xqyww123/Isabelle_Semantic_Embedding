@@ -719,8 +719,8 @@ theory，`map Context.Theory` 一做，caller 的 `declare` 就没了。加首�
 > | 6 打包 | `10833a1` | setuptools 自己的 `find_data_files`；另实建 wheel 核对六个 SKILL.md |
 >
 > **有意未做**（非遗漏）：
-> - §4.8 辅通路只用于「额度用完 vs 没钱了」的分辨与 log `resets_at`；**没有**用 `resets_at`
->   替换 `_run_agent` 里硬编码的 `sleep(1200)`——那是两条 driver 共用的路径，改它超出本步范围。
+> - §4.8 辅通路只用于「额度用完 vs 没钱了」的分辨与 log `resets_at`；**不**用 `resets_at`
+>   替换 `_run_agent` 里硬编码的 `sleep(1200)`（用户 2026-07-27 定：固定 20 分钟即可）。
 > - §4.3 提到的 `AsyncTurnHandle.interrupt()` **未接线**。中断在本子系统里本来就是"按设计硬崩"
 >   （答案与成本都已逐条落盘、重跑可续），Claude 路径同样不接；driver 的 `__aexit__` 关掉
 >   client 已足以让 app-server 随之退出。
@@ -731,9 +731,27 @@ theory，`map Context.Theory` 一做，caller 的 `declare` 就没了。加首�
 > conda-forge 的 `codex` 是另一个东西（Rust CLI，SDK 从不查 PATH 故用不上）。
 > 理由已写进 `conda/recipe.yaml` 的 run 段注释。
 >
-> ⚠️ **`interpretation_config_template.yaml` 里 gpt-5.5 的三个价格取自本文 §4.5 的示例，
-> 未经核对。** 模板里已醒目标注"不是报价、请对照 provider 价目表"，但步骤 7 之前应先把它换成真值，
-> 否则第一次 Codex 跑出来的美元数就是错的（且会写进 theory 记录）。
+> **价格与模型 id（2026-07-27 查证，两个 agent 独立取证、数字一致，来源
+> `developers.openai.com/api/docs/pricing` + `learn.chatgpt.com/docs/models`）：**
+>
+> - §4.5 示例里的 `gpt-5.5` 价格已被真值取代。模板现在收录 6 个模型
+>   （`gpt-5.6-{sol,terra,luna}` / `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini`）。
+>   `gpt-5.3-codex-spark` 有意不收：它只对 ChatGPT Pro 开放、**没有公开的每 token 价格**，
+>   拿别的模型的价格顶上会产出一个看着合理的错数。
+> - ⚠️ **`gpt-5.6` 不是真 slug。** 它出现在 codex 官方文档示例里，但不在模型目录中
+>   （本机 `~/.codex/models_cache.json` 实查：只有 `gpt-5.6-{sol,terra,luna}` /
+>   `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.3-codex-spark` / 内部的
+>   `codex-auto-review`）。默认取 **`gpt-5.6-sol`**——codex 自己的文档默认
+>   （"the default Power setting, which uses gpt-5.6-sol"），且模板给它定了价，
+>   所以 `--driver Codex` 开箱能跑。单测钉住"模板必须给默认模型定价"。
+> - ⚠️ **记进库里的美元数对 ChatGPT 订阅是名义值。** 订阅模式下 codex 用量走的是
+>   五小时窗口的 credit 配额，不按美元计费；我们算出的是"这些 token 按 API 标价折合多少钱"
+>   ——用于两条 driver 横向比较是对的，当账单看是错的。API key 模式下它才是真账单。
+> - ⚠️ **两处已知少算，均接受**：(a) GPT-5.6 家族对 **cache write** 另收一档
+>   （未缓存 input 价的 1.25 倍），但 SDK 的用量结构里**根本没有 cache-write 字段**
+>   （只有 input / cached input / output / reasoning output / total），无从计算；
+>   (b) 单次请求 input 超 272K 时按 2× input、1.5× output 计，未建模——本管线的批次远小于此。
+> 以上要点已逐条写进 `interpretation_config_template.yaml` 的注释。
 
 1. **纯重构，零行为变化**（单独提交）。抽 ABC + 注册表，现有路径搬进
    `interpretation_driver/claude_code.py`，`_run_agent` 改走 driver，接上 `on_context_reset`。

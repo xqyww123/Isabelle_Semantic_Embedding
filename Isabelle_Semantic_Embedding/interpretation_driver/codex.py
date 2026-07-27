@@ -61,12 +61,6 @@ _HEALTHCHECK_TIMEOUT_S = 30.0
 
 # --- user-facing failure text -----------------------------------------------
 
-_MSG_NEEDS_MODEL = (
-    "Semantic interpretation failed: the Codex backend needs the model spelled "
-    "out, e.g. \"Codex.gpt-5.5\" rather than \"Codex\". It reports token counts "
-    "and not money, so its cost can only be computed from a model whose prices "
-    "you have configured.")
-
 _MSG_AUTH_FAILED = (
     "Semantic interpretation failed: Codex could not authenticate. Run 'codex "
     "login' (it may not be logged in, or the login may have expired), then retry.")
@@ -175,10 +169,13 @@ def classify_turn_error(err: TurnError) -> Exception:
 class CodexDriver(InterpretationDriver):
     """Runs the interpretation agent through the Codex SDK."""
 
-    #: Codex has no model default we could name, let alone price -- with no
-    #: model given it uses whatever the user's codex is configured for, which we
-    #: could neither record nor cost.  So the setting must spell one out.
-    DEFAULT_MODEL = ""
+    #: Codex's own documented default ("the default Power setting, which uses
+    #: gpt-5.6-sol"), named here rather than left implicit: the model has to be
+    #: one we can record in the theory entry and price, and "whatever this
+    #: machine's codex happens to be configured for" is neither.  It must be a
+    #: real catalogue slug -- `gpt-5.6` appears in the documentation but is not
+    #: one, and has no published price.
+    DEFAULT_MODEL = "gpt-5.6-sol"
 
     #: 0.144.4 never sends `thread/compacted`, and hooks registered through the
     #: SDK are never executed by the headless app-server, so there is no signal
@@ -188,8 +185,6 @@ class CodexDriver(InterpretationDriver):
 
     def __init__(self, **kw: Any) -> None:
         super().__init__(**kw)
-        if not self.model:
-            raise FatalAgentError(_MSG_NEEDS_MODEL)
         # Before anything is spent, not lazily at the first turn: an unpriced
         # model would otherwise be found only after the run had cost money, and
         # the failure would arrive as a mid-run exception rather than as the

@@ -7,22 +7,84 @@
 # per-theory cost recorded in the semantic database is in dollars.  A backend
 # that reports its own cost (ClaudeCode does) needs no entry here at all.
 #
-# ⚠ THE PRICES BELOW ARE NOT AUTHORITATIVE.  They are a starting point, not a
-# quote: list prices change, and what you actually pay depends on your plan.
-# Check them against your provider's pricing page before trusting the dollar
-# figures this system reports.  Prices are in dollars PER TOKEN.
+# Prices are in dollars PER TOKEN:
 #
 #   input:         a token sent and not served from the prompt cache
 #   cached_input:  a token sent and served from the prompt cache
-#   output:        a token generated (this INCLUDES reasoning tokens)
+#   output:        a token generated (this INCLUDES reasoning tokens, which the
+#                  provider bills as output and reports inside the output count)
 #
 # A model used by a backend that needs prices, but missing from this file, is a
-# hard error naming the model and this path — reporting a run as free is worse
+# hard error naming the model and this path -- reporting a run as free is worse
 # than refusing to start it.
+#
+# ---------------------------------------------------------------------------
+# WHAT THE RECORDED DOLLARS MEAN FOR CODEX.  Read this before trusting them.
+#
+# Signed in with a ChatGPT plan -- which is the reason this backend exists --
+# Codex usage is NOT billed in dollars at all.  It draws on a plan quota metered
+# in credits over a five-hour window, and money changes hands only if you buy
+# extra credits.  The figure computed from the prices below is therefore the API
+# list-price EQUIVALENT of the tokens consumed: the right number for comparing
+# one backend against another, and not a bill.  Signed in with an API key, the
+# same figure IS the bill, at these rates.
+#
+# Two known under-counts, both accepted:
+#
+#   * Cache WRITES.  The GPT-5.6 family charges a fourth rate for them (1.25x
+#     the uncached input rate; earlier families charge nothing).  The Codex SDK's
+#     usage report has no cache-write field at all -- input, cached input,
+#     output, reasoning output, total -- so this cost cannot be computed from
+#     what we are given, at any price we could write here.
+#   * Requests over 272K input tokens are billed at 2x input and 1.5x output for
+#     the whole request.  Not modelled; the batches this pipeline sends are far
+#     smaller, and a compaction lands well before that ceiling.
+#
+# ---------------------------------------------------------------------------
+# The prices below were read on 2026-07-27 from
+# https://developers.openai.com/api/docs/pricing (standard tier, short context),
+# and cross-checked against each model's own page.  The page carries no "as of"
+# date; list prices change.  Check them before trusting a dollar figure.
+#
+# gpt-5.3-codex-spark is deliberately absent: it is available only to ChatGPT Pro
+# subscribers and has no published per-token price.  Substituting a similar
+# model's price would produce a plausible, wrong number.
 
 models:
+  # The Codex default (docs: "the default Power setting, which uses
+  # gpt-5.6-sol"; priority 1 in the model catalogue).
+  gpt-5.6-sol:
+    pricing:
+      input: 5.0e-6          # $5.00 / 1M
+      cached_input: 5.0e-7   # $0.50 / 1M
+      output: 3.0e-5         # $30.00 / 1M
+
+  gpt-5.6-terra:
+    pricing:
+      input: 2.5e-6          # $2.50 / 1M
+      cached_input: 2.5e-7   # $0.25 / 1M
+      output: 1.5e-5         # $15.00 / 1M
+
+  gpt-5.6-luna:
+    pricing:
+      input: 1.0e-6          # $1.00 / 1M
+      cached_input: 1.0e-7   # $0.10 / 1M
+      output: 6.0e-6         # $6.00 / 1M
+
   gpt-5.5:
     pricing:
-      input: 1.25e-6
-      cached_input: 0.125e-6
-      output: 10.0e-6
+      input: 5.0e-6          # $5.00 / 1M
+      cached_input: 5.0e-7   # $0.50 / 1M
+      output: 3.0e-5         # $30.00 / 1M
+
+  gpt-5.4:
+    pricing:
+      input: 2.5e-6          # $2.50 / 1M
+      cached_input: 2.5e-7   # $0.25 / 1M
+      output: 1.5e-5         # $15.00 / 1M
+
+  gpt-5.4-mini:
+    pricing:
+      input: 7.5e-7          # $0.75 / 1M
+      cached_input: 7.5e-8   # $0.075 / 1M
+      output: 4.5e-6         # $4.50 / 1M

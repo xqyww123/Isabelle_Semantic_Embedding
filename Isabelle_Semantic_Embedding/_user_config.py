@@ -64,6 +64,10 @@ class User_Config:
         self._data: dict | None = None
         self._source: pathlib.Path | None = None
 
+    def template_path(self) -> pathlib.Path:
+        """The bundled template a first run seeds from (and falls back to)."""
+        return self._template
+
     def path(self) -> 'pathlib.Path | None':
         override = os.getenv(self._env_var)
         if override:

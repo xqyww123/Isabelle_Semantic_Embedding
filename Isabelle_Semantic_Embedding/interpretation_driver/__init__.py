@@ -129,11 +129,9 @@ class InterpretationDriver(ABC):
     NAME: str = ""
 
     #: model used when the driver spec names none (`Codex` rather than
-    #: `Codex.gpt-5.5`).  Every concrete driver must set it: which model is
+    #: `Codex.gpt-5.6`).  Every concrete driver must set it: which model is
     #: sensible is the backend's own business, and a shared default would be a
-    #: model name from one backend handed to another.  Left empty by a backend
-    #: that has no default it can name, which must then reject an unnamed model
-    #: itself rather than run on one it cannot identify.
+    #: model name from one backend handed to another.
     DEFAULT_MODEL: str = ""
 
     #: whether this backend tells us when it compacts the conversation, i.e.
@@ -147,7 +145,8 @@ class InterpretationDriver(ABC):
                  tools: list["SdkMcpTool[Any]"],
                  task: "InterpretationTask",
                  on_context_reset: Callable[[], None]) -> None:
-        self.model = model
+        # The spec may name only the backend ("Codex"), leaving the model to it.
+        self.model = model or self.DEFAULT_MODEL
         self.system_prompt = system_prompt
         self.tools = tools
         self.task = task

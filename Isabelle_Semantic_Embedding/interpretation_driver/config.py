@@ -28,6 +28,11 @@ def config_source() -> "pathlib.Path | None":
     return _CONFIG.source()
 
 
+def template_path() -> pathlib.Path:
+    """The bundled price table a first run is seeded from."""
+    return _CONFIG.template_path()
+
+
 class Pricing(NamedTuple):
     """Dollars per token, by kind."""
     input: float

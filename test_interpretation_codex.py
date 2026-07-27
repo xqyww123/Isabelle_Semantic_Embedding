@@ -245,12 +245,21 @@ def test_a_failed_turn_raises_out_of_run_turn(priced):
 
 # --- refusing to start ------------------------------------------------------
 
-def test_the_model_has_to_be_spelled_out(priced):
-    """Codex has no default model we could name, let alone price."""
-    with pytest.raises(FatalAgentError) as e:
-        _driver(_make_task(1, batch_size=1), model="")
-    assert str(e.value).startswith(USER_ERROR_MARKER)
-    assert "Codex.gpt-5.5" in str(e.value)
+def test_an_unnamed_model_falls_back_to_this_backend_s_own(tmp_path, monkeypatch):
+    """`Codex` with no model means CodexDriver.DEFAULT_MODEL -- not "whatever
+    the user's codex happens to be configured for", which we could neither
+    record in the theory entry nor price."""
+    path = tmp_path / "interpretation_config"
+    path.write_text(yaml.safe_dump({"models": {CodexDriver.DEFAULT_MODEL: {
+        "pricing": {"input": 1.0, "cached_input": 1.0, "output": 1.0}}}}),
+        encoding="utf-8")
+    monkeypatch.setenv("INTERPRETATION_CONFIG_PATH", str(path))
+    C.load_interpretation_config(force_reload=True)
+    try:
+        assert _driver(_make_task(1, batch_size=1), model="").model \
+            == CodexDriver.DEFAULT_MODEL
+    finally:
+        C.load_interpretation_config(force_reload=True)
 
 
 def test_an_unpriced_model_is_refused_before_anything_is_spent(priced):
@@ -258,6 +267,20 @@ def test_an_unpriced_model_is_refused_before_anything_is_spent(priced):
         _driver(_make_task(1, batch_size=1), model="never-heard-of-it")
     assert str(e.value).startswith(USER_ERROR_MARKER)
     assert "never-heard-of-it" in str(e.value)
+
+
+def test_the_shipped_template_prices_the_default_model(monkeypatch):
+    """Otherwise `--driver Codex` cannot start at all: the driver refuses an
+    unpriced model, so a default nobody priced is a backend that never runs.
+
+    It also has to be a real catalogue slug -- `gpt-5.6` reads like one, appears
+    in Codex's own documentation, and is not in the model catalogue."""
+    monkeypatch.setenv("INTERPRETATION_CONFIG_PATH", str(C.template_path()))
+    C.load_interpretation_config(force_reload=True)
+    try:
+        assert C.pricing_of(CodexDriver.DEFAULT_MODEL).input > 0
+    finally:
+        C.load_interpretation_config(force_reload=True)
 
 
 def test_it_declares_that_it_cannot_report_a_compaction():
