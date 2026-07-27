@@ -66,7 +66,7 @@ fun run (force : bool) names state =
        workload number -- it is computed by the very cache filter the live run
        applies, so the confirmation below quotes exactly the work a "Yes" buys.
        The theory names only show the user the scope. *)
-    val (work_names, n) = Semantic_Store.dry_run force roots
+    val (work_names, n) = Semantic_Store.dry_run force (map Context.Theory roots)
     val m = length work_names
 
     (* Phase 2: whole-DB vector completion (missing-only) for the configured embedding

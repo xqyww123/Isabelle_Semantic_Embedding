@@ -143,11 +143,6 @@ migrate_on_hash_change: bool = False
 # lowest ceiling anywhere in the tree (isabelle_semantics's `remove` used 1<<33).
 SEMANTICS_MAP_SIZE: int = 1 << 32   # 4 GiB
 
-# How many theory names the "not interpreted" warning spells out before eliding.
-# Enough to act on, short enough that the remedy at the end stays visible.
-_WARN_THEORY_LIMIT: int = 10
-
-
 def _iter_vector_store_envs() -> 'Iterator[lmdb.Environment]':
     """Every ``vector_*.lmdb`` store on disk, as an open (process-cached) environment.
 
@@ -1355,15 +1350,79 @@ def mk_query_by_name_tool(
 
 # --- Other utilities ---
 
-async def interpret_theories_by_names(connection: Connection, names: list[str]) -> None:
-    """Interpret the ancestor cones of the named theories (short or long names).
-    The ML side expands the names to their whole ancestor cone, skips
-    already-interpreted theories, and interprets the rest in dependency order.
-    Calls back into Isabelle ML via the Semantic_Store.interpret_theories
-    callback -- argument (context, names, force, dry_run); the return (a dry-run
-    report on dry runs, ([], -1) on a live run like this one) is ignored."""
-    await connection.callback("Semantic_Store.interpret_theories",
-                              (None, names, False, False))
+# Per-RPC-host suppression of the update-interpretations question (the third
+# dialog option).  The RPC host is one process per Isabelle instance, so the
+# flag's scope is naturally "this Isabelle session": it survives across aoa
+# connections and resets with the host.  It suppresses the ASKING only --
+# the startup check still runs and small updates still run silently.
+_dont_ask_this_session: bool = False
+
+# The asking threshold, in entities (the dry run's n -- the system's one
+# workload number).  Locked at 100 in CHECK_OUTDATE_PLAN.md §8.
+_UPDATE_ASK_THRESHOLD: int = 100
+
+
+async def update_interpretations(connection: Connection,
+                                 ask_user: bool = False,
+                                 theory_names: 'list[str] | None' = None,
+                                 include_context: bool = True,
+                                 ctxt: Any = None) -> None:
+    """The interpretation policy shell (CHECK_OUTDATE_PLAN.md §8): gate, dry
+    run, threshold, question -- wrapped around the Semantic_Store cone callback.
+    The two callers are aoa startup (`ask_user=True`, context included as an
+    as-is root) and `_auto_embed`'s point fix (`ask_user=False`, an explicit
+    theory-name list, no context root); the `run_semantic_interpretation`
+    command deliberately does NOT go through here (explicit intent gets no
+    threshold, it has its own dialog).
+
+    Steps: 1. the `auto_interpret_for_embedding` gate is read fresh (a live
+    per-context option) -- off means silent return.  2/3. one dry run over
+    theory_names ∪ (the connection's current context when include_context)
+    yields the workload count n.  4. n = 0: nothing to do.  5. n below the
+    threshold: interpret silently.  6. otherwise ask (three options; "don't
+    ask again" sets the host-wide flag above) when ask_user, else warn with
+    the real n and the explicit command -- and do nothing."""
+    global _dont_ask_this_session
+    gate = await connection.config_lookup("auto_interpret_for_embedding", ctxt)
+    if not gate:
+        return
+    names = theory_names or []
+    thy_names, n = await connection.callback(
+        "Semantic_Store.interpret_theories",
+        (ctxt, names, False, True, include_context))
+    if n == 0:
+        return
+    if n < _UPDATE_ASK_THRESHOLD:
+        await connection.tracing(
+            f"[Semantic_Embedding] updating {n} new or outdated entity "
+            f"descriptions across {len(thy_names)} theories")
+        await connection.callback("Semantic_Store.interpret_theories",
+                                  (ctxt, names, False, False, include_context))
+        return
+    if ask_user:
+        if _dont_ask_this_session:
+            return          # the user said not to ask; they knowingly declined
+        shown = ", ".join(thy_names[:10]) + (", ..." if len(thy_names) > 10 else "")
+        answer = await connection.dialogue(
+            f"[Semantic_Embedding] {n} entities across {len(thy_names)} theories "
+            f"need (re-)interpretation: {shown}\n"
+            f"This calls the LLM: it may take a long time and cost money. Proceed?",
+            ["Yes", "No", "No, don't ask again in this session"])
+        if answer == "No, don't ask again in this session":
+            _dont_ask_this_session = True
+            return
+        if answer != "Yes":
+            return
+        await connection.callback("Semantic_Store.interpret_theories",
+                                  (ctxt, names, False, False, include_context))
+        return
+    # Nobody was asked (ask_user=False): the one warning point of §8's warning
+    # discipline -- report the real workload and the explicit remedy, do nothing.
+    await connection.warning(
+        f"[Semantic_Embedding] {n} entities across {len(thy_names)} theories have "
+        f"new or outdated descriptions that were not updated automatically.\n"
+        f"These gaps can degrade AoA's retrieval quality.  Run "
+        f"`run_semantic_interpretation` to update them.")
 
 
 _RERANK_FETCH_MULTIPLIER = 4
@@ -1442,6 +1501,13 @@ class Semantic_Vector_Store(Vector_Store):
         path = os.path.join(cache_dir, f"vector_{sanitize_model(model_name)}.lmdb")
         super().__init__(path, emb_provider, connection)
         self.model_name = model_name
+        # First of the DOUBLE gate on _auto_embed's point-fix interpretation
+        # (CHECK_OUTDATE_PLAN §8, 段(1)): a plain member, not a config option
+        # and not on the wire.  AoA sets it False after taking the store -- its
+        # by-aoa startup sweep (update_interpretations at _ensure_semantic_db)
+        # already covers the check, so query time short-circuits before even
+        # the config read.  Governs 段(1) only; embedding in 段(2) is unaffected.
+        self.enable_interpret_in_auto_embed: bool = True
         if connection is not None:
             with _svs_lock:
                 stores = getattr(connection, '_semantic_vector_stores', None)
@@ -1549,120 +1615,63 @@ class Semantic_Vector_Store(Vector_Store):
                 data[b"total_tokens"] = data.get(b"total_tokens", 0) + total_tokens
             txn.put(theory_key, msgpack.packb(data))  # type: ignore
 
-    async def _auto_embed(self, missing: list[key]) -> list[key]:
+    async def _auto_embed(self, missing: list[key], ctxt: Any = None) -> list[key]:
         if self.connection is None:
             return []
-        gate = await self.connection.config_lookup("auto_interpret_for_embedding")
+        from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
         theory_hashes: set[bytes] = set()
         # (process id, theory serial) of each WIP theory met below, fetched once
         # per theory; the SAME stamp is used for the freshness check and for the
         # mark after embedding (one run, one theory value).
         stamps: 'dict[bytes, tuple[str, int] | None]' = {}
-        # (1) When the gate permits it, auto-interpret the uninterpreted theories of the
-        # non-xor missing entities so they become embeddable.  XOR-prefixed keys
-        # (theorem/rule AND experience) are skipped: their prefix is an XOR pseudo-theory,
-        # not a locatable theory.  EXPERIENCE keys are xor-prefixed AND carry their own
-        # interpretation, so they never need this step -- the gate governs ONLY this
-        # interpretation, not the embedding in (2) (S1-a).
-        if gate:
-            from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
+        # (1) Point-fix interpretation of the missing entities' theories,
+        # delegated to the policy shell (update_interpretations, CHECK_OUTDATE_
+        # PLAN §8) -- which never asks at query time: small jobs run silently,
+        # big ones warn with the dry run's real workload count.  DOUBLE gate:
+        # first this store's `enable_interpret_in_auto_embed` field (AoA sets
+        # it False after taking the store -- its by-aoa startup sweep already
+        # ran the check, so the query path pays nothing here, not even a config
+        # read); second, `auto_interpret_for_embedding` is read fresh INSIDE
+        # the shell (a live per-context option -- never cached).
+        # XOR-prefixed keys are skipped: their prefix is an XOR pseudo-theory,
+        # not a locatable theory; EXPERIENCE keys also carry their own
+        # interpretation and never need this step.  The name list makes this a
+        # POINT FIX (the startup sweep passes none and roots on its context);
+        # the current theory is NOT excluded -- the old exclusion starved the
+        # very entities the running proof needs most (§8 context-root ruling).
+        if self.enable_interpret_in_auto_embed:
+            names: set[str] = set()
+            seen_th: set[bytes] = set()
             for k in missing:
                 if is_xor_prefixed_key(k):
                     continue
-                entity = destruct_key(k)
-                th = entity.theory
-                if is_WIP(th) and th not in stamps:
+                th = destruct_key(k).theory
+                if th in seen_th:
+                    continue
+                seen_th.add(th)
+                if is_WIP(th):
                     stamps[th] = await self._thy_stamp(th)
                 if not self.is_thy_embedded(th, stamps.get(th)):
-                    theory_hashes.add(th)
-            await self.connection.tracing(
-                f"[Semantic_Embedding] {len(missing)} entities missing embeddings, "
-                f"spanning {len(theory_hashes)} un-embedded theories")
-            # Filter to uninterpreted theories, excluding the current theory and skipped theories
-            from Isabelle_RPC_Host.context import theory_long_name
-            current_thy = await theory_long_name(self.connection)
-            uninterpreted_theories: list[str] = []
-            for th in theory_hashes:
-                if not Semantic_DB.is_thy_interpreted(th):
-                    name = await self.connection.callback("Theory_Hash.theory_name_of", th)
-                    if name is not None and name != current_thy and not is_thy_skipped(name):
-                        uninterpreted_theories.append(name)
-            if uninterpreted_theories:
-                if len(uninterpreted_theories) > 5:
-                    import Isabelle_RPC_Host.dialogue
-                    answer = await self.connection.dialogue(
-                        f"[Semantic Embedding] {len(uninterpreted_theories)} uninterpreted theories "
-                        f"need interpretation before embedding. "
-                        f"This may consume a significant amount of API tokens. Proceed?",
-                        ["Yes", "No"])
-                    if answer != "Yes":
-                        return []
-                await self.connection.tracing(
-                    f"[Semantic_Embedding] {len(uninterpreted_theories)} of {len(theory_hashes)} theories "
-                    f"not yet interpreted, running interpretation for: "
-                    + ", ".join(uninterpreted_theories))
-                await interpret_theories_by_names(self.connection, uninterpreted_theories)
+                    theory_hashes.add(th)      # embed-mark bookkeeping for (2)
+                name = await self.connection.callback("Theory_Hash.theory_name_of", th)
+                if name is not None and not is_thy_skipped(name):
+                    names.add(name)
+            if names:
+                await update_interpretations(
+                    self.connection, ask_user=False,
+                    theory_names=sorted(names), include_context=False, ctxt=ctxt)
         # (2) Keys embeddable NOW: record present AND document_text_of != None -- every
         # EXPERIENCE, plus entities whose theory is interpreted (including any just
-        # interpreted in (1)).  This set embeds regardless of the gate (S1-a): the gate
-        # is about spending LLM tokens to interpret, and these need no interpretation.
+        # interpreted in (1)).  This set embeds regardless of the gates (S1-a): they
+        # are about spending LLM tokens to interpret, and these need no interpretation.
         # ONE read txn for the whole batch (get_many), not one per key: `missing` can be
-        # 10^5 long on a library not yet embedded for this model, and we are on the event
-        # loop.  This runs before the gate check below because the gate governs only the
-        # interpretation in (1) -- but it must not cost 10^5 begin/commit pairs to find
-        # out there is nothing ready.
+        # 10^5 long on a library not yet embedded for this model, and we are on the
+        # event loop.
         ready: 'list[tuple[key, SemanticRecord]]' = [
             (k, rec) for k, rec in zip(missing, Semantic_DB.get_many(missing))
             if rec is not None and document_text_of(rec) is not None]
-        # (3) Gate off: warn about the entities we could NOT embed (they would need
-        # interpretation, which the gate forbids).  The already-ready set still embeds.
-        if not gate:
-            n_blocked = len(missing) - len(ready)
-            if n_blocked:
-                # Name the theories, not just a count of entities: the count says
-                # something is missing, the names say what to do about it -- they are
-                # what the user feeds to `run_semantic_interpretation`.  Same filtering
-                # as the gate-on branch above (skip xor-prefixed keys, the current
-                # theory, and infra theories), so both paths report the same set.
-                from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
-                from Isabelle_RPC_Host.context import theory_long_name
-                ready_keys = {k for k, _ in ready}
-                blocked: dict[bytes, int] = {}
-                for k in missing:
-                    if k in ready_keys or is_xor_prefixed_key(k):
-                        continue
-                    th = destruct_key(k).theory
-                    if not Semantic_DB.is_thy_interpreted(th):
-                        blocked[th] = blocked.get(th, 0) + 1
-                current_thy = await theory_long_name(self.connection)
-                named: list[tuple[str, int]] = []
-                for th, n in blocked.items():
-                    name = await self.connection.callback("Theory_Hash.theory_name_of", th)
-                    if name is not None and name != current_thy and not is_thy_skipped(name):
-                        named.append((name, n))
-                # Warn only when we can NAME something.  n_blocked alone is the wrong
-                # trigger: it counts the keys this filter deliberately drops (current
-                # theory, skipped infra theories, unknown hashes, xor-prefixed thm keys),
-                # none of which `run_semantic_interpretation` can ever resolve.  Firing on
-                # those produced "0 theories and 4 entities ... : " -- a dangling colon,
-                # an empty list, and a remedy that does nothing -- on every single lookup,
-                # permanently, with no way for the user to clear it.  Count entities over
-                # the SAME named set too, so the two numbers cannot disagree.
-                if named:
-                    named.sort()
-                    names = [nm for nm, _ in named]
-                    n_ents = sum(n for _, n in named)
-                    shown = ", ".join(names[:_WARN_THEORY_LIMIT])
-                    more = (f", ... (and {len(names) - _WARN_THEORY_LIMIT} more)"
-                            if len(names) > _WARN_THEORY_LIMIT else "")
-                    await self.connection.warning(
-                        f"[Semantic_Embedding] {len(names)} theories and {n_ents} entities "
-                        f"have not been interpreted or embedded: {shown}{more}\n"
-                        f"These gaps can significantly degrade AoA's performance, though they "
-                        f"do not stop it from working.\n"
-                        f"Run `run_semantic_interpretation` to interpret and embed them.")
         if not ready:                                    # C1: nothing embeddable -> do NOT mark theories
-            if gate:
+            if self.enable_interpret_in_auto_embed:
                 await self.connection.tracing(
                     f"[Semantic_Embedding] no semantic interpretations found for the missing entities, skipping")
             return []
@@ -1868,13 +1877,15 @@ class Semantic_Vector_Store(Vector_Store):
         top: list[tuple[universal_key, float]] = []
         if candidates:
             top = await self.topk(query, candidates, fetch_k,
-                                   kinds_phrase=render_kinds(entity_kinds))
+                                   kinds_phrase=render_kinds(entity_kinds),
+                                   ctxt=ctxt)
         if exp_hit and query_str is not None:
             from . import embedding_config as _ecfg
             exp_qvec = (await self.emb_provider.embed(
                 [query_str], role="query",
                 task_override=_ecfg.experience_task_description())).vectors[0]
-            top = top + await self.topk(exp_qvec, list(exp_hit.keys()), fetch_k)
+            top = top + await self.topk(exp_qvec, list(exp_hit.keys()), fetch_k,
+                                        ctxt=ctxt)
         # Stage-1 relevance boost (§6): a convex pull of the cosine toward 1 by
         # hit_rate, applied uniformly (entities default hit_rate 1). Disabled when
         # the query has <= 1 term pattern (every survivor then has hit_rate 1, so

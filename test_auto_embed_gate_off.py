@@ -1,20 +1,20 @@
-"""Regression tests for the gate-off branch of ``Semantic_Vector_Store._auto_embed``.
+"""Regression tests for the gates of ``Semantic_Vector_Store._auto_embed``
+(CHECK_OUTDATE_PLAN §8, 段(1)) and the policy shell it delegates to.
 
-This branch (auto_interpret_for_embedding = false) emits the "not interpreted"
-warning.  It is reachable only from a live Isabelle RPC lookup, so it is driven
-here with a stub Connection and a monkeypatched Semantic_DB.
+The old gate-off warning branch (段(3)) is DELETED BY DESIGN: a gate the user
+switched off must be silent -- the per-query nagging was the highest-frequency
+annoyance the warning-discipline ruling removed.  What this file now guards:
 
-Regression guarded: the warning used to fire on ``n_blocked`` -- a count that
-includes keys the theory-name filter deliberately drops (the current theory,
-skipped infra theories such as Pure, unknown theory hashes, and xor-prefixed
-theorem keys).  In steady state, when every nameable theory is interpreted, only
-those undroppable keys remain, and the warning fired forever as
-"0 theories and 4 entities ... : " -- dangling colon, empty list, and a remedy
-that resolves nothing.
+  * gate off   -> no warning, no interpretation; already-ready keys still embed
+  * field off  -> 段(1) skipped wholesale: not even the config gets read
+  * field+gate -> the point fix delegates to update_interpretations with the
+    missing entities' theory names -- the current theory NOT excluded (the old
+    exclusion starved the entities the running proof needs most), skipped infra
+    theories and unresolvable hashes dropped
+  * the shell: small n interprets silently; big n with ask_user=False warns
+    with the dry run's real entity count and does nothing
 """
 import asyncio
-
-import pytest
 
 from Isabelle_RPC_Host.universal_key import EntityKind, xor_theory_prefix
 import Isabelle_Semantic_Embedding.semantics as S
@@ -37,22 +37,31 @@ CUR_NAME = "Scratch.Current"
 
 
 class _StubConn:
-    """Minimal Connection: gate off, ML-Option-like theory_name_of, captured output."""
+    """Minimal Connection: configurable gate, ML-Option-like callbacks,
+    captured output.  ``dry`` is what the cone callback's dry run reports."""
 
-    def __init__(self, names: dict):
+    def __init__(self, names: dict, gate: bool, dry=((), 0)):
         self.names = names
+        self.gate = gate
+        self.dry = dry
         self.warnings: list = []
         self.tracings: list = []
+        self.calls: list = []
 
     async def config_lookup(self, name, ctxt=None):
         assert name == "auto_interpret_for_embedding"
-        return False
+        self.calls.append(("config", name))
+        return self.gate
 
     async def callback(self, name, arg):
-        if name == "Context.the_theory_long_name":
-            return CUR_NAME
+        self.calls.append((name, arg))
         if name == "Theory_Hash.theory_name_of":
             return self.names.get(arg)      # None mirrors the ML NONE
+        if name == "Theory_Hash.process_serial_of":
+            return ("test-process", 1)
+        if name == "Semantic_Store.interpret_theories":
+            ctxt, names, force, dry_run, include_context = arg
+            return [list(self.dry[0]), self.dry[1]] if dry_run else [[], -1]
         raise AssertionError(f"unexpected callback {name}")
 
     async def warning(self, msg):
@@ -61,51 +70,88 @@ class _StubConn:
     async def tracing(self, msg):
         self.tracings.append(msg)
 
+    async def dialogue(self, msg, options):
+        raise AssertionError("_auto_embed must never ask at query time")
 
-def _store(names, missing, ready_key=None):
+
+def _store(names, gate, ready_key=None, field=True, dry=((), 0)):
     S.Semantic_DB.get_many = lambda ks: [
         ({"interpretation": "x"} if k == ready_key else None) for k in ks]
-    S.Semantic_DB.is_thy_interpreted = lambda k: False
     S.document_text_of = lambda rec: "doc"
     store = object.__new__(S.Semantic_Vector_Store)
-    store.connection = _StubConn(names)
+    store.connection = _StubConn(names, gate, dry)
+    store.enable_interpret_in_auto_embed = field
+    store.is_thy_embedded = lambda th, stamp=None: False
 
     async def _embed(records, force=False):
         return 0
     store.embed_records = _embed
-    store.mark_thy_embedded = lambda th, tok: None
+    store.mark_thy_embedded = lambda th, tok=0, stamp=None: None
     return store
 
 
-def test_warning_names_theories_and_counts_only_their_entities():
-    """12 nameable theories + 4 keys the filter drops: both numbers must be 12."""
-    plain = [_thy(10 + i) for i in range(12)]
-    names = {T_CUR: CUR_NAME, T_SKIP: "Pure", T_UNK: None}
-    names.update({t: f"HOL.Thy{i:02d}" for i, t in enumerate(plain)})
+def _interpret_calls(conn):
+    return [a for n, a in conn.calls if n == "Semantic_Store.interpret_theories"]
 
+
+def test_gate_off_is_silent_and_still_embeds_ready_keys():
+    """The user switched the gate off: no warning, no live interpretation --
+    and the already-interpreted key still gets its vector."""
+    plain = [_thy(10 + i) for i in range(3)]
+    names = {T_CUR: CUR_NAME, T_SKIP: "Pure", T_UNK: None}
+    names.update({t: f"HOL.Thy{i}" for i, t in enumerate(plain)})
     ready_key = _ent(plain[0], "already_ready")
-    missing = (
-        [_ent(T_CUR, "cur"), _ent(T_SKIP, "skip"), _ent(T_UNK, "unk")]
-        + [_ent(t, f"c{i}") for i, t in enumerate(plain)]
-        + [_thm([plain[0], plain[1]])]
-        + [ready_key]
-    )
-    store = _store(names, missing, ready_key)
+    missing = [_ent(t, f"c{i}") for i, t in enumerate(plain)] + [ready_key]
+    store = _store(names, gate=False, ready_key=ready_key)
+
     assert asyncio.run(store._auto_embed(missing)) == [ready_key]
-
-    (warn,) = store.connection.warnings
-    # The entity count must match the named set, not len(missing) - len(ready) == 16.
-    assert "12 theories and 12 entities" in warn
-    assert "HOL.Thy00" in warn and "(and 2 more)" in warn
-    # Nothing the filter drops may be named.
-    assert CUR_NAME not in warn and "Pure" not in warn
+    conn = store.connection
+    assert conn.warnings == []                       # silence, by ruling
+    # the shell was consulted (dry run) but its gate stopped everything:
+    # only never a LIVE interpretation call
+    assert all(a[3] for a in _interpret_calls(conn)), "no live run may happen"
 
 
-def test_no_warning_when_nothing_can_be_named():
-    """Steady state: only undroppable keys are blocked -> stay silent."""
-    names = {T_CUR: CUR_NAME, T_SKIP: "Pure", T_UNK: None}
-    missing = [_ent(T_CUR, "cur"), _ent(T_SKIP, "skip"), _ent(T_UNK, "unk"),
-               _thm([_thy(10)])]
-    store = _store(names, missing)
+def test_field_off_skips_paragraph_one_entirely():
+    """AoA's store: not even the config gets read, no callbacks fire."""
+    missing = [_ent(_thy(10), "c0")]
+    store = _store({_thy(10): "HOL.Thy0"}, gate=True, field=False)
     assert asyncio.run(store._auto_embed(missing)) == []
-    assert store.connection.warnings == []
+    assert store.connection.calls == []
+
+
+def test_point_fix_passes_theory_names_including_the_current_theory():
+    """The name list is the point fix; the current theory is NOT excluded, the
+    skipped/unresolvable ones are.  A small n runs silently (no warning)."""
+    plain = _thy(10)
+    names = {T_CUR: CUR_NAME, T_SKIP: "Pure", T_UNK: None, plain: "HOL.Thy0"}
+    missing = [_ent(T_CUR, "cur"), _ent(T_SKIP, "skip"), _ent(T_UNK, "unk"),
+               _ent(plain, "c0"), _thm([plain])]
+    store = _store(names, gate=True, dry=(("HOL.Thy0",), 2))
+
+    asyncio.run(store._auto_embed(missing))
+    conn = store.connection
+    dry_calls = _interpret_calls(conn)
+    assert dry_calls, "the point fix must reach the cone callback"
+    ctxt, passed_names, force, dry_run, include_context = dry_calls[0]
+    assert CUR_NAME in passed_names                  # the old exclusion is the fixed defect
+    assert "Pure" not in passed_names and None not in passed_names
+    assert include_context is False                  # point fix, not the startup sweep
+    # n = 2 < threshold: interpreted silently, warning-free
+    assert any(not a[3] for a in dry_calls), "small n must run live silently"
+    assert conn.warnings == []
+
+
+def test_shell_warns_with_the_real_count_when_nobody_was_asked():
+    """n >= threshold and ask_user=False: one warning quoting the dry run's n,
+    and no live interpretation."""
+    plain = _thy(10)
+    names = {plain: "HOL.Thy0"}
+    missing = [_ent(plain, "c0")]
+    store = _store(names, gate=True, dry=(("HOL.Thy0", "HOL.Thy1"), 150))
+
+    asyncio.run(store._auto_embed(missing))
+    conn = store.connection
+    (warn,) = conn.warnings
+    assert "150" in warn and "run_semantic_interpretation" in warn
+    assert all(a[3] for a in _interpret_calls(conn)), "no live run may happen"

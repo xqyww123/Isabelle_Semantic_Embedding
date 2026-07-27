@@ -10,7 +10,7 @@ import pathlib
 import tempfile
 import time
 from urllib.parse import urlsplit
-from typing import TYPE_CHECKING, Awaitable, Callable, ClassVar, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, ClassVar, NamedTuple, cast
 if TYPE_CHECKING:
     from Isabelle_RPC_Host.rpc import Connection
 import httpx
@@ -1151,17 +1151,21 @@ class Vector_Store(ABC):
                 txn.put(k, encode_q15(vec).tobytes())
         return result.total_tokens
 
-    async def _auto_embed(self, missing: list[key]) -> list[key]:
+    async def _auto_embed(self, missing: list[key], ctxt: 'Any' = None) -> list[key]:
         """Override to obtain and persist vectors for keys absent from the store.
 
         Called by topk before it opens its read transaction, so implementations
         are free to await. Whatever they persist is picked up by the subsequent
-        gather; they need not hand the vectors back.
+        gather; they need not hand the vectors back.  `ctxt` is the caller's ML
+        context handle (None = the ML side's current command context), threaded
+        down the lookup -> topk -> _auto_embed chain for config reads and the
+        interpretation callback.
         Returns the keys that are now stored. Default: none recovered."""
         return []
 
     async def topk(self, query: np.ndarray | str, domain: list[key], k: int,
-                   *, kinds_phrase: str | None = None) -> list[tuple[key, float]]:
+                   *, kinds_phrase: str | None = None,
+                   ctxt: Any = None) -> list[tuple[key, float]]:
         """Return the top-k (key, cosine) pairs from domain most similar to query.
 
         If query is a string, it is embedded via emb_provider first (role="query",
@@ -1189,7 +1193,7 @@ class Vector_Store(ABC):
         # Missing keys fall out of the gather itself — probing for them up front
         # would mean a second pass over the whole domain on the event loop.
         results, missing = await asyncio.to_thread(self._topk_sync, query_q15, domain, k)
-        if missing and await self._auto_embed(missing):
+        if missing and await self._auto_embed(missing, ctxt=ctxt):
             results, _ = await asyncio.to_thread(self._topk_sync, query_q15, domain, k)
         return results
 
