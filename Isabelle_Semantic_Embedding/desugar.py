@@ -62,7 +62,18 @@ def mk_desugar_and_explain_tool(
     connection: Connection,
     file_path: str | None = None,
     seen_constants: set[str] | None = None,
+    dedup: bool = True,
 ) -> SdkMcpTool[Any]:
+    """The desugar tool, annotating each constant with its English description.
+
+    `dedup` skips a constant already annotated earlier in the conversation, to
+    spend the tokens once.  It is only safe while someone clears
+    `seen_constants` when the conversation is compacted: after a compaction the
+    earlier annotations are gone from the agent's context while the set still
+    says they were given, so the agent would meet a constant it cannot see the
+    meaning of and would not know it was missing.  Pass False for an agent
+    backend that does not report its compactions -- annotating twice costs
+    tokens, annotating never costs the translation."""
     log = connection.server.logger.getChild("desugar")
     if seen_constants is None:
         seen_constants = set()
@@ -103,7 +114,7 @@ def mk_desugar_and_explain_tool(
         new_annotations: list[str] = []
         for full_name, uk_bytes in constants:
             uk: universal_key = bytes(uk_bytes)
-            if full_name in seen_constants:
+            if dedup and full_name in seen_constants:
                 continue
             sem = Semantic_DB.query(uk, with_pretty=False)
             if sem is None:

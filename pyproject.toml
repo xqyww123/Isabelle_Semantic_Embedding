@@ -76,6 +76,13 @@ dependencies = [
     "zstandard",
 ]
 
+[project.optional-dependencies]
+# The Codex interpretation backend.  Optional because it pulls the codex binary
+# (openai-codex-cli-bin, ~129 MB): a user who interprets with Claude Code should
+# not carry it.  Pinned exactly -- the SDK ships against one binary version and
+# the protocol is self-described as experimental.
+codex = ["openai-codex==0.144.4"]
+
 [project.urls]
 "Homepage" = "https://github.com/xqyww123/Premise_Embedding"
 

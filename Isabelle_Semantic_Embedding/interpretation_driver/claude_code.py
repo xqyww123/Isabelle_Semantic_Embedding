@@ -317,6 +317,7 @@ class ClaudeCodeDriver(InterpretationDriver):
     connection; the CLI subprocess reaches them over the SDK's own transport."""
 
     DEFAULT_MODEL = "claude-opus-4-8[1m]"
+    REPORTS_CONTEXT_RESET = True          # the PreCompact hook below
 
     def __init__(self, **kw: Any) -> None:
         super().__init__(**kw)

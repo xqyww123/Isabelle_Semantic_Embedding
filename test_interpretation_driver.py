@@ -267,6 +267,53 @@ def test_the_resolved_pair_is_what_gets_recorded():
     assert (task2.driver, task2.model) == ("Codex", "gpt-5.5")
 
 
+# --- explaining the same constant twice ------------------------------------
+
+class _DesugarConnection:
+    """Just enough connection for the desugar tool: a logger and one callback."""
+
+    class server:
+        logger = logging.getLogger("test_interpretation_driver.desugar")
+
+    def __init__(self, constants):
+        self._constants = constants
+
+    async def callback(self, name, args):
+        return "compact term", self._constants
+
+
+def _desugar_twice(dedup, monkeypatch):
+    """Call the desugar tool twice on the same constant; return both replies."""
+    from Isabelle_Semantic_Embedding import desugar as D
+    monkeypatch.setattr(D.Semantic_DB, "query",
+                        lambda uk, with_pretty=False: "the successor function")
+    tool = D.mk_desugar_and_explain_tool(
+        _DesugarConnection([("Nat.Suc", b"\x01" * 32)]), dedup=dedup)
+
+    async def go():
+        return (await tool.handler({"term": "Suc n"}),
+                await tool.handler({"term": "Suc n"}))
+
+    return asyncio.run(go())
+
+
+def test_the_desugar_tool_explains_a_constant_once_when_it_may(monkeypatch):
+    first, second = _desugar_twice(True, monkeypatch)
+    assert "the successor function" in first["content"][0]["text"]
+    assert "the successor function" not in second["content"][0]["text"]
+
+
+def test_the_desugar_tool_explains_it_every_time_when_it_must(monkeypatch):
+    """For a backend that compacts the conversation without telling anyone: the
+    earlier explanation is gone from the agent's context while the record still
+    says it was given, so the agent would meet a constant it cannot see the
+    meaning of -- and would not know it was missing.  Explaining twice costs
+    tokens; explaining never costs the translation."""
+    first, second = _desugar_twice(False, monkeypatch)
+    assert "the successor function" in first["content"][0]["text"]
+    assert "the successor function" in second["content"][0]["text"]
+
+
 # --- the context-reset channel ---------------------------------------------
 
 def test_on_context_reset_reaches_the_desugar_dedup_set():

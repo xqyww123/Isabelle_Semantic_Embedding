@@ -67,15 +67,17 @@ def _module_basename(name: str) -> str:
 def resolve_interpretation_driver_class(name: str) -> type[InterpretationDriver] | None:
     """The driver class for `name`, importing its module on first use.
 
-    Returns None when no such driver exists, so a caller can report the
-    available names; a driver module that fails to LOAD still raises."""
+    Returns None when there is no such driver, so a caller can report the names
+    there are.  A driver that EXISTS but cannot be imported raises instead --
+    that is a backend whose optional dependency is not installed, and reporting
+    it as an unknown name would send the user looking for a typo."""
     cls = DRIVERS.get(name)
     if cls is not None:
         return cls
-    try:
-        importlib.import_module(f".{_module_basename(name)}", __package__)
-    except ModuleNotFoundError:
+    module = _module_basename(name)
+    if not (Path(__file__).parent / f"{module}.py").exists():
         return None
+    importlib.import_module(f".{module}", __package__)
     return DRIVERS.get(name)
 
 
@@ -129,8 +131,17 @@ class InterpretationDriver(ABC):
     #: model used when the driver spec names none (`Codex` rather than
     #: `Codex.gpt-5.5`).  Every concrete driver must set it: which model is
     #: sensible is the backend's own business, and a shared default would be a
-    #: model name from one backend handed to another.
+    #: model name from one backend handed to another.  Left empty by a backend
+    #: that has no default it can name, which must then reject an unnamed model
+    #: itself rather than run on one it cannot identify.
     DEFAULT_MODEL: str = ""
+
+    #: whether this backend tells us when it compacts the conversation, i.e.
+    #: whether `on_context_reset` is ever called.  The desugar tool spends
+    #: tokens once per constant only while someone can clear its record of what
+    #: it has already explained; a backend that compacts silently must have it
+    #: explain every time (see `mk_desugar_and_explain_tool`'s `dedup`).
+    REPORTS_CONTEXT_RESET: bool = False
 
     def __init__(self, *, model: str, system_prompt: str,
                  tools: list["SdkMcpTool[Any]"],

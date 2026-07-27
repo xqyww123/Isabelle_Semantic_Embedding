@@ -889,7 +889,8 @@ async def interpret_file(
             definition_tool = mk_definition_tool(connection, unicode=True)
             hover_tool = mk_hover_tool(connection, unicode=True)
             desugar_tool = mk_desugar_and_explain_tool(
-                connection, file_path=file_path, seen_constants=seen_constants)
+                connection, file_path=file_path, seen_constants=seen_constants,
+                dedup=driver_cls.REPORTS_CONTEXT_RESET)
             tools = [query_by_name_tool, definition_tool, hover_tool,
                      desugar_tool, _answer_tool]
 
