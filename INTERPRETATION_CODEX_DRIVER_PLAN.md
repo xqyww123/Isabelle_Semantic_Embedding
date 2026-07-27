@@ -707,6 +707,34 @@ theory，`map Context.Theory` 一做，caller 的 `declare` 就没了。加首�
 
 ## 5. 分步实施
 
+> **实施状态（2026-07-27）：步骤 1–6 已落地并提交，步骤 7 待跑。**
+>
+> | 步骤 | 提交 | 验证 |
+> |---|---|---|
+> | 1 纯重构 | `c5163ec` | fake-driver harness；分类器测试改指新位置后全绿 |
+> | 2 配置入口解析 | `9f916c4` | `Test/Interpretation_Driver_Config_Test.thy`（`isabelle build -d . -d Test` 通过）+ 四级链单测 |
+> | 3 HTTP MCP server | `1bb612b` | 真实 loopback HTTP 往返；翻译层与 contextvar 重绑各自**验证过"去掉就失败"** |
+> | 4 价格表 | `dbdc290` | 载入/缺失/半填/算术单测 |
+> | 5 Codex driver | `bd5fbda` | 成本差分、错误分类（全枚举 + 全对象变体 + HTTP 状态）、两处拒绝启动 |
+> | 6 打包 | `10833a1` | setuptools 自己的 `find_data_files`；另实建 wheel 核对六个 SKILL.md |
+>
+> **有意未做**（非遗漏）：
+> - §4.8 辅通路只用于「额度用完 vs 没钱了」的分辨与 log `resets_at`；**没有**用 `resets_at`
+>   替换 `_run_agent` 里硬编码的 `sleep(1200)`——那是两条 driver 共用的路径，改它超出本步范围。
+> - §4.3 提到的 `AsyncTurnHandle.interrupt()` **未接线**。中断在本子系统里本来就是"按设计硬崩"
+>   （答案与成本都已逐条落盘、重跑可续），Claude 路径同样不接；driver 的 `__aexit__` 关掉
+>   client 已足以让 app-server 随之退出。
+> - §4.6 的 `SkillInput` 强制灌入未做（计划本就写"实测模型行为后再定"）；skill 走
+>   `<cwd>/.codex/skills/` 自动发现。
+>
+> **conda**：不带 Codex（用户 2026-07-27 决定）。`openai-codex` 只在 PyPI 上，
+> conda-forge 的 `codex` 是另一个东西（Rust CLI，SDK 从不查 PATH 故用不上）。
+> 理由已写进 `conda/recipe.yaml` 的 run 段注释。
+>
+> ⚠️ **`interpretation_config_template.yaml` 里 gpt-5.5 的三个价格取自本文 §4.5 的示例，
+> 未经核对。** 模板里已醒目标注"不是报价、请对照 provider 价目表"，但步骤 7 之前应先把它换成真值，
+> 否则第一次 Codex 跑出来的美元数就是错的（且会写进 theory 记录）。
+
 1. **纯重构，零行为变化**（单独提交）。抽 ABC + 注册表，现有路径搬进
    `interpretation_driver/claude_code.py`，`_run_agent` 改走 driver，接上 `on_context_reset`。
    **验收**（评审 major 3）：
