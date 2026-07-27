@@ -99,6 +99,7 @@ isabelle-semantics = "Isabelle_Semantic_Embedding.isabelle_semantics:main"
 # artifact, _vecgather, is an ext_module and needs no entry here -- build_ext
 # places it. (.dylib / .dll will join this list when those platforms land.)
 Isabelle_Semantic_Embedding = ["embedding_config_template.yaml", "config_template.yaml",
+                               "interpretation_config_template.yaml",
                                "libisabelle_vector.so",
                                # The deformalisation agent runs with this directory as its
                                # cwd and setting_sources=["project"], so the three skills

@@ -1,0 +1,28 @@
+# Configuration for the semantic-interpretation agent backends.
+#
+# This file is seeded from a template on first use and never touched again, so a
+# key added to a later template will NOT appear here.  Edit it freely.
+#
+# It exists because some backends report only token counts, not money, and the
+# per-theory cost recorded in the semantic database is in dollars.  A backend
+# that reports its own cost (ClaudeCode does) needs no entry here at all.
+#
+# ⚠ THE PRICES BELOW ARE NOT AUTHORITATIVE.  They are a starting point, not a
+# quote: list prices change, and what you actually pay depends on your plan.
+# Check them against your provider's pricing page before trusting the dollar
+# figures this system reports.  Prices are in dollars PER TOKEN.
+#
+#   input:         a token sent and not served from the prompt cache
+#   cached_input:  a token sent and served from the prompt cache
+#   output:        a token generated (this INCLUDES reasoning tokens)
+#
+# A model used by a backend that needs prices, but missing from this file, is a
+# hard error naming the model and this path — reporting a run as free is worse
+# than refusing to start it.
+
+models:
+  gpt-5.5:
+    pricing:
+      input: 1.25e-6
+      cached_input: 0.125e-6
+      output: 10.0e-6

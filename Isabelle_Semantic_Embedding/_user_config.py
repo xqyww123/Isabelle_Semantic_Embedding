@@ -28,6 +28,29 @@ import yaml
 _PACKAGE_DIR = pathlib.Path(__file__).parent
 
 
+def isabelle_home_user() -> 'pathlib.Path | None':
+    """Resolve $ISABELLE_HOME_USER, falling back to ~/.isabelle/$ISABELLE_IDENTIFIER."""
+    env = os.getenv("ISABELLE_HOME_USER")
+    if env:
+        return pathlib.Path(env)
+    ident = os.getenv("ISABELLE_IDENTIFIER")
+    if ident:
+        return pathlib.Path.home() / ".isabelle" / ident
+    return None
+
+
+def isabelle_etc(name: str) -> 'Callable[[], pathlib.Path | None]':
+    """A locator for ``$ISABELLE_HOME_USER/etc/<name>``.
+
+    For the configs that are only ever driven from inside Isabelle, and so
+    belong with the rest of the user's Isabelle settings rather than in a
+    platform config directory."""
+    def locate() -> 'pathlib.Path | None':
+        home = isabelle_home_user()
+        return None if home is None else home / "etc" / name
+    return locate
+
+
 class User_Config:
     """A YAML file seeded from a bundled template, loaded once per process."""
 

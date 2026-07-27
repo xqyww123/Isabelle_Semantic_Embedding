@@ -21,28 +21,11 @@ from __future__ import annotations
 import os
 import pathlib
 
-from ._user_config import User_Config
-
-
-def _isabelle_home_user() -> pathlib.Path | None:
-    """Resolve $ISABELLE_HOME_USER, falling back to ~/.isabelle/$ISABELLE_IDENTIFIER."""
-    env = os.getenv("ISABELLE_HOME_USER")
-    if env:
-        return pathlib.Path(env)
-    ident = os.getenv("ISABELLE_IDENTIFIER")
-    if ident:
-        return pathlib.Path.home() / ".isabelle" / ident
-    return None
-
-
-def _resolve_config_path() -> pathlib.Path | None:
-    """Path of the editable config file, or None if it cannot be located."""
-    home = _isabelle_home_user()
-    return None if home is None else home / "etc" / "embedding_config"
+from ._user_config import User_Config, isabelle_etc
 
 
 _CONFIG = User_Config("embedding_config_template.yaml", "EMBEDDING_CONFIG_PATH",
-                      _resolve_config_path)
+                      isabelle_etc("embedding_config"))
 
 
 def load_embedding_config(force_reload: bool = False) -> dict:
