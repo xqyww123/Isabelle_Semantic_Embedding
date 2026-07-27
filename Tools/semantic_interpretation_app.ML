@@ -69,8 +69,16 @@ val _ = REPL_Server.register_app "Semantic_Store.collect" (fn (cin, cout, state)
            Private_Output.error_message_fn := old_error_message)
         val _ = set_channels (fn msgs => List.app send msgs)
 
+        (* Batch collection has no user context of its own, so the first root theory
+           serves as the one whose `declare [[Semantic_Embedding.interpretation_driver]]`
+           governs the run; with no roots there is nothing to interpret anyway.  In
+           practice this path is driven by `semantics_manage collect --driver`, which
+           outranks the declaration. *)
+        val cfg_context = (case thys of thy :: _ => Context.Theory thy
+                            | [] => Context.Theory (Thy_Info.get_theory "Pure"))
         val _ = \<^try>\<open>
-                  Semantic_Store.interpret_with_parallel force (map Context.Theory thys)
+                  Semantic_Store.interpret_with_parallel cfg_context force
+                    (map Context.Theory thys)
                   catch exn => (restore_channels (); Exn.reraise exn)\<close>
         val _ = restore_channels ()
         val _ = done ()

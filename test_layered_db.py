@@ -391,6 +391,8 @@ def test_write_cost_accumulates_onto_system_status(cache):
          b"output_tokens": 2, b"cost_usd": 1.0, b"finished": True, b"model": "m"})})
     task = object.__new__(SI.InterpretationTask)
     task.theory_key = HA
+    task.driver = "ClaudeCode"
+    task.model = "m"
     task.total_input_tokens = 1
     task.total_cache_creation_tokens = 0
     task.total_cache_read_tokens = 0
@@ -402,6 +404,8 @@ def test_write_cost_accumulates_onto_system_status(cache):
     st = S.unpack_thy_status(_user_raw(HA))
     assert st[b"finished"] is True                           # never defaulted to False
     assert st[b"input_tokens"] == 11
+    # Which backend produced it, recorded alongside the model.
+    assert st[b"driver"] == b"ClaudeCode" or st[b"driver"] == "ClaudeCode"
 
 
 def test_mark_thy_embedded_continues_system_status(cache):

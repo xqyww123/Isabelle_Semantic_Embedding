@@ -316,6 +316,8 @@ class ClaudeCodeDriver(InterpretationDriver):
     (`create_sdk_mcp_server`), so their handlers keep their live Isabelle RPC
     connection; the CLI subprocess reaches them over the SDK's own transport."""
 
+    DEFAULT_MODEL = "claude-opus-4-8[1m]"
+
     def __init__(self, **kw: Any) -> None:
         super().__init__(**kw)
         self._client: ClaudeSDKClient | None = None

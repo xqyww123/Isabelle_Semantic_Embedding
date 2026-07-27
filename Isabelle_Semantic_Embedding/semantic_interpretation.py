@@ -22,16 +22,47 @@ from claude_agent_sdk import tool
 
 from .base import ToolCall_ret, mk_ret as _mk_ret
 from .desugar import mk_desugar_and_explain_tool
-from .interpretation_driver import InterpretationDriver, make_interpretation_driver
+from .interpretation_driver import (
+    InterpretationDriver,
+    available_interpretation_drivers,
+    make_interpretation_driver,
+    resolve_interpretation_driver_class,
+)
 from .semantics import Provenance, Semantic_DB, SemanticRecord, unpack_thy_status
 
 # --- Module-level configuration ---
 
-interpretation_model: str = "claude-opus-4-8[1m]"
-"""LLM model used for semantic interpretation. Set before calling interpret_file."""
+_DEFAULT_DRIVER = "ClaudeCode"
 
-interpretation_driver_name: str = "ClaudeCode"
-"""Agent backend used for semantic interpretation (see `interpretation_driver`)."""
+interpretation_driver_override: str = ""
+"""Process-wide choice of agent backend, outranking every other source.
+
+A ``"<Driver>[.<model>]"`` string, exactly as the Isabelle config option and the
+environment variable carry it (see `_resolve_driver`).  Empty means "not set":
+this is the batch CLI's channel into the pipeline (`semantics_manage collect
+--driver`), and it must stay empty when the user did not ask for one."""
+
+
+def _resolve_driver(from_isabelle: str) -> tuple[str, str]:
+    """Which agent backend and model to run, as ``(driver_name, model)``.
+
+    Four sources, first non-empty wins: the batch CLI, the Isabelle config option
+    `Semantic_Embedding.interpretation_driver` (already resolved ML-side and
+    passed down as data -- never looked up per theory, see its comment in
+    semantic_store.ML), the environment, and finally ClaudeCode.  Empty string is
+    "not set" at every layer, which is this package's one convention for it
+    (cf. `embedding_driver`).
+
+    The value is ONE string carrying both halves, split at the FIRST dot -- so a
+    model name may contain dots (``Codex.gpt-5.5``) while a driver name may not.
+    Keeping them in one value is what makes a mismatched pair (one layer naming
+    the driver, another naming a model that backend has never heard of)
+    structurally impossible.  An empty model half means "that driver's own
+    default".  Same rule as AoA's driver spec (independent implementation)."""
+    spec = (interpretation_driver_override or from_isabelle
+            or os.environ.get("INTERPRETATION_DRIVER", "") or _DEFAULT_DRIVER)
+    driver_name, _, model = spec.partition(".")
+    return driver_name, model
 
 # --- Context-local state ---
 
@@ -227,12 +258,18 @@ class InterpretationResult(NamedTuple):
 class InterpretationTask:
     def __init__(self, connection: Connection, file_path: str,
                  theory_longname: str, theory_key: universal_key,
-                 entries: list[Entry]):
+                 entries: list[Entry], driver: str = _DEFAULT_DRIVER,
+                 model: str = ""):
         self.connection = connection
         self.file_path = file_path
         self.theory_longname = theory_longname
         self.theory_key = theory_key
         self.entries = entries
+        # Which backend and model produced these interpretations, both already
+        # resolved (no empty halves).  write_cost records them, so a theory's
+        # provenance stays readable after the config that chose them has changed.
+        self.driver = driver
+        self.model = model
         # results / _keys / _label_to_idx are strictly 1:1 with `entries`, in
         # order.  Because the agent addresses an entry only by its label (see
         # `_label` and `_answer_tool`), two entries sharing a label are mutually
@@ -339,7 +376,10 @@ class InterpretationTask:
                 b"output_tokens": total[3],
                 b"cost_usd": total[4],
                 b"finished": prev.get(b"finished", False),
-                b"model": interpretation_model,
+                b"model": self.model,
+                # New field; readers use .get, so older records (no b"driver")
+                # need no migration -- they all predate any driver but ClaudeCode.
+                b"driver": self.driver,
             })
             packed: bytes = msgpack.packb(data)  # type: ignore[assignment]
             txn.put(self.theory_key, packed)
@@ -737,11 +777,12 @@ async def interpret_file(
     theory_longname: str,
     theory_key: universal_key,
     entries: list[Entry],
+    driver: str = "",
 ) -> InterpretationResult:
     """Interpret entities from an Isabelle theory file.
 
     Looks up cached interpretations in LMDB. For uncached entries, launches
-    a Claude agent to generate plain-English translations.
+    an agent to generate plain-English translations.
 
     Args:
         connection: Active Isabelle RPC connection.
@@ -750,12 +791,25 @@ async def interpret_file(
         theory_key: Universal key for the theory (used for cost tracking).
         entries: Entities to interpret, each with kind, name, prop_str,
             line_number, and universal_key.
+        driver: The Isabelle side's `"<Driver>[.<model>]"` choice, "" if it made
+            none; `_resolve_driver` decides what actually runs.
 
     Returns:
         InterpretationResult with per-entry interpretations, pretty-prints,
         and cost summaries (current run + cumulative).
     """
     n = len(entries)
+    # Resolve up front, before any cache read or LLM work: a misspelt driver
+    # name is a configuration error and should say so immediately rather than
+    # after the cone has been walked.
+    driver_name, model = _resolve_driver(driver)
+    driver_cls = resolve_interpretation_driver_class(driver_name)
+    if driver_cls is None:
+        raise FatalAgentError(
+            f"Semantic interpretation failed: unknown interpretation driver "
+            f"{driver_name!r}. Known drivers: "
+            f"{', '.join(available_interpretation_drivers())}.")
+    model = model or driver_cls.DEFAULT_MODEL
 
     # Build Unicode pretty-prints for all entries
     pretty_prints = [_pretty_print_entry(e) for e in entries]
@@ -807,6 +861,7 @@ async def interpret_file(
         with InterpretationTask(
             connection, file_path, theory_longname, theory_key,
             entries=[entries[i] for i in uncached],
+            driver=driver_name, model=model,
         ) as task:
             _local_task.set(task)
 
@@ -840,16 +895,16 @@ async def interpret_file(
 
             def make_driver() -> InterpretationDriver:
                 return make_interpretation_driver(
-                    interpretation_driver_name,
-                    model=interpretation_model,
+                    driver_name,
+                    model=model,
                     system_prompt=_SYSTEM_PROMPT,
                     tools=tools,
                     task=task,
                     on_context_reset=seen_constants.clear,
                 )
 
-            _log.info("interpret_file: starting %s agent with %d batches",
-                      interpretation_driver_name, len(task.batches))
+            _log.info("interpret_file: starting %s agent on %s with %d batches",
+                      driver_name, model, len(task.batches))
             await _run_agent(make_driver)
             answered = sum(1 for v in task.results.values() if v is not None)
             _log.info("interpret_file: agent finished, %d/%d interpreted",
@@ -897,7 +952,7 @@ async def interpret_file(
         # All cached — read cumulative cost from DB
         with InterpretationTask(
             connection, file_path, theory_longname, theory_key,
-            entries=[],
+            entries=[], driver=driver_name, model=model,
         ) as task:
             cumulative_cost = CostSummary(*task.historical_cost())
 
@@ -914,7 +969,7 @@ async def interpret_file(
 @isabelle_remote_procedure("Semantic_Store.interpret_file")
 async def _interpret_file(arg: Any, connection: Connection) -> InterpretationResult:
     from Isabelle_RPC_Host.universal_key import THM_RULE_KINDS
-    (file_path, theory_longname, theory_key, raw_entries) = arg
+    (file_path, theory_longname, theory_key, driver, raw_entries) = arg
     entries = [
         Entry(
             kind=kind,
@@ -935,6 +990,6 @@ async def _interpret_file(arg: Any, connection: Connection) -> InterpretationRes
         for kind, name, prop, lineno, uk, hint, prov, consts in raw_entries
     ]
     return await interpret_file(
-        connection, file_path, theory_longname, bytes(theory_key), entries
+        connection, file_path, theory_longname, bytes(theory_key), entries, driver
     )
 

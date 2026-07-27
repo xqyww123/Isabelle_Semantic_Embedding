@@ -115,7 +115,11 @@ fun run (force : bool) names state =
           "Yes" =>
             (* roots, NOT work: interpret_with_parallel re-derives the cone itself and needs
                the interpreted ancestors as relay nodes. *)
-            (Semantic_Store.interpret_with_parallel force (map Context.Theory roots);
+            (* `Context.Proof ctxt`, not a root: the roots may be other theories, and
+               only the command's own context sees a `declare
+               [[Semantic_Embedding.interpretation_driver]]` made above this command. *)
+            (Semantic_Store.interpret_with_parallel (Context.Proof ctxt) force
+               (map Context.Theory roots);
              embed_phase ())
         | _ => writeln "[Semantic_Store] Aborted.")
       end

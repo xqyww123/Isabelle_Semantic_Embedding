@@ -144,7 +144,15 @@ def _parse_thy_status(val: bytes) -> dict:
     model = data.get(b"model", data.get("model", b""))
     if isinstance(model, bytes):
         model = model.decode("utf-8", errors="replace")
-    return {"finished": finished, "cost_usd": cost, "model": model}
+    driver = data.get(b"driver", data.get("driver", b""))
+    if isinstance(driver, bytes):
+        driver = driver.decode("utf-8", errors="replace")
+    # Report it back in the very syntax that would reproduce it (`--driver`,
+    # `declare [[Semantic_Embedding.interpretation_driver]]`).  Records written
+    # before there was a choice of backend carry no b"driver" and keep showing
+    # the bare model, as they always did.
+    return {"finished": finished, "cost_usd": cost,
+            "model": f"{driver}.{model}" if driver else model}
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -242,7 +250,7 @@ def cmd_list(args: argparse.Namespace) -> None:
     name_w = min(name_w, 60)
 
     print(f"{'Theory':<{name_w}}  {'Entities':>8}  {'Layer':<12}  {'Status':<10}  "
-          f"{'Cost':>9}  {'Model':<20}  Universal Key")
+          f"{'Cost':>9}  {'Driver':<32}  Universal Key")
     print("─" * (name_w + 8 + 12 + 10 + 9 + 20 + 16 + 14))
 
     n_complete = n_partial = n_removed = 0
@@ -288,7 +296,7 @@ def cmd_list(args: argparse.Namespace) -> None:
         cost = meta.get("cost_usd", 0.0)
         model = meta.get("model", "")
         print(f"{name:<{name_w}}  {usr + syc:>8}  {layer:<12}  {status:<10}  "
-              f"${cost:>8.4f}  {model:<20}  {h.hex()}")
+              f"${cost:>8.4f}  {model:<32}  {h.hex()}")
 
     print()
     total_entities = sum(usr_count.values()) + sum(sys_count.values())
@@ -862,7 +870,10 @@ def cmd_collect(args: argparse.Namespace) -> None:
         import time
         import Isabelle_RPC_Host
         import Isabelle_Semantic_Embedding.semantic_interpretation as si
-        si.interpretation_model = args.model
+        # Only when the user actually asked for one: left empty, the Isabelle
+        # config option / environment / default chain decides (see
+        # semantic_interpretation._resolve_driver).
+        si.interpretation_driver_override = args.driver
         from IsaREPL import Client
 
         import socket
@@ -1105,8 +1116,13 @@ def main() -> None:
     p_collect.add_argument("--repl-addr", default="127.0.0.1:6666", help="Isa-REPL server address")
     p_collect.add_argument("--rpc-addr", default="127.0.0.1:27182", help="RPC host address")
     p_collect.add_argument("--session", default="HOL", help="Session qualifier for theory name resolution")
-    p_collect.add_argument("--model", default="claude-opus-4-8[1m]",
-        help="LLM model for semantic interpretation (default: claude-opus-4-8[1m])")
+    p_collect.add_argument("--driver", default="",
+        help="Agent backend and model for semantic interpretation, as "
+             "'<Driver>[.<model>]' (e.g. 'ClaudeCode', 'Codex.gpt-5.5'); the model "
+             "part is optional and defaults to that backend's own. Outranks the "
+             "Isabelle config option Semantic_Embedding.interpretation_driver and "
+             "the INTERPRETATION_DRIVER environment variable; unset means let those "
+             "decide (default: ClaudeCode).")
     p_collect.add_argument("--embed-models", default="",
         help="Comma-separated canonical (HuggingFace) embedding model names "
              "(e.g., 'Qwen/Qwen3-Embedding-8B'). NOTE: all listed models are embedded "

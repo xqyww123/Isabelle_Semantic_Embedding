@@ -79,6 +79,25 @@ def resolve_interpretation_driver_class(name: str) -> type[InterpretationDriver]
     return DRIVERS.get(name)
 
 
+def available_interpretation_drivers() -> list[str]:
+    """Every driver name this package can serve.
+
+    For REPORTING an unknown name only -- it imports every module in the package
+    to find out, whereas the happy path imports exactly one.  A module that
+    cannot be imported (an optional dependency of some other backend) is skipped:
+    it must not stop us naming the backends that do work.  Modules that are not
+    drivers at all simply register nothing, which is why there is no second list
+    of driver names here to drift from the decorators."""
+    for path in sorted(Path(__file__).parent.glob("*.py")):
+        if path.stem.startswith("_"):
+            continue
+        try:
+            importlib.import_module(f".{path.stem}", __package__)
+        except Exception:
+            continue
+    return sorted(DRIVERS)
+
+
 def make_interpretation_driver(
     name: str,
     *,
@@ -92,7 +111,7 @@ def make_interpretation_driver(
     if cls is None:
         raise ValueError(
             f"unknown interpretation driver {name!r}; "
-            f"known drivers: {sorted(DRIVERS) or ['(none loaded)']}")
+            f"known drivers: {available_interpretation_drivers()}")
     return cls(model=model, system_prompt=system_prompt, tools=tools,
                task=task, on_context_reset=on_context_reset)
 
@@ -106,6 +125,12 @@ class InterpretationDriver(ABC):
 
     #: user-facing name, set by @register_interpretation_driver
     NAME: str = ""
+
+    #: model used when the driver spec names none (`Codex` rather than
+    #: `Codex.gpt-5.5`).  Every concrete driver must set it: which model is
+    #: sensible is the backend's own business, and a shared default would be a
+    #: model name from one backend handed to another.
+    DEFAULT_MODEL: str = ""
 
     def __init__(self, *, model: str, system_prompt: str,
                  tools: list["SdkMcpTool[Any]"],

@@ -24,7 +24,10 @@ signature SEMANTIC_STORE = sig
      to generate plain-English translations using a Claude agent. *)
   (* Concurrency width is the session's own -o threads=N (Multithreading.max_threads). *)
   val interpret : bool -> Context.generic -> unit
-  val interpret_with_parallel : bool -> Context.generic list -> unit
+  (* The first context is where the run reads `Semantic_Embedding.interpretation_driver`;
+     it is read once, here, and carried down to every cone node as data.  Pass the
+     context the USER declared it in -- which is not always one of the roots. *)
+  val interpret_with_parallel : Context.generic -> bool -> Context.generic list -> unit
 
   (* The two pieces interpret_with_parallel is built from, exposed so a test can drive the
      scheduler with a cheap body -- no network, no LLM spend. `schedule_dag label body cone`
@@ -77,6 +80,12 @@ signature SEMANTIC_STORE = sig
   (* Config option: reranker model name for re-ranking search results.
      Empty string means disabled (use env var RERANKER_MODEL or no reranking). *)
   val reranker_model : string Config.T
+
+  (* Config option: agent backend + model for semantic interpretation, as one
+     "<Driver>[.<model>]" string (e.g. "Codex.gpt-5.5").  Empty string means use
+     the environment variable INTERPRETATION_DRIVER (default ClaudeCode).
+     Read ONCE per run by interpret_with_parallel -- see its comment. *)
+  val interpretation_driver : string Config.T
 
   (* Config option: echo Semantic_Store's OPT-IN INTERNAL DIAGNOSTICS to the output
      panel -- the Thm_Cache delta timings, and (looked up over RPC) the Python embed
@@ -189,6 +198,21 @@ val reranker_model = Attrib.setup_config_string
 val _ = Config.register_rpc_option "Semantic_Embedding.reranker_model"
           (Config.string_value reranker_model)
 
+(* Agent backend + model for semantic interpretation, as one "<Driver>[.<model>]"
+   string (e.g. "Codex.gpt-5.5"); the model part is optional and defaults to that
+   driver's own.  Empty means "not set here": Python then falls through to
+   INTERPRETATION_DRIVER and finally to ClaudeCode.
+
+   Deliberately NOT registered as an RPC option, unlike every other option above.
+   Python must never look this up per cone node: `declare [[...]]` flows only
+   parent->child through the theory graph, and interpret_cone rebuilds a context
+   from EACH node's own theory, so a lookup would land on ancestors like HOL.List,
+   read the "" default, and silently run the whole cone on the default driver --
+   with the theory record faithfully recording that default.  It is read ONCE, at
+   the interpret_with_parallel entry, where the caller's context is still in hand. *)
+val interpretation_driver = Attrib.setup_config_string
+  \<^binding>\<open>interpretation_driver\<close> (K "")
+
 (* Whether Semantic_Store echoes its opt-in internal diagnostics to the output panel.
    false (default) — quiet, which is what callers embedding this in a larger run
    (notably the `aoa` method) want; enable with `declare [[Semantic_Store_verbose]]`
@@ -276,13 +300,13 @@ local
   val pack_entry_kind = Universal_Key.pack_entity_kind
 
   val pack_arg =
-    fn {file_path, theory_longname, theory_key, entries} =>
-    packTuple4
-      (packString, packString, packBytes,
+    fn {file_path, theory_longname, theory_key, driver, entries} =>
+    packTuple5
+      (packString, packString, packBytes, packString,
        packList (packTuple8 (pack_entry_kind, packString, packString, packInt, packBytes, packString,
                              packOption (packTuple3 (packOption packBytes, packOption packBytes, packString)),
                              packList (packPair (packString, packBytes)))))
-      (file_path, theory_longname, theory_key, entries)
+      (file_path, theory_longname, theory_key, driver, entries)
 
   fun unpackUsage src =
     let val ((i, cw, cr, o_, c), src') = unpackTuple5 (unpackInt, unpackInt, unpackInt, unpackInt, unpackReal) src
@@ -300,6 +324,7 @@ val check_theorem_name_in_file_cmd :
 
 fun make_interpret_file_cmd callbacks :
     ({file_path: string, theory_longname: string, theory_key: Universal_Key.universal_key,
+      driver: string,
       entries: (Universal_Key.entity * string * string * int * Word8Vector.vector * string
                 * (Word8Vector.vector option * Word8Vector.vector option * string) option
                 * Universal_Key.constituent list) list},
@@ -1097,7 +1122,10 @@ fun interpretation_rpc_error message =
     SOME human => error human
   | NONE => error (String.concat ["Semantic interpretation RPC failed: ", message]))
 
-fun interpret' (context : Context.generic) : usage * usage =
+(* `driver` is the "<Driver>[.<model>]" string resolved ONCE at the entry point (see
+   interpretation_driver above); it is carried down as data, never re-read here --
+   this context is rebuilt from the cone node's own theory and would read the default. *)
+fun interpret' (driver : string) (context : Context.generic) : usage * usage =
   let
     (* 1. Get theory information *)
     val thy = Context.theory_of context
@@ -1373,6 +1401,7 @@ fun interpret' (context : Context.generic) : usage * usage =
         file_path = thy_file_path,
         theory_longname = thy_name,
         theory_key = thy_key,
+        driver = driver,
         entries = entries
       }
       val (_, _, current, cumulative) =
@@ -1500,14 +1529,14 @@ fun schedule_dag (label : string) (body : theory -> unit -> 'a) (cone : theory l
         Par_Exn.release_first results
       end)
 
-fun interpret_cone (force : bool) (cone : theory list) : usage * usage =
+fun interpret_cone (driver : string) (force : bool) (cone : theory list) : usage * usage =
   let
     (* An already-interpreted theory still gets a task: it relays the dependency edge on to
        its descendants without doing any work. *)
     fun body thy () =
       if skip_interpreted force thy then (zero_usage, zero_usage)
       else
-        let val r = interpret' (Context.Theory thy)
+        let val r = interpret' driver (Context.Theory thy)
             val _ = mark_interpreted thy
         in r end
     fun add2 ((c1, h1), (c2, h2)) = (add_usage (c1, c2), add_usage (h1, h2))
@@ -1523,8 +1552,16 @@ fun interpret_cone (force : bool) (cone : theory list) : usage * usage =
 fun plan_interpretation (force : bool) (roots : theory list) : theory list =
   filter_out (skip_interpreted force) (collect_cone roots)
 
-fun interpret_with_parallel (force : bool) (roots : Context.generic list) : unit =
+(* `cfg_context` is the context whose `declare [[Semantic_Embedding.interpretation_driver]]`
+   governs this run.  It is a SEPARATE parameter rather than `hd roots` because the roots
+   are not always where the user declared it: make_interpret_theory_callback resolves its
+   roots from theory NAMES, so `map Context.Theory` there would throw away the caller's
+   context — and with it the declaration.  Resolving here, once, is also what keeps the
+   whole cone on one driver (see interpretation_driver's comment). *)
+fun interpret_with_parallel (cfg_context : Context.generic) (force : bool)
+      (roots : Context.generic list) : unit =
   let
+    val driver = Config.get_generic cfg_context interpretation_driver
     val cone = collect_cone (map Context.theory_of roots)
     (* Same set plan_interpretation reports, by construction: the command shows the user
        a count, then this runs the work.  `cone` itself is still needed below -- interpret_cone
@@ -1554,12 +1591,12 @@ fun interpret_with_parallel (force : bool) (roots : Context.generic list) : unit
 
     (* Nothing to do (the common resume case): do not build a graph or fork relay tasks. *)
     val (ttotal, thist) =
-      if null work then (zero_usage, zero_usage) else interpret_cone force cone
+      if null work then (zero_usage, zero_usage) else interpret_cone driver force cone
 
     (* Proof contexts run LAST and sequentially; interpreted but never marked. *)
     val (ptotal, phist) =
       fold (fn ctx => fn (acc, hacc) =>
-        let val (cur, cum) = interpret' ctx
+        let val (cur, cum) = interpret' driver ctx
         in (add_usage (acc, cur), add_usage (hacc, cum)) end)
       proofs (zero_usage, zero_usage)
 
@@ -1573,7 +1610,7 @@ fun interpret_with_parallel (force : bool) (roots : Context.generic list) : unit
     ()
   end
 
-fun interpret force context = interpret_with_parallel force [context]
+fun interpret force context = interpret_with_parallel context force [context]
 
 fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpacker)
     : Remote_Procedure_Calling.callback' =
@@ -1589,7 +1626,9 @@ fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpa
            ancestor theories the cone sweeps in.  store_theory_hash walks
            Theory.nodes_of, so the roots cover the whole cone. *)
         val _ = List.app Theory_Hash.store_theory_hash roots
-      in interpret_with_parallel false (map Context.Theory roots) end,
+      (* `context`, not a root: the roots were resolved from NAMES, so only the
+         caller's context still carries its interpretation_driver declaration. *)
+      in interpret_with_parallel context false (map Context.Theory roots) end,
     timeout = NONE
   }
 

@@ -11,9 +11,11 @@ bookkeeping (which entries remain, when to advance, what the next prompt is) is
 exercised rather than simulated.
 """
 import asyncio
+import logging
 
 import pytest
 
+import Isabelle_Semantic_Embedding.semantic_interpretation as SI
 from Isabelle_Semantic_Embedding.interpretation_driver import (
     InterpretationDriver,
     accumulate_usage,
@@ -28,6 +30,7 @@ from Isabelle_Semantic_Embedding.semantic_interpretation import (
     _answer_tool,
     _label,
     _local_task,
+    _resolve_driver,
     _run_agent,
 )
 
@@ -202,6 +205,66 @@ def test_poisoned_session_recycles_a_fresh_driver_and_keeps_answers():
     # Answers written before the poisoning are not redone.
     assert task.written == [(0, "description of c0"), (1, "description of c1"),
                             (2, "description of c2")]
+
+
+# --- which backend and model to run ----------------------------------------
+
+@pytest.fixture(autouse=True)
+def _clean_driver_sources(monkeypatch):
+    """No ambient driver choice: neither the batch CLI's nor the environment's."""
+    monkeypatch.setattr(SI, "interpretation_driver_override", "")
+    monkeypatch.delenv("INTERPRETATION_DRIVER", raising=False)
+
+
+def test_nothing_set_anywhere_is_the_default_driver():
+    assert _resolve_driver("") == ("ClaudeCode", "")
+
+
+def test_the_model_half_is_optional_and_splits_at_the_first_dot():
+    assert _resolve_driver("Codex") == ("Codex", "")
+    # Model names contain dots; driver names do not, which is why the split is
+    # at the FIRST one.
+    assert _resolve_driver("Codex.gpt-5.5") == ("Codex", "gpt-5.5")
+    assert _resolve_driver("ClaudeCode.claude-opus-4-8[1m]") \
+        == ("ClaudeCode", "claude-opus-4-8[1m]")
+
+
+def test_sources_are_tried_in_order_and_empty_means_unset(monkeypatch):
+    monkeypatch.setenv("INTERPRETATION_DRIVER", "Codex.from-env")
+    assert _resolve_driver("") == ("Codex", "from-env")           # env
+    assert _resolve_driver("Codex.from-isabelle") \
+        == ("Codex", "from-isabelle")                             # declare beats env
+    monkeypatch.setattr(SI, "interpretation_driver_override", "Codex.from-cli")
+    assert _resolve_driver("Codex.from-isabelle") == ("Codex", "from-cli")
+    # An empty batch-CLI setting is "not asked for", not "use the default".
+    monkeypatch.setattr(SI, "interpretation_driver_override", "")
+    assert _resolve_driver("Codex.from-isabelle") == ("Codex", "from-isabelle")
+
+
+class _StubConnection:
+    class server:
+        logger = logging.getLogger("test_interpretation_driver.stub")
+
+
+def test_an_unknown_driver_fails_before_any_work():
+    """Loudly, and before the cache is even read: it is a config typo, and the
+    quiet alternative is a whole cone silently interpreted by the wrong backend."""
+    with pytest.raises(FatalAgentError) as e:
+        asyncio.run(SI.interpret_file(
+            _StubConnection(), "/tmp/T.thy", "T", b"\x00" * 32, [],
+            driver="Codx.gpt-5.5"))
+    assert "Codx" in str(e.value)
+    assert "ClaudeCode" in str(e.value), "should name what it does know"
+
+
+def test_the_resolved_pair_is_what_gets_recorded():
+    """`write_cost` records the backend and model actually used, so a theory's
+    provenance survives a later change of configuration."""
+    task = _make_task(1, batch_size=1)
+    assert (task.driver, task.model) == ("ClaudeCode", "")
+    task2 = InterpretationTask(None, "/tmp/T.thy", "T", b"\x00" * 32, [],
+                               driver="Codex", model="gpt-5.5")
+    assert (task2.driver, task2.model) == ("Codex", "gpt-5.5")
 
 
 # --- the context-reset channel ---------------------------------------------
