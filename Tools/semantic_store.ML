@@ -263,25 +263,33 @@ fun query_semantics (context : Context.generic) (entity : Universal_Key.entity)
     (with_pretty : bool) : string option =
   query_semantics_by_key (Universal_Key.key_of NONE context entity) with_pretty
 
-fun is_interpreted' (key : Universal_Key.universal_key) : bool =
+(* The (process id, theory serial) pair rides both calls (CHECK_OUTDATE_PLAN.md
+   §3.4): for a WIP theory it IS the skip criterion Python stores and compares
+   -- `finished` does not exist on WIP status records -- while for a persistent
+   theory Python ignores it and keeps the `finished` flag.  Value-passing
+   discipline: the serial is read off the very theory value the caller holds
+   (the one the pipeline scanned), never re-resolved by name or context. *)
+fun is_interpreted' (key : Universal_Key.universal_key, pid : string, serial : int) : bool =
   Remote_Procedure_Calling.call_command
     {name = "Semantic_Store.is_interpreted",
-     arg_schema = packBytes, ret_schema = unpackBool,
+     arg_schema = packTuple3 (packBytes, packString, packInt), ret_schema = unpackBool,
      callback = [], timeout = NONE}
-    key
+    (key, pid, serial)
 
-fun mark_interpreted' (key : Universal_Key.universal_key) : unit =
+fun mark_interpreted' (key : Universal_Key.universal_key, pid : string, serial : int) : unit =
   Remote_Procedure_Calling.call_command
     {name = "Semantic_Store.mark_interpreted",
-     arg_schema = packBytes, ret_schema = unpackUnit,
+     arg_schema = packTuple3 (packBytes, packString, packInt), ret_schema = unpackUnit,
      callback = [], timeout = NONE}
-    key
+    (key, pid, serial)
 
 fun is_interpreted (thy : theory) : bool =
-  is_interpreted' (Universal_Key.key_of_theory' thy)
+  is_interpreted' (Universal_Key.key_of_theory' thy,
+                   Theory_Hash.process_id (), Context.theory_identifier thy)
 
 fun mark_interpreted (thy : theory) : unit =
-  mark_interpreted' (Universal_Key.key_of_theory' thy)
+  mark_interpreted' (Universal_Key.key_of_theory' thy,
+                     Theory_Hash.process_id (), Context.theory_identifier thy)
 
 fun clean_wip () : int =
   Remote_Procedure_Calling.call_command

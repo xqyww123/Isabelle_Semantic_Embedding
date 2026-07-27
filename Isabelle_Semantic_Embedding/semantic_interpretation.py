@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable
 from typing import Any, NamedTuple
 
 from Isabelle_RPC_Host import Connection, isabelle_remote_procedure
-from Isabelle_RPC_Host.universal_key import EntityKind, universal_key
+from Isabelle_RPC_Host.universal_key import EntityKind, is_WIP, universal_key
 from Isabelle_RPC_Host.unicode import pretty_unicode
 from claude_agent_sdk import tool
 
@@ -404,12 +404,20 @@ class InterpretationTask:
                 b"cache_read_tokens": total[2],
                 b"output_tokens": total[3],
                 b"cost_usd": total[4],
-                b"finished": prev.get(b"finished", False),
                 b"model": self.model,
                 # New field; readers use .get, so older records (no b"driver")
                 # need no migration -- they all predate any driver but ClaudeCode.
                 b"driver": self.driver,
             })
+            if is_WIP(self.theory_key):
+                # WIP status records carry no `finished` field at all
+                # (CHECK_OUTDATE_PLAN.md §3.4) -- their skip criterion is the
+                # (process id, theory serial) pair, written by mark_interpreted
+                # only after a completed run; this cost flush must neither
+                # introduce the field nor keep a legacy one alive.
+                data.pop(b"finished", None)
+            else:
+                data[b"finished"] = prev.get(b"finished", False)
             packed: bytes = msgpack.packb(data)  # type: ignore[assignment]
             txn.put(self.theory_key, packed)
         self.total_input_tokens = 0
@@ -978,6 +986,17 @@ async def interpret_file(
                     rec.semantic_digest is None or
                     rec.semantic_digest != e.semantic_digest):
                 stale = True    # never-digested record: stale by §4.4
+            elif rec.deps is not None and set(rec.deps) != set(e.deps or []):
+                # Unified dep criterion (§4.3): every stored edge is compared,
+                # by value, against the target's CURRENT universal key as the
+                # scan just resolved it.  With the digest equal, the dep NAME
+                # set is unchanged (invariant I3), so a set difference here
+                # means some target's KEY moved -- typically a WIP<->persistent
+                # flip re-keying the target.  Without this, the version walk
+                # would query the OLD key forever and read silence: the dead
+                # edge.  Re-interpretation stores the current uks (write_answer
+                # takes deps off the wire entry), which heals the edge.
+                stale = True
             else:
                 eff_v = eff_value(version_to_write.get(i, rec.version or 0),
                                   e.deps)

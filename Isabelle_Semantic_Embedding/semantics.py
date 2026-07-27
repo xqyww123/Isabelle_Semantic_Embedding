@@ -133,7 +133,6 @@ def is_thy_skipped(name: str) -> bool:
 
 
 migrate_on_hash_change: bool = False
-persist_wip: bool = os.getenv("SEMANTIC_PERSIST_WIP", "") != ""
 
 # Write ceiling for semantics.lmdb.  LMDB does not preallocate: this only
 # reserves virtual address space, and the value passed at open() is the hard
@@ -648,23 +647,52 @@ class _Semantic_DB:
             return entity_document_text(rec)
         return rec.interpretation
 
-    def is_thy_interpreted(self, key: universal_key) -> bool:
+    def is_thy_interpreted(self, key: universal_key,
+                           process_id: 'str | None' = None,
+                           serial: 'int | None' = None) -> bool:
         """Check whether a theory has been fully interpreted (layered read: a
-        theory finished in the system layer counts, unless tombstoned)."""
+        theory finished in the system layer counts, unless tombstoned).
+
+        A PERSISTENT key answers via the `finished` flag, as ever.  A WIP key
+        answers via the skip criterion of CHECK_OUTDATE_PLAN.md §3.4: the
+        stored (process id, theory serial) pair must equal the current loaded
+        theory's values -- a theory value is immutable, so a matching pair
+        proves the very content this process scanned was interpreted; a serial
+        alone is a process-local counter and may only be trusted alongside the
+        process that minted it.  A caller with no pair in hand reads False:
+        the cost of that is one re-scan, never a false skip."""
         raw = self._get_raw(key)
         if not raw:
             return False
-        return unpack_thy_status(raw).get(b"finished", False)
+        st = unpack_thy_status(raw)
+        if is_WIP(key):
+            if process_id is None or serial is None:
+                return False
+            return (st.get(b"process_id") == process_id
+                    and st.get(b"serial") == serial)
+        return st.get(b"finished", False)
 
-    def mark_interpreted(self, key: universal_key) -> None:
-        """Mark a theory as interpreted (finished) in the semantic store.
-        Skips WIP (non-persistent) theories unless persist_wip is enabled.
+    def mark_interpreted(self, key: universal_key,
+                         process_id: 'str | None' = None,
+                         serial: 'int | None' = None) -> None:
+        """Mark a theory as interpreted in the semantic store.
+
+        Persistent key: sets `finished`.  WIP key: stores the (process id,
+        theory serial) pair, and NO `finished` field -- the field does not
+        exist on WIP status records (§3.4: `finished` means "this key's
+        interpretations are complete and forever trustworthy", which only a
+        content-addressed key can promise; a lingering field would invite
+        future readers).  A legacy `finished` is dropped on this rewrite.
+        A WIP mark with no pair in hand is ignored: the pair may only come
+        from the pipeline that just completed the entity-level scan and
+        interpretation of that very theory value (write-back discipline 2).
 
         Read-modify-write: copy-up-then-modify (plan §3.1).  The status is read
         through the layers so a system-resident status is continued (its
         cost/token/model fields carry forward into the user copy) rather than
         restarted from the zeroed template; a tombstoned status starts fresh."""
-        if is_WIP(key) and not persist_wip:
+        wip = is_WIP(key)
+        if wip and (process_id is None or serial is None):
             return
         with self._ensure_env().begin(write=True) as txn:
             raw = txn.get(key)
@@ -672,17 +700,18 @@ class _Semantic_DB:
                 raw = None                       # tombstoned: start fresh
             elif raw is None:
                 raw = self._system_get(key)      # copy-up: continue system status
-            if raw:
-                data = unpack_thy_status(raw)
-                data[b"finished"] = True
-                txn.put(key, msgpack.packb(data))  # type: ignore
+            data = unpack_thy_status(raw) if raw else {
+                b"input_tokens": 0, b"cache_creation_tokens": 0,
+                b"cache_read_tokens": 0, b"output_tokens": 0,
+                b"cost_usd": 0.0, b"model": "",
+            }
+            if wip:
+                data.pop(b"finished", None)
+                data[b"process_id"] = process_id
+                data[b"serial"] = serial
             else:
-                txn.put(key, msgpack.packb({
-                    b"input_tokens": 0, b"cache_creation_tokens": 0,
-                    b"cache_read_tokens": 0, b"output_tokens": 0,
-                    b"cost_usd": 0.0, b"finished": True,
-                    b"model": "",
-                }))  # type: ignore
+                data[b"finished"] = True
+            txn.put(key, msgpack.packb(data))  # type: ignore
 
     def clean_wip(self) -> int:
         """Remove all entries with non-persistent theory hashes."""
@@ -1446,13 +1475,36 @@ class Semantic_Vector_Store(Vector_Store):
             raw = txn.get(theory_key)
         return bytes(raw) if raw is not None else None
 
-    def is_thy_embedded(self, theory_key: universal_key) -> bool:
+    def is_thy_embedded(self, theory_key: universal_key,
+                        stamp: 'tuple[str, int] | None' = None) -> bool:
         """Check whether a theory's entities are all embedded in this vector
-        store (layered: embedded-in-the-system-layer counts)."""
+        store (layered: embedded-in-the-system-layer counts).
+
+        Mirrors Semantic_DB.is_thy_interpreted (CHECK_OUTDATE_PLAN.md §3.4):
+        a persistent key answers via `finished`; a WIP key answers via the
+        stored (process id, theory serial) pair against `stamp` -- the current
+        loaded theory's values, fetched with `_thy_stamp`.  No stamp in hand
+        reads False (a re-embed sweep, never a false skip)."""
         raw = self._thy_embed_status_raw(theory_key)
         if not raw:
             return False
-        return unpack_thy_status(raw).get(b"finished", False)
+        st = unpack_thy_status(raw)
+        if is_WIP(theory_key):
+            if stamp is None:
+                return False
+            return (st.get(b"process_id") == stamp[0]
+                    and st.get(b"serial") == stamp[1])
+        return st.get(b"finished", False)
+
+    async def _thy_stamp(self, theory_key: universal_key) -> 'tuple[str, int] | None':
+        """(process id, theory serial) of the loaded theory behind a WIP
+        theory key, via the Theory_Hash.process_serial_of callback; None when
+        there is no connection or the hash resolves to no loaded theory."""
+        if self.connection is None:
+            return None
+        r = await self.connection.callback("Theory_Hash.process_serial_of",
+                                           theory_key)
+        return (r[0], r[1]) if r is not None else None
 
     def thy_embed_tokens(self, theory_key: universal_key) -> int | None:
         """Look up the total tokens used to embed a theory. Returns None if not
@@ -1462,14 +1514,21 @@ class Semantic_Vector_Store(Vector_Store):
             return None
         return unpack_thy_status(raw).get(b"total_tokens", 0)
 
-    def mark_thy_embedded(self, theory_key: universal_key, total_tokens: int = 0) -> None:
+    def mark_thy_embedded(self, theory_key: universal_key, total_tokens: int = 0,
+                          stamp: 'tuple[str, int] | None' = None) -> None:
         """Mark a theory as fully embedded in this vector store, recording token usage.
-        Skips WIP (non-persistent) theories unless persist_wip is enabled.
+
+        Mirrors Semantic_DB.mark_interpreted (CHECK_OUTDATE_PLAN.md §3.4):
+        persistent key -> `finished`; WIP key -> the (process id, theory
+        serial) pair and NO `finished` field (a legacy one is dropped).  A WIP
+        mark without a stamp is ignored -- the stamp may only describe the
+        loaded theory value whose entities were just embedded.
 
         Read-modify-write: copy-up-then-modify (plan §3.1) -- a system-layer
         status is continued (its token count accumulates onward), the updated
         status lands in this model's user store."""
-        if is_WIP(theory_key) and not persist_wip:
+        wip = is_WIP(theory_key)
+        if wip and stamp is None:
             return
         with self._env.begin(write=True) as txn:
             raw = txn.get(theory_key)
@@ -1479,7 +1538,13 @@ class Semantic_Vector_Store(Vector_Store):
                 data = unpack_thy_status(raw)
             else:
                 data = {}
-            data[b"finished"] = True
+            if wip:
+                assert stamp is not None
+                data.pop(b"finished", None)
+                data[b"process_id"] = stamp[0]
+                data[b"serial"] = stamp[1]
+            else:
+                data[b"finished"] = True
             if total_tokens > 0:
                 data[b"total_tokens"] = data.get(b"total_tokens", 0) + total_tokens
             txn.put(theory_key, msgpack.packb(data))  # type: ignore
@@ -1489,6 +1554,10 @@ class Semantic_Vector_Store(Vector_Store):
             return []
         gate = await self.connection.config_lookup("auto_interpret_for_embedding")
         theory_hashes: set[bytes] = set()
+        # (process id, theory serial) of each WIP theory met below, fetched once
+        # per theory; the SAME stamp is used for the freshness check and for the
+        # mark after embedding (one run, one theory value).
+        stamps: 'dict[bytes, tuple[str, int] | None]' = {}
         # (1) When the gate permits it, auto-interpret the uninterpreted theories of the
         # non-xor missing entities so they become embeddable.  XOR-prefixed keys
         # (theorem/rule AND experience) are skipped: their prefix is an XOR pseudo-theory,
@@ -1501,8 +1570,11 @@ class Semantic_Vector_Store(Vector_Store):
                 if is_xor_prefixed_key(k):
                     continue
                 entity = destruct_key(k)
-                if not self.is_thy_embedded(entity.theory):
-                    theory_hashes.add(entity.theory)
+                th = entity.theory
+                if is_WIP(th) and th not in stamps:
+                    stamps[th] = await self._thy_stamp(th)
+                if not self.is_thy_embedded(th, stamps.get(th)):
+                    theory_hashes.add(th)
             await self.connection.tracing(
                 f"[Semantic_Embedding] {len(missing)} entities missing embeddings, "
                 f"spanning {len(theory_hashes)} un-embedded theories")
@@ -1606,8 +1678,10 @@ class Semantic_Vector_Store(Vector_Store):
         tokens = await self.embed_records(ready, force=True)
         # Mark processed theories as embedded, recording cost.  theory_hashes is empty
         # when the gate is off, so a gate-off ready-only embed marks nothing.
+        # A WIP theory is marked with the same stamp its freshness was checked
+        # under; mark_thy_embedded ignores a WIP mark with no stamp.
         for th in theory_hashes:
-            self.mark_thy_embedded(th, tokens)
+            self.mark_thy_embedded(th, tokens, stamps.get(th))
         return [k for k, _ in ready]
 
     async def _experience_hits(self, term_patterns: 'list[str]',
@@ -1985,15 +2059,17 @@ class Semantic_Vector_Store(Vector_Store):
                     raise ValueError(
                         f"Theory key {thy_key.hex()} not found in the active Isabelle runtime; "
                         f"the theory may not be loaded")
-            if not force and self.is_thy_embedded(thy_key):
+            stamp = await self._thy_stamp(thy_key) if is_WIP(thy_key) else None
+            if not force and self.is_thy_embedded(thy_key, stamp):
                 continue
             entries, _is_local, _warnings = await entities_of(self.connection, EntityKind.ALL, # type: ignore
                                theory=thy_name, the_theory_only=True)
             keys = [k for k, _, _ in entries]
-            wip = is_WIP(thy_key) and not persist_wip
             await self.embed_keys(keys, force=force)
-            if not wip:
-                self.mark_thy_embedded(thy_key)
+            # A WIP theory whose stamp could not be resolved stays unmarked
+            # (mark_thy_embedded ignores it): re-swept next time, never
+            # falsely skipped.
+            self.mark_thy_embedded(thy_key, stamp=stamp)
 
 
 def _collect_embed_candidates(kinds: 'set | None' = None) -> 'list[tuple[bytes, object]]':
@@ -2009,8 +2085,10 @@ def _collect_embed_candidates(kinds: 'set | None' = None) -> 'list[tuple[bytes, 
     CONSTRUCTION.
     Dropping WIP vectors is still available, but only as an EXPLICIT act
     (clean_wip / clean_all_wip_in_created_dbs), never as an implicit side effect of
-    embedding. (The WIP guards in mark_interpreted / mark_thy_embedded stay: those record
-    that a theory is FINISHED, and a WIP theory will still change.)
+    embedding. (mark_interpreted / mark_thy_embedded no longer skip WIP theories:
+    since CHECK_OUTDATE_PLAN §3.4 they record the (process id, theory serial)
+    pair for them -- an honest "this very loaded value was processed" -- instead
+    of the `finished` promise only a content-addressed key can make.)
 
     Records are handed to ``Semantic_Vector_Store.embed_records``, which derives the
     document text via ``document_text_of`` (the single authority, dispatched on kind).
@@ -2257,8 +2335,8 @@ async def _query(arg: Any, connection: Connection) -> str | None:
 
 @isabelle_remote_procedure("Semantic_Store.is_interpreted")
 async def _is_interpreted(arg: Any, connection: Connection) -> bool:
-    key = bytes(arg)
-    if Semantic_DB.is_thy_interpreted(key):
+    key, process_id, serial = bytes(arg[0]), arg[1], arg[2]
+    if Semantic_DB.is_thy_interpreted(key, process_id, serial):
         return True
     if migrate_on_hash_change and Semantic_DB._try_migrate(key):
         return True
@@ -2267,7 +2345,8 @@ async def _is_interpreted(arg: Any, connection: Connection) -> bool:
 
 @isabelle_remote_procedure("Semantic_Store.mark_interpreted")
 async def _mark_interpreted(arg: Any, connection: Connection) -> None:
-    Semantic_DB.mark_interpreted(bytes(arg))
+    key, process_id, serial = bytes(arg[0]), arg[1], arg[2]
+    Semantic_DB.mark_interpreted(key, process_id, serial)
 
 
 @isabelle_remote_procedure("Semantic_Store.clean_wip")
@@ -2375,7 +2454,8 @@ async def _is_thy_embedded_rpc(arg: Any, connection: Connection) -> bool:
         thy_key = await universal_key_of(connection, EntityKind.THEORY, theory_name)
     except UndefinedEntity:
         return False
-    return store.is_thy_embedded(thy_key)
+    stamp = await store._thy_stamp(thy_key) if is_WIP(thy_key) else None
+    return store.is_thy_embedded(thy_key, stamp)
 
 
 @isabelle_remote_procedure("Vector_Arith.library_path")
