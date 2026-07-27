@@ -1253,8 +1253,11 @@ async def interpret_theories_by_names(connection: Connection, names: list[str]) 
     """Interpret the ancestor cones of the named theories (short or long names).
     The ML side expands the names to their whole ancestor cone, skips
     already-interpreted theories, and interprets the rest in dependency order.
-    Calls back into Isabelle ML via the Semantic_Store.interpret_theories callback."""
-    await connection.callback("Semantic_Store.interpret_theories", (None, names))
+    Calls back into Isabelle ML via the Semantic_Store.interpret_theories
+    callback -- argument (context, names, force, dry_run); the return (a dry-run
+    report on dry runs, ([], -1) on a live run like this one) is ignored."""
+    await connection.callback("Semantic_Store.interpret_theories",
+                              (None, names, False, False))
 
 
 _RERANK_FETCH_MULTIPLIER = 4

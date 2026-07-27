@@ -62,8 +62,12 @@ fun run (force : bool) names state =
        resolve these theory hashes. *)
     val _ = List.app Theory_Hash.store_theory_hash roots
 
-    val work = Semantic_Store.plan_interpretation force roots
-    val n = length work
+    (* Mode 4 / dry run (CHECK_OUTDATE_PLAN.md §8): the entity count n is the one
+       workload number -- it is computed by the very cache filter the live run
+       applies, so the confirmation below quotes exactly the work a "Yes" buys.
+       The theory names only show the user the scope. *)
+    val (work_names, n) = Semantic_Store.dry_run force roots
+    val m = length work_names
 
     (* Phase 2: whole-DB vector completion (missing-only) for the configured embedding
        model.  Runs after a successful interpretation run AND on the nothing-to-
@@ -81,26 +85,30 @@ fun run (force : bool) names state =
           SOME human => error human
         | NONE => error ("Vector embedding failed: " ^ message))
   in
+    (* n = 0 with unmarked theories still in scope is possible (every entity already
+       cached): the dry run marks nothing (CHECK_OUTDATE_PLAN.md write-back
+       discipline 3), so those theories are simply re-scanned next time.  That scan
+       is cheap, and only a completed live run may mark. *)
     if n = 0 then (writeln "[Semantic_Store] Nothing to interpret."; embed_phase ())
     else
       let
-        (* Name the theories, not just the count: "11 theories" gives the user nothing to
-           judge by, while the names show at a glance whether this is the intended scope
-           (say a couple of local theories) or an accidental sweep of half of HOL.  `work`
-           comes from collect_cone in topological order, so these are also the ones that
-           run first.  Capped at 20 -- past that the list stops informing and starts
-           burying the question. *)
+        (* Name the theories, not just the counts: "11 theories" gives the user nothing
+           to judge by, while the names show at a glance whether this is the intended
+           scope (say a couple of local theories) or an accidental sweep of half of HOL.
+           `work_names` comes from collect_cone in topological order, so these are also
+           the ones that run first.  Capped at 20 -- past that the list stops informing
+           and starts burying the question. *)
         val limit = 20
-        val names = map Context.theory_long_name work
-        val shown = take limit names
+        val shown = take limit work_names
         val listing =
           Pretty.string_of (Pretty.block (Pretty.commas (map Pretty.str shown))) ^
-          (if n > limit then ", ... (and " ^ string_of_int (n - limit) ^ " more)" else "")
+          (if m > limit then ", ... (and " ^ string_of_int (m - limit) ^ " more)" else "")
 
         val (mk, promise) = Active.dialog_text ()
         val _ = writeln (String.concat [
           "[Semantic_Store] ", string_of_int n,
-          (if n = 1 then " theory needs" else " theories need"), " interpretation:\n",
+          (if n = 1 then " entity needs" else " entities need"), " interpretation, across ",
+          string_of_int m, (if m = 1 then " theory" else " theories"), ":\n",
           listing, "\n",
           "This calls the LLM: it may take a long time and cost money.\n",
           "Afterwards, missing vector embeddings are computed as well (embedding API; far cheaper).\n",

@@ -778,7 +778,8 @@ async def interpret_file(
     theory_key: universal_key,
     entries: list[Entry],
     driver: str = "",
-) -> InterpretationResult:
+    dry_run: bool = False,
+) -> InterpretationResult | int:
     """Interpret entities from an Isabelle theory file.
 
     Looks up cached interpretations in LMDB. For uncached entries, launches
@@ -793,15 +794,57 @@ async def interpret_file(
             line_number, and universal_key.
         driver: The Isabelle side's `"<Driver>[.<model>]"` choice, "" if it made
             none; `_resolve_driver` decides what actually runs.
+        dry_run: Mode 4 (CHECK_OUTDATE_PLAN.md §8): stop right after the cache
+            filter and return how many entries an ordinary run would send to
+            the LLM.  No LLM runs, no cost is written, and the theory is never
+            marked interpreted; the count comes from the same filter an
+            ordinary run applies, so it cannot drift from the actual work.
 
     Returns:
         InterpretationResult with per-entry interpretations, pretty-prints,
-        and cost summaries (current run + cumulative).
+        and cost summaries (current run + cumulative); under ``dry_run``, the
+        number of entries that still need interpretation.
     """
     n = len(entries)
-    # Resolve up front, before any cache read or LLM work: a misspelt driver
-    # name is a configuration error and should say so immediately rather than
-    # after the cone has been walked.
+
+    # Inherit RPC server's logging configuration (idempotent, no race).  The
+    # driver package gets it too: its loggers are NOT children of this module's,
+    # so without this the driver's lines (tool allowed/denied, model output,
+    # per-round usage) would silently vanish from the host log.
+    for lg in (_log, logging.getLogger(f"{__package__}.interpretation_driver")):
+        if not lg.handlers and connection.server.logger.handlers:
+            for h in connection.server.logger.handlers:
+                lg.addHandler(h)
+            lg.setLevel(connection.server.logger.level)
+    _log.info("interpret_file%s: %s (%s), %d entries",
+              " (dry run)" if dry_run else "", theory_longname, file_path, n)
+
+    # Check LMDB cache.  This loop doubles as the dry run's workload count: the
+    # entries it leaves uncached are exactly the ones an ordinary run sends to
+    # the LLM.  The expr refresh is a scan-time write that the write-back
+    # discipline allows on a dry run too (CHECK_OUTDATE_PLAN.md discipline 3).
+    results: list[str | None] = [None] * n
+    for i, e in enumerate(entries):
+        rec = Semantic_DB[e.universal_key]
+        if rec is not None and rec.interpretation is not None:
+            results[i] = rec.interpretation
+            if e.prop_str and rec.expr != e.prop_str:
+                Semantic_DB.update_expr(e.universal_key, e.prop_str)
+
+    uncached = [i for i, r in enumerate(results) if r is None]
+    n_cached = n - len(uncached)
+
+    if dry_run:
+        # Mode 4 returns here: no driver resolution (nothing will run), no cost
+        # write, no report into the user's buffer (the caller aggregates the
+        # per-theory counts and does the talking), and no InterpretationTask is
+        # ever created -- so nothing marks the theory.
+        _log.info("interpret_file (dry run): %s -- %d of %d entries need "
+                  "interpretation", theory_longname, len(uncached), n)
+        return len(uncached)
+
+    # Resolve before any LLM work: a misspelt driver name is a configuration
+    # error and should say so immediately rather than mid-run.
     driver_name, model = _resolve_driver(driver)
     driver_cls = resolve_interpretation_driver_class(driver_name)
     if driver_cls is None:
@@ -813,29 +856,6 @@ async def interpret_file(
 
     # Build Unicode pretty-prints for all entries
     pretty_prints = [_pretty_print_entry(e) for e in entries]
-
-    # Inherit RPC server's logging configuration (idempotent, no race).  The
-    # driver package gets it too: its loggers are NOT children of this module's,
-    # so without this the driver's lines (tool allowed/denied, model output,
-    # per-round usage) would silently vanish from the host log.
-    for lg in (_log, logging.getLogger(f"{__package__}.interpretation_driver")):
-        if not lg.handlers and connection.server.logger.handlers:
-            for h in connection.server.logger.handlers:
-                lg.addHandler(h)
-            lg.setLevel(connection.server.logger.level)
-    _log.info("interpret_file: %s (%s), %d entries", theory_longname, file_path, n)
-
-    # Check LMDB cache
-    results: list[str | None] = [None] * n
-    for i, e in enumerate(entries):
-        rec = Semantic_DB[e.universal_key]
-        if rec is not None and rec.interpretation is not None:
-            results[i] = rec.interpretation
-            if e.prop_str and rec.expr != e.prop_str:
-                Semantic_DB.update_expr(e.universal_key, e.prop_str)
-
-    uncached = [i for i, r in enumerate(results) if r is None]
-    n_cached = n - len(uncached)
     # Say what is about to happen in words, not internal vocabulary: "entries/cached/to
     # interpret" means nothing to someone watching from a theory buffer.
     if not uncached:
@@ -965,13 +985,13 @@ async def interpret_file(
     )
 
 
-# --- RPC shim ---
+# --- RPC shims ---
 
-@isabelle_remote_procedure("Semantic_Store.interpret_file")
-async def _interpret_file(arg: Any, connection: Connection) -> InterpretationResult:
+def _entries_of_wire(raw_entries: Any) -> list[Entry]:
+    """Decode the wire entries of Semantic_Store.interpret_file / its dry-run
+    twin (one `pack_arg` on the ML side, so one decoder here)."""
     from Isabelle_RPC_Host.universal_key import THM_RULE_KINDS
-    (file_path, theory_longname, theory_key, driver, raw_entries) = arg
-    entries = [
+    return [
         Entry(
             kind=kind,
             name=pretty_unicode(name),
@@ -990,7 +1010,29 @@ async def _interpret_file(arg: Any, connection: Connection) -> InterpretationRes
         )
         for kind, name, prop, lineno, uk, hint, prov, consts in raw_entries
     ]
-    return await interpret_file(
-        connection, file_path, theory_longname, bytes(theory_key), entries, driver
+
+
+@isabelle_remote_procedure("Semantic_Store.interpret_file")
+async def _interpret_file(arg: Any, connection: Connection) -> InterpretationResult:
+    (file_path, theory_longname, theory_key, driver, raw_entries) = arg
+    result = await interpret_file(
+        connection, file_path, theory_longname, bytes(theory_key),
+        _entries_of_wire(raw_entries), driver
     )
+    assert isinstance(result, InterpretationResult)  # not a dry run
+    return result
+
+
+@isabelle_remote_procedure("Semantic_Store.interpret_file_dry_run")
+async def _interpret_file_dry_run(arg: Any, connection: Connection) -> int:
+    """Mode 4 (CHECK_OUTDATE_PLAN.md §8): count, over the same wire payload an
+    ordinary run sends, how many entries still need interpretation.  The driver
+    field arrives as "" and is never read -- nothing runs on this path."""
+    (file_path, theory_longname, theory_key, driver, raw_entries) = arg
+    count = await interpret_file(
+        connection, file_path, theory_longname, bytes(theory_key),
+        _entries_of_wire(raw_entries), driver, dry_run=True
+    )
+    assert isinstance(count, int)  # the dry-run branch returns the count
+    return count
 

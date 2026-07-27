@@ -36,11 +36,15 @@ signature SEMANTIC_STORE = sig
   val collect_cone : theory list -> theory list
   val schedule_dag : string -> (theory -> unit -> 'a) -> theory list -> 'a list
 
-  (* The theories in the ancestor cone of `roots` that actually need interpretation:
-     exactly the work set interpret_with_parallel will act on.  Lets a caller size the
-     job -- and ask the user about it -- before committing to LLM spend.  Costs one
-     `Semantic_Store.is_interpreted` RPC per cone node. *)
-  val plan_interpretation : bool -> theory list -> theory list
+  (* Mode 4 / dry run (CHECK_OUTDATE_PLAN.md §8): the system's ONE workload-metering
+     implementation.  Level 1 filters the ancestor cone of `roots` down to the theories
+     still needing interpretation (one `Semantic_Store.is_interpreted` RPC per cone
+     node); level 2 enumerates each one's entities and has Python count -- with the
+     very filter a live run applies -- how many would actually be sent to the LLM.
+     Returns (long names of those theories, that entity count).  Counts only: no LLM
+     call, no cost written, and no theory marked interpreted -- the same theories
+     stay due until a live run completes (write-back discipline 3). *)
+  val dry_run : bool -> theory list -> string list * int
 
   (* Whole-DB vector completion: embed every interpreted record that has no vector in
      the store of the connection's configured embedding model (config option >
@@ -54,8 +58,11 @@ signature SEMANTIC_STORE = sig
   val clean_wip : unit -> int
 
   (* Create a callback that Python can invoke to interpret theories by name
-     (short or long): interprets the whole ancestor cone of the named theories
-     (via interpret_with_parallel), skipping already-interpreted ones. *)
+     (short or long).  Argument (context, names, force, dry_run); dry_run = true
+     runs `dry_run` above on the named roots and returns its (theory long names,
+     entity count) report, dry_run = false interprets the whole ancestor cone
+     (via interpret_with_parallel) and returns ([], ~1) -- a live run reports no
+     numbers, dry run being the one workload metering. *)
   val make_interpret_theory_callback : Context_Callbacks.context_unpacker -> Remote_Procedure_Calling.callback'
 
   (* Config option: when true, Semantic_Vector_Store._auto_embed will
@@ -336,6 +343,26 @@ fun make_interpret_file_cmd callbacks :
                              unpackList unpackString,
                              unpackUsage, unpackUsage),
   callback = callbacks,
+  timeout = NONE
+}
+
+(* Mode 4 / dry run: same payload as interpret_file (one wire format, one Python-side
+   parser -- the count comes from the very cache filter a live run applies, so the
+   report cannot drift from the work), but Python stops after that filter and returns
+   how many entities it would have sent to the LLM.  The driver field is unread on
+   this path (no LLM runs) and is sent as "".  No callbacks: the dry path never
+   invokes the interpretation agent's tools. *)
+val interpret_file_dry_run_cmd :
+    ({file_path: string, theory_longname: string, theory_key: Universal_Key.universal_key,
+      driver: string,
+      entries: (Universal_Key.entity * string * string * int * Word8Vector.vector * string
+                * (Word8Vector.vector option * Word8Vector.vector option * string) option
+                * Universal_Key.constituent list) list},
+     int) Remote_Procedure_Calling.command = {
+  name = "Semantic_Store.interpret_file_dry_run",
+  arg_schema = pack_arg,
+  ret_schema = unpackInt,
+  callback = [],
   timeout = NONE
 }
 
@@ -1122,10 +1149,12 @@ fun interpretation_rpc_error message =
     SOME human => error human
   | NONE => error (String.concat ["Semantic interpretation RPC failed: ", message]))
 
-(* `driver` is the "<Driver>[.<model>]" string resolved ONCE at the entry point (see
-   interpretation_driver above); it is carried down as data, never re-read here --
-   this context is rebuilt from the cone node's own theory and would read the default. *)
-fun interpret' (driver : string) (context : Context.generic) : usage * usage =
+(* The enumerate half of interpret' (CHECK_OUTDATE_PLAN.md §8's two-piece split):
+   steps 1-6 -- enumerate the context's entities, build the wire entries, run the
+   label-uniqueness assert -- with no LLM-side effect.  Shared verbatim by the live
+   path (interpret') and the dry run (dry_run'), which is what makes a dry-run
+   report equal the live work set by construction. *)
+fun enumerate_entries (context : Context.generic) =
   let
     (* 1. Get theory information *)
     val thy = Context.theory_of context
@@ -1374,46 +1403,78 @@ fun interpret' (driver : string) (context : Context.generic) : usage * usage =
           end) entries
       end
   in
-    if null entries then (zero_usage, zero_usage)
-    else let
-      (* 7. Build callbacks capturing context *)
-      val su = Context_Callbacks.static_context_unpacker context
-      val pu = PIDE_State.position_context_unpacker context
-      val uk_cb = Universal_Key.make_universal_key_callback pu
-      val theory_info_cb = Context_Callbacks.make_theory_long_name_and_path_callback su
-      val desugar_cb = Explain_Term.make_desugar_callback context
-      val resolve_notation_cb = Explain_Term.make_resolve_notation_callback context
-      (* pu, not su: the query tool's show_defs threads a (file, offset)
-         context through entities_of into these callbacks; the static
-         unpacker accepts only nil and would fail to decode it. *)
-      val {constants, theorems, types, classes, locales, named_theorems, methods,
-           introduction_rules, elimination_rules,
-           induction_rules, case_split_rules} = make_entity_callbacks context pu
-      val cmd = make_interpret_file_cmd [uk_cb, theory_info_cb, desugar_cb,
-            resolve_notation_cb,
-            constants, theorems, types, classes, locales, named_theorems, methods,
-            introduction_rules, elimination_rules,
-            induction_rules, case_split_rules]
+    {file_path = thy_file_path, theory_longname = thy_name,
+     theory_key = Universal_Key.key_of_theory' thy, entries = entries}
+  end
 
-      (* 8. Call RPC command *)
-      val thy_key = Universal_Key.key_of_theory' thy
-      val rpc_arg = {
-        file_path = thy_file_path,
-        theory_longname = thy_name,
-        theory_key = thy_key,
-        driver = driver,
-        entries = entries
-      }
-      val (_, _, current, cumulative) =
-        Remote_Procedure_Calling.call_command cmd rpc_arg
-          handle Remote_Procedure_Calling.Remote_Calling_Failure {message, ...} =>
-            interpretation_rpc_error message
-      val _ = writeln (String.concat [
-        "[Semantic_Store] ", thy_name, ": ", fmt_usage current,
-        " (historical: ", fmt_usage cumulative, ")"])
-    in
-      (current, cumulative)
-    end
+(* The send half of interpret': build the tool callbacks and hand the enumerated
+   entries to Python for the live interpretation (cache filter, then LLM for the
+   rest).  `driver` is the "<Driver>[.<model>]" string resolved ONCE at the entry
+   point (see interpretation_driver above); it is carried down as data, never re-read
+   here -- this context is rebuilt from the cone node's own theory and would read the
+   default. *)
+fun send_for_interpretation (driver : string) (context : Context.generic)
+      {file_path, theory_longname, theory_key, entries} : usage * usage =
+  let
+    (* 7. Build callbacks capturing context *)
+    val su = Context_Callbacks.static_context_unpacker context
+    val pu = PIDE_State.position_context_unpacker context
+    val uk_cb = Universal_Key.make_universal_key_callback pu
+    val theory_info_cb = Context_Callbacks.make_theory_long_name_and_path_callback su
+    val desugar_cb = Explain_Term.make_desugar_callback context
+    val resolve_notation_cb = Explain_Term.make_resolve_notation_callback context
+    (* pu, not su: the query tool's show_defs threads a (file, offset)
+       context through entities_of into these callbacks; the static
+       unpacker accepts only nil and would fail to decode it. *)
+    val {constants, theorems, types, classes, locales, named_theorems, methods,
+         introduction_rules, elimination_rules,
+         induction_rules, case_split_rules} = make_entity_callbacks context pu
+    val cmd = make_interpret_file_cmd [uk_cb, theory_info_cb, desugar_cb,
+          resolve_notation_cb,
+          constants, theorems, types, classes, locales, named_theorems, methods,
+          introduction_rules, elimination_rules,
+          induction_rules, case_split_rules]
+
+    (* 8. Call RPC command *)
+    val rpc_arg = {
+      file_path = file_path,
+      theory_longname = theory_longname,
+      theory_key = theory_key,
+      driver = driver,
+      entries = entries
+    }
+    val (_, _, current, cumulative) =
+      Remote_Procedure_Calling.call_command cmd rpc_arg
+        handle Remote_Procedure_Calling.Remote_Calling_Failure {message, ...} =>
+          interpretation_rpc_error message
+    val _ = writeln (String.concat [
+      "[Semantic_Store] ", theory_longname, ": ", fmt_usage current,
+      " (historical: ", fmt_usage cumulative, ")"])
+  in
+    (current, cumulative)
+  end
+
+fun interpret' (driver : string) (context : Context.generic) : usage * usage =
+  let val payload = enumerate_entries context
+  in
+    if null (#entries payload) then (zero_usage, zero_usage)
+    else send_for_interpretation driver context payload
+  end
+
+(* Per-theory dry run (level 2 of Semantic_Store.dry_run): same enumeration as a live
+   run, then the interpret_file_dry_run RPC -- Python applies the live run's cache
+   filter and returns how many entities the LLM would be asked about, doing nothing
+   else.  No driver is involved: nothing runs. *)
+fun dry_run' (context : Context.generic) : int =
+  let val {file_path, theory_longname, theory_key, entries} = enumerate_entries context
+  in
+    if null entries then 0
+    else
+      Remote_Procedure_Calling.call_command interpret_file_dry_run_cmd
+        {file_path = file_path, theory_longname = theory_longname,
+         theory_key = theory_key, driver = "", entries = entries}
+      handle Remote_Procedure_Calling.Remote_Calling_Failure {message, ...} =>
+        interpretation_rpc_error message
   end
 
 (* Theories that are never interpreted: infrastructure sessions, and the three base
@@ -1545,13 +1606,29 @@ fun interpret_cone (driver : string) (force : bool) (cone : theory list) : usage
       (schedule_dag "Semantic_Store.interpret" body cone) (zero_usage, zero_usage)
   end
 
+(* Level 1 of the dry run, and the very filter interpret_with_parallel applies: the
+   theories in the ancestor cone of `roots` that still need interpretation.  Private
+   since the dry run became the system's one workload metering (CHECK_OUTDATE_PLAN.md
+   §8); the name survives because interpret_with_parallel's "same set ... by
+   construction" comment leans on it. *)
+fun plan_interpretation (force : bool) (roots : theory list) : theory list =
+  filter_out (skip_interpreted force) (collect_cone roots)
+
+(* Mode 4 / dry run -- see the signature comment.  Level 2 reuses schedule_dag for
+   parallelism only: dry bodies neither mark nor skip (level 1 already picked the work
+   set), and enumeration does not depend on ancestors' interpretation state, so the
+   edges merely bound concurrency the same way a live run's do. *)
+fun dry_run (force : bool) (roots : theory list) : string list * int =
+  let
+    val work = plan_interpretation force roots
+    val counts =
+      schedule_dag "Semantic_Store.dry_run" (fn thy => fn () => dry_run' (Context.Theory thy)) work
+  in (map Context.theory_long_name work, fold (curry op +) counts 0) end
+
 (* Interpret the merged ancestor cone of `roots` under one DAG, at the width the REPL was
    started with (-o threads=N). A `Context.Proof` root additionally has its own proof-local
    entities interpreted, last and sequentially, and is never marked (a proof context has no
    theory hash). *)
-fun plan_interpretation (force : bool) (roots : theory list) : theory list =
-  filter_out (skip_interpreted force) (collect_cone roots)
-
 (* `cfg_context` is the context whose `declare [[Semantic_Embedding.interpretation_driver]]`
    governs this run.  It is a SEPARATE parameter rather than `hd roots` because the roots
    are not always where the user declared it: make_interpret_theory_callback resolves its
@@ -1616,9 +1693,14 @@ fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpa
     : Remote_Procedure_Calling.callback' =
   Remote_Procedure_Calling.mk_callback {
     name = "Semantic_Store.interpret_theories",
-    arg_schema = MessagePackBinIO.Unpack.unpackPair (ctxt_unpack, MessagePackBinIO.Unpack.unpackList MessagePackBinIO.Unpack.unpackString),
-    ret_schema = MessagePackBinIO.Pack.packUnit,
-    function = fn (context, names) =>
+    arg_schema = MessagePackBinIO.Unpack.unpackTuple4
+      (ctxt_unpack,
+       MessagePackBinIO.Unpack.unpackList MessagePackBinIO.Unpack.unpackString,
+       MessagePackBinIO.Unpack.unpackBool, MessagePackBinIO.Unpack.unpackBool),
+    ret_schema = MessagePackBinIO.Pack.packPair
+      (MessagePackBinIO.Pack.packList MessagePackBinIO.Pack.packString,
+       MessagePackBinIO.Pack.packInt),
+    function = fn (context, names, force, dry) =>
       let
         val roots = map (Theory_Hash.resolve_theory context) names
         (* As in interpret_command.ML:63 and semantic_interpretation_app.ML: push the
@@ -1626,9 +1708,17 @@ fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpa
            ancestor theories the cone sweeps in.  store_theory_hash walks
            Theory.nodes_of, so the roots cover the whole cone. *)
         val _ = List.app Theory_Hash.store_theory_hash roots
-      (* `context`, not a root: the roots were resolved from NAMES, so only the
-         caller's context still carries its interpretation_driver declaration. *)
-      in interpret_with_parallel context false (map Context.Theory roots) end,
+      in
+        if dry then dry_run force roots
+        else
+          (* `context`, not a root: the roots were resolved from NAMES, so only the
+             caller's context still carries its interpretation_driver declaration. *)
+          (interpret_with_parallel context force (map Context.Theory roots);
+           (* A live run reports no numbers -- the dry run is the one workload
+              metering.  ~1 says "not counted", distinct from a genuine ([], 0)
+              nothing-to-do dry-run report. *)
+           ([], ~1))
+      end,
     timeout = NONE
   }
 
