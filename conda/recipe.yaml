@@ -346,6 +346,16 @@ requirements:
     - httpx
     - diskcache
     - claude-agent-sdk
+    #
+    # The Codex interpretation backend is DELIBERATELY absent.  It is a pip extra
+    # (`Isabelle_Semantic_Embedding[codex]`) and stays one; a conda user who wants it
+    # installs `openai-codex` themselves.  Two facts worth not re-establishing:
+    # `openai-codex`, the Python SDK, exists ONLY on PyPI -- anaconda.org has no package
+    # of that name on any channel -- and conda-forge's `codex` is a DIFFERENT thing, the
+    # Rust CLI binary, which the SDK never uses because it resolves its binary from its
+    # own bundled copy and never consults PATH.  Depending on the latter would resolve,
+    # install green, and change nothing.
+    # The ClaudeCode backend is the default and needs none of this.
     - pyyaml
     - filelock
     - zstandard

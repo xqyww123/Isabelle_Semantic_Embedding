@@ -116,4 +116,11 @@ Isabelle_Semantic_Embedding = ["embedding_config_template.yaml", "config_templat
                                # The dot component must be spelled out: setuptools' glob
                                # skips hidden entries, so "Agent_Interpretation_Dir/**/*"
                                # silently matches NOTHING here.  Measured, not assumed.
-                               "Agent_Interpretation_Dir/.claude/**/*"]
+                               "Agent_Interpretation_Dir/.claude/**/*",
+                               # The same three skills, where the Codex backend looks for
+                               # them (<cwd>/.codex/skills/, discovered automatically).
+                               # It is a directory SYMLINK to ../.claude/skills, which
+                               # setuptools' glob follows -- so the files ship once in the
+                               # source tree and twice in the wheel, and the two can never
+                               # drift.  Same dot-component caveat as above.
+                               "Agent_Interpretation_Dir/.codex/**/*"]
