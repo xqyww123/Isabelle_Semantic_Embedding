@@ -74,10 +74,13 @@ class _StubConn:
         raise AssertionError("_auto_embed must never ask at query time")
 
 
-def _store(names, gate, ready_key=None, field=True, dry=((), 0)):
-    S.Semantic_DB.get_many = lambda ks: [
-        ({"interpretation": "x"} if k == ready_key else None) for k in ks]
-    S.document_text_of = lambda rec: "doc"
+def _store(monkeypatch, names, gate, ready_key=None, field=True, dry=((), 0)):
+    # monkeypatch, not assignment: a bare `S.Semantic_DB.get_many = ...` would
+    # stay patched on the module singleton for every LATER test file in the
+    # same pytest run (measured: it blinded test_incremental_criteria's scans).
+    monkeypatch.setattr(S.Semantic_DB, "get_many", lambda ks: [
+        ({"interpretation": "x"} if k == ready_key else None) for k in ks])
+    monkeypatch.setattr(S, "document_text_of", lambda rec: "doc")
     store = object.__new__(S.Semantic_Vector_Store)
     store.connection = _StubConn(names, gate, dry)
     store.enable_interpret_in_auto_embed = field
@@ -94,7 +97,7 @@ def _interpret_calls(conn):
     return [a for n, a in conn.calls if n == "Semantic_Store.interpret_theories"]
 
 
-def test_gate_off_is_silent_and_still_embeds_ready_keys():
+def test_gate_off_is_silent_and_still_embeds_ready_keys(monkeypatch):
     """The user switched the gate off: no warning, no live interpretation --
     and the already-interpreted key still gets its vector."""
     plain = [_thy(10 + i) for i in range(3)]
@@ -102,7 +105,7 @@ def test_gate_off_is_silent_and_still_embeds_ready_keys():
     names.update({t: f"HOL.Thy{i}" for i, t in enumerate(plain)})
     ready_key = _ent(plain[0], "already_ready")
     missing = [_ent(t, f"c{i}") for i, t in enumerate(plain)] + [ready_key]
-    store = _store(names, gate=False, ready_key=ready_key)
+    store = _store(monkeypatch, names, gate=False, ready_key=ready_key)
 
     assert asyncio.run(store._auto_embed(missing)) == [ready_key]
     conn = store.connection
@@ -112,22 +115,22 @@ def test_gate_off_is_silent_and_still_embeds_ready_keys():
     assert all(a[3] for a in _interpret_calls(conn)), "no live run may happen"
 
 
-def test_field_off_skips_paragraph_one_entirely():
+def test_field_off_skips_paragraph_one_entirely(monkeypatch):
     """AoA's store: not even the config gets read, no callbacks fire."""
     missing = [_ent(_thy(10), "c0")]
-    store = _store({_thy(10): "HOL.Thy0"}, gate=True, field=False)
+    store = _store(monkeypatch, {_thy(10): "HOL.Thy0"}, gate=True, field=False)
     assert asyncio.run(store._auto_embed(missing)) == []
     assert store.connection.calls == []
 
 
-def test_point_fix_passes_theory_names_including_the_current_theory():
+def test_point_fix_passes_theory_names_including_the_current_theory(monkeypatch):
     """The name list is the point fix; the current theory is NOT excluded, the
     skipped/unresolvable ones are.  A small n runs silently (no warning)."""
     plain = _thy(10)
     names = {T_CUR: CUR_NAME, T_SKIP: "Pure", T_UNK: None, plain: "HOL.Thy0"}
     missing = [_ent(T_CUR, "cur"), _ent(T_SKIP, "skip"), _ent(T_UNK, "unk"),
                _ent(plain, "c0"), _thm([plain])]
-    store = _store(names, gate=True, dry=(("HOL.Thy0",), 2))
+    store = _store(monkeypatch, names, gate=True, dry=(("HOL.Thy0",), 2))
 
     asyncio.run(store._auto_embed(missing))
     conn = store.connection
@@ -142,13 +145,13 @@ def test_point_fix_passes_theory_names_including_the_current_theory():
     assert conn.warnings == []
 
 
-def test_shell_warns_with_the_real_count_when_nobody_was_asked():
+def test_shell_warns_with_the_real_count_when_nobody_was_asked(monkeypatch):
     """n >= threshold and ask_user=False: one warning quoting the dry run's n,
     and no live interpretation."""
     plain = _thy(10)
     names = {plain: "HOL.Thy0"}
     missing = [_ent(plain, "c0")]
-    store = _store(names, gate=True, dry=(("HOL.Thy0", "HOL.Thy1"), 150))
+    store = _store(monkeypatch, names, gate=True, dry=(("HOL.Thy0", "HOL.Thy1"), 150))
 
     asyncio.run(store._auto_embed(missing))
     conn = store.connection
