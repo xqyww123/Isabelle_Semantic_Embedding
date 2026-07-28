@@ -47,6 +47,15 @@ THEORY_HASH_DB_PATH = os.path.join(THEORY_HASH_CACHE_DIR, "theory_hash.lmdb")
 # ---------------------------------------------------------------------------
 
 
+def _loud(line: str) -> str:
+    """Red bold on a terminal -- for the one line a skimming reader must not
+    miss (user request 2026-07-28); plain when piped or redirected, so logs
+    and scripts stay clean."""
+    if sys.stdout.isatty():
+        return f"\033[1;31m{line}\033[0m"
+    return line
+
+
 def _load_theory_names() -> dict[bytes, str]:
     """Load hash→name mapping from theory_hash.lmdb."""
     if not os.path.exists(THEORY_HASH_DB_PATH):
@@ -679,12 +688,9 @@ def cmd_prune(args: argparse.Namespace) -> None:
           + (f"; vectors dropped from {n_vec} store(s)." if n_vec else "."))
 
     if not args.apply:
-        # Loud on purpose (user request 2026-07-28): red bold when stdout is a
-        # terminal, plain when piped/redirected so logs stay clean.
-        line = "DRY RUN -- nothing deleted.  Add --apply to execute."
-        if sys.stdout.isatty():
-            line = f"\033[1;31m{line}\033[0m"
-        print(line)
+        print(_loud("This was a DRY RUN: the listing above only shows what "
+                    "WOULD be deleted -- nothing has been touched.  Re-run "
+                    "the same command with --apply to actually delete."))
         return
 
     if not args.no_backup:
@@ -717,8 +723,14 @@ def cmd_orphans(args: argparse.Namespace) -> None:
         if not os.path.exists(SEMANTICS_DB_PATH):
             sys.exit(f"No semantic database found at {SEMANTICS_DB_PATH}")
         path = SEMANTICS_DB_PATH
-    orphans: 'list[tuple[bytes, str]]' = []
-    legacy = scanned = 0
+    from Isabelle_RPC_Host.universal_key import EntityKind
+    # Orphans GROUPED by the unknown theory hash that claims them: orphans come
+    # in clusters (all the records of one forgotten theory), the group's hash
+    # is exactly what `remove` takes, and kind numbers mean nothing to a
+    # reader -- so each group shows a count and a few sample entities by kind
+    # label and name.
+    groups: 'dict[bytes, list[str]]' = defaultdict(list)
+    legacy = scanned = n_orphans = 0
     env = lmdb.open(path, readonly=True, lock=False)
     with env.begin() as txn:
         for key, val in txn.cursor():
@@ -726,6 +738,7 @@ def cmd_orphans(args: argparse.Namespace) -> None:
             if len(key) <= 16 or val == b"":
                 continue                         # status / counter / tombstone
             scanned += 1
+            owner: 'bytes | None'
             if is_xor_prefixed_key(key):
                 consts = record_constituent_hashes(val)
                 if consts is None:
@@ -733,26 +746,50 @@ def cmd_orphans(args: argparse.Namespace) -> None:
                     continue
                 if any(h in hash_to_name for h in consts):
                     continue
-            elif key[:16] in hash_to_name:
+                owner = min(consts) if consts else None
+            else:
+                if key[:16] in hash_to_name:
+                    continue
+                owner = key[:16]
+            n_orphans += 1
+            if owner is None:
                 continue
             try:
                 vals = msgpack.unpackb(val)
-                label = f"kind {vals[0]} {vals[1]}"
+                kind = EntityKind(vals[0]).label
+                name = vals[1].decode() if isinstance(vals[1], bytes) else vals[1]
+                groups[owner].append(f"{kind} {name}")
             except Exception:
-                label = "<undecodable>"
-            orphans.append((key, label))
+                groups[owner].append("<undecodable record>")
     env.close()
-    layer = "system" if args.system else "user"
-    print(f"{layer} layer: {len(orphans)} orphaned record(s) of {scanned} scanned"
-          + (f" ({legacy} legacy records carry no constituent list and cannot "
-             f"be attributed at all)" if legacy else ""))
-    for key, label in orphans[:args.limit]:
-        print(f"  {key.hex()}  {label}")
-    if len(orphans) > args.limit:
-        print(f"  ... (and {len(orphans) - args.limit} more; raise --limit to see them)")
-    if orphans:
-        print("Read-only report; nothing was deleted.  Review, then use "
-              "`isabelle-semantics remove <hash>` for what you judge dead.")
+
+    where = ("the read-only system database" if args.system
+             else "your local (user) database")
+    print(f"Scanned {scanned} records in {where}.")
+    if not n_orphans and not legacy:
+        print("No orphans: every record belongs to a theory name this "
+              "machine's registry knows.")
+        return
+    print(f"{n_orphans} of them are ORPHANED: no theory name known to this "
+          f"machine claims them.  That usually means leftovers of theories "
+          f"interpreted long ago, or on another machine, whose names never "
+          f"reached the local registry.  Grouped by the unknown theory hash "
+          f"that owns them:")
+    ranked = sorted(groups.items(), key=lambda g: -len(g[1]))
+    for owner, members in ranked[:args.limit]:
+        samples = "; ".join(members[:3]) + (", ..." if len(members) > 3 else "")
+        print(f"  {owner.hex()}  --  {len(members)} record(s), e.g. {samples}")
+    if len(ranked) > args.limit:
+        rest = sum(len(m) for _, m in ranked[args.limit:])
+        print(f"  ... (and {len(ranked) - args.limit} more group(s), "
+              f"{rest} record(s); raise --limit to see them)")
+    if legacy:
+        print(f"  (plus {legacy} very old record(s) that carry no theory "
+              f"information at all and cannot be grouped)")
+    print(_loud("Read-only report; nothing was deleted.")
+          + "  To delete one group after reviewing it, feed its hash to the "
+            "remove command:\n"
+            f"  isabelle-semantics remove {ranked[0][0].hex() if ranked else '<hash>'}")
 
 
 # ---------------------------------------------------------------------------
