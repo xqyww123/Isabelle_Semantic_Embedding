@@ -1395,7 +1395,7 @@ async def update_interpretations(connection: Connection,
     if n < _UPDATE_ASK_THRESHOLD:
         await connection.tracing(
             f"[Semantic_Embedding] updating {n} new or outdated entity "
-            f"descriptions across {len(thy_names)} theories")
+            f"interpretations across {len(thy_names)} theories")
         await connection.callback("Semantic_Store.interpret_theories",
                                   (ctxt, names, False, False, include_context))
         return
@@ -1420,7 +1420,7 @@ async def update_interpretations(connection: Connection,
     # discipline -- report the real workload and the explicit remedy, do nothing.
     await connection.warning(
         f"[Semantic_Embedding] {n} entities across {len(thy_names)} theories have "
-        f"new or outdated descriptions that were not updated automatically.\n"
+        f"new or outdated interpretations that were not updated automatically.\n"
         f"These gaps can degrade AoA's retrieval quality.  Run "
         f"`run_semantic_interpretation` to update them.")
 

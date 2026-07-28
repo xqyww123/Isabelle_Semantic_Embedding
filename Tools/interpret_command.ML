@@ -89,7 +89,7 @@ fun run (force : bool) names state =
        cached): the dry run marks nothing (CHECK_OUTDATE_PLAN.md write-back
        discipline 3), so those theories are simply re-scanned next time.  That scan
        is cheap, and only a completed live run may mark. *)
-    if n = 0 then (writeln "[Semantic_Store] Nothing to interpret."; embed_phase ())
+    if n = 0 then (writeln "[Semantic_Embedding] Nothing to interpret."; embed_phase ())
     else
       let
         (* Name the theories, not just the counts: "11 theories" gives the user nothing
@@ -106,7 +106,7 @@ fun run (force : bool) names state =
 
         val (mk, promise) = Active.dialog_text ()
         val _ = writeln (String.concat [
-          "[Semantic_Store] ", string_of_int n,
+          "[Semantic_Embedding] ", string_of_int n,
           (if n = 1 then " entity needs" else " entities need"), " interpretation, across ",
           string_of_int m, (if m = 1 then " theory" else " theories"), ":\n",
           listing, "\n",
@@ -129,7 +129,7 @@ fun run (force : bool) names state =
             (Semantic_Store.interpret_with_parallel (Context.Proof ctxt) force
                (map Context.Theory roots);
              embed_phase ())
-        | _ => writeln "[Semantic_Store] Aborted.")
+        | _ => writeln "[Semantic_Embedding] Aborted.")
       end
   end
 

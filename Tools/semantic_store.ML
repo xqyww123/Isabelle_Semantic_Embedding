@@ -1563,7 +1563,7 @@ fun send_for_interpretation (driver : string) (context : Context.generic)
         handle Remote_Procedure_Calling.Remote_Calling_Failure {message, ...} =>
           interpretation_rpc_error message
     val _ = writeln (String.concat [
-      "[Semantic_Store] ", theory_longname, ": ", fmt_usage current,
+      "[Semantic_Embedding] ", theory_longname, ": ", fmt_usage current,
       " (historical: ", fmt_usage cumulative, ")"])
   in
     (current, cumulative)
@@ -1784,10 +1784,10 @@ fun interpret_with_parallel (cfg_context : Context.generic) (force : bool)
        parallel work, so it is the one multi-line message that cannot be interleaved. *)
     val _ = if n_units = 0 then () else
       vtr (String.concat [
-        "[Semantic_Store] Interpreting ", Int.toString n_units, " theories: their ",
+        "[Semantic_Embedding] Interpreting ", Int.toString n_units, " theories: their ",
         "constants, theorems, types and locales will be translated into English\n",
-        "descriptions and stored in the semantic database.\n",
-        "Interrupting is safe -- descriptions are saved as they arrive, and re-running resumes."])
+        "interpretations and stored in the semantic database.\n",
+        "Interrupting is safe -- interpretations are saved as they arrive, and re-running resumes."])
 
     (* Nothing to do (the common resume case): do not build a graph or fork relay tasks. *)
     val (ttotal, thist) =
@@ -1803,7 +1803,7 @@ fun interpret_with_parallel (cfg_context : Context.generic) (force : bool)
     val total = add_usage (ttotal, ptotal)
     val hist = add_usage (thist, phist)
     val _ = vtr (String.concat [
-        "[Semantic_Store] Done: ", Int.toString n_units, " theories. This run cost ",
+        "[Semantic_Embedding] Done: ", Int.toString n_units, " theories. This run cost ",
         fmt_usage total, "; everything spent on these theories so far: ",
         fmt_usage hist, "."])
   in
@@ -1882,7 +1882,7 @@ fun update_thm_cache thy =
          matching the monotonic Thm_Cache theorem semantics (see plan risk 6). *)
       val (ni, nl, nn, nc) = classify_rule_entries is_infra_induct_thm unique_new
       val _ = vtracing_global thy (String.concat [
-        "[Semantic_Store] Thm_Cache updated: ", Int.toString (length unique_new), " new entries (",
+        "[Semantic_Embedding] Thm_Cache updated: ", Int.toString (length unique_new), " new entries (",
         Int.toString (length cached + length unique_new), " total) in ",
         Int.toString (Time.toMilliseconds (Time.- (Time.now (), t0))), "ms"])
     in

@@ -740,7 +740,7 @@ async def _run_agent(make_driver: Callable[[], InterpretationDriver],
                 chunk = missing_idx[:_BATCH_SIZE]
                 await _report(
                     f"{task.theory_longname}: {len(missing_idx)} of "
-                    f"{len(task.entries)} entities still have no description; "
+                    f"{len(task.entries)} entities still have no interpretation; "
                     f"asking the LLM again (attempt {stall + 1} of {_MAX_STALLED_RETRIES}).",
                     warn=True)
                 missing_text = task.format_entries(chunk)
@@ -1037,15 +1037,15 @@ async def interpret_file(
     # Say what is about to happen in words, not internal vocabulary: "entries/cached/to
     # interpret" means nothing to someone watching from a theory buffer.
     if not uncached:
-        await _report(f"{theory_longname}: all {n} entities are already described "
-                      f"in the database and up to date, nothing to ask.")
+        await _report(f"{theory_longname}: all {n} entities are already interpreted "
+                      f"in the semantic database and up to date, nothing to ask.")
     elif n_cached:
-        await _report(f"{theory_longname}: found {n} entities to describe; "
-                      f"{n_cached} are already described and up to date, asking the "
+        await _report(f"Interpreting {theory_longname}: found {n} entities to interpret; "
+                      f"{n_cached} are already interpreted and up to date, asking the "
                       f"LLM for the remaining {len(uncached)} (new or outdated).")
     else:
-        await _report(f"{theory_longname}: found {n} entities to describe; none are in "
-                      f"the database yet, asking the LLM for all {n}.")
+        await _report(f"Interpreting {theory_longname}: found {n} entities to interpret; "
+                      f"none are in the semantic database yet, asking the LLM for all {n}.")
     current_cost = CostSummary(0, 0, 0, 0, 0.0)
     cumulative_cost = CostSummary(0, 0, 0, 0, 0.0)
 
@@ -1138,7 +1138,7 @@ async def interpret_file(
                 task.run_cache_read_tokens, task.run_output_tokens,
                 task.run_cost_usd)
             cumulative_cost = CostSummary(*cum)
-            await _report(f"{theory_longname}: done -- {answered} entities described, "
+            await _report(f"{theory_longname}: done -- {answered} entities interpreted, "
                           f"cost ${current_cost.cost_usd:.4f}.")
 
             # Remap agent results to original indices (cache already written
