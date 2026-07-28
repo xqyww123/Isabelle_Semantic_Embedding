@@ -707,7 +707,31 @@ theory，`map Context.Theory` 一做，caller 的 `declare` 就没了。加首�
 
 ## 5. 分步实施
 
-> **实施状态（2026-07-27）：步骤 1–6 已落地并提交，步骤 7 待跑。**
+> **实施状态（2026-07-28）：步骤 1–7 全部完成。**
+>
+> **步骤 7 实测结果**（两条路径各跑一次真实解释）：
+>
+> | driver | theory | 实体 | 结果 | 成本 |
+> |---|---|---|---|---|
+> | `Codex.gpt-5.6-sol` | `HOL.Predicate` | 244 | 244/244，零重试零回收 | $1.7736 |
+> | `ClaudeCode.claude-opus-4-8[1m]` | 一个临时 theory | 36 | 36/36 | $0.3733 |
+>
+> - **成本核算逐位复核通过**：72599 未缓存 input × $5/1M + 1027584 缓存 input × $0.50/1M
+>   + 29895 output × $30/1M = **$1.7736**，与记录完全一致。缓存命中 103 万 token，
+>   证明 `usage.total` 差分法与"input 含 cached 要相减"两条规则都对；用 `usage.last`
+>   会小数倍且看着仍合理。`cache_write=0`（SDK 不给该字段，§4.5 已记为已知少算）。
+> - **`base_instructions` 完全替换未损害任务遵从度**（§4.6 唯一未测的风险）：产出自包含、
+>   点名概念、把记号讲开，符合 `_SYSTEM_PROMPT` 规格。
+> - **`declare` 通道端到端首次验证**：临时 theory 里 declare `ClaudeCode`，ML 入口读到、
+>   随 RPC 参数下传、Python 解析、`b"driver"` 落库，日志确认
+>   "starting ClaudeCode agent on claude-opus-4-8[1m]"。
+> - 语义库 `list` 两条记录分别显示 `Codex.gpt-5.6-sol` / `ClaudeCode.claude-opus-4-8[1m]`；
+>   旧记录（无 `b"driver"`）仍显示裸模型名，向后兼容如设计。
+> - 全程未用 `force`，库里 1540 个 theory、64.7 万实体一条未被覆盖；靶子先用零成本的
+>   `dry_run` / `plan_interpretation` 确认过 work set 不牵连其它 theory。
+> - 遗留：临时 theory 的 36 条 WIP 记录（`list` 里带 `*`）。**未跑 `clean_wip`**——它会
+>   一并清掉其它 agent 可能正在产生的 WIP 记录，交由使用者决定。
+
 >
 > | 步骤 | 提交 | 验证 |
 > |---|---|---|
