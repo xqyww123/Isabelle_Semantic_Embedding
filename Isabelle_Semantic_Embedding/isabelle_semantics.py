@@ -679,7 +679,12 @@ def cmd_prune(args: argparse.Namespace) -> None:
           + (f"; vectors dropped from {n_vec} store(s)." if n_vec else "."))
 
     if not args.apply:
-        print("DRY RUN -- nothing deleted.  Add --apply to execute.")
+        # Loud on purpose (user request 2026-07-28): red bold when stdout is a
+        # terminal, plain when piped/redirected so logs stay clean.
+        line = "DRY RUN -- nothing deleted.  Add --apply to execute."
+        if sys.stdout.isatty():
+            line = f"\033[1;31m{line}\033[0m"
+        print(line)
         return
 
     if not args.no_backup:
