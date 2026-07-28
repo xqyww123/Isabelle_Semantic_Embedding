@@ -25,8 +25,6 @@ signature THEORY_STRUCTURE = sig
   val is_elimination_rule_name : string -> bool
   val is_induction_rule_name : string -> bool
   val is_case_split_rule_name : string -> bool
-  val get_theorems_with_positions_of : Context.generic -> Universal_Key.entity list ->
-    (string * int * Position.T * thm * bool) list
 end
 
 structure Theory_Structure : THEORY_STRUCTURE = struct
@@ -402,40 +400,5 @@ val is_induction_rule_name  = name_ends_in_any induct_suffix
 val is_case_split_rule_name = name_ends_in_any case_suffix
 
 end
-
-fun get_theorems_with_positions_of context entities =
-  let
-    val thy = Context.theory_of context
-    val facts = Context.cases Global_Theory.facts_of Proof_Context.facts_of context
-    val global_facts = Global_Theory.facts_of thy
-    val is_global = Facts.defined global_facts
-    val fact_space = Facts.space_of facts
-    fun pos_of name =
-      case try (Name_Space.the_entry fact_space) name of
-        SOME entry => #pos entry | NONE => Position.none
-    fun from_thm thm =
-      let val thm = Thm.transfer thy thm
-      in if not (Thm.has_name_hint thm)
-         then error "Anonymous theorem (no name hint)"
-         else let val thm_name = Thm.get_name_hint thm
-                  (* the fact space and Facts.defined are keyed on the bare fact name *)
-              in [(Thm_Name.print thm_name, 0, pos_of (#1 thm_name), thm, is_global (#1 thm_name))] end
-      end
-    fun from_name name =
-      case Facts.lookup context facts name of
-        NONE => error ("Unknown fact: " ^ quote name)
-      | SOME {thms, ...} =>
-          let val pos = pos_of name
-              val n = length thms
-              val global = is_global name
-          in map_index (fn (idx, thm) =>
-              (name, if n = 1 then 0 else idx + 1, pos,
-               Thm.transfer thy thm, global)) thms
-          end
-  in
-    maps (fn Universal_Key.Theorem thm => from_thm thm
-           | Universal_Key.Named_Theorem name => from_name name
-           | _ => []) entities
-  end
 
 end

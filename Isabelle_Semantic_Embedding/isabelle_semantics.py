@@ -9,6 +9,8 @@ Subcommands:
   collect   Collect semantic interpretations for a theory (requires Isa-REPL)
   list      List all theories in the layered database (offline)
   remove    Remove theories: tombstone their records, any residency (offline)
+  prune     Remove OLD GENERATIONS of named theories; dry run by default (offline)
+  orphans   Read-only report of records no known theory name can claim (offline)
   reindex   Rebuild the user experience index from semantics.lmdb (offline)
   fsck      Check semantics.lmdb invariants; --fix repairs the derived ones (offline)
   embed     Embed interpreted entities lacking a vector for MODEL, whole DB (offline)
@@ -20,6 +22,7 @@ Subcommands:
 import argparse
 import os
 import sys
+import time
 from collections import defaultdict
 
 import lmdb
@@ -312,28 +315,26 @@ def cmd_list(args: argparse.Namespace) -> None:
 # remove
 # ---------------------------------------------------------------------------
 
-def cmd_remove(args: argparse.Namespace) -> None:
-    """Remove theories from the LAYERED database (§4 of the plan, per L8).
-
-    Every record of each requested theory -- ANY residency -- is tombstoned in
-    the user layer (`put(key, b"")`); user-layer vectors and user-index entries
-    are really dropped.  A system-resident record is thereby masked locally and
-    drops out of the published snapshot at the next release."""
+def _system_sem_path() -> 'str | None':
+    """Path of the system layer's semantics.lmdb, or None; exits when NEITHER
+    layer exists."""
     from Isabelle_Semantic_Embedding.snapshot_sync import validated_system_db
-    from Isabelle_Semantic_Embedding.semantics import (
-        record_constituent_hashes, SEMANTICS_MAP_SIZE)
-    from Isabelle_Semantic_Embedding.semantic_embedding import VECTOR_MAP_SIZE
     sysdb = validated_system_db()
     if not os.path.exists(SEMANTICS_DB_PATH) and sysdb is None:
         print(f"No semantic database found at {SEMANTICS_DB_PATH}", file=sys.stderr)
         sys.exit(1)
-    hash_to_name = _load_theory_names()
-    system_sem_path = (os.path.join(sysdb.path, "semantics.lmdb")
-                       if sysdb is not None else None)
+    return (os.path.join(sysdb.path, "semantics.lmdb")
+            if sysdb is not None else None)
 
-    # Discover all theory hashes present in EITHER layer (user tombstones are
-    # not records).  Theorem/rule keys carry XOR pseudo-theory prefixes: their
-    # theories come from the record's constituent list, never from the prefix.
+
+def _discover_theory_hashes(system_sem_path: 'str | None',
+                            ) -> tuple[set[bytes], set[bytes]]:
+    """(theory hashes attributable in EITHER layer, user-tombstoned keys).
+
+    User tombstones are not records.  Theorem/rule keys carry XOR pseudo-theory
+    prefixes: their theories come from the record's constituent list, never
+    from the prefix."""
+    from Isabelle_Semantic_Embedding.semantics import record_constituent_hashes
     thy_hashes_in_db: set[bytes] = set()
     tombstoned_keys: set[bytes] = set()
     if os.path.exists(SEMANTICS_DB_PATH):
@@ -360,14 +361,24 @@ def cmd_remove(args: argparse.Namespace) -> None:
                 elif len(key) >= 16:             # < 16 = the 0xF0 counter key
                     thy_hashes_in_db.add(key[:16])
         env.close()
+    return thy_hashes_in_db, tombstoned_keys
 
-    resolved = _resolve_identifiers(args.identifiers, thy_hashes_in_db, hash_to_name)
-    if not resolved:
-        sys.exit(1)
-    resolved_set = set(resolved)
 
-    # Collect what to tombstone, over BOTH layers.  For experience keys keep
-    # the constituent hashes so the user-index entries can be dropped too.
+def _collect_removal(resolved_set: set[bytes], tombstoned_keys: set[bytes],
+                     system_sem_path: 'str | None',
+                     include_experiences: bool = True,
+                     ) -> 'tuple[set[bytes], dict[bytes, int], dict[bytes, list[bytes]], bool]':
+    """Every key belonging to a theory hash in `resolved_set`, over BOTH layers:
+    name-addressed by prefix, thm/rule/experience by constituent list, the
+    16-byte theory-status key included.  Returns (keys_to_tomb, per-hash entity
+    counts, experience removals with their constituents, any_system_resident).
+
+    `include_experiences=False` leaves EXPERIENCE records untouched (prune's
+    scope, CHECK_OUTDATE_PLAN §10: experience retrieval walks the bucket index,
+    not recomputed keys, so old-generation constituents do not strand them)."""
+    from Isabelle_RPC_Host.universal_key import EntityKind
+    from Isabelle_Semantic_Embedding.semantics import record_constituent_hashes
+    exp_tag = int(EntityKind.EXPERIENCE)
     del_counts: dict[bytes, int] = defaultdict(int)
     keys_to_tomb: set[bytes] = set()
     exp_removals: dict[bytes, list[bytes]] = {}
@@ -375,6 +386,9 @@ def cmd_remove(args: argparse.Namespace) -> None:
 
     def visit(key: bytes, val: bytes, in_system: bool) -> None:
         nonlocal any_system_resident
+        is_exp = len(key) == 32 and key[16] == exp_tag
+        if is_exp and not include_experiences:
+            return
         if key in keys_to_tomb:
             # Already collected from the user layer — but a system-resident
             # copy at the same key IS still being masked, and the §14 Note
@@ -398,8 +412,7 @@ def cmd_remove(args: argparse.Namespace) -> None:
         for thy in matched:
             if len(key) > 16:
                 del_counts[thy] += 1
-        from Isabelle_RPC_Host.universal_key import EntityKind
-        if len(key) == 32 and key[16] == int(EntityKind.EXPERIENCE):
+        if is_exp:
             exp_removals[key] = sorted(consts or set())
 
     if os.path.exists(SEMANTICS_DB_PATH):
@@ -418,38 +431,25 @@ def cmd_remove(args: argparse.Namespace) -> None:
                 if key not in tombstoned_keys:
                     visit(key, bytes(val), in_system=True)
         env.close()
+    return keys_to_tomb, del_counts, exp_removals, any_system_resident
 
-    # Print summary
-    print("Will remove:")
-    for h in resolved:
-        name = hash_to_name.get(h, "?")
-        count = del_counts.get(h, 0)
-        print(f"  {name:<50}  {count:>5} entities  [{h.hex()}]")
 
-    vec_paths = _vector_store_paths()
-    if vec_paths:
-        print(f"Also cleaning {len(vec_paths)} vector store(s).")
+def _execute_removal(keys_to_tomb: set[bytes],
+                     exp_removals: 'dict[bytes, list[bytes]]') -> None:
+    """The tombstoning engine shared by `remove` and `prune`.
 
-    if not args.force:
-        try:
-            answer = input("\nConfirm? [y/N] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print("\nAborted.")
-            sys.exit(1)
-        if answer != "y":
-            print("Aborted.")
-            return
-
-    # ORDER: derived data first, the tombstones LAST -- the exact dual of the
-    # discipline in experience_store.delete_experience.  The tombstone is what
-    # makes a key invisible to the discovery scans above, so writing it first
-    # would leave an interruption unrecoverable: a re-run could no longer
-    # derive keys_to_tomb, and the stale user vectors would keep serving
-    # (the L23 shortcut relies on "tombstoned => user vector already gone").
-    # Interrupted THIS way, a re-run just re-derives everything and converges.
+    ORDER: derived data first, the tombstones LAST -- the exact dual of the
+    discipline in experience_store.delete_experience.  The tombstone is what
+    makes a key invisible to the discovery scans, so writing it first would
+    leave an interruption unrecoverable: a re-run could no longer derive
+    keys_to_tomb, and the stale user vectors would keep serving (the L23
+    shortcut relies on "tombstoned => user vector already gone").  Interrupted
+    THIS way, a re-run just re-derives everything and converges."""
+    from Isabelle_Semantic_Embedding.semantics import SEMANTICS_MAP_SIZE
+    from Isabelle_Semantic_Embedding.semantic_embedding import VECTOR_MAP_SIZE
 
     # Really drop the user-layer vectors (vectors carry no tombstones).
-    for path in vec_paths:
+    for path in _vector_store_paths():
         venv = lmdb.open(path, map_size=VECTOR_MAP_SIZE)
         with venv.begin(write=True) as txn:
             for key in keys_to_tomb:
@@ -474,12 +474,260 @@ def cmd_remove(args: argparse.Namespace) -> None:
             txn.put(key, b"")
     env.close()
 
+
+def cmd_remove(args: argparse.Namespace) -> None:
+    """Remove theories from the LAYERED database (§4 of the plan, per L8).
+
+    Every record of each requested theory -- ANY residency -- is tombstoned in
+    the user layer (`put(key, b"")`); user-layer vectors and user-index entries
+    are really dropped.  A system-resident record is thereby masked locally and
+    drops out of the published snapshot at the next release."""
+    system_sem_path = _system_sem_path()
+    hash_to_name = _load_theory_names()
+
+    thy_hashes_in_db, tombstoned_keys = _discover_theory_hashes(system_sem_path)
+
+    resolved = _resolve_identifiers(args.identifiers, thy_hashes_in_db, hash_to_name)
+    if not resolved:
+        sys.exit(1)
+    resolved_set = set(resolved)
+
+    keys_to_tomb, del_counts, exp_removals, any_system_resident = \
+        _collect_removal(resolved_set, tombstoned_keys, system_sem_path)
+
+    # Print summary
+    print("Will remove:")
+    for h in resolved:
+        name = hash_to_name.get(h, "?")
+        count = del_counts.get(h, 0)
+        print(f"  {name:<50}  {count:>5} entities  [{h.hex()}]")
+
+    vec_paths = _vector_store_paths()
+    if vec_paths:
+        print(f"Also cleaning {len(vec_paths)} vector store(s).")
+
+    if not args.force:
+        try:
+            answer = input("\nConfirm? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            sys.exit(1)
+        if answer != "y":
+            print("Aborted.")
+            return
+
+    _execute_removal(keys_to_tomb, exp_removals)
+
     theories_word = "theory" if len(resolved) == 1 else "theories"
     print(f"Removed {len(resolved)} {theories_word} ({len(keys_to_tomb)} records "
           f"tombstoned; vectors and index entries dropped).")
     if any_system_resident:
         print("Note: system-resident records are now masked locally; they drop "
               "out of the\npublished snapshot at the next release.")
+
+
+# ---------------------------------------------------------------------------
+# prune / orphans (CHECK_OUTDATE_PLAN §10: batch deletion, not GC)
+# ---------------------------------------------------------------------------
+
+def _load_theory_generations() -> 'dict[str, list[tuple[bytes, int]]]':
+    """theory long name -> [(hash, ts)] from theory_hash.lmdb, PERSISTENT
+    hashes only (WIP garbage belongs to clean_wip, §10).  ts is the
+    last-touched time the registry keeps per hash (puts overwrite)."""
+    from Isabelle_RPC_Host.theory_hash import is_persistent
+    out: 'dict[str, list[tuple[bytes, int]]]' = defaultdict(list)
+    if not os.path.exists(THEORY_HASH_DB_PATH):
+        return out
+    env = lmdb.open(THEORY_HASH_DB_PATH, readonly=True, lock=False)
+    with env.begin() as txn:
+        for key, val in txn.cursor():
+            key = bytes(key)
+            if not is_persistent(key):
+                continue
+            name, ts = msgpack.unpackb(val)
+            if isinstance(name, bytes):
+                name = name.decode("utf-8")
+            out[name].append((key, int(ts)))
+    env.close()
+    return out
+
+
+def _prune_backup() -> None:
+    """The prune-owned rolling backup (§10, approved variant (a)): ONE copy of
+    the semantics.lmdb store alone, refreshed in place -- copy to a temp
+    directory, then swap it in for the previous backup, so exactly one backup
+    ever exists.  Vector stores and the experience index are deliberately NOT
+    backed up: vectors are a lazily refilled cache and the index can be rebuilt
+    (rebuild_experience_index); the only irreplaceable data is the
+    interpretation text itself.  A failed copy (ENOSPC included) aborts the
+    whole prune BEFORE anything is deleted."""
+    import shutil
+    from Isabelle_Semantic_Embedding.semantics import SEMANTICS_MAP_SIZE
+    dst = SEMANTICS_DB_PATH + ".prune-backup"
+    tmp = f"{dst}.tmp-{os.getpid()}"
+    env = lmdb.open(SEMANTICS_DB_PATH, map_size=SEMANTICS_MAP_SIZE)
+    try:
+        os.makedirs(tmp)
+        env.copy(tmp, compact=True)
+    except (lmdb.Error, OSError) as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        sys.exit(f"backup failed ({e}); nothing was deleted")
+    finally:
+        env.close()
+    old = dst + ".old"
+    if os.path.isdir(old):
+        shutil.rmtree(old)
+    if os.path.isdir(dst):
+        os.rename(dst, old)
+    os.rename(tmp, dst)
+    if os.path.isdir(old):
+        shutil.rmtree(old)
+    print(f"backup written: {dst}")
+    print("  (restore = stop the RPC host, then swap this directory back in "
+          f"place of {os.path.basename(SEMANTICS_DB_PATH)})")
+
+
+def cmd_prune(args: argparse.Namespace) -> None:
+    """Remove OLD GENERATIONS of the named theories (§10).
+
+    A "generation" is one persistent hash the theory-hash registry has seen for
+    a theory name and that still owns records in the semantic store.  The
+    newest --keep generations (by registry timestamp) survive; the rest are
+    handed to the shared removal engine.  EXPERIENCE records are out of scope.
+    DEFAULT IS A DRY RUN: nothing is deleted without --apply."""
+    if args.current_from == "repl":
+        sys.exit("--current-from repl is not implemented yet; the default "
+                 "(store: newest registry timestamp) covers the common case")
+    system_sem_path = _system_sem_path()
+    thy_hashes_in_db, tombstoned_keys = _discover_theory_hashes(system_sem_path)
+    generations = _load_theory_generations()
+
+    # Generations that actually own records, newest first, per name.
+    live: 'dict[str, list[tuple[bytes, int]]]' = {
+        name: sorted((g for g in gens if g[0] in thy_hashes_in_db),
+                     key=lambda g: -g[1])
+        for name, gens in generations.items()}
+
+    if args.all:
+        targets = sorted(n for n, gens in live.items() if len(gens) > args.keep)
+        if not targets:
+            print(f"No theory has more than {args.keep} generation(s) with "
+                  f"records; nothing to prune.")
+            return
+    else:
+        if not args.identifiers:
+            sys.exit("name at least one theory, or pass --all")
+        targets = []
+        for ident in args.identifiers:
+            if ident in live:
+                targets.append(ident)
+                continue
+            matches = [n for n in live if n.endswith("." + ident) or n == ident]
+            if len(matches) == 1:
+                targets.append(matches[0])
+            elif not matches:
+                sys.exit(f"unknown theory {ident!r} (not in the theory-hash "
+                         f"registry, or no records)")
+            else:
+                sys.exit(f"ambiguous theory {ident!r}: " + ", ".join(sorted(matches)))
+
+    doomed: set[bytes] = set()
+    print("Generations (newest first; the newest "
+          f"{args.keep} per theory survive):")
+    for name in targets:
+        gens = live.get(name, [])
+        print(f"  {name}")
+        for rank, (h, ts) in enumerate(gens):
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+            if rank < args.keep:
+                print(f"    keep    {h.hex()}  {when}")
+            else:
+                doomed.add(h)
+                print(f"    DELETE  {h.hex()}  {when}")
+        if len(gens) <= args.keep:
+            print(f"    (only {len(gens)} generation(s) with records -- nothing to delete)")
+
+    if not doomed:
+        print("Nothing to prune.")
+        return
+
+    keys_to_tomb, del_counts, exp_removals, _sys_res = _collect_removal(
+        doomed, tombstoned_keys, system_sem_path, include_experiences=False)
+    n_vec = len(_vector_store_paths())
+    print(f"\nWould tombstone {len(keys_to_tomb)} records across "
+          f"{len(doomed)} old generation(s)"
+          + (f"; vectors dropped from {n_vec} store(s)." if n_vec else "."))
+
+    if not args.apply:
+        print("DRY RUN -- nothing deleted.  Add --apply to execute.")
+        return
+
+    if not args.no_backup:
+        _prune_backup()
+    if not args.yes:
+        try:
+            answer = input("\nConfirm? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            sys.exit(1)
+        if answer != "y":
+            print("Aborted.")
+            return
+    _execute_removal(keys_to_tomb, exp_removals)
+    print(f"Pruned {len(doomed)} old generation(s): {len(keys_to_tomb)} records "
+          f"tombstoned; vectors and index entries dropped.")
+
+
+def cmd_orphans(args: argparse.Namespace) -> None:
+    """Read-only report of records whose prefix/constituents resolve to no
+    known theory name (§10).  No automatic deletion: review, then use
+    `remove <hash>` on what you judge dead."""
+    from Isabelle_Semantic_Embedding.semantics import record_constituent_hashes
+    hash_to_name = _load_theory_names()
+    if args.system:
+        path = _system_sem_path()
+        if path is None:
+            sys.exit("no system DB installed")
+    else:
+        if not os.path.exists(SEMANTICS_DB_PATH):
+            sys.exit(f"No semantic database found at {SEMANTICS_DB_PATH}")
+        path = SEMANTICS_DB_PATH
+    orphans: 'list[tuple[bytes, str]]' = []
+    legacy = scanned = 0
+    env = lmdb.open(path, readonly=True, lock=False)
+    with env.begin() as txn:
+        for key, val in txn.cursor():
+            key, val = bytes(key), bytes(val)
+            if len(key) <= 16 or val == b"":
+                continue                         # status / counter / tombstone
+            scanned += 1
+            if is_xor_prefixed_key(key):
+                consts = record_constituent_hashes(val)
+                if consts is None:
+                    legacy += 1                  # pre-constituent record: unattributable
+                    continue
+                if any(h in hash_to_name for h in consts):
+                    continue
+            elif key[:16] in hash_to_name:
+                continue
+            try:
+                vals = msgpack.unpackb(val)
+                label = f"kind {vals[0]} {vals[1]}"
+            except Exception:
+                label = "<undecodable>"
+            orphans.append((key, label))
+    env.close()
+    layer = "system" if args.system else "user"
+    print(f"{layer} layer: {len(orphans)} orphaned record(s) of {scanned} scanned"
+          + (f" ({legacy} legacy records carry no constituent list and cannot "
+             f"be attributed at all)" if legacy else ""))
+    for key, label in orphans[:args.limit]:
+        print(f"  {key.hex()}  {label}")
+    if len(orphans) > args.limit:
+        print(f"  ... (and {len(orphans) - args.limit} more; raise --limit to see them)")
+    if orphans:
+        print("Read-only report; nothing was deleted.  Review, then use "
+              "`isabelle-semantics remove <hash>` for what you judge dead.")
 
 
 # ---------------------------------------------------------------------------
@@ -1153,6 +1401,38 @@ def main() -> None:
         help="Theory names or universal key hex prefixes (from 'list' output)")
     p_remove.add_argument("--force", action="store_true", help="Skip confirmation prompt")
 
+    # prune (CHECK_OUTDATE_PLAN §10)
+    p_prune = sub.add_parser("prune",
+        help="Remove OLD GENERATIONS of the named theories (dry run by default)")
+    p_prune.add_argument("identifiers", nargs="*",
+        help="Theory names (long, or unambiguous base names)")
+    p_prune.add_argument("--all", action="store_true",
+        help="Every theory that has prunable old generations")
+    p_prune.add_argument("--keep", type=int, default=1, metavar="N",
+        help="How many newest generations survive per theory (default 1)")
+    p_prune.add_argument("--apply", action="store_true",
+        help="Actually delete (the default is a dry run)")
+    p_prune.add_argument("--yes", action="store_true",
+        help="With --apply: skip the confirmation prompt")
+    p_prune.add_argument("--no-backup", action="store_true",
+        help="With --apply: skip the rolling semantics.lmdb backup")
+    p_prune.add_argument("--current-from", choices=["store", "repl"],
+        default="store",
+        help="What decides the current generation: the registry's newest "
+             "timestamp (store, default) or a live REPL session (repl)")
+    p_prune.add_argument("--repl-addr", default=None,
+        help="With --current-from repl: the Isa-REPL address")
+    p_prune.add_argument("--session", default=None,
+        help="With --current-from repl: the session name")
+
+    # orphans (CHECK_OUTDATE_PLAN §10)
+    p_orphans = sub.add_parser("orphans",
+        help="Read-only report of records attributable to no known theory name")
+    p_orphans.add_argument("--limit", type=int, default=50, metavar="N",
+        help="How many orphans to list (default 50)")
+    p_orphans.add_argument("--system", action="store_true",
+        help="Report on the read-only system layer instead of the user layer")
+
     # reindex
     p_reindex = sub.add_parser("reindex",
         help="Rebuild experience_index.lmdb from the EXPERIENCE records in semantics.lmdb")
@@ -1211,6 +1491,7 @@ def main() -> None:
 
     args = parser.parse_args()
     {"collect": cmd_collect, "list": cmd_list, "remove": cmd_remove,
+     "prune": cmd_prune, "orphans": cmd_orphans,
      "reindex": cmd_reindex, "fsck": cmd_fsck, "embed": cmd_embed,
      "status": cmd_status, "pull": cmd_pull, "release": cmd_release,
      "export": cmd_export}[args.command](args)

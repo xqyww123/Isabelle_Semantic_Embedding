@@ -1,8 +1,10 @@
 # 增量失效机制的已知缺陷
 
-**日期**: 2026-07-20
-**状态**: 设计期记录，缺陷均已知且被明确接受，留待后续处理
-**关联**: `CHECK_OUTDATE_PLAN.md`（仓库根）
+**日期**: 2026-07-20（2026-07-28 随机制落地同步：计划节号更新、补缺陷 6、
+删除已作废的「手动强制重解释入口」承诺）
+**状态**: 缺陷均已知且被明确接受；机制本体已落地（`Tools/semantic_digest.ML` +
+`semantic_interpretation.py` 的待办集过滤，CHECK_OUTDATE_PLAN M1–M4）
+**关联**: `CHECK_OUTDATE_PLAN.md`（仓库根；本文是其 §4.4/§7.3 的接受缺陷登记处）
 
 本文集中记录 `check_outdate` 增量失效机制**已知不能覆盖的情况**。这些缺陷是设计权衡的
 结果，不是实现 bug。写下来是为了避免日后有人误以为覆盖是完备的，也为将来改进留下起点。
@@ -20,6 +22,7 @@
 | 3 | class 超类传递闭包会被下游污染 | 低 | 317 个 class |
 | 4 | method 永不过期 | 低 | 28 个 |
 | 5 | theorem collection 永不过期 | 低 | 64 个 |
+| 6 | 无记录的 dep 目标贡献 eff 0（infra 死边） | 低 | Main 上 28% 的 dep 目标 |
 
 ---
 
@@ -62,9 +65,9 @@ Nat.add_Suc 等引理  不失效
 
 两个设计决定叠加：
 
-- **statement 级依赖**（`CHECK_OUTDATE_PLAN.md` §4.6）：依赖取自定理陈述中出现的
+- **statement 级依赖**（`CHECK_OUTDATE_PLAN.md` §3.2）：依赖取自定理陈述中出现的
   constant/type。类型类的实例解析发生在项之外，陈述看不见它。
-- **下游污染过滤器**（同 §6.0）：`Defs.specifications_of` 对 `plus` 返回 9 条实例定义
+- **下游污染过滤器**（同 §7.3）：`Defs.specifications_of` 对 `plus` 返回 9 条实例定义
   公理，分布在 `Nat`/`Int`/`String` 等下游 theory 中。若纳入则 `Groups` 的实体会依赖
   其后代，既造成大面积过度失效，又使依赖边指向前方、破坏拓扑序假设。故必须过滤掉。
 
@@ -131,12 +134,12 @@ if is_some (Axclass.class_of_param thy c) then []   (* 类参数没有自己的�
 而 Isabelle 的 `subclass A < B` 命令可以在**下游 theory** 中证明新的类包含关系。一旦如此，
 上游某个类的传递超类集合就会增长——与缺陷 1 中 `plus` 的 9 条实例定义完全同构的下游污染。
 
-### 处理
+### 处理（已落地）
 
-`CHECK_OUTDATE_PLAN.md` §6.0 的过滤器必须同样施加于 class：只保留归属 theory ⊑ 该类
-归属 theory 的超类；或更稳妥地只取该类声明处的直接超类。
-
-**未过滤的后果**：下游任何一个 `subclass` 证明都会让上游 class 失效，并使依赖边指向前方。
+`semantic_digest.ML` 的 `sem_class`：超类结构经由 `Axclass.get_info` 的 `def`
+定理进入 payload——它在声明时刻冻结，下游 `subclass` 不改写它，digest 因此不随
+env 漂移（敏感性断言 S7：`Rings.idom` 跨 env digest 相同）。传递超类集只进
+**依赖边**；下游新增的边指向前方，由 Python 侧递归 eff 求值自然容忍。
 
 ---
 
@@ -197,7 +200,8 @@ ML error: Value or constructor (get_methods) has not been declared in structure 
 这类缺陷的是敏感性测试（「改了 X，digest 必须变」），而第一版没有。
 
 所以：**下表只说明"算得出来"，不说明"测得出变化"。** 失效能力的依据是
-`CHECK_OUTDATE_PLAN.md` §11 阶段 1 第 6 项的敏感性测试集。
+`CHECK_OUTDATE_PLAN.md` §14 的敏感性测试集（已落地：`Test/Test_Sensitivity.thy`，
+失败即 build 红）。
 
 ## 解析覆盖率汇总
 
@@ -209,4 +213,20 @@ ML error: Value or constructor (get_methods) has not been declared in structure 
 
 数据取自实际语义库（117,611 条记录 / 1,513 个 theory）。
 
-对"永不过期"的那 92 个实体，需保留**手动强制重解释**的入口。
+那 92 个"永不过期"实体，永不过期即终态（CHECK_OUTDATE_PLAN §2 锁定决策）——
+不设也不承诺任何强制重解释入口；要重做只能删记录（`isabelle-semantics remove`）
+后按 uncached 重解释。
+
+---
+
+## 6. 无记录的 dep 目标贡献 eff 0（infra 死边）
+
+`deps` 边的目标若在库中没有记录——Main 实测 28% 的 dep 目标是被 Infra_Filter
+排除的基础设施实体（`BNF_Def.Grp`、`HOL.equal_class` 等）——则递归 eff 求值对
+这条边取 **0**（CHECK_OUTDATE_PLAN §4.4 的显式设计决定）：infra 实体永远不被
+解释，也就永远没有 version 可供抬升，这条边对失效**永远沉默**。
+
+**后果**：改动一个 infra 实体的定义不会经 version 走廊失效它的依赖者。接受理由
+与缺陷 1/2 相同——本机制检测英文解释是否过时，不算逻辑闭包；infra 实体的语义
+变动几乎不改变依赖者的英文描述。persistent 侧不受影响（infra theory 的内容变化
+照样使 Merkle hash 漂移）。

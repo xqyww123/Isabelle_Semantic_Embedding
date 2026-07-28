@@ -704,9 +704,35 @@ def export(outdir: str) -> dict:
     # ①/④ records: the layered visible view, batched into fresh (hence
     # compacted) stores.
     _log("  exporting records...")
+
+    # ②' (CHECK_OUTDATE_PLAN §9, the export filter job): the payload contains
+    # PERSISTENT data only.  Drops the 0xF0 global version counter (the
+    # publishing machine's counter value is meaningless and harmful elsewhere)
+    # and every WIP key -- machine-local working state whose incremental fields
+    # carry this machine's counter domain.  Prefix-addressed keys go by the
+    # key's WIP bit; XOR-prefixed keys (thm/rule/experience) go by their
+    # constituent list, because the XORed bit is a PARITY that two WIP
+    # constituents cancel; a legacy record with no constituent list falls back
+    # to the bit.  Applied to every copy loop below -- records, vectors,
+    # embed-status -- one missed loop would be a release leak.
+    from Isabelle_RPC_Host.theory_hash import is_persistent as _hash_persistent
+    from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
+    from .semantics import record_constituent_hashes as _consts_of
+
+    def _ships(key: bytes, val: bytes) -> bool:
+        if len(key) < 16:
+            return False                 # the 0xF0 global version counter
+        if is_xor_prefixed_key(key):
+            consts = _consts_of(val)
+            if consts is None:
+                return _hash_persistent(key)
+            return all(_hash_persistent(h) for h in consts)
+        return _hash_persistent(key)
+
     out_sem = lmdb.open(os.path.join(outdir, "semantics.lmdb"),
                         map_size=SEMANTICS_MAP_SIZE)
     n_records = 0
+    n_wip_dropped = 0
     batch: list[tuple[bytes, bytes]] = []
 
     def _flush(env: lmdb.Environment) -> None:
@@ -718,11 +744,16 @@ def export(outdir: str) -> dict:
             batch = []
 
     for k, v in Semantic_DB.iter_items():
+        if not _ships(k, v):
+            n_wip_dropped += 1
+            continue
         batch.append((k, v))
         n_records += 1
         if len(batch) >= _EXPORT_BATCH:
             _flush(out_sem)
     _flush(out_sem)
+    if n_wip_dropped:
+        _log(f"  dropped {n_wip_dropped} WIP/counter key(s) from the payload")
 
     # ② the system experience index of the payload, built over the OUTPUT.
     _log("  building the experience index...")
@@ -753,6 +784,8 @@ def export(outdir: str) -> dict:
             for k, _v in Semantic_DB.iter_items():
                 if len(k) == 16:
                     continue                        # thy status, not an entity
+                if not _ships(k, _v):
+                    continue                        # ②': persistent data only
                 vec = get(k)
                 if vec is not None:
                     batch.append((k, bytes(vec)))
@@ -771,13 +804,13 @@ def export(outdir: str) -> dict:
         if sys_env is not None:
             with sys_env.begin() as txn:
                 for k, v in txn.cursor():
-                    if len(bytes(k)) == 16:
-                        status[bytes(k)] = bytes(v)
+                    if len(bytes(k)) == 16 and _hash_persistent(bytes(k)):
+                        status[bytes(k)] = bytes(v)     # ②': no WIP embed status
         if os.path.isdir(shell.path):
             with shell._env.begin() as txn:
                 for k, v in txn.cursor():
-                    if len(bytes(k)) == 16:
-                        status[bytes(k)] = bytes(v)
+                    if len(bytes(k)) == 16 and _hash_persistent(bytes(k)):
+                        status[bytes(k)] = bytes(v)     # ②': no WIP embed status
         with out_vec.begin(write=True) as txn:
             for k, v in status.items():
                 txn.put(k, v)
