@@ -595,9 +595,29 @@ def cmd_prune(args: argparse.Namespace) -> None:
     newest --keep generations (by registry timestamp) survive; the rest are
     handed to the shared removal engine.  EXPERIENCE records are out of scope.
     DEFAULT IS A DRY RUN: nothing is deleted without --apply."""
+    # --current-from repl: DELIBERATELY UNIMPLEMENTED (user decision,
+    # 2026-07-28).  What it would be: instead of trusting the registry's
+    # newest timestamp, ask a LIVE Isabelle session -- via the Isa-REPL Python
+    # client, hence the --repl-addr/--session flags -- for the hash each named
+    # theory is ACTUALLY loaded under right now, and treat those hashes as the
+    # current generations.  Why it exists on paper (CHECK_OUTDATE_PLAN §10):
+    # "most recently touched" can lie about "current" -- run anything on an
+    # old checkout and the OLD content's hash gets a fresh registry timestamp,
+    # so a subsequent store-mode prune would keep the old generation and offer
+    # to delete the main line's.  Why it is deferred: the failure needs that
+    # inverted-recency workflow AND an --apply without reading the dry-run
+    # listing (which prints every generation with its timestamp and verdict),
+    # AND the damage is bounded anyway (tombstones + the pre-apply backup;
+    # worst case, the pruned generation re-interprets as uncached at LLM
+    # cost).  If the scenario ever bites, implement it here: connect with the
+    # Isa-REPL client, resolve each target name in the session, fetch its
+    # current theory hash (Theory_Hash.hash_of on the loaded value), and use
+    # that set -- with an explicit error for a theory the session has not
+    # loaded -- in place of the newest-timestamp rule below.
     if args.current_from == "repl":
-        sys.exit("--current-from repl is not implemented yet; the default "
-                 "(store: newest registry timestamp) covers the common case")
+        sys.exit("--current-from repl is not implemented (see the comment "
+                 "here for the design); the default store mode -- newest "
+                 "registry timestamp -- covers the common case")
     system_sem_path = _system_sem_path()
     thy_hashes_in_db, tombstoned_keys = _discover_theory_hashes(system_sem_path)
     generations = _load_theory_generations()
