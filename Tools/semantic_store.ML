@@ -482,9 +482,28 @@ local
 in
 fun key_kind_ord (k1, k2) = int_ord (entity_kind_rank k1, entity_kind_rank k2)
 end
-fun entry_ord (e1, e2) =
-  (case int_ord (the_default 999999999 (Position.line_of (#3 e1)),
-                 the_default 999999999 (Position.line_of (#3 e2))) of
+(* Send order (CHECK_OUTDATE_PLAN.md §5): the primary key is the Name_Space
+   entry SERIAL, not the source line.  Line order was falsified: a generated
+   binding falls back to its command's first line (three HOL core
+   counter-examples measured), and a dynamically loaded theory has no lines at
+   all.  Serials are registration timestamps -- measured over 9 theories /
+   10,758 in-theory dependency edges: zero genuine violations, no entity
+   without a serial, no duplicate serials, monotone across load layers.
+   The role is quality, not correctness: a dependency's fresh interpretation
+   lands before its dependants' prompts reference it, and the recursive eff
+   evaluation mostly follows back edges; eff does not depend on this order.
+
+   The ordering runs decorated: the sort site pairs each entry with its serial
+   (serial_of, defined where the spaces are in scope), sorts, and strips.  An
+   entry whose serial cannot be resolved sorts LAST (they are theorem-alike
+   fall-through names -- theory_structure's rule getters -- which nothing
+   depends on). *)
+fun entry_ord ((s1 : int option, e1), (s2, e2)) =
+  (case (case (s1, s2) of
+           (SOME a, SOME b) => int_ord (a, b)
+         | (SOME _, NONE) => LESS
+         | (NONE, SOME _) => GREATER
+         | (NONE, NONE) => EQUAL) of
     EQUAL => (case key_kind_ord (#1 e1, #1 e2) of
       EQUAL => string_ord (#2 e1, #2 e2)
     | ord => ord)
@@ -754,7 +773,11 @@ fun build_entries (context : Context.generic)
             | NONE => name
         in
           (entity, disp_name, mk_prop_str (entity, pos),
-           the_default 999999999 (Position.line_of pos), uk, hint, prov,
+           (* ~1 = no source line.  Python's Entry docstring and its prompt
+              guard (line_number > 0) both speak -1; the old 999999999 slipped
+              past that guard and printed "[line 999999999]" into the agent
+              prompt (CHECK_OUTDATE_PLAN §5's ride-along display fix). *)
+           the_default ~1 (Position.line_of pos), uk, hint, prov,
            mk_constituents (entity, uk, name))
         end)
   end
@@ -1360,14 +1383,42 @@ fun enumerate_entries (context : Context.generic) =
        same uk) would both reach the agent — wasted interpretation + last-write-
        wins LMDB overwrite.  Rules never collide with theorem/member by uk
        (distinct kind-tag byte in the key), so this keep-first pass removes only
-       intra-rule-list duplicates (keeping the position-dominant one, since the
+       intra-rule-list duplicates (keeping the serial-dominant one, since the
        list is already sorted by entry_ord) and leaves every other kind
        untouched.  Done on the flat (entity,name,pos,uk,member_idx) tuples BEFORE
        build_entries so the positional raw ~~ provss zip there stays aligned.
        Non-member producers carry member_idx = NONE; member_entries already carry
-       SOME i.  A member whose uk equals a static entry's is dropped here (static,
-       with a real line, sorts first), taking its SOME i with it — so no surviving
-       entry is ever mis-rendered as coll(i). *)
+       SOME i.  A member whose uk equals a static entry's is dropped here (the
+       static fact's own serial sorts at or before its members'), taking its
+       SOME i with it — so no surviving entry is ever mis-rendered as coll(i). *)
+    (* serial_of (§5): the entry serial from the entity's own name space.  A
+       dynamic-collection member (bare collection name + member_idx) borrows its
+       collection's serial; theorem names carry Thm_Name.print's "(i)" suffix,
+       which Thm_Name.parse strips for the fact-space lookup. *)
+    val serial_of =
+      let
+        val fact_space = Facts.space_of (Global_Theory.facts_of thy)
+        val const_space = Consts.space_of (Sign.consts_of thy)
+        val type_space = Type.type_space (Sign.tsig_of thy)
+        val class_space = Sign.class_space thy
+        val locale_space = Locale.locale_space thy
+        val method_space = Method.method_space context
+        fun space_serial space n =
+          try (fn () => #serial (Name_Space.the_entry space n)) ()
+        fun fact_serial n = space_serial fact_space (#1 (Thm_Name.parse n))
+      in
+        fn (entity, name) =>
+          case entity of
+            Universal_Key.Constant n => space_serial const_space n
+          | Universal_Key.Type n => space_serial type_space n
+          | Universal_Key.Class n => space_serial class_space n
+          | Universal_Key.Locale n => space_serial locale_space n
+          | Universal_Key.Theorem_Collection n => space_serial fact_space n
+          | Universal_Key.Method n => space_serial method_space n
+          (* every theorem-alike constructor, thm-valued or named: resolve the
+             carried NAME (members carry the bare collection name) *)
+          | _ => fact_serial name
+      end
     val all_entries_with_pos =
       let val tag = map (fn (e, n, p, u) => (e, n, p, u, NONE)) in
         (tag (const_entries @ deduped_thm_entries)
@@ -1376,7 +1427,9 @@ fun enumerate_entries (context : Context.generic) =
                 @ named_theorems_entries @ method_entries
                 @ intro_entries @ elim_entries
                 @ induct_entries @ case_split_entries))
+        |> map (fn e => (serial_of (#1 e, #2 e), e))
         |> sort entry_ord
+        |> map #2
         |> (fn es =>
               let val seen = Bytehashtab.empty (Int.max (16, length es))
               in filter (fn (_, _, _, uk, _) =>

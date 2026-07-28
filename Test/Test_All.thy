@@ -84,6 +84,28 @@ val _ =
   end
 \<close>
 
+subsection \<open>Send order: entry serials, not source lines (CHECK_OUTDATE_PLAN \<section>5)\<close>
+
+ML \<open>
+(* The acceptance pair from the plan: `rel_fun` (a constant) must sort before
+   `rel_fun_def` (its defining fact).  Line order got this wrong -- generated
+   bindings fall back to their command's first line -- which is why the send
+   order's primary key is the Name_Space entry serial. *)
+val _ =
+  let
+    val fact_space = Facts.space_of (Global_Theory.facts_of main_thy)
+    val const_space = Consts.space_of (Sign.consts_of main_thy)
+    fun serial_in space n = #serial (Name_Space.the_entry space n)
+    val s_const = serial_in const_space "BNF_Def.rel_fun"
+    val s_def = serial_in fact_space "BNF_Def.rel_fun_def"
+  in
+    if s_const < s_def
+    then writeln ("send order: rel_fun (" ^ string_of_int s_const ^
+                  ") < rel_fun_def (" ^ string_of_int s_def ^ ") OK")
+    else error "send order violated: rel_fun_def would be sent before rel_fun"
+  end
+\<close>
+
 subsection \<open>Whole pass: coverage, cost, determinism\<close>
 
 ML \<open>
