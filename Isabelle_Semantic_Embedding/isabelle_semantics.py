@@ -693,8 +693,11 @@ def cmd_prune(args: argparse.Namespace) -> None:
                     "the same command with --apply to actually delete."))
         return
 
-    if not args.no_backup:
-        _prune_backup()
+    # Confirm FIRST, backup second, delete last (review R8): the rolling
+    # backup rotation is irreversible -- it replaces the previous backup, the
+    # only recovery copy of whatever the LAST applied prune deleted.  A run
+    # the user aborts at the prompt must consume nothing; the invariant is
+    # only ever "backup before deletion".
     if not args.yes:
         try:
             answer = input("\nConfirm? [y/N] ").strip().lower()
@@ -704,6 +707,8 @@ def cmd_prune(args: argparse.Namespace) -> None:
         if answer != "y":
             print("Aborted.")
             return
+    if not args.no_backup:
+        _prune_backup()
     _execute_removal(keys_to_tomb, exp_removals)
     print(f"Pruned {len(doomed)} old generation(s): {len(keys_to_tomb)} records "
           f"tombstoned; vectors and index entries dropped.")
