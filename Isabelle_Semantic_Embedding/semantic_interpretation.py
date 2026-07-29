@@ -906,11 +906,18 @@ async def interpret_file(
                 version_to_write[i] = rec.version if rec.version else epsilon
 
     # Phase 2 -- effective version: eff(E) = max version over E's dependency
-    # closure (E itself included), evaluated by iterative DFS with one numeric
-    # memo over batch ∪ store (§4.1).  A missing record contributes 0 (§4.4:
-    # infrastructure targets carry no record by design).  Cycles fold to the
-    # on-stack member's own version -- SCC members are defined by one command
-    # and bump together, so the truncation loses no signal.
+    # closure (E itself included), evaluated by iterative Tarjan DFS with one
+    # numeric memo over batch ∪ store (§4.1).  A missing record contributes 0
+    # (§4.4: infrastructure targets carry no record by design).  Folding a
+    # cycle to a max is lossless for INTRA-SCC signal (SCC members are defined
+    # by one command and bump together), but memo finalization must be
+    # SCC-wide: a node memoized before its SCC root pops misses contributions
+    # reachable only through the back edge (an SCC-mate's external dep), and
+    # the poisoned memo then serves every later lookup -- the order-dependent
+    # false-fresh of the 2026-07-28 review (R1, blocker; class parameter <->
+    # class edges make the shape an everyday one).  So no node writes memo
+    # until its SCC root pops; the root assigns the SCC-wide value (max over
+    # member versions and the effs of all external successors) to all members.
     memo: dict[bytes, int] = {}
     rec_cache: 'dict[bytes, SemanticRecord | None]' = {
         e.universal_key: r for e, r in zip(entries, recs)}
@@ -927,37 +934,69 @@ async def interpret_file(
         if r0 is None:
             memo[root] = 0
             return 0
-        on_stack = {root}
-        # frame = [uk, best-so-far, deps iterator]
-        stack = [[root, r0.version or 0, iter(r0.deps or [])]]
+        # index/low are per-call (finalized nodes live in memo and are never
+        # re-indexed); scc is the candidate stack -- a node stays on it,
+        # un-memoized, until its SCC root pops.  An SCC always forms a
+        # contiguous DFS subtree under its root, so the val flow at non-root
+        # frame pops accumulates every member's contribution into the root.
+        index: dict[bytes, int] = {}
+        low: dict[bytes, int] = {}
+        val: dict[bytes, int] = {}
+        scc: list[bytes] = []
+        on_scc: set[bytes] = set()
+
+        def _open(k: bytes, r: 'SemanticRecord') -> list:
+            index[k] = low[k] = len(index)
+            val[k] = r.version or 0
+            scc.append(k)
+            on_scc.add(k)
+            return [k, iter(r.deps or [])]
+
+        stack = [_open(root, r0)]
         while stack:
             frame = stack[-1]
+            k = frame[0]
             pushed = False
-            for d in frame[2]:
-                if d in memo:
-                    if memo[d] > frame[1]:
-                        frame[1] = memo[d]
+            for d in frame[1]:
+                if d in memo:              # finalized in an earlier SCC
+                    if memo[d] > val[k]:
+                        val[k] = memo[d]
                     continue
-                if d in on_stack:
-                    r = _rec_of(d)
-                    v = (r.version or 0) if r is not None else 0
-                    if v > frame[1]:
-                        frame[1] = v
+                if d in on_scc:            # edge into the candidate region:
+                    if index[d] < low[k]:  # lowlink only -- d's own value
+                        low[k] = index[d]  # reaches the root via tree pops
                     continue
                 r = _rec_of(d)
                 if r is None:
                     memo[d] = 0
                     continue
-                stack.append([d, r.version or 0, iter(r.deps or [])])
-                on_stack.add(d)
+                stack.append(_open(d, r))
                 pushed = True
                 break
             if not pushed:
                 stack.pop()
-                on_stack.discard(frame[0])
-                memo[frame[0]] = frame[1]
-                if stack and frame[1] > stack[-1][1]:
-                    stack[-1][1] = frame[1]
+                if low[k] == index[k]:
+                    # SCC root: assign the SCC-wide value to every member,
+                    # then flow it to the parent like any finalized successor
+                    # (the parent pushed this child, so it never saw a memo
+                    # hit for it -- without this flow the whole subtree's
+                    # contribution would be lost).  A finished SCC never
+                    # lowers the parent's lowlink.
+                    v = val[k]
+                    while True:
+                        m = scc.pop()
+                        on_scc.discard(m)
+                        memo[m] = v
+                        if m == k:
+                            break
+                    if stack and v > val[stack[-1][0]]:
+                        val[stack[-1][0]] = v
+                else:
+                    parent = stack[-1][0]
+                    if low[k] < low[parent]:
+                        low[parent] = low[k]
+                    if val[k] > val[parent]:
+                        val[parent] = val[k]
         return memo[root]
 
     def eff_value(version: int, deps: 'list[bytes] | None') -> int:

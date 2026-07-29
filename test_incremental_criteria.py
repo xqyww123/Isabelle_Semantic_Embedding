@@ -136,6 +136,28 @@ def test_eff_propagates_through_the_dep_edge(isolated_db):
         "corrupting only a must pull b in through its dep edge (eff)"
 
 
+def test_eff_scc_memo_is_order_independent(isolated_db):
+    """R1 regression (2026-07-28 review, blocker): eff's memo must be finalized
+    SCC-wide.  Shape: r <-> x mutual deps (one SCC), x also depends on h; h was
+    bumped to version 5.  Two probes with interpreted_at=2 hang off r and off x.
+    True eff over the closure {r, x, h} is 5 > 2, so BOTH probes are stale --
+    in either evaluation order.  The pre-Tarjan code memoized r as 1 when the
+    x-side probe ran first (the on-stack fold took only r's own version), so
+    the r-side probe came out falsely fresh and the count dropped to 1."""
+    dg_c, dg_d = b"\xcc" * 16, b"\xdd" * 16
+    e_pr = _entry("pr", dg_d, [_uk("r")])
+    e_px = _entry("px", dg_d, [_uk("x")])
+    for order in ([e_px, e_pr], [e_pr, e_px]):
+        # rebuild the store per order: phase 1 must see identical initial state
+        _put("r", "t", DG_A, [_uk("x")], 1, 1)
+        _put("x", "t", DG_B, [_uk("r"), _uk("h")], 1, 1)
+        _put("h", "t", dg_c, [], 5, 5)
+        _put("pr", "t", dg_d, [_uk("r")], 1, 2)
+        _put("px", "t", dg_d, [_uk("x")], 1, 2)
+        assert _dry(order) == 2, \
+            f"both probes must be stale regardless of order {order[0].name} first"
+
+
 def test_unified_dep_criterion_catches_uk_drift(isolated_db):
     """§4.3: with the digest equal, one drifted stored dep uk means stale --
     the dead-edge detector (a WIP<->persistent flip re-keys the target)."""
