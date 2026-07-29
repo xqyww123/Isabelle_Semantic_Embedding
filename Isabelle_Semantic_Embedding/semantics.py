@@ -1408,16 +1408,23 @@ async def update_interpretations(connection: Connection,
             f"need (re-)interpretation: {shown}\n"
             f"This calls the LLM: it may take a long time and cost money. Proceed?",
             ["Yes", "No", "No, don't ask again in this session"])
-        if answer == "No, don't ask again in this session":
-            _dont_ask_this_session = True
+        if answer is not None:
+            if answer == "No, don't ask again in this session":
+                _dont_ask_this_session = True
+                return
+            if answer != "Yes":
+                return
+            await connection.callback("Semantic_Store.interpret_theories",
+                                      (ctxt, names, False, False, include_context))
             return
-        if answer != "Yes":
-            return
-        await connection.callback("Semantic_Store.interpret_theories",
-                                  (ctxt, names, False, False, include_context))
-        return
-    # Nobody was asked (ask_user=False): the one warning point of §8's warning
-    # discipline -- report the real workload and the explicit remedy, do nothing.
+        # answer is None: no attached frontend can answer dialogs (the
+        # no-responder sentinel; distinct from the user declining!).  Nobody
+        # was asked, so fall through to the warning below -- checked BEFORE
+        # the string comparisons, which would otherwise swallow None into a
+        # silent return.
+    # Nobody was asked (ask_user=False, or the dialogue had no responder): the
+    # one warning point of §8's warning discipline -- report the real workload
+    # and the explicit remedy, do nothing.
     await connection.warning(
         f"[Semantic_Embedding] {n} entities across {len(thy_names)} theories have "
         f"new or outdated interpretations that were not updated automatically.\n"

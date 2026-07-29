@@ -112,3 +112,18 @@ def test_not_asked_warns_with_the_real_count():
     # and the dry call carried the point-fix shape
     dry = [a for n, a in conn.calls if n != "config"][0]
     assert dry[1] == ["HOL.A"] and dry[4] is False
+
+
+def test_no_responder_sentinel_falls_to_the_warning():
+    """R3: dialogue returning None (no frontend can answer dialogs) is NOT a
+    decline -- nobody was asked, so the ask path must fall through to the
+    ask_user=False warning (real n + remedy) and run nothing.  None is checked
+    BEFORE the string comparisons: the old control flow swallowed it into a
+    silent return."""
+    conn = _Conn(dry=(("HOL.A",), 250), answer=None)
+    _run(conn, ask_user=True, theory_names=["HOL.A"], include_context=False)
+    assert len(conn.dialogues) == 1                 # it did try to ask
+    (warn,) = conn.warnings
+    assert "250" in warn and "run_semantic_interpretation" in warn
+    assert _live_calls(conn) == []
+    assert S._dont_ask_this_session is False        # not a knowing decline
