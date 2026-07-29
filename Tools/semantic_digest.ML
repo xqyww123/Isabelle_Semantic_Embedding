@@ -49,6 +49,7 @@ sig
 
   (* The constants, type constructors and sort classes a term mentions. *)
   val deps_of_term: term -> dep list
+  val class_parents: env -> string -> string list
 
   (* Digest and dependencies of one pipeline entity:
        SOME (SOME digest, deps) -- the four WIP name-addressed kinds;
@@ -534,6 +535,12 @@ fun sem_type (env: env) name =
    evaluation tolerates (an over-approximation costing nothing).
 
    HOL.type has no axclass info (measured NONE) -- digest degrades to the name. *)
+(* The production super-edge source for a class's dependency list -- exported
+   so the sensitivity suite can cross-check it against the test-only def-parse
+   extraction (CHECK_OUTDATE_PLAN.md §3.2, §14). *)
+fun class_parents (env: env) name =
+  sort_strings (Sign.super_classes (#thy env) name)
+
 fun sem_class (env: env) name =
   let
     val thy = #thy env
@@ -549,8 +556,7 @@ fun sem_class (env: env) name =
        (frozen by Axclass.define_class), which is the stable thing.
 
        They do belong in the DEPENDENCIES. *)
-    val supers = sort_strings (Sign.super_classes thy name)
-    val super_deps = map (pair Universal_Key.ClassK) supers
+    val super_deps = map (pair Universal_Key.ClassK) (class_parents env name)
   in
     case try (Axclass.get_info thy) name of
       SOME {def, axioms, params, ...} =>

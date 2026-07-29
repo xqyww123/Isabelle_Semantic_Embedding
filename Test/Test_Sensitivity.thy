@@ -245,6 +245,76 @@ in
 end
 \<close>
 
+subsection \<open>S11 class: super deps are the DECLARED direct supers (§3.2, A5)\<close>
+
+ML \<open>
+(* Test-only def-parse extraction: the OFCLASS conjuncts on the RHS of
+   Axclass.get_info's `def` are the supers AS DECLARED, frozen by
+   Axclass.define_class at definition time -- registration-immune by
+   construction.  "HOL.type" appears there iff the declared super sort is
+   empty (it is the implicit top, not a declared super), so it is dropped. *)
+fun def_parse_supers thy c =
+  case try (Axclass.get_info thy) c of
+    NONE => NONE
+  | SOME {def, ...} =>
+      SOME (Thm.prop_of def
+        |> Logic.dest_equals |> snd
+        |> Logic.dest_conjunctions
+        |> map_filter (fn t => try (snd o Logic.dest_of_class) t)
+        |> filter_out (fn s => s = "HOL.type")
+        |> sort_strings);
+\<close>
+
+ML \<open>
+let
+  val thy = \<^theory>
+  val env_rings = Semantic_Digest.make_env (Thy_Info.get_theory "HOL.Rings")
+  val idom_direct = these (def_parse_supers thy "Rings.idom")
+  fun full_deps e n =
+    case Semantic_Digest.semantics_of e (Universal_Key.Class n) of
+      SOME (_, ds) => ds | NONE => []
+in
+  writeln ("      idom direct supers: " ^ commas idom_direct);
+  check "S11a Rings.idom declares exactly 2 direct supers (A5 census)"
+    (length idom_direct = 2);
+  check "S11b idom's production super component == def-parse (direct, not transitive)"
+    (eq_set (op =) (Semantic_Digest.class_parents env "Rings.idom", idom_direct));
+  (* Discriminating TODAY: idom's transitive super set is 43 under HOL.Rings
+     and 48 under Main-scale envs (post-hoc `subclass` widenings), so an
+     extraction that leaks transitivity cannot pass this. *)
+  check "S11c idom's full dep set is env-independent (Rings env vs this env)"
+    (eq_set (op =) (full_deps env_rings "Rings.idom", full_deps env "Rings.idom"))
+end
+\<close>
+
+subsection \<open>S12 class: production extraction == def-parse, every class in scope\<close>
+
+ML \<open>
+let
+  val thy = \<^theory>
+  val classes = Sign.all_classes thy
+  val bad = classes |> map_filter (fn c =>
+    let val prod = Semantic_Digest.class_parents env c in
+      case def_parse_supers thy c of
+        NONE =>
+          (* axiomatic class without axclass info (HOL.type etc.): the
+             production extraction must yield no parents at all *)
+          if null prod then NONE
+          else SOME (c ^ ": no axclass info but parents [" ^ commas prod ^ "]")
+      | SOME direct =>
+          if eq_set (op =) (prod, direct) then NONE
+          else SOME (c ^ ": production=[" ^ commas prod ^ "] def-parse=[" ^
+                     commas direct ^ "]")
+    end)
+in
+  writeln ("      " ^ string_of_int (length classes) ^ " classes in scope, " ^
+           string_of_int (length bad) ^ " mismatches");
+  app (writeln o prefix "      MISMATCH ") (take 10 bad);
+  check "S12  production extraction == def-parse over all classes in scope"
+    (null bad)
+end
+\<close>
+
 subsection \<open>Summary\<close>
 
 ML \<open>
