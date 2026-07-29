@@ -1622,7 +1622,9 @@ class Semantic_Vector_Store(Vector_Store):
                 data[b"total_tokens"] = data.get(b"total_tokens", 0) + total_tokens
             txn.put(theory_key, msgpack.packb(data))  # type: ignore
 
-    async def _auto_embed(self, missing: list[key], ctxt: Any = None) -> list[key]:
+    async def _auto_embed(self, missing: list[key], ctxt: Any = None,
+                          interpret_in_auto_embed: 'bool | None' = None
+                          ) -> list[key]:
         if self.connection is None:
             return []
         from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
@@ -1630,18 +1632,24 @@ class Semantic_Vector_Store(Vector_Store):
         # delegated to the policy shell (update_interpretations, CHECK_OUTDATE_
         # PLAN §8) -- which never asks at query time: small jobs run silently,
         # big ones warn with the dry run's real workload count.  DOUBLE gate:
-        # first this store's `enable_interpret_in_auto_embed` field (AoA sets
-        # it False after taking the store -- its by-aoa startup sweep already
-        # ran the check, so the query path pays nothing here, not even a config
-        # read); second, `auto_interpret_for_embedding` is read fresh INSIDE
-        # the shell (a live per-context option -- never cached).
+        # first the per-call `interpret_in_auto_embed` override, falling back
+        # to this store's field of the same name (AoA passes False on its
+        # lookups -- its by-aoa startup sweep already ran the check, so its
+        # query path pays nothing here, not even a config read; a PARAMETER,
+        # not a field write, so AoA's policy cannot stick to the
+        # connection-cached store other consumers share, review R7); second,
+        # `auto_interpret_for_embedding` is read fresh INSIDE the shell (a
+        # live per-context option -- never cached).
         # XOR-prefixed keys are skipped: their prefix is an XOR pseudo-theory,
         # not a locatable theory; EXPERIENCE keys also carry their own
         # interpretation and never need this step.  The name list makes this a
         # POINT FIX (the startup sweep passes none and roots on its context);
         # the current theory is NOT excluded -- the old exclusion starved the
         # very entities the running proof needs most (§8 context-root ruling).
-        if self.enable_interpret_in_auto_embed:
+        interpret = (self.enable_interpret_in_auto_embed
+                     if interpret_in_auto_embed is None
+                     else interpret_in_auto_embed)
+        if interpret:
             names: set[str] = set()
             seen_th: set[bytes] = set()
             for k in missing:
@@ -1669,7 +1677,7 @@ class Semantic_Vector_Store(Vector_Store):
             (k, rec) for k, rec in zip(missing, Semantic_DB.get_many(missing))
             if rec is not None and document_text_of(rec) is not None]
         if not ready:                                    # C1: nothing embeddable
-            if self.enable_interpret_in_auto_embed:
+            if interpret:
                 await self.connection.tracing(
                     f"[Semantic_Embedding] no semantic interpretations found for the missing entities, skipping")
             return []
@@ -1737,6 +1745,7 @@ class Semantic_Vector_Store(Vector_Store):
         name_contains: list[str] = [],
         target_type: str = "",
         ctxt: Any = None,
+        interpret_in_auto_embed: 'bool | None' = None,
     ) -> tuple[list[tuple[float, 'SemanticRecord']], list[str], int]:
         """Search the k closest entities to query, filtered by kinds and domain.
         Returns (results, warnings, total) where results are (score, record)
@@ -1876,14 +1885,16 @@ class Semantic_Vector_Store(Vector_Store):
         if candidates:
             top = await self.topk(query, candidates, fetch_k,
                                    kinds_phrase=render_kinds(entity_kinds),
-                                   ctxt=ctxt)
+                                   ctxt=ctxt,
+                                   interpret_in_auto_embed=interpret_in_auto_embed)
         if exp_hit and query_str is not None:
             from . import embedding_config as _ecfg
             exp_qvec = (await self.emb_provider.embed(
                 [query_str], role="query",
                 task_override=_ecfg.experience_task_description())).vectors[0]
             top = top + await self.topk(exp_qvec, list(exp_hit.keys()), fetch_k,
-                                        ctxt=ctxt)
+                                        ctxt=ctxt,
+                                        interpret_in_auto_embed=interpret_in_auto_embed)
         # Stage-1 relevance boost (§6): a convex pull of the cosine toward 1 by
         # hit_rate, applied uniformly (entities default hit_rate 1). Disabled when
         # the query has <= 1 term pattern (every survivor then has hit_rate 1, so
