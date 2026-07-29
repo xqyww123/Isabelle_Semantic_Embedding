@@ -214,3 +214,20 @@ def test_embed_side_pair_predicates(isolated_db, tmp_path):
     assert store.is_thy_embedded(WIP_THY, stamp) is True
     assert store.is_thy_embedded(WIP_THY, ("pid-1", 43)) is False
     assert store.is_thy_embedded(WIP_THY) is False
+
+
+def test_eff_scc_fresh_cycle_stays_fresh(isolated_db):
+    """Companion of the order-independence case: the SCC-wide value must be
+    EXACTLY the max over the closure, not merely large enough.  Same r <-> x
+    + external h shape, probes' interpreted_at raised to the closure max (5):
+    a fresh cycle must stay fresh, in both evaluation orders."""
+    dg_c, dg_d = b"\xcc" * 16, b"\xdd" * 16
+    e_pr = _entry("pr", dg_d, [_uk("r")])
+    e_px = _entry("px", dg_d, [_uk("x")])
+    for order in ([e_px, e_pr], [e_pr, e_px]):
+        _put("r", "t", DG_A, [_uk("x")], 1, 1)
+        _put("x", "t", DG_B, [_uk("r"), _uk("h")], 1, 1)
+        _put("h", "t", dg_c, [], 5, 5)
+        _put("pr", "t", dg_d, [_uk("r")], 1, 5)
+        _put("px", "t", dg_d, [_uk("x")], 1, 5)
+        assert _dry(order) == 0, "a fresh cycle must stay fresh"

@@ -171,3 +171,31 @@ def test_shell_warns_with_the_real_count_when_nobody_was_asked(monkeypatch):
     assert str(BIG) in warn and "run_semantic_interpretation" in warn
     assert all(a[3] for a in _interpret_calls(conn)), "no live run may happen"
     assert store.marks == []                         # R6: never a theory mark
+
+
+def test_kwarg_false_overrides_field_true(monkeypatch):
+    """R7, the actual AoA shape: field left at its True default, the caller
+    passes interpret_in_auto_embed=False per call -- paragraph (1) must be
+    skipped wholesale (no config read, no callbacks) without touching the
+    shared store's field."""
+    missing = [_ent(_thy(10), "c0")]
+    store = _store(monkeypatch, {_thy(10): "HOL.Thy0"}, gate=True, field=True)
+    assert asyncio.run(
+        store._auto_embed(missing, interpret_in_auto_embed=False)) == []
+    assert store.connection.calls == []
+    assert store.enable_interpret_in_auto_embed is True   # nothing mutated
+    assert store.marks == []                              # R6: never a theory mark
+
+
+def test_kwarg_true_overrides_field_false(monkeypatch):
+    """R7, the other direction: explicit True runs the point fix although the
+    store field says False -- pinning that None-vs-explicit precedence is on
+    the parameter, not the field."""
+    plain = _thy(10)
+    store = _store(monkeypatch, {plain: "HOL.Thy0"}, gate=True, field=False,
+                   dry=(("HOL.Thy0",), 2))
+    asyncio.run(store._auto_embed([_ent(plain, "c0")],
+                                  interpret_in_auto_embed=True))
+    assert _interpret_calls(store.connection), \
+        "explicit True must reach the cone callback despite field False"
+    assert store.marks == []                              # R6: never a theory mark

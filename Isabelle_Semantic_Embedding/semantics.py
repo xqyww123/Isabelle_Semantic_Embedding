@@ -1358,7 +1358,8 @@ def mk_query_by_name_tool(
 _dont_ask_this_session: bool = False
 
 # The asking threshold, in entities (the dry run's n -- the system's one
-# workload number).  Locked at 100 in CHECK_OUTDATE_PLAN.md §8.
+# workload number).  Locked at 400 (2026-07-29 user directive;
+# CHECK_OUTDATE_PLAN.md §8).
 _UPDATE_ASK_THRESHOLD: int = 400
 
 
@@ -1510,10 +1511,15 @@ class Semantic_Vector_Store(Vector_Store):
         self.model_name = model_name
         # First of the DOUBLE gate on _auto_embed's point-fix interpretation
         # (CHECK_OUTDATE_PLAN §8, 段(1)): a plain member, not a config option
-        # and not on the wire.  AoA sets it False after taking the store -- its
-        # by-aoa startup sweep (update_interpretations at _ensure_semantic_db)
-        # already covers the check, so query time short-circuits before even
-        # the config read.  Governs 段(1) only; embedding in 段(2) is unaffected.
+        # and not on the wire.  This is the STORE-LEVEL DEFAULT only -- a
+        # caller wanting a different policy for its own queries passes the
+        # interpret_in_auto_embed kwarg down the lookup chain (AoA passes
+        # False: its by-aoa startup sweep already covers the check, so its
+        # query time short-circuits before even the config read).  Consumers
+        # must NEVER write this field: the store is connection-cached and the
+        # ML connection pool shares it across callers, so a field write leaks
+        # one caller's policy to everyone (review R7).  Governs 段(1) only;
+        # embedding in 段(2) is unaffected.
         self.enable_interpret_in_auto_embed: bool = True
         if connection is not None:
             with _svs_lock:

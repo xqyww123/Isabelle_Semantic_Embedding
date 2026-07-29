@@ -155,6 +155,18 @@ let
   val _ = Remote_Procedure_Calling.load ["Isabelle_Semantic_Embedding"]
   val thy = \<^theory>
   val ctxt = \<^context>
+  (* Vacuity guard 3 -- the discriminator itself (round-2 implementation
+     review): the dedup is only observable on an UNCACHED uk enumerated by
+     both channels.  r2_dedup_probe is a constant of THIS theory, so both
+     channels enumerate it; assert it is really absent from the store.
+     NB the two quotes below are separate RPC rounds against the shared
+     store: this probe follows the test-exclusivity discipline -- never run
+     it concurrently with a live interpretation. *)
+  val _ =
+    (case Semantic_Store.query_semantics (Context.Theory thy)
+            (Universal_Key.Constant "Test_All.r2_dedup_probe") false of
+      NONE => ()
+    | SOME _ => error "Test_All: probe vacuous -- r2_dedup_probe already cached")
   val (works, n_thy) = Semantic_Store.dry_run false [Context.Theory thy]
   val (_, n_both) =
     Semantic_Store.dry_run false [Context.Theory thy, Context.Proof ctxt]

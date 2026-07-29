@@ -82,38 +82,30 @@ type env =
   locale_parents: string list Symtab.table}
 
 (* Def-time-only filter (CHECK_OUTDATE_PLAN.md section 3.2, the A5 ruling): an
-   edge's serial is the registration event's timestamp; a def-time import is
-   registered BEFORE the host locale's name-space entry (a register_locale
-   evaluation-order fact, not a documented promise -- hence the guard), so
-   `edge serial < host entry serial` keeps exactly the declared imports
-   (measured on Main: 243 locales / 537 edges, zero counterexamples).
-   Post-hoc `sublocale`/`subclass` registrations arrive later and are dropped;
-   `interpretation` and `instance` never enter this table at all --
-   registration edges are excluded by construction, zero residue.
-   Guard: a kept edge must sit on the same file+line as the host's entry; a
-   violation means the evaluation-order assumption broke, so fail loudly
-   rather than ship wrong dependency edges. *)
+   edge's serial is the registration event's timestamp, and a def-time
+   import's dep record is CONSTRUCTED while elaborating the import expression
+   -- an input of registering the locale itself -- so with serial () strictly
+   monotonic, `edge serial < host entry serial` holds by construction for
+   declared imports (measured on Main: 243 locales / 537 edges, zero
+   counterexamples).  Post-hoc `sublocale`/`subclass` registrations happen
+   after the entry exists and are dropped; `interpretation` and `instance`
+   never enter this table at all -- registration edges are excluded by
+   construction, zero residue.  (A position-based double check of this
+   ordering was deleted by ruling, 2026-07-30: it misjudged the legal
+   keyword/name line split and was vacuous under id-only PIDE positions;
+   extraction-drift implementation errors are what the sensitivity suite's
+   S11/S12/S3 assertions catch.) *)
 fun make_env thy : env =
  {thy = thy,
   axioms = Symtab.make_distinct (Theory.all_axioms_of thy),
   locale_parents =
     let
       val space = Locale.locale_space thy
-      fun same_line p1 p2 =
-        Position.file_of p1 = Position.file_of p2 andalso
-        Position.line_of p1 = Position.line_of p2
     in
-      fold (fn {source, target, pos, serial, ...} =>
-          let val entry = Name_Space.the_entry space target in
-            if serial >= #serial entry then I   (* post-hoc registration *)
-            else if same_line pos (#pos entry) then
-              Symtab.cons_list (target, source)
-            else
-              error ("Semantic_Digest.make_env: def-time locale dependency of " ^
-                quote target ^ " not at its entry position -- the \
-                \register_locale evaluation-order criterion broke \
-                \(CHECK_OUTDATE_PLAN.md section 3.2)")
-          end)
+      fold (fn {source, target, serial, ...} =>
+          if serial < #serial (Name_Space.the_entry space target)
+          then Symtab.cons_list (target, source)
+          else I)   (* post-hoc registration *)
         (Locale.dest_dependencies [] thy) Symtab.empty
     end}
 
