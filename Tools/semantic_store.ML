@@ -1580,17 +1580,17 @@ fun interpret' (driver : string) (context : Context.generic) : usage * usage =
    run, then the interpret_file_dry_run RPC -- Python applies the live run's cache
    filter and returns how many entities the LLM would be asked about, doing nothing
    else.  No driver is involved: nothing runs. *)
+fun dry_run_payload {file_path, theory_longname, theory_key, entries} : int =
+  if null entries then 0
+  else
+    Remote_Procedure_Calling.call_command interpret_file_dry_run_cmd
+      {file_path = file_path, theory_longname = theory_longname,
+       theory_key = theory_key, driver = "", entries = entries}
+    handle Remote_Procedure_Calling.Remote_Calling_Failure {message, ...} =>
+      interpretation_rpc_error message
+
 fun dry_run' (context : Context.generic) : int =
-  let val {file_path, theory_longname, theory_key, entries} = enumerate_entries context
-  in
-    if null entries then 0
-    else
-      Remote_Procedure_Calling.call_command interpret_file_dry_run_cmd
-        {file_path = file_path, theory_longname = theory_longname,
-         theory_key = theory_key, driver = "", entries = entries}
-      handle Remote_Procedure_Calling.Remote_Calling_Failure {message, ...} =>
-        interpretation_rpc_error message
-  end
+  dry_run_payload (enumerate_entries context)
 
 (* Theories that are never interpreted: infrastructure sessions, and the three base
    theories every HOL theory sits on. They are still TRAVERSED THROUGH -- see collect_cone. *)
@@ -1740,12 +1740,47 @@ fun dry_run (force : bool) (roots : Context.generic list) : string list * int =
   let
     val work = plan_interpretation force (map Context.theory_of roots)
     val proofs = filter (fn Context.Proof _ => true | _ => false) roots
-    val counts =
-      schedule_dag "Semantic_Store.dry_run" (fn thy => fn () => dry_run' (Context.Theory thy)) work
-    val pcounts = map dry_run' proofs
+    (* Theory channel: enumerate once per theory, count via the RPC, and KEEP
+       the enumerated uks.  One dry_run is ONE metering (the quote must equal
+       the live work, CHECK_OUTDATE_PLAN.md section 8), so the proof channel
+       below must never re-count a uk this channel already counted: the
+       proof-context enumeration is subtractive only for static theorems --
+       constants/types/classes/locales/collections/methods/rules re-enumerate
+       with identical uks, which the live run pays once (theory channel writes
+       first, the proof channel's copies are cache-filtered) but a plain sum
+       here counted twice, an upward-only quote drift (review R2). *)
+    val work_results =
+      schedule_dag "Semantic_Store.dry_run"
+        (fn thy => fn () =>
+           let val payload = enumerate_entries (Context.Theory thy)
+           in (dry_run_payload payload, map #5 (#entries payload)) end)
+        work
+    val n_work = fold (fn (n, _) => fn acc => n + acc) work_results 0
+    val counted =
+      let
+        val size = fold (fn (_, uks) => fn a => a + length uks) work_results 16
+        val tab = Bytehashtab.empty size
+      in
+        List.app (fn (_, uks) =>
+          List.app (fn uk => Bytehashtab.update tab (uk, ())) uks) work_results;
+        tab
+      end
+    (* Proof channel: only entries no work theory enumerated.  If the Proof
+       root's background theory is NOT in `work` (already interpreted and
+       skipped), nothing was collected for it and its entries pass through
+       untouched -- exactly the entities the live proof channel would pay for. *)
+    val pcounts = proofs |> map (fn ctxt =>
+      let
+        val {file_path, theory_longname, theory_key, entries} =
+          enumerate_entries ctxt
+        val entries' =
+          filter_out (fn e => Bytehashtab.defined counted (#5 e)) entries
+      in
+        dry_run_payload {file_path = file_path, theory_longname = theory_longname,
+                         theory_key = theory_key, entries = entries'}
+      end)
   in
-    (map Context.theory_long_name work,
-     fold (curry op +) (counts @ pcounts) 0)
+    (map Context.theory_long_name work, fold (curry op +) pcounts n_work)
   end
 
 (* Interpret the merged ancestor cone of `roots` under one DAG, at the width the REPL was
