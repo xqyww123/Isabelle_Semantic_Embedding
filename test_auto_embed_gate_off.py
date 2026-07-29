@@ -22,6 +22,9 @@ import asyncio
 from Isabelle_RPC_Host.universal_key import EntityKind, xor_theory_prefix
 import Isabelle_Semantic_Embedding.semantics as S
 
+# over-threshold workload (threshold-relative, see test_update_interpretations)
+BIG = S._UPDATE_ASK_THRESHOLD + 50
+
 
 def _thy(n: int) -> bytes:
     return bytes([n]) + b"\x00" * 15
@@ -160,11 +163,11 @@ def test_shell_warns_with_the_real_count_when_nobody_was_asked(monkeypatch):
     plain = _thy(10)
     names = {plain: "HOL.Thy0"}
     missing = [_ent(plain, "c0")]
-    store = _store(monkeypatch, names, gate=True, dry=(("HOL.Thy0", "HOL.Thy1"), 150))
+    store = _store(monkeypatch, names, gate=True, dry=(("HOL.Thy0", "HOL.Thy1"), BIG))
 
     asyncio.run(store._auto_embed(missing))
     conn = store.connection
     (warn,) = conn.warnings
-    assert "150" in warn and "run_semantic_interpretation" in warn
+    assert str(BIG) in warn and "run_semantic_interpretation" in warn
     assert all(a[3] for a in _interpret_calls(conn)), "no live run may happen"
     assert store.marks == []                         # R6: never a theory mark

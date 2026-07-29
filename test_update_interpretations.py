@@ -7,6 +7,10 @@ import asyncio
 
 import Isabelle_Semantic_Embedding.semantics as S
 
+# over-threshold workload for the ask/warn cases -- threshold-relative so a
+# retuned _UPDATE_ASK_THRESHOLD never silently turns these into small-n cases
+BIG = S._UPDATE_ASK_THRESHOLD + 50
+
 
 class _Conn:
     def __init__(self, gate=True, dry=((), 0), answer="Yes"):
@@ -73,29 +77,29 @@ def test_small_n_interprets_silently_with_context_root():
 
 
 def test_big_n_asks_and_yes_runs():
-    conn = _Conn(dry=(("HOL.A", "HOL.B"), 250), answer="Yes")
+    conn = _Conn(dry=(("HOL.A", "HOL.B"), BIG), answer="Yes")
     _run(conn, ask_user=True)
     ((msg, options),) = conn.dialogues
-    assert "250" in msg
+    assert str(BIG) in msg
     assert options == ["Yes", "No", "No, don't ask again in this session"]
     assert len(_live_calls(conn)) == 1
 
 
 def test_big_n_no_declines_once():
-    conn = _Conn(dry=(("HOL.A",), 250), answer="No")
+    conn = _Conn(dry=(("HOL.A",), BIG), answer="No")
     _run(conn, ask_user=True)
     assert _live_calls(conn) == []
     assert S._dont_ask_this_session is False        # plain No: ask again next time
 
 
 def test_third_option_sets_the_host_flag_and_later_calls_stay_silent():
-    conn = _Conn(dry=(("HOL.A",), 250), answer="No, don't ask again in this session")
+    conn = _Conn(dry=(("HOL.A",), BIG), answer="No, don't ask again in this session")
     _run(conn, ask_user=True)
     assert _live_calls(conn) == []
     assert S._dont_ask_this_session is True
     # a later big-n startup check: no dialog, no warning, no run -- but the
     # check itself and the small-update path stay alive
-    conn2 = _Conn(dry=(("HOL.A",), 250))
+    conn2 = _Conn(dry=(("HOL.A",), BIG))
     _run(conn2, ask_user=True)
     assert conn2.dialogues == [] and conn2.warnings == [] and _live_calls(conn2) == []
     conn3 = _Conn(dry=(("HOL.A",), 3))
@@ -104,10 +108,10 @@ def test_third_option_sets_the_host_flag_and_later_calls_stay_silent():
 
 
 def test_not_asked_warns_with_the_real_count():
-    conn = _Conn(dry=(("HOL.A",), 250))
+    conn = _Conn(dry=(("HOL.A",), BIG))
     _run(conn, ask_user=False, theory_names=["HOL.A"], include_context=False)
     (warn,) = conn.warnings
-    assert "250" in warn and "run_semantic_interpretation" in warn
+    assert str(BIG) in warn and "run_semantic_interpretation" in warn
     assert _live_calls(conn) == []
     # and the dry call carried the point-fix shape
     dry = [a for n, a in conn.calls if n != "config"][0]
@@ -120,10 +124,10 @@ def test_no_responder_sentinel_falls_to_the_warning():
     ask_user=False warning (real n + remedy) and run nothing.  None is checked
     BEFORE the string comparisons: the old control flow swallowed it into a
     silent return."""
-    conn = _Conn(dry=(("HOL.A",), 250), answer=None)
+    conn = _Conn(dry=(("HOL.A",), BIG), answer=None)
     _run(conn, ask_user=True, theory_names=["HOL.A"], include_context=False)
     assert len(conn.dialogues) == 1                 # it did try to ask
     (warn,) = conn.warnings
-    assert "250" in warn and "run_semantic_interpretation" in warn
+    assert str(BIG) in warn and "run_semantic_interpretation" in warn
     assert _live_calls(conn) == []
     assert S._dont_ask_this_session is False        # not a knowing decline

@@ -1359,7 +1359,7 @@ _dont_ask_this_session: bool = False
 
 # The asking threshold, in entities (the dry run's n -- the system's one
 # workload number).  Locked at 100 in CHECK_OUTDATE_PLAN.md §8.
-_UPDATE_ASK_THRESHOLD: int = 100
+_UPDATE_ASK_THRESHOLD: int = 400
 
 
 async def update_interpretations(connection: Connection,
