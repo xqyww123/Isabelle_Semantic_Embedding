@@ -75,19 +75,47 @@ struct
 type env =
  {thy: theory,
   axioms: term Symtab.table,
-  (* locale long name -> its parent locales.  Locale.dependencies_of is NOT
-     exported (only its implementation is visible at locale.ML:259); the
+  (* locale long name -> its DEF-TIME parent locales.  Locale.dependencies_of
+     is NOT exported (only its implementation is visible at locale.ML:259); the
      signature offers dest_dependencies, which yields every {source, target}
-     edge in one traversal, so index it once here rather than per locale.
-     pretty_locale_deps would also do but pretty-prints every locale body. *)
+     edge in one traversal, so index it once here rather than per locale. *)
   locale_parents: string list Symtab.table}
 
+(* Def-time-only filter (CHECK_OUTDATE_PLAN.md section 3.2, the A5 ruling): an
+   edge's serial is the registration event's timestamp; a def-time import is
+   registered BEFORE the host locale's name-space entry (a register_locale
+   evaluation-order fact, not a documented promise -- hence the guard), so
+   `edge serial < host entry serial` keeps exactly the declared imports
+   (measured on Main: 243 locales / 537 edges, zero counterexamples).
+   Post-hoc `sublocale`/`subclass` registrations arrive later and are dropped;
+   `interpretation` and `instance` never enter this table at all --
+   registration edges are excluded by construction, zero residue.
+   Guard: a kept edge must sit on the same file+line as the host's entry; a
+   violation means the evaluation-order assumption broke, so fail loudly
+   rather than ship wrong dependency edges. *)
 fun make_env thy : env =
  {thy = thy,
   axioms = Symtab.make_distinct (Theory.all_axioms_of thy),
   locale_parents =
-    fold (fn {source, target, ...} => Symtab.cons_list (target, source))
-      (Locale.dest_dependencies [] thy) Symtab.empty}
+    let
+      val space = Locale.locale_space thy
+      fun same_line p1 p2 =
+        Position.file_of p1 = Position.file_of p2 andalso
+        Position.line_of p1 = Position.line_of p2
+    in
+      fold (fn {source, target, pos, serial, ...} =>
+          let val entry = Name_Space.the_entry space target in
+            if serial >= #serial entry then I   (* post-hoc registration *)
+            else if same_line pos (#pos entry) then
+              Symtab.cons_list (target, source)
+            else
+              error ("Semantic_Digest.make_env: def-time locale dependency of " ^
+                quote target ^ " not at its entry position -- the \
+                \register_locale evaluation-order criterion broke \
+                \(CHECK_OUTDATE_PLAN.md section 3.2)")
+          end)
+        (Locale.dest_dependencies [] thy) Symtab.empty
+    end}
 
 fun theory_of_env ({thy, ...}: env) = thy
 
@@ -535,27 +563,29 @@ fun sem_type (env: env) name =
    evaluation tolerates (an over-approximation costing nothing).
 
    HOL.type has no axclass info (measured NONE) -- digest degrades to the name. *)
-(* The production super-edge source for a class's dependency list -- exported
-   so the sensitivity suite can cross-check it against the test-only def-parse
-   extraction (CHECK_OUTDATE_PLAN.md §3.2, §14). *)
+(* The production super-edge source for a class's dependency list: the class's
+   DEF-TIME imports, read off the serial-filtered locale-dependency table via
+   its class-locale -- measured equal to the declared direct supers on all of
+   Main (A5).  Classes without a class-locale (old-style axiomatic: HOL.type
+   etc.) have no table entry and get [].  Exported so the sensitivity suite
+   (S11/S12) can cross-check this against the test-only def-parse
+   extraction. *)
 fun class_parents (env: env) name =
-  sort_strings (Sign.super_classes (#thy env) name)
+  sort_strings (these (Symtab.lookup (#locale_parents env) name))
 
 fun sem_class (env: env) name =
   let
     val thy = #thy env
-    (* TRANSITIVE closure, and it GROWS when a downstream theory proves a new
-       `subclass` relation -- Rings.thy declares class idom, and
-       Semiring_Normalization.thy later widens it with `subclass (in idom) ...`.
-
-       So supers must stay OUT of the payload.  Putting them in makes the digest
-       a function of how far the enclosing env reaches: the same class hashes
-       differently under make_env "HOL.Rings" and make_env "Main", and two
-       scan runs from different top theories would each undo the other's
-       refresh.  `def` already encodes the superclass structure AS DECLARED
-       (frozen by Axclass.define_class), which is the stable thing.
-
-       They do belong in the DEPENDENCIES. *)
+    (* Direct DECLARED supers only (class_parents: the serial-filtered locale
+       table).  The transitive closure (Sign.super_classes) GROWS when a
+       downstream theory proves a new `subclass` relation -- Rings.thy declares
+       class idom, and Semiring_Normalization.thy later widens it -- so it
+       stays out of the payload AND out of the deps (the A5 ruling: transitive
+       edges couple every class's eff to ALL its ancestors and every post-hoc
+       widening; measured 1,576 polluted class edges on Main).  Nothing is
+       lost: eff propagates transitively through the direct edges.  `def`
+       already encodes the superclass structure AS DECLARED (frozen by
+       Axclass.define_class), which is the stable thing. *)
     val super_deps = map (pair Universal_Key.ClassK) (class_parents env name)
   in
     case try (Axclass.get_info thy) name of
