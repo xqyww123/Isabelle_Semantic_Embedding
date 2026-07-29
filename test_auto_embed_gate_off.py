@@ -13,6 +13,9 @@ annoyance the warning-discipline ruling removed.  What this file now guards:
     theories and unresolvable hashes dropped
   * the shell: small n interprets silently; big n with ask_user=False warns
     with the dry run's real entity count and does nothing
+  * NEVER a theory mark (review R6): "fully embedded" may only be asserted by
+    a path that covered a whole theory; _auto_embed sees only the query's
+    keys, so every case asserts mark_thy_embedded was never called
 """
 import asyncio
 
@@ -84,12 +87,15 @@ def _store(monkeypatch, names, gate, ready_key=None, field=True, dry=((), 0)):
     store = object.__new__(S.Semantic_Vector_Store)
     store.connection = _StubConn(names, gate, dry)
     store.enable_interpret_in_auto_embed = field
-    store.is_thy_embedded = lambda th, stamp=None: False
 
     async def _embed(records, force=False):
         return 0
     store.embed_records = _embed
-    store.mark_thy_embedded = lambda th, tok=0, stamp=None: None
+    # recording stub: _auto_embed must NEVER mark a theory (R6) -- every test
+    # asserts this list stays empty
+    store.marks = []
+    store.mark_thy_embedded = \
+        lambda th, tok=0, stamp=None: store.marks.append(th)
     return store
 
 
@@ -113,6 +119,7 @@ def test_gate_off_is_silent_and_still_embeds_ready_keys(monkeypatch):
     # the shell was consulted (dry run) but its gate stopped everything:
     # only never a LIVE interpretation call
     assert all(a[3] for a in _interpret_calls(conn)), "no live run may happen"
+    assert store.marks == []                         # R6: never a theory mark
 
 
 def test_field_off_skips_paragraph_one_entirely(monkeypatch):
@@ -121,6 +128,7 @@ def test_field_off_skips_paragraph_one_entirely(monkeypatch):
     store = _store(monkeypatch, {_thy(10): "HOL.Thy0"}, gate=True, field=False)
     assert asyncio.run(store._auto_embed(missing)) == []
     assert store.connection.calls == []
+    assert store.marks == []                         # R6: never a theory mark
 
 
 def test_point_fix_passes_theory_names_including_the_current_theory(monkeypatch):
@@ -143,6 +151,7 @@ def test_point_fix_passes_theory_names_including_the_current_theory(monkeypatch)
     # n = 2 < threshold: interpreted silently, warning-free
     assert any(not a[3] for a in dry_calls), "small n must run live silently"
     assert conn.warnings == []
+    assert store.marks == []                         # R6: never a theory mark
 
 
 def test_shell_warns_with_the_real_count_when_nobody_was_asked(monkeypatch):
@@ -158,3 +167,4 @@ def test_shell_warns_with_the_real_count_when_nobody_was_asked(monkeypatch):
     (warn,) = conn.warnings
     assert "150" in warn and "run_semantic_interpretation" in warn
     assert all(a[3] for a in _interpret_calls(conn)), "no live run may happen"
+    assert store.marks == []                         # R6: never a theory mark

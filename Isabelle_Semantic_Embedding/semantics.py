@@ -1626,11 +1626,6 @@ class Semantic_Vector_Store(Vector_Store):
         if self.connection is None:
             return []
         from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
-        theory_hashes: set[bytes] = set()
-        # (process id, theory serial) of each WIP theory met below, fetched once
-        # per theory; the SAME stamp is used for the freshness check and for the
-        # mark after embedding (one run, one theory value).
-        stamps: 'dict[bytes, tuple[str, int] | None]' = {}
         # (1) Point-fix interpretation of the missing entities' theories,
         # delegated to the policy shell (update_interpretations, CHECK_OUTDATE_
         # PLAN §8) -- which never asks at query time: small jobs run silently,
@@ -1656,10 +1651,6 @@ class Semantic_Vector_Store(Vector_Store):
                 if th in seen_th:
                     continue
                 seen_th.add(th)
-                if is_WIP(th):
-                    stamps[th] = await self._thy_stamp(th)
-                if not self.is_thy_embedded(th, stamps.get(th)):
-                    theory_hashes.add(th)      # embed-mark bookkeeping for (2)
                 name = await self.connection.callback("Theory_Hash.theory_name_of", th)
                 if name is not None and not is_thy_skipped(name):
                     names.add(name)
@@ -1677,7 +1668,7 @@ class Semantic_Vector_Store(Vector_Store):
         ready: 'list[tuple[key, SemanticRecord]]' = [
             (k, rec) for k, rec in zip(missing, Semantic_DB.get_many(missing))
             if rec is not None and document_text_of(rec) is not None]
-        if not ready:                                    # C1: nothing embeddable -> do NOT mark theories
+        if not ready:                                    # C1: nothing embeddable
             if self.enable_interpret_in_auto_embed:
                 await self.connection.tracing(
                     f"[Semantic_Embedding] no semantic interpretations found for the missing entities, skipping")
@@ -1691,13 +1682,13 @@ class Semantic_Vector_Store(Vector_Store):
         # above).  The tracing line below reports the count.
         await self.connection.tracing(
             f"[Semantic_Embedding] embedding {len(ready)} of {len(missing)} missing entities into vectors")
-        tokens = await self.embed_records(ready, force=True)
-        # Mark processed theories as embedded, recording cost.  theory_hashes is empty
-        # when the gate is off, so a gate-off ready-only embed marks nothing.
-        # A WIP theory is marked with the same stamp its freshness was checked
-        # under; mark_thy_embedded ignores a WIP mark with no stamp.
-        for th in theory_hashes:
-            self.mark_thy_embedded(th, tokens, stamps.get(th))
+        # No theory marking here (review R6): "fully embedded" may only be
+        # asserted by a path that actually covered a WHOLE theory
+        # (embed_all_entities_in_theories).  `missing` is just the keys this
+        # query touched, so any mark from here was a false ledger -- worst on
+        # the no-op policy-shell paths, which used to mark theories whose
+        # entities were never interpreted nor embedded at all.
+        await self.embed_records(ready, force=True)
         return [k for k, _ in ready]
 
     async def _experience_hits(self, term_patterns: 'list[str]',
