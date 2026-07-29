@@ -6,11 +6,22 @@ nothing-to-interpret path) it also completes the vector store:
 Semantic_Store.embed_all_missing embeds every interpreted record in the whole DB
 still missing a vector for the configured embedding model.
 
-INTERACTIVE USE ONLY.  The confirmation blocks on Active.dialog, whose only responder in
-the whole Isabelle tree is jEdit (Tools/jEdit/src/active.scala:100).  Under `isabelle
-build`, Isa-REPL, VSCode, `isabelle server` or headless PIDE the join never returns.  Do
-not put this command in a theory that gets built; batch collection goes through the
-`Semantic_Store.collect` REPL app instead (semantic_interpretation_app.ML).
+Frontend behavior (DIALOGUE_RESPONDER_DETECTION_PLAN.md section 2.6).  The
+confirmation dialog blocks on Active.dialog, whose only responder in the whole
+Isabelle tree is jEdit (Tools/jEdit/src/active.scala:100), so the command
+probes the attached frontend at entry (Isabelle_RPC's
+Dialogue.frontend_identity):
+  - batch forms (`isabelle build`, Isa-REPL, Headless server/dump/update, bare
+    ML process) ERROR OUT immediately -- semantic interpretation of theories
+    is by design performed only under an interactive frontend: a command
+    executed by a batch build carries no live consent for the LLM/embedding
+    spend, and the fuse fires independently of the cache state;
+  - jEdit gets the confirmation dialog as always;
+  - an interactive-but-dialog-incapable frontend (VSCode) or an unknown one
+    proceeds without asking: the live invocation itself is the consent
+    (ruling: no extra notice printed -- the normal report suffices).
+Batch collection goes through the `Semantic_Store.collect` REPL app instead
+(semantic_interpretation_app.ML).
 *)
 
 structure Semantic_Interpret_Command =
@@ -52,6 +63,19 @@ fun run (force : bool) names state =
     val roots =
       if null names then [Toplevel.theory_of state]
       else map (resolve_root ctxt) names
+
+    (* Frontend three-way, probed at ENTRY -- before the RPC cold start, so
+       batch forms fail in milliseconds and deterministically (the fuse must
+       not be green while everything is cached and red after an upstream
+       bump).  See the header comment. *)
+    val (capable, interactive, _) = Dialogue.frontend_identity ()
+    val _ =
+      (case interactive of
+        SOME false =>
+          error "run_semantic_interpretation is not for batch/build mode: \
+                \semantic interpretation of theories is by design performed \
+                \only under an interactive frontend."
+      | _ => ())
 
     (* Connecting may cold-start the Python RPC host (RPC.ML:421 -> launch_and_retry ->
        launch_RPC_host), which takes 1-40 s.  Say so, or the command looks hung. *)
@@ -104,32 +128,43 @@ fun run (force : bool) names state =
           Pretty.string_of (Pretty.block (Pretty.commas (map Pretty.str shown))) ^
           (if m > limit then ", ... (and " ^ string_of_int (m - limit) ^ " more)" else "")
 
-        val (mk, promise) = Active.dialog_text ()
-        val _ = writeln (String.concat [
+        val info = String.concat [
           "[Semantic_Embedding] ", string_of_int n,
           (if n = 1 then " entity needs" else " entities need"), " interpretation, across ",
           string_of_int m, (if m = 1 then " theory" else " theories"), ":\n",
           listing, "\n",
           "This calls the LLM: it may take a long time and cost money.\n",
-          "Afterwards, missing vector embeddings are computed as well (embedding API; far cheaper).\n",
-          "  ", mk "Yes", "   ", mk "No"])
-        (* Blocks until the user clicks.  Not caught: if the buffer is edited, jEdit
-           cancels this exec and the interrupt propagates -- Active.dialog's promise carries
-           an abort hook that removes it from the dialog table (active.ML:51), so that is
-           clean.  Interrupting a run in progress is safe too: answers are written to LMDB
-           as they arrive and each theory is marked as it completes, so a re-run resumes. *)
+          "Afterwards, missing vector embeddings are computed as well (embedding API; far cheaper)."]
+        (* roots, NOT work: interpret_with_parallel re-derives the cone itself and needs
+           the interpreted ancestors as relay nodes. *)
+        (* `Context.Proof ctxt`, not a root: the roots may be other theories, and
+           only the command's own context sees a `declare
+           [[Semantic_Embedding.interpretation_driver]]` made above this command. *)
+        fun go () =
+          (Semantic_Store.interpret_with_parallel (Context.Proof ctxt) force
+             (map Context.Theory roots);
+           embed_phase ())
       in
-        (case Future.join promise of
-          "Yes" =>
-            (* roots, NOT work: interpret_with_parallel re-derives the cone itself and needs
-               the interpreted ancestors as relay nodes. *)
-            (* `Context.Proof ctxt`, not a root: the roots may be other theories, and
-               only the command's own context sees a `declare
-               [[Semantic_Embedding.interpretation_driver]]` made above this command. *)
-            (Semantic_Store.interpret_with_parallel (Context.Proof ctxt) force
-               (map Context.Theory roots);
-             embed_phase ())
-        | _ => writeln "[Semantic_Embedding] Aborted.")
+        if capable then
+          let
+            val (mk, promise) = Active.dialog_text ()
+            val _ = writeln (String.concat [info, "\n  ", mk "Yes", "   ", mk "No"])
+            (* Blocks until the user clicks.  Not caught: if the buffer is edited, jEdit
+               cancels this exec and the interrupt propagates -- Active.dialog's promise
+               carries an abort hook that removes it from the dialog table (active.ML:51),
+               so that is clean.  Interrupting a run in progress is safe too: answers are
+               written to LMDB as they arrive and each theory is marked as it completes,
+               so a re-run resumes. *)
+          in
+            (case Future.join promise of
+              "Yes" => go ()
+            | _ => writeln "[Semantic_Embedding] Aborted.")
+          end
+        else
+          (* Q2: no dialog can be answered here, yet the frontend is interactive
+             (VSCode) or unknown -- the live invocation is the consent; same
+             report, no extra notice, no dialog markup (see header). *)
+          (writeln info; go ())
       end
   end
 
