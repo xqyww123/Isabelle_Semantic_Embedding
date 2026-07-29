@@ -4,7 +4,11 @@ Two read layers: the writable user DB under ``semantic_DB_dir()`` and the
 read-only system DB under ``<cache>/system`` (or a conda payload at
 ``sys.prefix/share/isabelle-semantic-data``).  Reads consult user first --
 where an empty value is a TOMBSTONE meaning "absent, do not fall through" --
-then system.  Vectors follow the vector-record binding invariant (L23).
+then system.  Vectors follow **the vector-layer self-sufficiency invariant**
+(VECTOR_INVALIDATION_PLAN §2): the vector stores answer a vector question by
+themselves -- a real user vector is served, a user tombstone (``b""``) masks any
+system vector, and only an absent key falls through to the system store.  No
+record store is consulted.
 
 Isolation: every test gets a fresh ``SEMANTIC_DB_DIR`` (and a fake
 ``sys.prefix``, so a real conda payload on the dev machine can never leak in),
@@ -134,6 +138,15 @@ class _FakeProvider:
 
 def _mk_vector_store(cache) -> SE.Vector_Store:
     return SE.Vector_Store(str(cache / STORE), _FakeProvider(), None)
+
+
+def _vector_raw(store, key: bytes):
+    """The USER store's stored bytes for `key`, untranslated -- so a test can
+    tell a tombstone (b"") from a real deletion (None), which the read facade
+    deliberately cannot."""
+    with store._env.begin() as txn:
+        raw = txn.get(key)
+    return bytes(raw) if raw is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -274,8 +287,9 @@ def test_tombstone_hides_system_vector(cache):
     store = _mk_vector_store(cache)
     assert store[k] is not None                              # served before
     S.Semantic_DB.delete(k)
-    assert store[k] is None                                  # no vector for an absent record
+    assert store[k] is None            # the vector tombstone masks the system vector
     assert k not in store
+    assert _vector_raw(store, k) == S.TOMBSTONE   # tombstoned, NOT really deleted
 
 
 def test_delete_experience_drops_vectors_and_index_entries(cache):
@@ -292,7 +306,8 @@ def test_delete_experience_drops_vectors_and_index_entries(cache):
     delete_experience(uk)
     assert _user_raw(uk) == S.TOMBSTONE                      # record tombstoned (L8)
     assert S.Semantic_DB[uk] is None
-    assert store[uk] is None                                 # user vector really deleted
+    assert store[uk] is None                                 # vector tombstoned
+    assert _vector_raw(store, uk) == S.TOMBSTONE
     assert uk not in Experience_Index.all_keys()             # user index entry dropped
 
 
@@ -468,24 +483,31 @@ def test_reindex_touches_only_the_user_index(cache):
 
 
 # ---------------------------------------------------------------------------
-# §9.4b  L23 corollaries: vector residency follows record residency
+# §9.4b  The vector-layer self-sufficiency invariant
 # ---------------------------------------------------------------------------
 
-def test_system_vector_wins_over_stale_user_cache(cache):
+def test_a_user_vector_wins_over_the_system_one(cache):
+    """Whatever the user vector store holds IS the answer; no record store is
+    consulted to second-guess it.
+
+    The superseded vector-record binding invariant (L23) served the SYSTEM
+    vector here, reasoning that the visible record is the system one.  That is
+    precisely what re-interpretation broke: once the user re-interprets, the
+    user vector is the one computed from the text now in force."""
     k = _key(HA, CONST, b"\x01")
     v_sys, v_usr = _basis(0), _basis(1)
     _mk_system(cache, records={k: _record(CONST, "k", "sys")},
                vectors={STORE: {k: _q15(v_sys)}})
     store = _mk_vector_store(cache)
-    store.put(k, v_usr)                                      # an older lazy cache fill
+    store.put(k, v_usr)
 
     got = store[k]
     assert got is not None
-    assert np.dot(got, _basis(0)) > np.dot(got, _basis(1))  # the system one
+    assert np.dot(got, _basis(1)) > np.dot(got, _basis(0))   # the user one
 
-    results, missing = store._topk_sync(encode_q15(v_sys), [k], 1)
+    results, missing = store._topk_sync(encode_q15(v_usr), [k], 1)
     assert missing == []
-    assert results[0][0] == k and results[0][1] > 0.99       # gathered the system vector
+    assert results[0][0] == k and results[0][1] > 0.99       # gathered the user vector
 
 
 def test_user_record_takes_user_vector(cache):
@@ -521,3 +543,296 @@ def test_candidate_collection_counts_system_covered_keys_complete(cache):
     # embed/complete_vector_store filter on contains: the system-covered key is
     # COMPLETE (no user-layer re-embedding), the user-only one is a candidate.
     assert store.contains([k_sys, k_usr]) == [True, False]
+
+
+# ---------------------------------------------------------------------------
+# §9.4c  Vector invalidation (VECTOR_INVALIDATION_PLAN §3, §4, §5)
+# ---------------------------------------------------------------------------
+
+def test_re_interpreting_invalidates_the_vector(cache):
+    """The defect this plan exists to fix.
+
+    The system DB ships an interpretation with no vector; the user layer lazily
+    caches a vector computed from the SYSTEM text; then the user re-interprets.
+    Before the fix the old vector kept being served forever and every
+    presence-based refresh path considered the key complete."""
+    k = _key(HA, CONST, b"\x01")
+    _mk_system(cache, records={k: _record(CONST, "k", "SYSTEM meaning")})
+    store = _mk_vector_store(cache)
+    store.put(k, _basis(0))                                  # the lazy cache fill
+    assert store.contains([k]) == [True]
+
+    S.Semantic_DB[k] = S.SemanticRecord(
+        EntityKind.CONSTANT, "k", "[]", "USER meaning", None, None, None)
+
+    assert store[k] is None
+    assert store.contains([k]) == [False]        # so the next embed pass refills it
+    assert _vector_raw(store, k) == S.TOMBSTONE
+
+
+def test_update_expr_invalidates_the_vector(cache):
+    """expr feeds pretty_print feeds the embedding document text, and update_expr
+    writes with a raw txn.put rather than through the setter."""
+    k = _key(HA, CONST, b"\x01")
+    _write_user({k: _record(CONST, "k", "meaning", expr="old")})
+    store = _mk_vector_store(cache)
+    store.put(k, _basis(0))
+
+    S.Semantic_DB.update_expr(k, "new")
+    assert S.Semantic_DB[k].expr == "new"
+    assert _vector_raw(store, k) == S.TOMBSTONE
+
+
+def test_a_no_op_update_expr_leaves_the_vector_alone(cache):
+    """Both early returns (tombstoned, and absent everywhere) write nothing, so
+    they must not invalidate either."""
+    k = _key(HA, CONST, b"\x01")
+    store = _mk_vector_store(cache)
+    store.put(k, _basis(0))
+    S.Semantic_DB.update_expr(k, "new")          # no record anywhere: no-op
+    assert _vector_raw(store, k) != S.TOMBSTONE
+
+
+def test_repair_xor_prefixes_tombstones_the_old_key(cache):
+    """Re-keying moves the vector to the good key and tombstones the bad one -- a
+    real deletion there would unmask a system vector under a tombstoned record."""
+    consts = [("T", HA)]
+    bad = _key(HB, THM, b"\x01")
+    good = _key(xor_theory_prefix([HA]), THM, b"\x01")
+    _write_user({bad: msgpack.packb((THM, "t", None, "meaning", None, consts, None))})
+    store = _mk_vector_store(cache)
+    store.put(bad, _basis(0))
+
+    moved, conflicts = S.Semantic_DB.repair_xor_prefixes([(bad, good)])
+    assert (moved, conflicts) == ([(bad, good)], [])
+    assert _vector_raw(store, bad) == S.TOMBSTONE
+    assert store[good] is not None               # the vector rode across
+
+
+def test_a_tombstone_is_reported_missing_not_skipped(cache, capsys):
+    """gather_addrs classifies a length mismatch as *skipped*, which would both
+    mis-classify a tombstone (the right answer is *missing*, which sends it to
+    _auto_embed) and print the Q1.15 migration warning on every query.  The
+    getter translates it away before the gather ever sees it."""
+    k = _key(HA, CONST, b"\x01")
+    store = _mk_vector_store(cache)               # single-layer: no system DB
+    store.put(k, _basis(0))
+    S.Semantic_DB.delete(k)
+
+    capsys.readouterr()
+    results, missing = store._topk_sync(encode_q15(_basis(0)), [k], 1)
+    assert (results, missing) == ([], [k])
+    assert "skipped" not in capsys.readouterr().out
+
+
+def test_the_single_layer_shortcut_translates_tombstones_too(cache):
+    """The CI export runs single-layer and writes `if vec is not None`, so an
+    untranslated tombstone would be SHIPPED into the published payload."""
+    k = _key(HA, CONST, b"\x01")
+    store = _mk_vector_store(cache)               # no system DB: the shortcut path
+    assert store._system_env is None
+    store.put(k, _basis(0))
+    S.Semantic_DB.delete(k)
+    assert store[k] is None
+    assert k not in store
+    assert store.contains([k]) == [False]
+    import contextlib
+    with contextlib.ExitStack() as stack:
+        assert store._raw_getter(stack)(k) is None
+        assert store._raw_getter(stack, buffers=True)(k) is None
+
+
+def test_a_system_shipped_model_gets_a_user_store_for_its_tombstone(cache):
+    """§3.1: the enumerator unions the system DB's stores in, and the user store
+    is created on demand to hold the tombstone.  Without this, switching
+    EMBEDDING_MODEL to that model would serve its stale system vector forever."""
+    k = _key(HA, CONST, b"\x01")
+    other = "vector_other.lmdb"
+    _mk_system(cache, records={k: _record(CONST, "k", "sys")},
+               vectors={other: {k: _q15(_basis(0))}})
+    assert not (cache / other).exists()
+
+    S.Semantic_DB[k] = S.SemanticRecord(
+        EntityKind.CONSTANT, "k", "[]", "re-interpreted", None, None, None)
+
+    assert (cache / other).is_dir()               # created on demand
+    env = SE._get_lmdb_env(str(cache / other))
+    with env.begin() as txn:
+        assert bytes(txn.get(k)) == S.TOMBSTONE
+
+
+def test_an_invalidation_write_failure_does_not_destroy_the_record(
+        cache, monkeypatch, caplog):
+    """§8: a write failure in a vector store is logged and never propagates out
+    of the setter -- an exception there would destroy an LLM answer that cost
+    money and cannot be regenerated, to save one stale vector."""
+    k = _key(HA, CONST, b"\x01")
+    _mk_vector_store(cache).put(k, _basis(0))     # the put is what creates the store
+
+    class _WriteFails:
+        def begin(self, *a, **kw):
+            raise lmdb.DiskError("simulated I/O failure")
+
+    monkeypatch.setattr(SE, "_get_lmdb_env", lambda path: _WriteFails())
+
+    rec = S.SemanticRecord(EntityKind.CONSTANT, "k", "[]", "meaning", None, None, None)
+    with caplog.at_level("WARNING"):
+        S.Semantic_DB[k] = rec                    # must not raise
+    assert S.Semantic_DB[k].interpretation == "meaning"
+    assert "simulated I/O failure" in caplog.text     # the cause, verbatim
+    assert str(cache / STORE) in caplog.text          # and the store it happened in
+
+
+def test_an_open_failure_does_propagate(cache, monkeypatch):
+    """The other half of the same split: OPEN failures raise.  At that point the
+    record store -- same directory, same filesystem -- was not going to be
+    writable either, so raising loses nothing and shows the user the fault."""
+    k = _key(HA, CONST, b"\x01")
+    _mk_vector_store(cache).put(k, _basis(0))     # the put is what creates the store
+
+    def refuse(path, **kw):
+        raise lmdb.LockError("simulated lock failure")
+
+    SE._close_all_lmdb_envs()                     # so the next use really re-opens
+    monkeypatch.setattr(lmdb, "open", refuse)
+    with pytest.raises(lmdb.LockError):
+        S.Semantic_DB[k] = S.SemanticRecord(
+            EntityKind.CONSTANT, "k", "[]", "meaning", None, None, None)
+
+
+def test_a_corrupt_store_is_moved_aside_and_rebuilt(cache, monkeypatch):
+    """The corruption class: a vector store is a cache, so rebuilding it empty
+    beats refusing to work.  The original is kept, never discarded."""
+    path = str(cache / STORE)
+    store = _mk_vector_store(cache)
+    k = _key(HA, CONST, b"\x01")
+    store.put(k, _basis(0))
+    SE._close_all_lmdb_envs()
+
+    real_open, calls = lmdb.open, {"n": 0}
+
+    def open_once_corrupt(p, **kw):
+        if p == path and calls["n"] == 0:
+            calls["n"] += 1
+            raise lmdb.CorruptedError("simulated corruption")
+        return real_open(p, **kw)
+
+    monkeypatch.setattr(lmdb, "open", open_once_corrupt)
+    env = SE._get_lmdb_env(path)
+    with env.begin() as txn:
+        assert txn.get(k) is None                 # rebuilt empty
+    backups = [p for p in os.listdir(cache) if p.startswith(STORE + ".bak-")]
+    assert len(backups) == 1                      # and the original is still there
+    with real_open(os.path.join(cache, backups[0]), readonly=True,
+                   lock=False).begin() as txn:
+        assert txn.get(k) is not None
+
+
+# ---------------------------------------------------------------------------
+# §9.4d  The system-upgrade purge (VECTOR_INVALIDATION_PLAN §7)
+# ---------------------------------------------------------------------------
+
+def test_the_purge_drops_a_stand_in_and_keeps_everything_else(cache):
+    """The rule: delete every REAL user vector whose key has NO non-tombstone
+    USER record, over entity keys only.  Each `keep` below is a way to get this
+    backwards that would lose data or unmask a suppressed key."""
+    standin = _key(HA, CONST, b"\x01")     # system record, user stand-in vector
+    local = _key(HA, CONST, b"\x02")       # interpreted locally: keep
+    tombed_vec = _key(HA, CONST, b"\x03")  # vector tombstone: keep (it masks)
+    tombed_rec = _key(HA, CONST, b"\x04")  # record tombstone: keep (same reason)
+    _mk_system(cache, records={standin: _record(CONST, "s", "sys")})
+    _write_user({local: _record(CONST, "l", "mine"), tombed_rec: S.TOMBSTONE})
+    store = _mk_vector_store(cache)
+    for k in (standin, local, tombed_rec):
+        store.put(k, _basis(0))
+    with store._env.begin(write=True) as txn:
+        txn.put(tombed_vec, S.TOMBSTONE)
+        txn.put(HA, msgpack.packb({b"total_tokens": 7}))   # 16-byte embed status
+
+    assert S.purge_vectors_without_a_user_record() == 1
+
+    with store._env.begin() as txn:
+        assert txn.get(standin) is None                    # dropped
+        assert txn.get(local) is not None                  # user-authored: kept
+        assert bytes(txn.get(tombed_vec)) == S.TOMBSTONE   # still masks
+        assert txn.get(tombed_rec) is not None             # still masks
+        # the embed-status ledger survives: losing it makes is_thy_embedded false
+        # across the board and discards the accumulated token count
+        assert msgpack.unpackb(bytes(txn.get(HA)))[b"total_tokens"] == 7
+
+    assert S.purge_vectors_without_a_user_record() == 0    # idempotent
+
+
+def test_after_the_purge_the_new_system_vector_shows_through(cache):
+    """Delete, do NOT tombstone -- that is the whole point.  A tombstone would
+    mask the vector the NEW system DB ships."""
+    k = _key(HA, CONST, b"\x01")
+    _mk_system(cache, records={k: _record(CONST, "k", "sys")},
+               vectors={STORE: {k: _q15(_basis(0))}})
+    store = _mk_vector_store(cache)
+    store.put(k, _basis(1))                    # the stale stand-in
+
+    assert S.purge_vectors_without_a_user_record() == 1
+    got = store[k]
+    assert got is not None and np.dot(got, _basis(0)) > 0.9   # the system vector
+
+
+def test_the_crash_window_between_the_two_writes_heals(cache):
+    """Ordering rule 1: vectors first, THEN the record.
+
+    A crash in between leaves the vector tombstoned and the record still the old
+    one -- so the next pass re-embeds from the old text: wasted work that heals
+    itself.  The reverse order would leave a new record with an old vector, and
+    under this invariant nothing would ever notice."""
+    k = _key(HA, CONST, b"\x01")
+    _write_user({k: _record(CONST, "k", "old")})
+    store = _mk_vector_store(cache)
+    store.put(k, _basis(0))
+
+    SE.invalidate_vectors([k])                   # the crash state, exactly
+
+    assert S.Semantic_DB[k].interpretation == "old"
+    assert store.contains([k]) == [False]        # refills on the next pass
+
+
+def test_put_experience_keeps_the_record_when_the_embed_fails(cache):
+    """Ordering rule 2: record, then index, then embed.
+
+    The record holds the whole experience and nothing can rebuild it; the index
+    and the vectors are derived.  Embed-first discarded agent-authored content
+    on a provider outage -- and is self-defeating now anyway, since the record
+    write tombstones whatever vector was just written."""
+    import asyncio
+    from Isabelle_Semantic_Embedding.experience_store import put_experience
+    from Isabelle_Semantic_Embedding.experience_index import Experience_Index
+    uk = _key(xor_theory_prefix([HA]), EXP, b"\x01")
+    rec = S.SemanticRecord(EntityKind.EXPERIENCE, "e", None, "when", None,
+                           [("T", HA)], "how", ["pat"])
+
+    class _EmbedFails:
+        async def embed_records(self, pairs, force=False):
+            raise RuntimeError("provider outage")
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(put_experience(_EmbedFails(), uk, rec))
+
+    # Durable and RETRIEVABLE: the experience domain is index-driven, so a
+    # vector-less key still enters topk's domain, is reported missing, and
+    # _auto_embed rebuilds the vector from the record.
+    assert S.Semantic_DB[uk] is not None
+    assert uk in Experience_Index.all_keys()
+
+
+def test_vector_store_delete_reaches_the_system_layer(cache):
+    """`delete` must make the key stop answering, and a real deletion of the
+    user entry would not: the system layer's vector would show through."""
+    k = _key(HA, CONST, b"\x01")
+    _mk_system(cache, records={k: _record(CONST, "k", "sys")},
+               vectors={STORE: {k: _q15(_basis(0))}})
+    store = _mk_vector_store(cache)
+    store.put(k, _basis(1))
+
+    assert store.delete(k) is True               # it was being served
+    assert store[k] is None                      # and now nothing is
+    assert _vector_raw(store, k) == S.TOMBSTONE
+    assert store.delete(k) is False              # idempotent, and says so

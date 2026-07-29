@@ -10,6 +10,7 @@ import pathlib
 import tempfile
 import time
 from urllib.parse import urlsplit
+from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, ClassVar, NamedTuple, cast
 if TYPE_CHECKING:
     from Isabelle_RPC_Host.rpc import Connection
@@ -18,6 +19,7 @@ import numpy as np
 import lmdb
 import diskcache
 from ._paths import semantic_DB_dir
+from .base import logger_of as _logger_of
 
 from ._vecarith import encode_q15, gather_addrs, top_k_q15_gather, Q15_SCALE
 
@@ -937,11 +939,122 @@ _lmdb_lock = threading.Lock()
 VECTOR_MAP_SIZE: int = 1 << 34      # 16 GiB
 
 
+# The store's own bytes are unusable.  Distinguished from everything else
+# because a vector store is a CACHE: rebuilding it empty costs re-embedding, and
+# that is strictly better than refusing to work at all.
+_CORRUPTION_ERRORS = (lmdb.CorruptedError, lmdb.InvalidError,
+                      lmdb.VersionMismatchError, lmdb.PanicError)
+
+# Messages already reported to the log but not yet in front of the user: this
+# opener is a synchronous module-level function with no connection in hand, so
+# it logs immediately and leaves the message here for the next connection-aware
+# call to relay (flush_store_warnings, called by topk).
+_pending_store_warnings: list[str] = []
+_pending_warnings_lock = threading.Lock()
+
+
+def _model_of_store_path(path: str) -> str:
+    """The embedding-model name a ``vector_<model>.lmdb`` path names."""
+    name = os.path.basename(path.rstrip(os.sep))
+    if name.startswith("vector_") and name.endswith(".lmdb"):
+        return unsanitize_model(name[len("vector_"):-len(".lmdb")])
+    return name
+
+
+def _store_problem_message(path: str, exc: BaseException,
+                           moved_to: 'str | None' = None) -> str:
+    """The user-facing text for a vector store that could not be used.
+
+    Three shapes, and the caller never picks: which one applies follows from the
+    exception.  None of them carries a literal "WARNING:" -- the log level and
+    Isabelle's own rendering already say that.  The cause is always reported
+    verbatim: a failure is never reframed as the normal state "the system DB
+    ships no store for this model", which would disguise a fault as a
+    configuration."""
+    model = _model_of_store_path(path)
+    if moved_to is not None:
+        return (f"[Semantic_Embedding] The vector store for {model} could not be "
+                f"opened and\nappears corrupt: {exc}\n"
+                f"  store:    {path}\n"
+                f"  moved to: {moved_to}\n"
+                f"A new empty store has been created.  Every vector for this model "
+                f"is gone and\nwill be re-embedded on demand, which costs embedding "
+                f"API calls.")
+    if isinstance(exc, lmdb.MapFullError):
+        # NOT the environment class.  This is not a full disk but the store
+        # hitting its own ceiling, and sending the user off to free disk space
+        # would waste their time.
+        gib = VECTOR_MAP_SIZE / (1 << 30)
+        ceiling = f"{gib:.0f} GiB" if gib == int(gib) else f"{gib:.1f} GiB"
+        return (f"[Semantic_Embedding] The vector store for {model} is full: {exc}\n"
+                f"  store: {path}\n"
+                f"The store has reached the size ceiling this package sets for it\n"
+                f"(VECTOR_MAP_SIZE, currently {ceiling}).  Raising that ceiling is "
+                f"what makes\nroom; free disk space is not what is missing.")
+    return (f"[Semantic_Embedding] The vector store for {model} could not be "
+            f"opened: {exc}\n"
+            f"  store: {path}")
+
+
+def _report_store_problem(msg: str) -> None:
+    """Log the message now and queue it for the user (plan §8's "always log")."""
+    _logger_of(None, "vector_store").warning("%s", msg)
+    with _pending_warnings_lock:
+        _pending_store_warnings.append(msg)
+
+
+async def flush_store_warnings(connection: 'Connection | None') -> None:
+    """Relay queued vector-store problems to Isabelle, once each."""
+    if connection is None:
+        return
+    with _pending_warnings_lock:
+        pending = list(_pending_store_warnings)
+        _pending_store_warnings.clear()
+    for msg in pending:
+        try:
+            await connection.warning(msg)
+        except Exception:
+            # Reporting must never fail the work it is reporting on; the log
+            # copy already exists.
+            _logger_of(None, "vector_store").exception(
+                "could not forward a vector-store warning to Isabelle")
+
+
 def _get_lmdb_env(path: str) -> lmdb.Environment:
+    """THE opener for a user-layer vector store, creating it if absent.
+
+    Two classes of failure and no third path (plan §8):
+
+    - **corruption** (`_CORRUPTION_ERRORS`) -- move the store aside to
+      ``<path>.bak-<timestamp>`` (the tree's backup convention, see
+      migrate_xor_thm_keys.py) and rebuild it empty.  A vector store is derived
+      data; every vector it held is re-embedded on demand.
+    - **everything else** -- report and RAISE.  The complete set of open-time
+      environment failures is small and every member is a property of the
+      MACHINE rather than of the data: permissions (EACCES/EPERM, or LockError
+      on lock.mdb), ENOSPC while creating the store, a read-only filesystem,
+      file-descriptor exhaustion, mmap/address-space failure, and
+      network-filesystem locking.  All of them are directory-wide -- semantics.lmdb
+      lives in the same directory on the same filesystem -- so when one fires the
+      record store is equally unopenable and the subsystem cannot work at all.
+      Raising therefore loses nothing that was going to be persisted anyway, and
+      it is what puts the fault in front of the user instead of degrading
+      silently.
+
+    RAISE, not sys.exit: in the RPC host an exception comes back to Isabelle as
+    an error the user actually sees, whereas sys.exit kills the host and leaves
+    only a corpse in the log.
+    """
     with _lmdb_lock:
         env = _lmdb_envs.get(path)
         if env is None:
-            env = lmdb.open(path, map_size=VECTOR_MAP_SIZE)
+            try:
+                env = lmdb.open(path, map_size=VECTOR_MAP_SIZE)
+            except _CORRUPTION_ERRORS as e:
+                env = _rebuild_corrupt_store(path, e)
+            except (lmdb.Error, OSError) as e:
+                _report_store_problem(_store_problem_message(path, e))
+                raise
             try:
                 # Reap dead readers at every open (attached RPC hosts die by
                 # os._exit by design).  See RPC_EPHEMERAL_HOST_PLAN.md, H0.
@@ -950,6 +1063,122 @@ def _get_lmdb_env(path: str) -> lmdb.Environment:
                 pass
             _lmdb_envs[path] = env
         return env
+
+
+def _rebuild_corrupt_store(path: str, exc: BaseException) -> lmdb.Environment:
+    """Move a corrupt vector store aside and open a fresh empty one in its place.
+
+    ``os.rename``, not ``env.copy``: the store cannot be opened, so there is no
+    environment to copy from.  A failure of the rename itself is an environment
+    failure and propagates under the rule above -- silently discarding the
+    corrupt data would be worse than not starting."""
+    moved_to = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+    os.rename(path, moved_to)
+    env = lmdb.open(path, map_size=VECTOR_MAP_SIZE)
+    _report_store_problem(_store_problem_message(path, exc, moved_to=moved_to))
+    return env
+
+def vector_store_names() -> list[str]:
+    """Every ``vector_<model>.lmdb`` the layered world knows about.
+
+    THE enumerator: the union of the user cache's stores and the system DB's
+    (plan §3.1), replacing the three that used to list the user cache only
+    (`semantics._iter_vector_store_envs`, `isabelle_semantics._vector_store_paths`,
+    `Semantic_Vector_Store.created_embedding_models`).
+
+    The union is what makes invalidation correct.  The system DB ships stores
+    for zero or more models (plan L14), so a model whose USER store does not
+    exist on disk would otherwise receive no tombstone -- and after switching
+    EMBEDDING_MODEL to it, its stale system vector would be served for a
+    re-interpreted record forever.  A fresh machine is the same case: the user
+    store directory is created lazily, so an interpretation pass that runs
+    before any embedding would tombstone nothing at all.
+
+    The cost is that a user store may be created empty for a model this machine
+    never embeds with.  Accepted: the only thing that notices is `remove`'s
+    "Also cleaning N vector store(s)." count."""
+    from .snapshot_sync import _store_dirs, validated_system_db
+    names = {s for s in _store_dirs(semantic_DB_dir()) if s.startswith("vector_")}
+    sysdb = validated_system_db()
+    if sysdb is not None:
+        names |= {s for s in _store_dirs(sysdb.path) if s.startswith("vector_")}
+    return sorted(names)
+
+
+def user_vector_store_paths() -> list[str]:
+    """The USER-layer path of every store in `vector_store_names()`.
+
+    A path here need not exist yet -- opening it through `_get_lmdb_env`
+    creates it, which is exactly how a system-shipped model gets a user store to
+    hold its tombstones."""
+    cache = semantic_DB_dir()
+    return [os.path.join(cache, name) for name in vector_store_names()]
+
+
+def user_vector_store_envs() -> 'Iterator[lmdb.Environment]':
+    """Writable environments for every store in `vector_store_names()`,
+    creating the user-layer store on demand."""
+    os.makedirs(semantic_DB_dir(), exist_ok=True)
+    for path in user_vector_store_paths():
+        yield _get_lmdb_env(path)
+
+
+def invalidate_vectors(keys: 'Sequence[bytes]', *,
+                       really_delete: bool = False) -> None:
+    """Invalidate the stored vectors of `keys` in EVERY vector store.
+
+    THE one place a vector store is invalidated; no open-coded ``txn.delete`` or
+    ``txn.put(b"")`` on a vector store anywhere else (plan §3.2).  It is an
+    extraction of the loops `experience_store.delete_experience` and
+    `isabelle_semantics._execute_removal` had each grown separately.
+
+    Two modes:
+
+    - default -- write a **tombstone** (`b""`).  Under the vector-layer
+      self-sufficiency invariant that is what masks a system vector; really
+      deleting the user's copy would let the system's stale one show through.
+    - ``really_delete`` -- drop the user entry so the system vector DOES show
+      through again.  Correct only where the system copy is the wanted answer
+      (the post-install purge) or where no system copy can exist (WIP keys,
+      which the published payload never contains).
+
+    One write transaction per store, so a batch is atomic within each store; the
+    stores themselves have no cross-store atomicity (§5) and none is available.
+
+    WRITE failures are logged and never propagate (plan §8): the caller is
+    typically `Semantic_DB.__setitem__`, and an exception there destroys an LLM
+    answer that cost money and cannot be regenerated, to save one stale vector
+    that this log line records.  OPEN failures do propagate -- see
+    `_get_lmdb_env`; at that point the record write was never going to succeed
+    either."""
+    if not keys:
+        return
+    os.makedirs(semantic_DB_dir(), exist_ok=True)
+    for path in user_vector_store_paths():
+        invalidate_vectors_in_store(path, keys, really_delete=really_delete)
+
+
+def invalidate_vectors_in_store(path: str, keys: 'Sequence[bytes]', *,
+                                really_delete: bool = False) -> None:
+    """`invalidate_vectors` for ONE store -- and the only place in the package
+    that writes a tombstone or a deletion into a vector store.
+
+    Split out for the callers that legitimately mean one store rather than all
+    of them (`Vector_Store.delete`), so that "one place writes `b\"\"`" stays
+    literally true rather than nearly true.  All the reasoning is in
+    `invalidate_vectors`; this half only owns the transaction."""
+    from .semantics import TOMBSTONE
+    env = _get_lmdb_env(path)                      # open failures RAISE
+    try:
+        with env.begin(write=True) as txn:
+            for k in keys:
+                if really_delete:
+                    txn.delete(k)
+                else:
+                    txn.put(k, TOMBSTONE)
+    except (lmdb.Error, OSError) as e:
+        _report_store_problem(_store_problem_message(path, e))
+
 
 # Read-only system-layer stores, cached separately from the writable user
 # stores above: the same process never opens one path both ways (system store
@@ -1056,47 +1285,52 @@ class Vector_Store(ABC):
 
     def _raw_getter(self, stack: contextlib.ExitStack, *,
                     buffers: bool = False) -> 'Callable[[key], bytes | memoryview | None]':
-        """A per-key raw vector lookup obeying the vector-record binding
-        invariant (plan L23): the vector served for ``k`` comes from the same
-        layer as the record currently visible for ``k``; the user-layer lazy
-        cache stands in only when that layer ships no vector for this model.
+        """A per-key raw vector lookup obeying **the vector-layer
+        self-sufficiency invariant**: a vector question is answered by the
+        vector stores alone.
 
-            user record visible?   -> user vector   (missing => _auto_embed)
-            tombstone?             -> None          (no vector for an absent record)
-            system record visible? -> system vector (absent => user cache stands in)
-            no record at all       -> user cache    (pre-layer cache behavior)
+        The user vector store has three states for any key, and they fully
+        determine the answer.  The system store is consulted only on the third,
+        and NO record store is consulted at all:
+
+            real vector -> serve it
+            tombstone   -> serve nothing (it masks any system vector)
+            absent      -> fall through to the system vector
+
+        This replaces the vector-record binding invariant (plan L23), whose own
+        caveat is what failed: it assumed same-model-same-text determinism, and
+        re-interpreting an entry breaks exactly that assumption -- the record
+        changed, the vector did not, and nothing noticed.  What replaces the
+        read-side check is write-side discipline: every writer of a record
+        invalidates its vectors first (`invalidate_vectors`).  Unlike before
+        there is NO backstop here, which is why that discipline is enumerated.
 
         Every transaction is entered on ``stack``, so the caller's ``with``
         block bounds their lifetime -- gathered buffers stay valid inside it.
 
-        With no system layer this degrades to a plain user-store ``txn.get``
-        with ZERO record-layer consulting.  That shortcut also holds when only
-        this model's system STORE is missing: deletion drops user vectors at
-        tombstone time (L8), so a tombstoned key has no user vector to leak,
-        and a system-resident record correctly falls back to the user cache
-        (its L14 stand-in) -- the record layers need consulting only to pick
-        BETWEEN a system vector and the user cache."""
+        ``v if v else None`` rather than ``len(v) == 0``: it is the cheaper form
+        (measured +1 to +5 ms per 100k-key gather for the whole closure) and
+        ``bool(memoryview(b""))`` is already False, so it reads both the bytes
+        and the buffers case.  The translation happens on EVERY return path
+        INCLUDING the single-layer shortcut below -- the CI export runs
+        single-layer and writes ``if vec is not None``, so an untranslated
+        tombstone would be shipped into the published payload."""
         utxn = stack.enter_context(self._env.begin(buffers=buffers))
         senv = self._system_env
         if senv is None:
-            return utxn.get
-        from .semantics import Semantic_DB
+            uget = utxn.get
+
+            def get_user_only(k: key):
+                v = uget(k)
+                return v if v else None
+            return get_user_only
         svtxn = stack.enter_context(senv.begin(buffers=buffers))
-        urtxn = stack.enter_context(Semantic_DB._ensure_env().begin())
-        sys_sem_env = Semantic_DB._ensure_system_env()
-        srtxn = (stack.enter_context(sys_sem_env.begin())
-                 if sys_sem_env is not None else None)
 
         def get(k: key):
-            ur = urtxn.get(k)
-            if ur is not None:
-                if len(ur) == 0:                 # tombstone: absent, serve nothing
-                    return None
-                return utxn.get(k)               # user record -> user vector
-            if srtxn is not None and srtxn.get(k) is not None:
-                v = svtxn.get(k)                 # system record -> system vector
-                return v if v is not None else utxn.get(k)   # L14 stand-in
-            return utxn.get(k)                   # no record: plain cache read
+            v = utxn.get(k)
+            if v is not None:
+                return v if v else None          # tombstone masks the system vector
+            return svtxn.get(k)
         return get
 
     def __getitem__(self, k: key) -> np.ndarray | None:
@@ -1108,12 +1342,16 @@ class Vector_Store(ABC):
         """
         with contextlib.ExitStack() as stack:
             raw = self._raw_getter(stack, buffers=True)(k)
-            if raw is None:
+            # `not raw`, not `is None`: defence in depth against a tombstone the
+            # getter somehow failed to translate, which _decode_q15 would report
+            # as a bogus 0-byte-vs-D*2 length error.
+            if not raw:
                 return None
             return _decode_q15(raw, self.dimension, k)
 
     def __contains__(self, k: key) -> bool:
-        """Check if key k has a stored vector (in the layer L23 designates)."""
+        """Check whether key k has a vector under the vector-layer
+        self-sufficiency invariant (a tombstone counts as absent)."""
         with contextlib.ExitStack() as stack:
             return self._raw_getter(stack)(k) is not None
 
@@ -1127,17 +1365,29 @@ class Vector_Store(ABC):
         self[k] = vector
 
     def delete(self, k: key) -> bool:
-        """Delete the stored vector for key k. Returns True if it existed.
-        A real deletion of the user-layer vector, not a tombstone -- vectors are
-        a derived cache; record-level absence is what masks a system vector.
-        Used e.g. to overwrite an experience memory (see write_memory)."""
-        with self._env.begin(write=True) as txn:
-            return txn.delete(k)
+        """Delete the vector for key k from the LAYERED view of this store.
+        Returns True if a vector was being served beforehand.
+
+        A tombstone in the user layer, not a real deletion, and that is what
+        makes it reach the system layer too: under the vector-layer
+        self-sufficiency invariant a tombstone is what masks a system vector,
+        while a real deletion of the user entry would let the system's copy show
+        through -- so "delete" would leave the key still answering.
+
+        Scoped to THIS store, unlike `invalidate_vectors`, which is the whole
+        point of the distinction: this is a method on one model's store.
+        Invalidating a record's vectors in every model is the record layer's job
+        (`Semantic_DB.__setitem__` / `.delete`)."""
+        served = k in self
+        invalidate_vectors_in_store(self.path, [k])
+        return served
 
     def contains(self, keys: list[key]) -> list[bool]:
         """Check existence for a batch of keys in a single transaction per layer.
-        Follows L23: a system-resident key with a system vector counts as
-        present, so completion runs never re-embed what the system DB ships."""
+        Follows the vector-layer self-sufficiency invariant: a key with no user
+        vector but a system one counts as present, so completion runs never
+        re-embed what the system DB ships; a tombstoned key counts as absent, so
+        a re-interpreted record IS re-embedded."""
         with contextlib.ExitStack() as stack:
             get = self._raw_getter(stack)
             return [get(k) is not None for k in keys]
@@ -1185,6 +1435,9 @@ class Vector_Store(ABC):
         itself runs in a worker thread, because py-lmdb read transactions are
         bound to the thread that opened them and must not span an await.
         """
+        # The one reliably connection-aware point every query passes through:
+        # relay anything _get_lmdb_env logged with no connection in hand.
+        await flush_store_warnings(self.connection)
         if isinstance(query, str):
             if self.connection is not None:
                 await self.connection.tracing(f"[Semantic_Embedding] embedding query: {query!r}")
@@ -1225,8 +1478,11 @@ class Vector_Store(ABC):
         # than the ~48ms a set() of 10^5 keys takes.
         ordered = sorted(domain)
         keys = [dk for i, dk in enumerate(ordered) if i == 0 or dk != ordered[i - 1]]
-        # Per-key resolution follows the L23 binding invariant (_raw_getter);
-        # with no system layer it is exactly the old single-store gather.  The
+        # Per-key resolution follows the vector-layer self-sufficiency invariant
+        # (_raw_getter), which translates a tombstone to None -- so `b""` never
+        # reaches gather_addrs, which would classify it as *skipped* (wrong: the
+        # correct classification is *missing*, which sends it to _auto_embed) and
+        # print the Q1.15-migration warning on every query.  The
         # ExitStack keeps every layer's read transaction open past the kernel
         # call: the memoryviews' addresses point into those transactions'
         # snapshots of the mmaps, and nothing is copied.

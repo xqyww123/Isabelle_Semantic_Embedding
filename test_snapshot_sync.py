@@ -479,6 +479,29 @@ def test_export_drops_tombstones_and_builds_the_payload(cache, tmp_path):
     assert found is not None and found.path == str(sysdir)
 
 
+def test_export_never_ships_a_vector_tombstone(cache, tmp_path):
+    """The CI export runs SINGLE-LAYER, and its vector loop writes `if vec is not
+    None`.  So if the read facade's single-layer shortcut ever stopped
+    translating a `b""` tombstone to None, a 0-byte value would be published into
+    the payload -- where every consumer would then read it as a present vector of
+    the wrong length."""
+    from Isabelle_Semantic_Embedding.semantic_embedding import _get_lmdb_env
+    k = _key(HA, CONST, b"\x01")
+    _write_user({k: _record(CONST, "live", "keep me"),
+                 HA: msgpack.packb({b"finished": True})})
+    with _get_lmdb_env(str(cache / STORE)).begin(write=True) as txn:
+        txn.put(k, b"")                                    # a VECTOR tombstone
+
+    snapshot_sync.export(str(tmp_path / "out"))
+
+    venv = lmdb.open(str(tmp_path / "out" / STORE), readonly=True, lock=False)
+    with venv.begin() as txn:
+        shipped = {bytes(kk): bytes(vv) for kk, vv in txn.cursor()}
+    venv.close()
+    assert all(v != b"" for v in shipped.values())
+    assert k not in shipped
+
+
 def test_export_refuses_a_nonempty_outdir(cache, tmp_path):
     outdir = tmp_path / "out"
     outdir.mkdir()
@@ -527,8 +550,12 @@ def test_remove_tombstones_system_resident_records(cache, monkeypatch, capsys):
     _cli_paths(cache, monkeypatch)
     CLI.cmd_remove(argparse.Namespace(identifiers=[HA.hex()], force=True))
     out = capsys.readouterr().out
-    assert "records tombstoned; vectors and index entries dropped" in out
-    assert "system-resident records are now masked locally" in out
+    assert "records, with their vectors and index entries" in out
+    # A statement of fact about what is being removed, printed while the user is
+    # still deciding.  "Tombstoned" and "the published snapshot" were both
+    # implementation vocabulary that had leaked into user-facing text.
+    assert "Some of these records come from the installed semantic database." in out
+    assert "tombstoned" not in out and "snapshot" not in out
     assert _user_raw(k) == b""                             # the tombstone is on disk
     assert S.Semantic_DB[k] is None                        # absent through the facade
     assert S.Semantic_DB.is_thy_interpreted(HA) is False   # status tombstoned too
@@ -541,8 +568,8 @@ def test_remove_of_a_user_only_theory_prints_no_system_note(cache, monkeypatch, 
     _cli_paths(cache, monkeypatch)
     CLI.cmd_remove(argparse.Namespace(identifiers=[HB.hex()], force=True))
     out = capsys.readouterr().out
-    assert "records tombstoned" in out
-    assert "masked locally" not in out
+    assert "records, with their vectors and index entries" in out
+    assert "installed semantic database" not in out
     assert S.Semantic_DB[k] is None
 
 
@@ -562,7 +589,9 @@ def test_remove_drops_user_vectors_and_index_entries(cache, monkeypatch, capsys)
     from Isabelle_Semantic_Embedding.experience_index import Experience_Index as EI
     assert uk not in EI.all_keys()
     with _get_lmdb_env(str(cache / STORE)).begin() as txn:
-        assert txn.get(uk) is None                         # vector really deleted
+        # Tombstoned, not really deleted: a real deletion would let a system
+        # vector at this key show through for a record that no longer exists.
+        assert txn.get(uk) == b""
 
 
 # ---------------------------------------------------------------------------

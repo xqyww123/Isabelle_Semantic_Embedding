@@ -73,16 +73,13 @@ def _load_theory_names() -> dict[bytes, str]:
 
 
 def _vector_store_paths() -> list[str]:
-    """Return paths of all vector_*.lmdb stores on disk."""
-    if not os.path.isdir(CACHE_DIR):
-        return []
-    paths = []
-    for entry in os.listdir(CACHE_DIR):
-        if entry.startswith("vector_") and entry.endswith(".lmdb"):
-            path = os.path.join(CACHE_DIR, entry)
-            if os.path.isdir(path):
-                paths.append(path)
-    return paths
+    """User-layer paths of every vector store the layered world knows about.
+
+    THE enumerator (plan §3.2), so this now unions the system DB's stores in and
+    may name a path that does not exist yet -- opening it creates it, which is
+    how a system-shipped model gets a user store to hold its tombstones."""
+    from Isabelle_Semantic_Embedding.semantic_embedding import user_vector_store_paths
+    return user_vector_store_paths()
 
 
 def _resolve_identifiers(identifiers: list[str],
@@ -447,23 +444,23 @@ def _execute_removal(keys_to_tomb: set[bytes],
                      exp_removals: 'dict[bytes, list[bytes]]') -> None:
     """The tombstoning engine shared by `remove` and `prune`.
 
-    ORDER: derived data first, the tombstones LAST -- the exact dual of the
-    discipline in experience_store.delete_experience.  The tombstone is what
-    makes a key invisible to the discovery scans, so writing it first would
-    leave an interruption unrecoverable: a re-run could no longer derive
-    keys_to_tomb, and the stale user vectors would keep serving (the L23
-    shortcut relies on "tombstoned => user vector already gone").  Interrupted
-    THIS way, a re-run just re-derives everything and converges."""
+    ORDER: derived data first, the record tombstones LAST -- the exact dual of
+    the discipline in experience_store.delete_experience.  The record tombstone
+    is what makes a key invisible to the discovery scans, so writing it first
+    would leave an interruption unrecoverable: a re-run could no longer derive
+    keys_to_tomb.  Interrupted THIS way, a re-run just re-derives everything and
+    converges."""
     from Isabelle_Semantic_Embedding.semantics import SEMANTICS_MAP_SIZE
-    from Isabelle_Semantic_Embedding.semantic_embedding import VECTOR_MAP_SIZE
+    from Isabelle_Semantic_Embedding.semantic_embedding import invalidate_vectors
 
-    # Really drop the user-layer vectors (vectors carry no tombstones).
-    for path in _vector_store_paths():
-        venv = lmdb.open(path, map_size=VECTOR_MAP_SIZE)
-        with venv.begin(write=True) as txn:
-            for key in keys_to_tomb:
-                txn.delete(key)
-        venv.close()
+    # TOMBSTONE the vectors -- do not really delete them.  Under the vector-layer
+    # self-sufficiency invariant a deleted user vector lets the SYSTEM layer's
+    # copy show through, so a removed theory's entities would keep scoring in
+    # topk: the candidate lists come from live ML enumeration, which knows
+    # nothing about this store.  Through the shared helper, which is also what
+    # gets this off its own second opening mechanism (a bare lmdb.open/close per
+    # store) and onto the process-cached opener and its failure policy.
+    invalidate_vectors(sorted(keys_to_tomb))
 
     # Drop the user-index entries of removed experiences.
     if exp_removals:
@@ -488,9 +485,9 @@ def cmd_remove(args: argparse.Namespace) -> None:
     """Remove theories from the LAYERED database (§4 of the plan, per L8).
 
     Every record of each requested theory -- ANY residency -- is tombstoned in
-    the user layer (`put(key, b"")`); user-layer vectors and user-index entries
-    are really dropped.  A system-resident record is thereby masked locally and
-    drops out of the published snapshot at the next release."""
+    the user layer (`put(key, b"")`), as are its vectors; user-index entries are
+    really dropped.  A system-resident record is thereby masked locally and drops
+    out of the published snapshot at the next release."""
     system_sem_path = _system_sem_path()
     hash_to_name = _load_theory_names()
 
@@ -510,6 +507,11 @@ def cmd_remove(args: argparse.Namespace) -> None:
         name = hash_to_name.get(h, "?")
         count = del_counts.get(h, 0)
         print(f"  {name:<50}  {count:>5} entities  [{h.hex()}]")
+    if any_system_resident:
+        # A statement of fact, not an alarm -- hence no "Warning:" prefix, and
+        # one line rather than a per-row tag.  It belongs BEFORE the confirmation
+        # prompt: it is something to know while deciding, not afterwards.
+        print("Some of these records come from the installed semantic database.")
 
     vec_paths = _vector_store_paths()
     if vec_paths:
@@ -528,11 +530,11 @@ def cmd_remove(args: argparse.Namespace) -> None:
     _execute_removal(keys_to_tomb, exp_removals)
 
     theories_word = "theory" if len(resolved) == 1 else "theories"
-    print(f"Removed {len(resolved)} {theories_word} ({len(keys_to_tomb)} records "
-          f"tombstoned; vectors and index entries dropped).")
-    if any_system_resident:
-        print("Note: system-resident records are now masked locally; they drop "
-              "out of the\npublished snapshot at the next release.")
+    # "tombstoned" is the name of a storage technique; the user asked to remove
+    # records, and what they get told is that the records went, with the derived
+    # data that hung off them.
+    print(f"Removed {len(resolved)} {theories_word} ({len(keys_to_tomb)} records, "
+          f"with their vectors and index entries).")
 
 
 # ---------------------------------------------------------------------------
@@ -826,40 +828,43 @@ def _count_user_tombstones() -> int:
     return n
 
 
-def _count_shadowed_user_vectors() -> int:
-    """User-layer vectors the L23 binding rule currently does not serve: the
-    key is tombstoned, or its visible record is system-resident and the system
-    store ships a vector for it.  Disk-usage diagnostics only."""
+def _count_vectors_with_no_visible_record() -> int:
+    """Real user-layer vectors whose key has NO record visible in either layer.
+
+    The structural half of what the read path gave up.  Under the vector-layer
+    self-sufficiency invariant nothing corrects a writer that forgets to
+    invalidate, so this checks the one thing that CAN be checked without a
+    digest: a real vector standing over a record that is gone -- which is exactly
+    what a missed `delete`-side invalidation leaves behind.  It cannot catch
+    staleness (a vector that is merely out of date sits over a perfectly present
+    record), and it is not meant to.
+
+    LAYERED-visible, not user-visible.  Reading it as "no USER record" would flag
+    every legitimate L14 stand-in -- the ordinary state of a machine using the
+    shipped database -- and fire on a healthy DB.  §7's purge uses precisely that
+    narrower predicate, on purpose; the two are different questions."""
     import contextlib
     from Isabelle_Semantic_Embedding.semantics import Semantic_DB, is_tombstone
-    from Isabelle_Semantic_Embedding.semantic_embedding import (
-        _get_lmdb_env, _try_system_store_env)
-    from Isabelle_Semantic_Embedding.snapshot_sync import validated_system_db
-    sysdb = validated_system_db()
-    sys_sem = Semantic_DB._ensure_system_env() if sysdb is not None else None
-    if sysdb is None or sys_sem is None:
-        return 0
+    from Isabelle_Semantic_Embedding.semantic_embedding import user_vector_store_envs
     total = 0
-    for path in _vector_store_paths():
-        sys_env = _try_system_store_env(os.path.join(sysdb.path, os.path.basename(path)))
+    sys_sem = Semantic_DB._ensure_system_env()
+    for venv in user_vector_store_envs():
         with contextlib.ExitStack() as stack:
-            vtxn = stack.enter_context(_get_lmdb_env(path).begin())
+            vtxn = stack.enter_context(venv.begin())
             utxn = stack.enter_context(Semantic_DB._ensure_env().begin())
-            stxn = stack.enter_context(sys_sem.begin())
-            svtxn = (stack.enter_context(sys_env.begin())
-                     if sys_env is not None else None)
-            for k, _v in vtxn.cursor():
+            stxn = (stack.enter_context(sys_sem.begin())
+                    if sys_sem is not None else None)
+            for k, v in vtxn.cursor():
                 k = bytes(k)
-                if len(k) == 16:
-                    continue                     # embed status, not a vector
-                ur = utxn.get(k)
-                if ur is not None:
-                    if is_tombstone(ur):
-                        total += 1               # tombstoned: nothing is served
-                    continue                     # user record: this vector serves
-                if (stxn.get(k) is not None and svtxn is not None
-                        and svtxn.get(k) is not None):
-                    total += 1                   # the system vector wins (L23)
+                if len(k) == 16 or is_tombstone(v):
+                    continue                     # embed status; vector tombstone
+                r = utxn.get(k)
+                if r is not None:
+                    if is_tombstone(r):
+                        total += 1               # deleted record, live vector
+                    continue
+                if stxn is None or stxn.get(k) is None:
+                    total += 1                   # no record in either layer
     return total
 
 
@@ -950,10 +955,10 @@ def cmd_fsck(args: argparse.Namespace) -> None:
     row("legacy XOR record (no constituent list)", c.legacy_xor, "(run migrate_xor_thm_keys.py)")
     n_tombstones = _count_user_tombstones()
     row("tombstones in the user DB", n_tombstones)
-    n_shadowed = _count_shadowed_user_vectors()
-    if n_shadowed:
-        row("user-layer vectors shadowed by the system DB", n_shadowed,
-            "(safe to ignore; disk only)")
+    n_orphan_vectors = _count_vectors_with_no_visible_record()
+    if n_orphan_vectors:
+        row("vectors whose record is gone", n_orphan_vectors,
+            "(a missed invalidation; run remove again)")
 
     db_bytes = os.path.getsize(os.path.join(SEMANTICS_DB_PATH, "data.mdb"))
     pct = 100.0 * db_bytes / SEMANTICS_MAP_SIZE
@@ -1024,6 +1029,42 @@ def cmd_status(args: argparse.Namespace) -> None:
 def cmd_pull(args: argparse.Namespace) -> None:
     from Isabelle_Semantic_Embedding import snapshot_sync
     _run_fail_fast(snapshot_sync.install_system_db, force=args.force)
+
+
+def cmd_post_install_system_db(args: argparse.Namespace) -> None:
+    """Run the system-upgrade purge.  THE ENTRY POINT OF THE CONDA POST-LINK HOOK.
+
+    Called by isabelle-semantic-data's post-link script, which fires exactly when
+    the payload changes and before any process can read it.  That timing is what
+    makes the whole design cheap: no remembered created_at, no comparison, no
+    bootstrap case, no marker file, no per-process check, and none of the
+    deadlock hazard a lazy trigger inside validated_system_db() would have
+    created.
+
+    IT MUST EXIT 0 ON EVERY PATH.  A nonzero post-link makes conda roll the whole
+    install back (measured on this project's own CI, run 29637825807) -- so a
+    machine whose cache directory is unreadable would lose the data package
+    entirely rather than merely skip a cache cleanup.  Hence the bare except:
+    this is the one entry point where the §8 "report and raise" policy is
+    inverted, by entry point and not by policy.
+
+    Output on success is not reliably displayed (conda-build swallows post-link
+    stdout), so printing is best-effort; the exit status is the contract."""
+    try:
+        from Isabelle_Semantic_Embedding.semantics import (
+            purge_vectors_without_a_user_record)
+        n = purge_vectors_without_a_user_record()
+        if n:
+            print(f"Dropped {n} cached vector(s) that the previous semantic "
+                  f"database supplied the text for.")
+    except Exception as e:
+        print(f"[Semantic_Embedding] Could not clean the vector cache after the "
+              f"semantic database was installed: {e}\n"
+              f"The database itself was installed correctly.  Stale cached "
+              f"vectors may be used until this is re-run:\n"
+              f"    isabelle-semantics post-install-system-db",
+              file=sys.stderr)
+    sys.exit(0)
 
 
 def cmd_export(args: argparse.Namespace) -> None:
@@ -1544,6 +1585,12 @@ def main() -> None:
     p_pull.add_argument("--force", action="store_true",
         help="Install even when the installed snapshot already matches the channel.")
 
+    # post-install-system-db  (the conda post-link hook's entry point)
+    sub.add_parser("post-install-system-db",
+        help="Drop cached vectors the replaced system database supplied the text "
+             "for. Run automatically when the semantic database is installed; "
+             "always exits 0.")
+
     # release
     p_release = sub.add_parser("release",
         help="Dispatch the CI release workflow (publishes the Hugging Face state "
@@ -1561,7 +1608,8 @@ def main() -> None:
      "prune": cmd_prune, "orphans": cmd_orphans,
      "reindex": cmd_reindex, "fsck": cmd_fsck, "embed": cmd_embed,
      "status": cmd_status, "pull": cmd_pull, "release": cmd_release,
-     "export": cmd_export}[args.command](args)
+     "export": cmd_export,
+     "post-install-system-db": cmd_post_install_system_db}[args.command](args)
 
 
 if __name__ == "__main__":

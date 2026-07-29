@@ -17,7 +17,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .semantics import Semantic_DB, _iter_vector_store_envs
+from .semantics import Semantic_DB
+from .semantic_embedding import invalidate_vectors
 from .experience_index import Experience_Index
 from .document_text import document_text_of
 
@@ -30,25 +31,46 @@ async def put_experience(store: 'Semantic_Vector_Store', key: 'universal_key',
                          rec: 'SemanticRecord') -> None:
     """Create or overwrite the experience ``rec`` under ``key``.
 
-    Embed FIRST: it is the only fallible/remote step, so if it raises, neither the
-    record nor the index is touched -- a record/index entry never exists without a
-    vector (a silent, unretrievable orphan).  Embeds into the ACTIVE model's store
-    only; other models backfill lazily.  Text comes from ``document_text_of`` inside
-    ``embed_records``, i.e. reconstructed from ``rec`` itself.
+    RECORD, then INDEX, then EMBED (ordering rule 2).  The fallible/remote step
+    goes LAST, so that when it fails everything durable is already in place.
 
-    Raises ValueError when ``rec`` has no embeddable document text (no interpretation,
-    or no ``goal_patterns``).  ``embed_records`` merely SKIPS such records
-    -- correct inside a batch, but here it would leave a record + index entry with no
-    vector: exactly the orphan this ordering exists to prevent.  So enforce it, rather
-    than trust the caller.  (Do NOT test embed_records' return value instead: that is a
+    Embed-first, which this used to do, is now self-defeating: ``Semantic_DB``'s
+    setter tombstones the key's vectors, so a vector written first would be
+    tombstoned by the record write one line later.  And record-first is not
+    merely forced, it is better:
+
+    - a record+index entry with no vector is NOT the "silent, unretrievable
+      orphan" this docstring used to claim.  The experience retrieval domain is
+      Experience_Index-driven -- ``lookup`` runs ``topk`` over the keys the index
+      returned, not over the keys the vector store holds -- so a vector-less key
+      still enters the domain, is reported missing, and ``_auto_embed`` rebuilds
+      it from the record (its EXPERIENCE pass ignores the interpretation gates).
+    - ``delete_experience`` below already states the priority: the record holds
+      the whole experience and nothing can rebuild it; the index and the vectors
+      are derived.  Under a provider outage, embed-first DISCARDS agent-authored
+      content that cannot be regenerated; record-first keeps it and fills the
+      vector in later.
+    - the index must precede the embed for the same reason it follows the
+      record: ``_experience_hits`` is index-driven, so a failure before the index
+      write would make the experience permanently invisible.
+
+    Embeds into the ACTIVE model's store only; other models backfill lazily.
+    Text comes from ``document_text_of`` inside ``embed_records``, i.e.
+    reconstructed from ``rec`` itself.
+
+    Raises ValueError when ``rec`` has no embeddable document text (no
+    interpretation, or no ``goal_patterns``).  Kept from the embed-first design,
+    and still right under the new order: a record that can NEVER be embedded is a
+    different case from one whose embedding is merely pending, and should still
+    be refused.  (Do NOT test embed_records' return value instead: that is a
     token count, and a provider may legitimately report 0.)"""
     if document_text_of(rec) is None:
         raise ValueError(
             f"refusing to store experience {rec.name!r}: it has no embeddable document "
             f"text (no interpretation, or no goal_patterns)")
-    await store.embed_records([(key, rec)], force=True)
     Semantic_DB[key] = rec
     Experience_Index.add(key, [h for _, h in (rec.theory_constituents or [])])
+    await store.embed_records([(key, rec)], force=True)
 
 
 def delete_experience(key: 'universal_key') -> None:
@@ -77,9 +99,11 @@ def delete_experience(key: 'universal_key') -> None:
         Experience_Index.remove(key, [h for _, h in consts])
     else:
         Experience_Index.remove_scanning(key)
-    # 2. drop the derived vectors, in every model's store
-    for env in _iter_vector_store_envs():
-        with env.begin(write=True) as txn:
-            txn.delete(key)
+    # 2. drop the derived vectors, in every model's store.  Through the one
+    #    invalidation helper (this loop is where its single-key form came from),
+    #    so this key gets a vector TOMBSTONE rather than a real deletion: a
+    #    deleted user vector would let the system layer's copy show through for a
+    #    record that no longer exists.
+    invalidate_vectors([key])
     # 3. the authoritative content dies last
     Semantic_DB.delete(key)

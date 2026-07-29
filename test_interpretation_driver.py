@@ -168,6 +168,46 @@ def test_each_turn_flushes_its_cost():
         == (20, 2, 1.0)
 
 
+def test_an_answer_that_cannot_be_written_is_not_counted_as_answered():
+    """A failed write must not leave memory claiming an answer that is not on
+    disk, and must not abandon the items after it in the same call.
+
+    `task.results` is what decides which entries the next batch asks for, so
+    marking before persisting loses the entry silently for the whole run: the
+    MCP SDK turns the exception into an isError result for the agent, and
+    nothing reaches Isabelle."""
+    task = _make_task(3, batch_size=3)
+    task.batch_range = task.batches[0][1]          # as _run_agent leaves it
+    real_write = task.write_answer
+
+    def write_answer(task_idx, sem):
+        if task_idx == 1:
+            raise OSError(28, "No space left on device")
+        real_write(task_idx, sem)
+
+    task.write_answer = write_answer                # type: ignore[method-assign]
+
+    async def go():
+        _local_task.set(task)
+        return await _answer_tool.handler({"interpretations": [
+            {"type": "constant", "name": task.entries[i].name,
+             "translation": f"description of c{i}"} for i in range(3)]})
+
+    ret = asyncio.run(go())
+
+    # Item 1 failed; items 0 and 2 were written anyway -- the failure did not
+    # abandon what came after it.
+    assert task.written == [(0, "description of c0"), (2, "description of c2")]
+    assert task.results[_label(task.entries[1])] is None, \
+        "the entry whose write failed must stay unanswered, so it is asked again"
+    assert task.results[_label(task.entries[0])] is not None
+    assert task.results[_label(task.entries[2])] is not None
+    # And the agent is told, in the errors list the handler already returns.
+    text = ret["content"][0]["text"]
+    assert "Failed to store" in text and "No space left on device" in text
+    assert "Answered 2 translations, remaining 1 in this batch." in text
+
+
 # --- missing-entry retries --------------------------------------------------
 
 def test_unanswered_entries_are_retried_with_their_full_text():

@@ -560,12 +560,29 @@ async def _answer_tool(args: dict[str, Any]) -> ToolCall_ret:
         # left in the conversation, make every subsequent API request fail with
         # 400 "no low surrogate in string", wedging the whole file.
         trans = re.sub(r"[\ud800-\udfff]", "", item["translation"])
-        task.results[key] = trans
+        # PERSIST FIRST, MARK IN MEMORY SECOND.  `task.results` is what decides
+        # batch_remaining, which entries the next batch asks for, and which count
+        # as unanswered at the end.  Marking first meant a failed write left memory
+        # claiming an answer that was not on disk, and the entry was never re-asked
+        # in that run — silently, because the MCP SDK turns a handler exception into
+        # an isError result for the agent and nothing reaches Isabelle.  This way
+        # "answered" means "durable".
+        #
         # Address by the precomputed label->entry-index map (O(1), and indexes
         # the FULL `entries` list correctly).  The old `_keys.index(key)` indexed
         # the deduped key list against the full entries list — the misalignment
         # that wrote translations onto neighbouring entries' universal_keys.
-        task.write_answer(task._label_to_idx[key], trans)
+        try:
+            task.write_answer(task._label_to_idx[key], trans)
+        except Exception as e:
+            # One bad item, not a bad batch: an exception on item 3 of 10 used to
+            # abandon items 4-10, which were fine.  The entry stays unanswered in
+            # `task.results`, so it is asked for again, and the reason travels back
+            # to the agent in the `errors` list this handler already returns.
+            errors.append(f"Failed to store {key!r}: {type(e).__name__}: {e}")
+            _log.warning("answer: failed to store %s", key, exc_info=True)
+            continue
+        task.results[key] = trans
         _log.info("answer: %s = %s", key, trans)
         count += 1
     batch_remaining = sum(1 for i in task.batch_range if task.results[task._keys[i]] is None)

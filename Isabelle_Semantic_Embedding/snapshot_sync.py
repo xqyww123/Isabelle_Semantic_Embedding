@@ -658,6 +658,23 @@ def install_system_db(*, force: bool = False, channel: str = CHANNEL_URL) -> Non
     global _system_db_cache
     _system_db_cache = _SYSTEM_DB_UNSET
 
+    # The system-upgrade purge (VECTOR_INVALIDATION_PLAN §7).  The conda package
+    # gets this from its post-link hook; `pull` is the other way the payload can
+    # be replaced, so it calls the same function inline.  A failure here must not
+    # fail the install, which has already succeeded and is what the user asked
+    # for -- the cost of skipping is stale cached vectors, and the command below
+    # runs the purge again.
+    from .semantics import purge_vectors_without_a_user_record
+    try:
+        n_purged = purge_vectors_without_a_user_record()
+        if n_purged:
+            _log(f"  dropped {n_purged} cached vector(s) that the previous "
+                 f"system DB supplied the text for")
+    except Exception as e:
+        _log(f"  could not clean the vector cache: {e}\n"
+             f"  The database itself was installed correctly.  Re-run with:\n"
+             f"      isabelle-semantics post-install-system-db")
+
     n = (manifest.get("stores", {}).get("semantics.lmdb", {}) or {}).get("entries")
     records = f" ({n:,} records)" if isinstance(n, int) else ""
     _log(f"Installed isabelle-semantic-data {latest.version}{records}\n"

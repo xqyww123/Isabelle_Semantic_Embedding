@@ -23,10 +23,12 @@ from .semantic_embedding import (Vector_Store, Embedding_Provider, make_embeddin
                                  sanitize_model, unsanitize_model,
                                  Reranker_Provider, reranker_provider, key,
                                  settings_file_path, _http_error_detail,
-                                 _embed_tracing_gated)
+                                 _embed_tracing_gated,
+                                 invalidate_vectors, user_vector_store_envs,
+                                 vector_store_names)
 from ._vecarith import library_path as _vector_library_path
 
-from .base import ToolCall_ret, mk_ret as _mk_ret
+from .base import ToolCall_ret, mk_ret as _mk_ret, logger_of as _logger_of
 from .hover import resolve_context_at
 from .embedding_config import _DEFAULT_KINDS_PHRASE
 from .document_text import document_text_of, entity_document_text
@@ -143,20 +145,10 @@ migrate_on_hash_change: bool = False
 # lowest ceiling anywhere in the tree (isabelle_semantics's `remove` used 1<<33).
 SEMANTICS_MAP_SIZE: int = 1 << 32   # 4 GiB
 
-def _iter_vector_store_envs() -> 'Iterator[lmdb.Environment]':
-    """Every ``vector_*.lmdb`` store on disk, as an open (process-cached) environment.
-
-    One store per embedding model; the model name is encoded in the directory name.
-    """
-    cache_dir = semantic_DB_dir()
-    if not os.path.isdir(cache_dir):
-        return
-    from .semantic_embedding import _get_lmdb_env
-    for entry in sorted(os.listdir(cache_dir)):
-        if entry.startswith("vector_") and entry.endswith(".lmdb"):
-            path = os.path.join(cache_dir, entry)
-            if os.path.isdir(path):
-                yield _get_lmdb_env(path)
+# The one enumerator over vector stores now lives in semantic_embedding, next to
+# the opener, and unions the user cache with the system DB (plan §3.1/§3.2).
+# Imported under the old name so the call sites here read unchanged.
+_iter_vector_store_envs = user_vector_store_envs
 
 
 class Provenance(NamedTuple):
@@ -582,6 +574,24 @@ class _Semantic_DB:
             yield k, rec
 
     def __setitem__(self, key: universal_key, record: 'Record') -> None:
+        """Write a record, invalidating its vectors FIRST.
+
+        The invalidation lives here so it cannot be forgotten: this is the write
+        that changes the embedding document text, and under the vector-layer
+        self-sufficiency invariant nothing downstream will ever notice a vector
+        that went stale.  Unconditional -- a "did the text really change?" test
+        would have to reconstruct the old document text, and getting that test
+        wrong is precisely the failure being fixed.
+
+        VECTORS FIRST, then the record (ordering rule 1).  A crash between the
+        two leaves the vector tombstoned and the record still old: the next pass
+        re-embeds from the old text, which is wasted work that heals itself.  The
+        reverse order would leave a new record with an old vector, permanently.
+
+        Writers that do NOT come through here must invalidate explicitly; the
+        enumerated set is `delete`, `update_expr`, `repair_xor_prefixes`,
+        `clean_wip` and isabelle_semantics._execute_removal."""
+        invalidate_vectors([key])
         with self._ensure_env().begin(write=True) as txn:
             txn.put(key, self._encode(record))
 
@@ -591,10 +601,17 @@ class _Semantic_DB:
         one stops being visible, through the same single mechanism.  Returns True
         if a record was visible in the layered store beforehand.
 
-        L8's other half -- dropping the key's user-layer vectors and user-index
-        entries -- stays with the caller (see experience_store.delete_experience,
-        which already owns the tri-store deletion order).
+        The key's vectors are tombstoned too, and first (ordering rule 1).  A
+        tombstone, NOT a real deletion: under the vector-layer self-sufficiency
+        invariant a really-deleted user vector would let the system layer's copy
+        show through, so a deleted record would keep scoring in `topk` -- the
+        candidate lists come from live ML enumeration, which knows nothing about
+        this store.
+
+        Dropping the user-index entries is still the caller's half (see
+        experience_store.delete_experience, which owns the tri-store order).
         Used e.g. to overwrite an experience memory (see write_memory)."""
+        invalidate_vectors([key])
         with self._ensure_env().begin(write=True) as txn:
             raw = txn.get(key)
             if raw is not None:
@@ -613,7 +630,13 @@ class _Semantic_DB:
         the write half lands in the user env carrying every untouched field with
         it.  On a system-resident record that means the FULL record is copied up
         with the new expr -- the old silent early-return on a user-env miss would
-        drop the update.  A tombstoned key reads as absent: no-op."""
+        drop the update.  A tombstoned key reads as absent: no-op.
+
+        THIS CHANGES THE EMBEDDING DOCUMENT TEXT -- expr feeds pretty_print feeds
+        entity_document_text -- and it writes with a raw txn.put rather than
+        through __setitem__, so it invalidates for itself.  Placed after the two
+        early returns, so a no-op update leaves the vectors alone, and before the
+        put, per ordering rule 1."""
         with self._ensure_env().begin(write=True) as txn:
             raw = txn.get(key)
             if raw is not None and is_tombstone(raw):
@@ -624,6 +647,7 @@ class _Semantic_DB:
                     return
             vals = list(msgpack.unpackb(raw))
             vals[2] = new_expr
+            invalidate_vectors([key])
             txn.put(key, msgpack.packb(vals))  # type: ignore
 
     def query(self, key: universal_key, with_pretty: bool = False) -> str | None:
@@ -865,11 +889,17 @@ class _Semantic_DB:
             with env.begin(write=True) as vtxn:
                 for bad, good in moved:
                     v = vtxn.get(bad)
-                    if v is None:
-                        continue
-                    if vtxn.get(good) is None:
+                    if v is not None and not is_tombstone(v) and vtxn.get(good) is None:
                         vtxn.put(good, bytes(v))
-                    vtxn.delete(bad)
+        # The old keys are then TOMBSTONED, not deleted -- the same reason the
+        # records above are: a real deletion would unmask the SYSTEM layer's
+        # vector at the bad key, and under the vector-layer self-sufficiency
+        # invariant nothing behind this would ever notice.  Through the one
+        # helper rather than inline in the loop above, so that no vector store is
+        # written with a bare put(b"") anywhere but there; the cost is a second
+        # transaction per store, and the window between them holds one correct
+        # vector under two keys.
+        invalidate_vectors([bad for bad, _ in moved])
         return moved, conflicts
 
     @staticmethod
@@ -1026,14 +1056,8 @@ class _Semantic_DB:
 
         n = self._copy_prefix(sem_env, old_hash, new_hash)
 
-        cache_dir = semantic_DB_dir()
-        if os.path.isdir(cache_dir):
-            from .semantic_embedding import _get_lmdb_env
-            for entry in os.listdir(cache_dir):
-                if entry.startswith("vector_") and entry.endswith(".lmdb"):
-                    path = os.path.join(cache_dir, entry)
-                    if os.path.isdir(path):
-                        self._copy_prefix(_get_lmdb_env(path), old_hash, new_hash)
+        for venv in _iter_vector_store_envs():      # THE enumerator (plan §3.2)
+            self._copy_prefix(venv, old_hash, new_hash)
 
         # Theorem/rule AND experience records reference theories through their
         # constituent lists, not their key prefix — rekey them by XOR recomputation.
@@ -1057,6 +1081,73 @@ def clean_wip() -> int:
     deleted = Semantic_DB.clean_wip()
     Semantic_Vector_Store.clean_all_wip_in_created_dbs()
     return deleted
+
+
+def purge_vectors_without_a_user_record() -> int:
+    """The system-upgrade purge (VECTOR_INVALIDATION_PLAN §7).  Returns the count.
+
+    THE CASE this exists for: the system DB is replaced -- by a conda upgrade or
+    by ``isabelle-semantics pull`` -- and it ships NO vector store for the active
+    model (the L14 stand-in arrangement).  The user layer is then holding a
+    vector it computed from the OLD system text.  The vector-layer
+    self-sufficiency invariant cannot help and neither can tombstones: a
+    legitimate stand-in fill and a stale one are both ordinary positive values,
+    and telling them apart needs exactly the record layer §2 decoupled from.
+    Nothing local was written, so no write site ever fires.  Hence a purge,
+    triggered when the payload changes -- which is the only moment at which the
+    question even arises.
+
+    THE RULE: delete every REAL (non-tombstone) user-layer vector whose key has
+    NO non-tombstone user-layer record, over entity keys only.  A key the user
+    interpreted locally has a user record and is untouched, so no user-authored
+    embedding is ever discarded.
+
+    Four details that are easy to get backwards:
+
+    - **Delete, do not tombstone.**  The one place in this plan that really
+      deletes.  A tombstone would mask the vector the NEW system DB ships.  The
+      key's record is system-resident, so there is nothing to mask: after
+      deletion the key reads "absent" and resolves to the new system vector, or
+      is re-embedded from the visible system record.
+    - **Skip vector tombstones.**  Deleting one would unmask a system vector for
+      a deliberately suppressed key.
+    - **Skip keys whose RECORD is a tombstone.**  "No non-tombstone user record"
+      is literally satisfied by a tombstoned record, and deleting a real vector
+      under one has the same unmasking effect.
+    - **Entity keys only.**  Vector stores also hold 16-byte theory embed-status
+      records; losing them makes ``is_thy_embedded`` false across the board and
+      discards the accumulated ``total_tokens`` ledger.
+
+    The scan writes with a bare ``txn.delete`` rather than through
+    ``invalidate_vectors``, and it is the one place that may: the predicate is
+    per-store (the "skip a vector tombstone" clause reads that store's own
+    value), whereas the helper applies one decision to every store at once.
+
+    Idempotent: a second run finds nothing left to delete."""
+    from .semantic_embedding import user_vector_store_envs
+    renv = Semantic_DB._ensure_env()
+    purged = 0
+    for venv in user_vector_store_envs():
+        doomed: list[bytes] = []
+        with venv.begin() as vtxn, renv.begin() as rtxn:
+            for k, v in vtxn.cursor():
+                k = bytes(k)
+                if len(k) == 16 or is_tombstone(v):
+                    continue
+                # ANY user-layer entry means keep, and the two reasons differ: a
+                # real record means the user interpreted this key locally and the
+                # vector is theirs; a record TOMBSTONE means the key is
+                # deliberately suppressed, and dropping its vector would unmask
+                # the system one.  So the test is presence, not content.
+                if rtxn.get(k) is not None:
+                    continue
+                doomed.append(k)
+        if doomed:
+            with venv.begin(write=True) as vtxn:
+                for k in doomed:
+                    vtxn.delete(k)
+            purged += len(doomed)
+    return purged
 
 
 # --- MCP tool factories ---
@@ -1480,16 +1571,13 @@ class Semantic_Vector_Store(Vector_Store):
 
     @staticmethod
     def created_embedding_models() -> list[str]:
-        """Return names of all embedding models that have LMDB stores on disk."""
-        cache_dir = semantic_DB_dir()
-        if not os.path.isdir(cache_dir):
-            return []
-        prefix = "vector_"
-        suffix = ".lmdb"
-        return [unsanitize_model(entry[len(prefix):-len(suffix)])
-                for entry in os.listdir(cache_dir)
-                if entry.startswith(prefix) and entry.endswith(suffix)
-                and os.path.isdir(os.path.join(cache_dir, entry))]
+        """Names of every embedding model the layered world has a store for.
+
+        Re-expressed on THE enumerator (plan §3.2), so it now includes a model
+        the system DB ships a store for but this machine has never embedded
+        with."""
+        return [unsanitize_model(name[len("vector_"):-len(".lmdb")])
+                for name in vector_store_names()]
 
     def __init__(
         self,
@@ -1951,8 +2039,7 @@ class Semantic_Vector_Store(Vector_Store):
                     msg = ("[Semantic_Embedding] Reranker failed, falling back to "
                            "embedding scores: " + (detail or f"{type(e).__name__}: {e}")
                            + (reranker._http_error_hint(e) if detail else ""))
-                    import logging
-                    logging.getLogger(__name__).warning("%s", msg)
+                    _logger_of(self.connection, "semantics").warning("%s", msg)
                     if self.connection is not None:
                         await self.connection.warning(msg)
         # Non-reranker path: merge embedded entities (real KNN score) with
