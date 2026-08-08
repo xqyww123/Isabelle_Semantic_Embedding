@@ -319,7 +319,14 @@ requirements:
     # ROOT:1  session Semantic_Embedding = HOL + sessions Isabelle_RPC Performant_Isabelle_ML
     # Session dependencies pyproject.toml cannot express.  isabelle-rpc is ALSO a pyproject
     # dependency, and it comes from conda.qiyuan.me, not conda-forge.
-    - isabelle-rpc >=0.4.0
+    #
+    # >=0.4.1, not >=0.4.0: Tools/semantic_store.ML calls Theory_Hash.process_id,
+    # which the published 0.4.0 does not contain (it landed after that VERSION was
+    # cut).  The old floor was satisfied by exactly that build, so the session
+    # failed to compile from the installed packages on all five platforms --
+    # "Value or constructor (process_id) has not been declared in structure
+    # Theory_Hash" (run 31246821630).
+    - isabelle-rpc >=0.4.1
     - isabelle-performant-ml >=0.1.0,<0.2.0
     #
     # The fourteen pyproject dependencies under their CONDA names.  TWO differ from PyPI,
