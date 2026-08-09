@@ -47,7 +47,13 @@ classifiers = [
 # published wheel naming it could never be installed.
 dependencies = [
     "msgpack",
-    "isabelle-rpc>=0.4.0",
+    # >=0.4.1 because semantics.py passes config_lookup's `ctxt`, which 0.4.0's
+    # Connection does not accept (TypeError), and reads dialogue()'s no-responder
+    # None.  PyPI has no isabelle-rpc 0.4.1 yet -- that repo publishes only to
+    # conda -- so pip cannot resolve this until it does.  Deliberate (user
+    # decision 2026-08-08): an unresolvable floor fails loudly, where >=0.4.0
+    # would install green and raise at runtime.
+    "isabelle-rpc>=0.4.1",
     "rocksdict",
     # Floor, not a pin. liblmdb 0.9.35 (bundled in py-lmdb 2.x) carries no
     # corruption regression over 0.9.29 -- the arc trends safer. The ONE release to
