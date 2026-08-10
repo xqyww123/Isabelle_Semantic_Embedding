@@ -307,6 +307,42 @@ def test_the_resolved_pair_is_what_gets_recorded():
     assert (task2.driver, task2.model) == ("Codex", "gpt-5.5")
 
 
+def test_claudecode_with_no_model_leaves_the_choice_to_the_cli():
+    """An empty model half means the CLI runs its own configured default: the
+    driver must pass NO model (None), not an empty string the CLI would treat
+    as a model name."""
+    from Isabelle_Semantic_Embedding.interpretation_driver.claude_code import (
+        ClaudeCodeDriver,
+    )
+    task = _make_task(1, batch_size=1)
+    driver = ClaudeCodeDriver(model="", system_prompt="sys", tools=[],
+                              task=task, on_context_reset=lambda: None)
+    assert driver.model == ""
+    assert driver._options().model is None
+    # An explicit model in the spec still pins the CLI to it.
+    pinned = ClaudeCodeDriver(model="claude-opus-4-8[1m]", system_prompt="sys",
+                              tools=[], task=task,
+                              on_context_reset=lambda: None)
+    assert pinned._options().model == "claude-opus-4-8[1m]"
+
+
+def test_the_cli_chosen_model_is_backfilled_into_provenance():
+    """When the CLI picked the model, the first assistant message names it and
+    `_handle_message` records it on the task -- so write_cost never stores an
+    empty model.  An explicitly configured model is NOT overwritten."""
+    from claude_agent_sdk.types import AssistantMessage
+
+    from Isabelle_Semantic_Embedding.interpretation_driver.claude_code import (
+        _handle_message,
+    )
+    task = _make_task(1, batch_size=1)
+    assert task.model == ""
+    _handle_message(task, AssistantMessage(content=[], model="claude-cli-pick"))
+    assert task.model == "claude-cli-pick"
+    _handle_message(task, AssistantMessage(content=[], model="something-else"))
+    assert task.model == "claude-cli-pick", "first backfill wins"
+
+
 # --- explaining the same constant twice ------------------------------------
 
 class _DesugarConnection:

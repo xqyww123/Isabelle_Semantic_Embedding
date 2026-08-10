@@ -129,9 +129,12 @@ class InterpretationDriver(ABC):
     NAME: str = ""
 
     #: model used when the driver spec names none (`Codex` rather than
-    #: `Codex.gpt-5.6`).  Every concrete driver must set it: which model is
-    #: sensible is the backend's own business, and a shared default would be a
-    #: model name from one backend handed to another.
+    #: `Codex.gpt-5.6`).  Which model is sensible is the backend's own business,
+    #: so a shared default would be a model name from one backend handed to
+    #: another.  A backend that has its own default-model setting may keep this
+    #: empty, meaning "pass no model and let the backend pick" (ClaudeCode: the
+    #: CLI's configured default) -- such a driver must backfill task.model with
+    #: the model that actually ran, so provenance never records an empty name.
     DEFAULT_MODEL: str = ""
 
     #: whether this backend tells us when it compacts the conversation, i.e.

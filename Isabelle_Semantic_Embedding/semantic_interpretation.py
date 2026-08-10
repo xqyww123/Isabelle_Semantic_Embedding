@@ -282,9 +282,12 @@ class InterpretationTask:
         # interpreted_at is the pre-agent eff snapshot (write-back
         # discipline 4).  write_answer stores them with the answer.
         self.inv_fields = inv_fields
-        # Which backend and model produced these interpretations, both already
-        # resolved (no empty halves).  write_cost records them, so a theory's
-        # provenance stays readable after the config that chose them has changed.
+        # Which backend and model produced these interpretations.  write_cost
+        # records them, so a theory's provenance stays readable after the config
+        # that chose them has changed.  `model` may start empty when the backend
+        # picks the model itself (ClaudeCode with an empty model half runs the
+        # CLI's configured default); the driver then backfills it from the
+        # response stream before the first cost flush.
         self.driver = driver
         self.model = model
         # results / _keys / _label_to_idx are strictly 1:1 with `entries`, in
@@ -1161,7 +1164,8 @@ async def interpret_file(
                 )
 
             _log.info("interpret_file: starting %s agent on %s with %d batches",
-                      driver_name, model, len(task.batches))
+                      driver_name, model or "the backend's default model",
+                      len(task.batches))
             await _run_agent(make_driver)
             answered = sum(1 for v in task.results.values() if v is not None)
             _log.info("interpret_file: agent finished, %d/%d interpreted",

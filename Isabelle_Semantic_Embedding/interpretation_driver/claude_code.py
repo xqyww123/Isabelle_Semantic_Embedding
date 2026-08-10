@@ -266,6 +266,10 @@ def _handle_message(task: InterpretationTask, message: Any) -> None:
     # the primary classification -- it is stable across CLI versions, unlike the
     # result text.
     if isinstance(message, AssistantMessage):
+        # No model configured (DEFAULT_MODEL = "") means the CLI chose one;
+        # record it so write_cost's provenance names the model that ran.
+        if not task.model and isinstance(message.model, str) and message.model:
+            task.model = message.model
         err = getattr(message, "error", None)
         if err is not None:
             _raise_for_agent_error(task, err, None, _model_error_text(message))
@@ -316,7 +320,11 @@ class ClaudeCodeDriver(InterpretationDriver):
     (`create_sdk_mcp_server`), so their handlers keep their live Isabelle RPC
     connection; the CLI subprocess reaches them over the SDK's own transport."""
 
-    DEFAULT_MODEL = "claude-opus-4-8[1m]"
+    # Empty = pass no model to the CLI, so the run uses whatever default model
+    # the user's own Claude Code configuration selects.  The model that actually
+    # served the run is backfilled into task.model from the response stream
+    # (see _handle_message), so provenance still records a real model name.
+    DEFAULT_MODEL = ""
     REPORTS_CONTEXT_RESET = True          # the PreCompact hook below
 
     def __init__(self, **kw: Any) -> None:
@@ -335,7 +343,7 @@ class ClaudeCodeDriver(InterpretationDriver):
             return {}
 
         return ClaudeAgentOptions(
-            model=self.model,
+            model=self.model or None,
             system_prompt=self.system_prompt,
             cwd=str(AGENT_DIR),
             setting_sources=["project"],
