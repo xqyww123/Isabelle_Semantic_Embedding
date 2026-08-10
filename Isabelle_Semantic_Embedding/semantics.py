@@ -1499,6 +1499,16 @@ async def update_interpretations(connection: Connection,
         answer = await connection.dialogue(
             f"[Semantic_Embedding] {n} entities across {len(thy_names)} theories "
             f"need (re-)interpretation: {shown}\n"
+            f"\n"
+            f"NOTE: Semantic_Embedding can only reuse prebuilt semantic "
+            f"interpretations for theories that are loaded from a built heap. "
+            f"If the list above looks too long — in particular if it contains "
+            f"many system-library theories — consider building them into a heap "
+            f"with `isabelle build <YOUR_SESSION>` and then working on top of "
+            f"that heap (e.g. `isabelle jedit -l <YOUR_SESSION>`), so that these "
+            f"theories' prebuilt interpretations are reused instead of being "
+            f"re-generated here.\n"
+            f"\n"
             f"This calls the LLM: it may take a long time and cost money. Proceed?",
             ["Yes", "No", "No, don't ask again in this session"])
         if answer is not None:
