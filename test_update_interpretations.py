@@ -21,6 +21,7 @@ class _Conn:
         self.warnings: list = []
         self.tracings: list = []
         self.dialogues: list = []
+        self.writelns: list = []
 
     async def config_lookup(self, name, ctxt=None):
         self.calls.append(("config", name))
@@ -41,6 +42,9 @@ class _Conn:
     async def dialogue(self, msg, options):
         self.dialogues.append((msg, options))
         return self.answer
+
+    async def writeln(self, msg):
+        self.writelns.append(msg)
 
 
 def _live_calls(conn):
@@ -83,6 +87,8 @@ def test_big_n_asks_and_yes_runs():
     assert str(BIG) in msg
     assert options == ["Yes", "No", "No, don't ask again in this session"]
     assert len(_live_calls(conn)) == 1
+    (ack,) = conn.writelns
+    assert "Choice received" in ack and "interpreting" in ack and str(BIG) in ack
 
 
 def test_big_n_no_declines_once():
@@ -90,6 +96,8 @@ def test_big_n_no_declines_once():
     _run(conn, ask_user=True)
     assert _live_calls(conn) == []
     assert S._dont_ask_this_session is False        # plain No: ask again next time
+    (ack,) = conn.writelns
+    assert "Choice received" in ack and "skipping" in ack
 
 
 def test_third_option_sets_the_host_flag_and_later_calls_stay_silent():
@@ -97,6 +105,8 @@ def test_third_option_sets_the_host_flag_and_later_calls_stay_silent():
     _run(conn, ask_user=True)
     assert _live_calls(conn) == []
     assert S._dont_ask_this_session is True
+    (ack,) = conn.writelns
+    assert "Choice received" in ack and "will not ask again" in ack
     # a later big-n startup check: no dialog, no warning, no run -- but the
     # check itself and the small-update path stay alive
     conn2 = _Conn(dry=(("HOL.A",), BIG))
@@ -131,3 +141,4 @@ def test_no_responder_sentinel_falls_to_the_warning():
     assert str(BIG) in warn and "run_semantic_interpretation" in warn
     assert _live_calls(conn) == []
     assert S._dont_ask_this_session is False        # not a knowing decline
+    assert conn.writelns == []                      # nobody answered: no ack

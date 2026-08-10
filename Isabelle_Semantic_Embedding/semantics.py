@@ -1473,7 +1473,8 @@ async def update_interpretations(connection: Connection,
     yields the workload count n.  4. n = 0: nothing to do.  5. n below the
     threshold: interpret silently.  6. otherwise ask (three options; "don't
     ask again" sets the host-wide flag above) when ask_user, else warn with
-    the real n and the explicit command -- and do nothing."""
+    the real n and the explicit command -- and do nothing.  Every answered
+    button press is acknowledged with a writeln naming what happens next."""
     global _dont_ask_this_session
     gate = await connection.config_lookup("auto_interpret_for_embedding", ctxt)
     if not gate:
@@ -1503,9 +1504,17 @@ async def update_interpretations(connection: Connection,
         if answer is not None:
             if answer == "No, don't ask again in this session":
                 _dont_ask_this_session = True
+                await connection.writeln(
+                    "[Semantic_Embedding] Choice received; will not ask again "
+                    "in this session.")
                 return
             if answer != "Yes":
+                await connection.writeln(
+                    "[Semantic_Embedding] Choice received; skipping this update.")
                 return
+            await connection.writeln(
+                f"[Semantic_Embedding] Choice received; interpreting {n} "
+                f"entities across {len(thy_names)} theories ...")
             await connection.callback("Semantic_Store.interpret_theories",
                                       (ctxt, names, False, False, include_context))
             return
