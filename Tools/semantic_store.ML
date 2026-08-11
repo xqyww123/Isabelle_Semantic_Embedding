@@ -445,18 +445,20 @@ val interpret_file_dry_run_cmd :
 
    The theory long name rides along purely so a Python-side failure can say which
    theory it was working on; the ML-side counters stay here, where the per-theory
-   report is assembled. *)
+   report is assembled.  The theory KEY is deliberately not sent: with L9 nothing
+   Python-side selects a theory any more, and a parameter no code consults invites
+   the next reader to build on it. *)
 val backfill_positions_cmd :
-    ({theory_key: Universal_Key.universal_key, theory_longname: string,
+    ({theory_longname: string,
       entries: (Universal_Key.universal_key * Entity_Position.entity_position option) list},
      int * int) Remote_Procedure_Calling.command = {
   name = "Semantic_Store.backfill_positions",
   arg_schema =
-    (fn {theory_key, theory_longname, entries} =>
-      packTuple3 (packBytes, packString,
-                  packList (packPair (packBytes,
-                    packOption (packTuple3 (packString, packInt, packInt)))))
-        (theory_key, theory_longname, entries)),
+    (fn {theory_longname, entries} =>
+      packPair (packString,
+                packList (packPair (packBytes,
+                  packOption (packTuple3 (packString, packInt, packInt)))))
+        (theory_longname, entries)),
   ret_schema = unpackPair (unpackInt, unpackInt),
   callback = [],
   timeout = NONE
@@ -1869,7 +1871,7 @@ fun backfill_theory (thy : theory) : backfill_report =
       hit = 0, missing = 0, no_position = 0, unreadable = 0, line_mismatch = 0})
   else
     let
-      val {file_path = _, theory_longname, theory_key, entries, position_report,
+      val {file_path = _, theory_longname, theory_key = _, entries, position_report,
            tie_break_degraded} = enumerate_entries (Context.Theory thy)
       val {no_file, unreadable, line_mismatch} = position_report
       fun report (theories, refused, hit_shortfall, hit, missing) : backfill_report =
@@ -1892,7 +1894,7 @@ fun backfill_theory (thy : theory) : backfill_report =
         let
           val (hit, missing) =
             Remote_Procedure_Calling.call_command backfill_positions_cmd
-              {theory_key = theory_key, theory_longname = theory_longname,
+              {theory_longname = theory_longname,
                entries = map (fn (_, _, _, epos, uk, _, _, _, _, _) => (uk, epos)) entries}
           (* §8.5's sharp form: a theory the store calls `finished` should have a
              record for essentially every entity it enumerates.  Zero hits means the

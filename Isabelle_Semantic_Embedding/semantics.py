@@ -772,7 +772,7 @@ class _Semantic_DB:
             txn.put(key, msgpack.packb(data))  # type: ignore
 
     def backfill_positions(
-            self, key: universal_key,
+            self,
             entries: 'list[tuple[universal_key, tuple[str, int, int] | None]]',
     ) -> tuple[int, int]:
         """Write each entity position onto the record that already holds that key,
@@ -784,8 +784,8 @@ class _Semantic_DB:
         NO BOOKKEEPING (plan L9).  No theory-status record is written or created, so
         nothing here can disagree with the data, and an interrupted sweep is resumed
         by running it again: re-encoding a record whose position is already the value
-        being written produces the same bytes.  `key` is carried only to name the
-        theory in a failure message.
+        being written produces the same bytes.  The theory's own identity is not a
+        parameter at all: with no status record to select, nothing here needs it.
 
         Explicitly untouched: interpretation, semantic_digest, deps, version,
         interpreted_at, every theory-status record, the global counter, and every
@@ -2567,10 +2567,9 @@ async def _mark_interpreted(arg: Any, connection: Connection) -> None:
 async def _backfill_positions(arg: Any, connection: Connection) -> tuple[int, int]:
     """ENTITY_POSITION_PLAN.md §8.3.  The theory name rides along only so a failure
     here can say which theory it was working on; ML owns the per-theory report."""
-    theory_key, theory_longname, entries = arg
+    theory_longname, entries = arg
     try:
         return Semantic_DB.backfill_positions(
-            bytes(theory_key),
             [(bytes(uk), tuple(pos) if pos is not None else None)
              for uk, pos in entries])
     except Exception as e:

@@ -82,7 +82,7 @@ def test_backfill_writes_the_position_and_touches_no_vector(isolated_db):
     before = _dump_vector_stores()
     assert before[vec_path][uk] == b"\x00\x01\x02\x03"
 
-    hit, missing = Semantic_DB.backfill_positions(THY_KEY, [(uk, ("$AFP/Foo/Bar.thy", 7, 3))])
+    hit, missing = Semantic_DB.backfill_positions([(uk, ("$AFP/Foo/Bar.thy", 7, 3))])
     assert (hit, missing) == (1, 0)
 
     rec = Semantic_DB[uk]
@@ -105,7 +105,7 @@ def test_backfill_is_idempotent():
     uk = _uk("Foo.c")
     before_vec = _dump_vector_stores()
     before_rec = Semantic_DB._get_raw(uk)
-    hit, missing = Semantic_DB.backfill_positions(THY_KEY, [(uk, ("$AFP/Foo/Bar.thy", 7, 3))])
+    hit, missing = Semantic_DB.backfill_positions([(uk, ("$AFP/Foo/Bar.thy", 7, 3))])
     assert (hit, missing) == (1, 0)
     assert Semantic_DB._get_raw(uk) == before_rec      # byte-identical
     assert _dump_vector_stores() == before_vec
@@ -118,7 +118,7 @@ def test_the_backfill_writes_no_theory_status_record():
     from Isabelle_Semantic_Embedding.semantics import Semantic_DB
 
     assert Semantic_DB._get_raw(THY_KEY) is None
-    Semantic_DB.backfill_positions(THY_KEY, [(_uk("Foo.c"), ("$AFP/Foo/Bar.thy", 7, 3))])
+    Semantic_DB.backfill_positions([(_uk("Foo.c"), ("$AFP/Foo/Bar.thy", 7, 3))])
     assert Semantic_DB._get_raw(THY_KEY) is None
 
 
@@ -129,7 +129,7 @@ def test_a_key_with_no_record_is_counted_and_creates_nothing():
 
     absent = _uk("Foo.never_interpreted")
     assert Semantic_DB.contains([absent]) == [False]
-    hit, missing = Semantic_DB.backfill_positions(THY_KEY, [(absent, ("$AFP/Foo/Bar.thy", 1, 1))])
+    hit, missing = Semantic_DB.backfill_positions([(absent, ("$AFP/Foo/Bar.thy", 1, 1))])
     assert (hit, missing) == (0, 1)
     assert Semantic_DB.contains([absent]) == [False]
     assert Semantic_DB[absent] is None
@@ -141,7 +141,7 @@ def test_a_position_of_none_is_stored_as_none():
 
     uk = _uk("Foo.dynamic_member")
     Semantic_DB[uk] = SemanticRecord(EntityKind.CONSTANT, "Foo.dynamic_member", "nat", "d")
-    hit, missing = Semantic_DB.backfill_positions(THY_KEY, [(uk, None)])
+    hit, missing = Semantic_DB.backfill_positions([(uk, None)])
     assert (hit, missing) == (1, 0)
     rec = Semantic_DB[uk]
     assert rec is not None and rec.position is None

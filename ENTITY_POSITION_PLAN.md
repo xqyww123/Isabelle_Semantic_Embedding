@@ -645,6 +645,16 @@ leaves the name-addressed kinds — constants, types, classes, locales — hitti
 normally, so the rate lands at 20–30 %, not 0. That is precisely the case a
 measured floor has to catch.
 
+The window is narrower still, which is why a measured floor matters rather than
+being a nicety. `Theory_Hash.hash_of` is an xxhash128 of the theory's **own source
+file plus its parents' hashes** — the session image is not an input — and
+`key_of_ns_entity` builds a constant/type/class/locale key from that hash and the
+name. So running the sweep under a different image does not move the
+name-addressed keys at all, and `hit = 0` requires a divergence severe enough to
+move every kind at once. (Measured on the live store: 11,468 theory-status
+records, 10,601 carrying `finished`, so the guard's first conjunct is satisfied
+for essentially the whole sweep.)
+
 ### 8.6 The failure the hit rate cannot see
 
 `enumerate_entries` calls `check_theorem_name_in_file` to learn where each fact
