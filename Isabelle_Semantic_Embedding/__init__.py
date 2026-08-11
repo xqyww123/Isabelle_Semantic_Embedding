@@ -21,6 +21,11 @@ from .semantics import (
     _is_interpreted,
     _mark_interpreted,
     _clean_wip,
+    # RPC handlers register as an import side effect of @isabelle_remote_procedure,
+    # so a handler missing from this list never registers and ML fails at CALL time
+    # with an unknown-procedure error (ENTITY_POSITION_PLAN.md §15.6(e)).
+    _positions_done,
+    _backfill_positions,
 )
 from . import semantics
 

@@ -68,7 +68,7 @@ def _uk(name: str) -> bytes:
 def _entry(name: str, digest: bytes, deps: list) -> 'object':
     from Isabelle_Semantic_Embedding.semantic_interpretation import Entry
     return Entry(kind=int(EntityKind.CONSTANT), name=name, prop_str="nat",
-                 line_number=1, universal_key=_uk(name),
+                 position=("$AFP/T/T.thy", 1, 1), universal_key=_uk(name),
                  semantic_digest=digest, deps=deps)
 
 

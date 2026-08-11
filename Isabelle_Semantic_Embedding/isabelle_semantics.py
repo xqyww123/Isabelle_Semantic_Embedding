@@ -1198,6 +1198,47 @@ def cmd_release(args: argparse.Namespace) -> None:
 # collect
 # ---------------------------------------------------------------------------
 
+async def stream_app_messages(c) -> bool:
+    """Print an Isa-REPL app's streamed output until its terminating unit arrives,
+    and say whether anything came through as an error.
+
+    One reader for every app registered through
+    Tools/semantic_interpretation_app.ML's shared framing (`collect`,
+    `backfill_positions`, ...): they all stream packString messages, mark failures
+    with an "ERROR:" prefix, and finish with packUnit."""
+    has_error = False
+    try:
+        while True:
+            raw = await c._feed_and_unpack()
+            if isinstance(raw, (list, tuple)) and len(raw) == 2:
+                msg, err = raw
+                if err is not None and err != ():
+                    err_str = err.decode("utf-8") if isinstance(err, bytes) else str(err)
+                    print(err_str, file=sys.stderr, flush=True)
+                    has_error = True
+                    continue
+                if msg is None or msg == ():
+                    if (msg is None or msg == ()) and (err is None or err == ()):
+                        break
+                    continue
+                if isinstance(msg, bytes):
+                    msg = msg.decode("utf-8", errors="replace")
+                if isinstance(msg, str):
+                    if msg.startswith("ERROR:"):
+                        print(msg, file=sys.stderr, flush=True)
+                        has_error = True
+                    else:
+                        print(msg, flush=True)
+            elif raw is None:
+                break
+            else:
+                print(f"[unexpected: {raw!r}]", flush=True)
+    except Exception as e:
+        print(f"Connection error: {e}", file=sys.stderr, flush=True)
+        raise
+    return has_error
+
+
 def cmd_collect(args: argparse.Namespace) -> None:
     if args.reinterpret and args.migrate_on_hash_change:
         print("Error: --reinterpret and --migrate-on-hash-change are mutually exclusive.",
@@ -1264,37 +1305,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
                 # REPL's own -o threads=N; there is no per-call override.
                 await c._write(targets, args.reinterpret)
 
-                has_error = False
-                try:
-                    while True:
-                        raw = await c._feed_and_unpack()
-                        if isinstance(raw, (list, tuple)) and len(raw) == 2:
-                            msg, err = raw
-                            if err is not None and err != ():
-                                err_str = err.decode("utf-8") if isinstance(err, bytes) else str(err)
-                                print(err_str, file=sys.stderr, flush=True)
-                                has_error = True
-                                continue
-                            if msg is None or msg == ():
-                                if (msg is None or msg == ()) and (err is None or err == ()):
-                                    break
-                                continue
-                            if isinstance(msg, bytes):
-                                msg = msg.decode("utf-8", errors="replace")
-                            if isinstance(msg, str):
-                                if msg.startswith("ERROR:"):
-                                    print(msg, file=sys.stderr, flush=True)
-                                    has_error = True
-                                else:
-                                    print(msg, flush=True)
-                        elif raw is None:
-                            break
-                        else:
-                            print(f"[unexpected: {raw!r}]", flush=True)
-                except Exception as e:
-                    print(f"Connection error: {e}", file=sys.stderr, flush=True)
-                    has_error = True
-                    raise
+                has_error = await stream_app_messages(c)
 
                 if has_error:
                     print("Failed.", file=sys.stderr)

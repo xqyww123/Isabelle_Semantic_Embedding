@@ -48,6 +48,43 @@ signature SEMANTIC_STORE = sig
      completes (write-back discipline 3). *)
   val dry_run : bool -> Context.generic list -> string list * int
 
+  (* The enumerate half of the pipeline (CHECK_OUTDATE_PLAN.md §8's two-piece
+     split), shared verbatim by the live path, the dry run and the backfill.
+     `entries` is the wire entry: kind, name, proposition, ENTITY POSITION,
+     universal key, prompt hint, locale provenance, constituents, semantic digest,
+     dependency edges.  `tie_break_degraded` says the source-order offsets behind
+     the theorem dedup are not real, so the surviving occurrence -- and hence its
+     position -- may be the wrong one (§8.6).  Exposed for tests. *)
+  val enumerate_entries : Context.generic ->
+    {file_path: string, theory_longname: string,
+     theory_key: Universal_Key.universal_key,
+     entries: (Universal_Key.entity * string * string
+               * Entity_Position.entity_position option * Word8Vector.vector * string
+               * (Word8Vector.vector option * Word8Vector.vector option * string) option
+               * Universal_Key.constituent list
+               * Word8Vector.vector option * Word8Vector.vector list) list,
+     position_report: Entity_Position.report,
+     tie_break_degraded: bool}
+
+  (* The position backfill (ENTITY_POSITION_PLAN.md §8): give the records already
+     collected from the AFP their entity positions, with no LLM involved.  Route A
+     -- the universal keys are RECOMPUTED by re-running the enumeration above,
+     which is what makes the backfill agree with collection on which occurrence of
+     a duplicated proposition wins.  Resumable per theory via the `positions_done`
+     flag on the theory-status record. *)
+  val positions_done : theory -> bool
+  type backfill_report =
+    {theories: int,        (* theories whose positions were written *)
+     skipped: int,         (* already done, or not persistent *)
+     refused: int,         (* refused: the source-order tie-break was degraded (§8.6) *)
+     enumerated: int, hit: int, missing: int,
+     no_position: int, unreadable: int, line_mismatch: int}
+  (* Raises when either stop condition fires: a refused theory, or a position whose
+     derived line disagrees with Isabelle's (§8.5).  Refused theories write nothing
+     and are not marked, so a later run retries them. *)
+  val backfill_cone : theory list -> backfill_report
+  val string_of_backfill_report : backfill_report -> string
+
   (* Whole-DB vector completion: embed every interpreted record that has no vector in
      the store of the connection's configured embedding model (config option >
      Isabelle env > host env > default; _resolve_embedding_config in semantics.py).
@@ -135,9 +172,10 @@ signature SEMANTIC_STORE = sig
 
   val build_entries : Context.generic ->
     (Universal_Key.entity * string * Position.T * Universal_Key.universal_key * int option) list ->
-    (Universal_Key.entity * string * string * int * Universal_Key.universal_key * string
+    (Universal_Key.entity * string * string * Entity_Position.entity_position option
+     * Universal_Key.universal_key * string
      * (Universal_Key.universal_key option * Universal_Key.universal_key option * string) option
-     * Universal_Key.constituent list) list
+     * Universal_Key.constituent list) list * Entity_Position.report
 
   (* Context callbacks with infra filters and theorem cache baked in.
      Computes infra filters once and returns all entity callbacks. *)
@@ -301,6 +339,20 @@ fun mark_interpreted (thy : theory) : unit =
   mark_interpreted' (Universal_Key.key_of_theory' thy,
                      Theory_Hash.process_id (), Context.theory_identifier thy)
 
+(* No (process id, theory serial) pair, unlike is_interpreted: the backfill only
+   ever runs over batch-loaded, heap-resident theories, whose status records take
+   the persistent branch.  backfill_cone skips a WIP theory outright rather than
+   inventing a WIP variant of this flag (ENTITY_POSITION_PLAN.md §15.6(c)). *)
+fun positions_done' (key : Universal_Key.universal_key) : bool =
+  Remote_Procedure_Calling.call_command
+    {name = "Semantic_Store.positions_done",
+     arg_schema = packBytes, ret_schema = unpackBool,
+     callback = [], timeout = NONE}
+    key
+
+fun positions_done (thy : theory) : bool =
+  positions_done' (Universal_Key.key_of_theory' thy)
+
 fun clean_wip () : int =
   Remote_Procedure_Calling.call_command
     {name = "Semantic_Store.clean_wip",
@@ -332,7 +384,13 @@ local
           (CHECK_OUTDATE_PLAN.md §3.2, step 9): the entity's semantic digest
           (NONE for theorem-alike entities and for persistent theories) and its
           dependency edges as the targets' CURRENT universal keys ([] likewise). *)
-       packList (packTuple10 (pack_entry_kind, packString, packString, packInt, packBytes, packString,
+       (* Field 4 is the entity position (portable symbolic file path, line, byte
+          column), NONE when there is none -- ENTITY_POSITION_PLAN.md §6.  It used
+          to be the bare line, and the wire is not backward compatible: an ML build
+          and a Python package on opposite sides of this change cannot talk. *)
+       packList (packTuple10 (pack_entry_kind, packString, packString,
+                              packOption (packTuple3 (packString, packInt, packInt)),
+                              packBytes, packString,
                               packOption (packTuple3 (packOption packBytes, packOption packBytes, packString)),
                               packList (packPair (packString, packBytes)),
                               packOption packBytes, packList packBytes)))
@@ -355,7 +413,8 @@ val check_theorem_name_in_file_cmd :
 fun make_interpret_file_cmd callbacks :
     ({file_path: string, theory_longname: string, theory_key: Universal_Key.universal_key,
       driver: string,
-      entries: (Universal_Key.entity * string * string * int * Word8Vector.vector * string
+      entries: (Universal_Key.entity * string * string
+                * Entity_Position.entity_position option * Word8Vector.vector * string
                 * (Word8Vector.vector option * Word8Vector.vector option * string) option
                 * Universal_Key.constituent list
                 * Word8Vector.vector option * Word8Vector.vector list) list},
@@ -379,7 +438,8 @@ fun make_interpret_file_cmd callbacks :
 val interpret_file_dry_run_cmd :
     ({file_path: string, theory_longname: string, theory_key: Universal_Key.universal_key,
       driver: string,
-      entries: (Universal_Key.entity * string * string * int * Word8Vector.vector * string
+      entries: (Universal_Key.entity * string * string
+                * Entity_Position.entity_position option * Word8Vector.vector * string
                 * (Word8Vector.vector option * Word8Vector.vector option * string) option
                 * Universal_Key.constituent list
                 * Word8Vector.vector option * Word8Vector.vector list) list},
@@ -387,6 +447,31 @@ val interpret_file_dry_run_cmd :
   name = "Semantic_Store.interpret_file_dry_run",
   arg_schema = pack_arg,
   ret_schema = unpackInt,
+  callback = [],
+  timeout = NONE
+}
+
+(* The position backfill (ENTITY_POSITION_PLAN.md §8.3).  Python writes each uk's
+   position onto the record it already has, and sets `positions_done` on the theory
+   status, in ONE write transaction -- so the flag can never commit without the
+   positions it claims.  Returns (hit, missing): records updated, and enumerated
+   keys with no record (legitimate -- never interpreted).
+
+   The theory long name rides along purely so a Python-side failure can say which
+   theory it was working on; the ML-side counters stay here, where the per-theory
+   report is assembled. *)
+val backfill_positions_cmd :
+    ({theory_key: Universal_Key.universal_key, theory_longname: string,
+      entries: (Universal_Key.universal_key * Entity_Position.entity_position option) list},
+     int * int) Remote_Procedure_Calling.command = {
+  name = "Semantic_Store.backfill_positions",
+  arg_schema =
+    (fn {theory_key, theory_longname, entries} =>
+      packTuple3 (packBytes, packString,
+                  packList (packPair (packBytes,
+                    packOption (packTuple3 (packString, packInt, packInt)))))
+        (theory_key, theory_longname, entries)),
+  ret_schema = unpackPair (unpackInt, unpackInt),
   callback = [],
   timeout = NONE
 }
@@ -531,9 +616,10 @@ val contains_cmd
    the live interpret' path. *)
 fun build_entries (context : Context.generic)
     (raw : (Universal_Key.entity * string * Position.T * Universal_Key.universal_key * int option) list)
-    : (Universal_Key.entity * string * string * int * Universal_Key.universal_key * string
+    : (Universal_Key.entity * string * string * Entity_Position.entity_position option
+       * Universal_Key.universal_key * string
        * (Universal_Key.universal_key option * Universal_Key.universal_key option * string) option
-       * Universal_Key.constituent list) list =
+       * Universal_Key.constituent list) list * Entity_Position.report =
   let
     val thy = Context.theory_of context
     val ctxt = Context.cases Proof_Context.init_global I context
@@ -757,9 +843,12 @@ fun build_entries (context : Context.generic)
       | Universal_Key.Named_Induction_Rule _ => registry_constituents uk name
       | Universal_Key.Named_Case_Split_Rule _ => registry_constituents uk name
       | _ => []
+    (* The entity positions of the whole batch in one go: one absolutize round
+       trip, one walk per source file (ENTITY_POSITION_PLAN.md §5.1). *)
+    val (entity_positions, position_report) = Entity_Position.of_positions (map #3 raw)
   in
-    (raw ~~ (provss ~~ prim_provenance)) |> map
-      (fn ((entity, name, pos, uk, midx), (provs, prov)) =>
+    ((raw ~~ (provss ~~ prim_provenance)) ~~ entity_positions |> map
+      (fn (((entity, name, pos, uk, midx), (provs, prov)), entity_pos) =>
         let
           val hint =
             if is_thm_entity entity andalso not (null provs)
@@ -773,13 +862,15 @@ fun build_entries (context : Context.generic)
             | NONE => name
         in
           (entity, disp_name, mk_prop_str (entity, pos),
-           (* ~1 = no source line.  Python's Entry docstring and its prompt
-              guard (line_number > 0) both speak -1; the old 999999999 slipped
-              past that guard and printed "[line 999999999]" into the agent
-              prompt (CHECK_OUTDATE_PLAN §5's ride-along display fix). *)
-           the_default ~1 (Position.line_of pos), uk, hint, prov,
+           (* NONE = no entity position (ENTITY_POSITION_PLAN.md §10).  Python's
+              Entry derives its line_number from this, and still speaks -1 for
+              "no source line" -- its prompt guard (line_number > 0) and the old
+              999999999 that slipped past it are CHECK_OUTDATE_PLAN §5's
+              ride-along display fix. *)
+           entity_pos, uk, hint, prov,
            mk_constituents (entity, uk, name))
-        end)
+        end),
+     position_report)
   end
 
 (* kind_is_elim also covers dest kinds, matching the old claset nets which
@@ -1233,13 +1324,23 @@ fun enumerate_entries (context : Context.generic) =
       then String.extract (name, size thy_prefix, NONE)
       else name
     val file_match_names = map (strip_thy_prefix o #1) raw_thm_entries_named
-    val name_check_results = Context.cases
-      (fn _ => Remote_Procedure_Calling.call_command
-          check_theorem_name_in_file_cmd (thy_file_path, file_match_names)
+    (* The flag says "these offsets are not the real ones", and the dedup below
+       therefore picks the occurrence in Facts.dest_static order rather than in
+       source order.  On the live path that only perturbs a tie-break, which is
+       why it degrades rather than fails; the position backfill refuses such a
+       theory outright, because its universal keys -- being content-addressed --
+       still match perfectly while its positions are systematically the wrong
+       occurrence (ENTITY_POSITION_PLAN.md §8.6).  It is a flag on the result and
+       not a ref because these bodies run as parallel Futures under schedule_dag.
+       A theory with no theorem names has no tie-break to get wrong. *)
+    val degraded_results = (map (K (0, ~1)) file_match_names, not (null file_match_names))
+    val (name_check_results, tie_break_degraded) = Context.cases
+      (fn _ => (Remote_Procedure_Calling.call_command
+          check_theorem_name_in_file_cmd (thy_file_path, file_match_names), false)
         handle Remote_Procedure_Calling.Remote_Calling_Failure {message, ...} =>
           (warning ("check_theorem_name_in_file RPC failed: " ^ message);
-           map (K (0, ~1)) file_match_names))
-      (fn _ => map (K (0, ~1)) file_match_names)
+           degraded_results))
+      (fn _ => degraded_results)
       context
     val raw_thm_entries_with_offsets =
           (raw_thm_entries_named ~~ name_check_results)
@@ -1438,7 +1539,15 @@ fun enumerate_entries (context : Context.generic) =
               end)
       end
     (* coll(i) is rendered inside build_entries (from member_idx); no post-pass. *)
-    val entries = build_entries context all_entries_with_pos
+    val (entries, position_report) = build_entries context all_entries_with_pos
+    (* The line assertion (ENTITY_POSITION_PLAN.md §5.2) is a self-check on the
+       byte-column walk, not a drift detector: it must be zero.  Say so here too,
+       not only on the backfill path, so a bug shows up on the collection path. *)
+    val _ =
+      if #line_mismatch position_report = 0 then ()
+      else warning ("Entity_Position: " ^ string_of_int (#line_mismatch position_report) ^
+                    " of " ^ string_of_int (length all_entries_with_pos) ^
+                    " positions in " ^ thy_name ^ " disagree with Isabelle's own line")
     (* Enforce (entity-kind, name) uniqueness over the FINAL entries (with each
        member's coll(i) already rendered by build_entries), before they reach the
        agent.  The Python interpreter
@@ -1492,8 +1601,8 @@ fun enumerate_entries (context : Context.generic) =
     val wip = not (Theory_Hash.is_persistent (Theory_Hash.hash_of thy))
     val entries' =
       if not wip then
-        map (fn (k, nm, prop, line, uk, hint, prov, consts) =>
-               (k, nm, prop, line, uk, hint, prov, consts, NONE, [])) entries
+        map (fn (k, nm, prop, epos, uk, hint, prov, consts) =>
+               (k, nm, prop, epos, uk, hint, prov, consts, NONE, [])) entries
       else
         let
           val env = Semantic_Digest.make_env thy
@@ -1509,17 +1618,18 @@ fun enumerate_entries (context : Context.generic) =
             case dep_target d of
               NONE => NONE
             | SOME e => try (Universal_Key.key_of NONE context) e
-          fun attach (ent, nm, prop, line, uk, hint, prov, consts) =
+          fun attach (ent, nm, prop, epos, uk, hint, prov, consts) =
             case Semantic_Digest.semantics_of env ent of
-              NONE => (ent, nm, prop, line, uk, hint, prov, consts, NONE, [])
+              NONE => (ent, nm, prop, epos, uk, hint, prov, consts, NONE, [])
             | SOME (dopt, deps) =>
-                (ent, nm, prop, line, uk, hint, prov, consts,
+                (ent, nm, prop, epos, uk, hint, prov, consts,
                  Option.map (Word8Array.vector o Term_Digest.digest128_to_array) dopt,
                  map_filter dep_uk deps)
         in map attach entries end
   in
     {file_path = thy_file_path, theory_longname = thy_name,
-     theory_key = Universal_Key.key_of_theory' thy, entries = entries'}
+     theory_key = Universal_Key.key_of_theory' thy, entries = entries',
+     position_report = position_report, tie_break_degraded = tie_break_degraded}
   end
 
 (* The send half of interpret': build the tool callbacks and hand the enumerated
@@ -1529,7 +1639,8 @@ fun enumerate_entries (context : Context.generic) =
    here -- this context is rebuilt from the cone node's own theory and would read the
    default. *)
 fun send_for_interpretation (driver : string) (context : Context.generic)
-      {file_path, theory_longname, theory_key, entries} : usage * usage =
+      {file_path, theory_longname, theory_key, entries, position_report = _,
+       tie_break_degraded = _} : usage * usage =
   let
     (* 7. Build callbacks capturing context *)
     val su = Context_Callbacks.static_context_unpacker context
@@ -1580,7 +1691,8 @@ fun interpret' (driver : string) (context : Context.generic) : usage * usage =
    run, then the interpret_file_dry_run RPC -- Python applies the live run's cache
    filter and returns how many entities the LLM would be asked about, doing nothing
    else.  No driver is involved: nothing runs. *)
-fun dry_run_payload {file_path, theory_longname, theory_key, entries} : int =
+fun dry_run_payload {file_path, theory_longname, theory_key, entries,
+                     position_report = _, tie_break_degraded = _} : int =
   if null entries then 0
   else
     Remote_Procedure_Calling.call_command interpret_file_dry_run_cmd
@@ -1721,6 +1833,104 @@ fun interpret_cone (driver : string) (force : bool) (cone : theory list) : usage
       (schedule_dag "Semantic_Store.interpret" body cone) (zero_usage, zero_usage)
   end
 
+(* --- the position backfill (ENTITY_POSITION_PLAN.md §8) --- *)
+
+type backfill_report =
+  {theories: int, skipped: int, refused: int,
+   enumerated: int, hit: int, missing: int,
+   no_position: int, unreadable: int, line_mismatch: int}
+
+val no_backfill : backfill_report =
+  {theories = 0, skipped = 0, refused = 0, enumerated = 0, hit = 0, missing = 0,
+   no_position = 0, unreadable = 0, line_mismatch = 0}
+
+fun add_backfill (a : backfill_report, b : backfill_report) : backfill_report =
+  {theories = #theories a + #theories b, skipped = #skipped a + #skipped b,
+   refused = #refused a + #refused b, enumerated = #enumerated a + #enumerated b,
+   hit = #hit a + #hit b, missing = #missing a + #missing b,
+   no_position = #no_position a + #no_position b,
+   unreadable = #unreadable a + #unreadable b,
+   line_mismatch = #line_mismatch a + #line_mismatch b}
+
+fun string_of_backfill_report (r : backfill_report) =
+  String.concatWith ", "
+    [string_of_int (#theories r) ^ " theories written",
+     string_of_int (#skipped r) ^ " skipped",
+     string_of_int (#refused r) ^ " refused",
+     "enumerated " ^ string_of_int (#enumerated r),
+     "hit " ^ string_of_int (#hit r),
+     "missing " ^ string_of_int (#missing r),
+     "no-position " ^ string_of_int (#no_position r),
+     "unreadable " ^ string_of_int (#unreadable r),
+     "line-mismatch " ^ string_of_int (#line_mismatch r)]
+
+(* One theory.  Refusal (§8.6) and a line mismatch (§5.2) both mean: write nothing,
+   do not set positions_done, count it -- and backfill_cone raises at the end, so
+   the operator sees the full extent rather than only the first occurrence.  A
+   later run retries exactly the theories that were refused. *)
+fun backfill_theory (thy : theory) : backfill_report =
+  let
+    val skipped =
+      {theories = 0, skipped = 1, refused = 0, enumerated = 0, hit = 0, missing = 0,
+       no_position = 0, unreadable = 0, line_mismatch = 0} : backfill_report
+  in
+    if not (Theory_Hash.is_persistent (Theory_Hash.hash_of thy)) then
+      (warning ("backfill_positions: skipping the non-persistent theory " ^
+                Context.theory_long_name thy);
+       skipped)
+    else if positions_done thy then skipped
+    else
+      let
+        val {file_path = _, theory_longname, theory_key, entries, position_report,
+             tie_break_degraded} = enumerate_entries (Context.Theory thy)
+        val {no_file, unreadable, line_mismatch} = position_report
+        fun report (theories, refused, hit, missing) : backfill_report =
+          {theories = theories, skipped = 0, refused = refused,
+           enumerated = length entries, hit = hit, missing = missing,
+           no_position = no_file, unreadable = unreadable, line_mismatch = line_mismatch}
+      in
+        if tie_break_degraded then
+          (warning ("backfill_positions: refusing " ^ theory_longname ^
+                    " -- check_theorem_name_in_file degraded, so the source-order " ^
+                    "tie-break picked the wrong occurrence (ENTITY_POSITION_PLAN.md §8.6)");
+           report (0, 1, 0, 0))
+        else if line_mismatch > 0 then
+          (warning ("backfill_positions: refusing " ^ theory_longname ^ " -- " ^
+                    string_of_int line_mismatch ^ " positions disagree with Isabelle's " ^
+                    "own line, which is a bug in Entity_Position, not in the sources");
+           report (0, 0, 0, 0))
+        else
+          let
+            val (hit, missing) =
+              Remote_Procedure_Calling.call_command backfill_positions_cmd
+                {theory_key = theory_key, theory_longname = theory_longname,
+                 entries = map (fn (_, _, _, epos, uk, _, _, _, _, _) => (uk, epos)) entries}
+            val _ = writeln (String.concat
+              ["[Semantic_Embedding] ", theory_longname,
+               ": enumerated ", string_of_int (length entries),
+               ", hit ", string_of_int hit, ", missing ", string_of_int missing,
+               ", no-position ", string_of_int no_file,
+               ", unreadable ", string_of_int unreadable,
+               ", line-mismatch ", string_of_int line_mismatch])
+          in report (1, 0, hit, missing) end
+      end
+  end
+
+fun backfill_cone (roots : theory list) : backfill_report =
+  let
+    val total =
+      fold (fn r => fn acc => add_backfill (acc, r))
+        (schedule_dag "Semantic_Store.backfill_positions" (fn thy => fn () => backfill_theory thy)
+           (collect_cone roots))
+        no_backfill
+    val _ =
+      if #refused total = 0 andalso #line_mismatch total = 0 then ()
+      else error ("backfill_positions stopped: " ^ string_of_int (#refused total) ^
+                  " theories refused, " ^ string_of_int (#line_mismatch total) ^
+                  " line mismatches (ENTITY_POSITION_PLAN.md §8.5) -- " ^
+                  string_of_backfill_report total)
+  in total end
+
 (* Level 1 of the dry run, and the very filter interpret_with_parallel applies: the
    theories in the ancestor cone of `roots` that still need interpretation.  Private
    since the dry run became the system's one workload metering (CHECK_OUTDATE_PLAN.md
@@ -1771,12 +1981,14 @@ fun dry_run (force : bool) (roots : Context.generic list) : string list * int =
        untouched -- exactly the entities the live proof channel would pay for. *)
     val pcounts = proofs |> map (fn ctxt =>
       let
-        val {file_path, theory_longname, theory_key, entries} =
-          enumerate_entries ctxt
+        val {file_path, theory_longname, theory_key, entries, position_report,
+             tie_break_degraded} = enumerate_entries ctxt
         val entries' =
           filter_out (fn e => Bytehashtab.defined counted (#5 e)) entries
       in
         dry_run_payload {file_path = file_path, theory_longname = theory_longname,
+                         position_report = position_report,
+                         tie_break_degraded = tie_break_degraded,
                          theory_key = theory_key, entries = entries'}
       end)
   in

@@ -257,6 +257,23 @@ class _Semantic_DB:
         # eff(E) snapshot taken BEFORE the interpreting agent started, stored
         # when its answer lands (write-back discipline 4).
         interpreted_at: 'int | None' = None
+        # Where this entity is declared in Isabelle source, as
+        # (portable symbolic file path, line, byte column) -- ENTITY_POSITION_PLAN.md §1.
+        #
+        # NB TWO COLUMN CONVENTIONS COEXIST IN THIS PACKAGE.  This column counts
+        # UTF-8 BYTES from the start of the line.  hover.py renders entity locations
+        # through IsabellePosition.to_ascii_position(), whose column counts SOURCE
+        # CHARACTERS -- a different number on any line containing literal non-ASCII
+        # bytes (1,501 of 10,297 AFP and 665 of 2,266 Isabelle .thy files contain
+        # some).  Never feed this column to a position.py API without converting.
+        #
+        # ADVISORY, not authoritative (ENTITY_POSITION_PLAN.md §11.1): recorded on
+        # the publisher's AFP snapshot; a consumer's sources may differ, and a
+        # content-preserving edit moves the line without changing the key.
+        #
+        # None when the entity has no source position (§10), and on every record
+        # written before this field existed.
+        position: 'tuple[str, int, int] | None' = None
 
         @property
         def pretty_print(self) -> str:
@@ -327,15 +344,17 @@ class _Semantic_DB:
 
     @staticmethod
     def _decode(raw: bytes) -> 'Record':
-        """Decode a stored record.  Records with fewer than 12 fields read with the
+        """Decode a stored record.  Records with fewer than 13 fields read with the
         missing trailing fields (locale_provenance, theory_constituents, experience,
-        goal_patterns, semantic_digest, deps, version, interpreted_at) = None.
+        goal_patterns, semantic_digest, deps, version, interpreted_at, position) = None.
 
         The codec is positional tail-append (8 -> 12 with the incremental
-        invalidation fields, CHECK_OUTDATE_PLAN.md §3.1).  NB code from before
-        the 12-field codec truncates at [:8] and would DROP the four new fields
-        on its next write of the record -- do not run a pre-§3.1 build against
-        a store that has them.
+        invalidation fields, CHECK_OUTDATE_PLAN.md §3.1; 12 -> 13 with the entity
+        position, ENTITY_POSITION_PLAN.md §4).  NB code from before the 12-field
+        codec truncates at [:8] and would DROP the four incremental fields on its
+        next write of the record, and code from before the 13-field codec drops
+        `position` the same way -- do not run a pre-§3.1 or pre-position build
+        against a store that has them.
 
         LEGACY (experiences written before goal_patterns became a real field): their
         patterns are a JSON list packed into ``expr``.  Unpack them HERE, at the storage
@@ -343,9 +362,9 @@ class _Semantic_DB:
         in the codec, not in every reader.  Once every store is migrated
         (migrate_experience_patterns.py) this branch is dead and can be deleted."""
         vals = list(msgpack.unpackb(raw))
-        vals += [None] * (12 - len(vals))
+        vals += [None] * (13 - len(vals))
         (kind, name, expr, sem, prov_raw, consts_raw, experience, pats_raw,
-         digest_raw, deps_raw, version, interpreted_at) = vals[:12]
+         digest_raw, deps_raw, version, interpreted_at, position_raw) = vals[:13]
         d = _Semantic_DB._dec
         pats = [d(p) for p in pats_raw] if pats_raw is not None else None
         if pats is None and kind == int(EntityKind.EXPERIENCE) and expr is not None:
@@ -375,12 +394,17 @@ class _Semantic_DB:
         consts = None
         if consts_raw is not None:
             consts = [(d(n), bytes(h)) for n, h in consts_raw]
+        position = None
+        if position_raw is not None:
+            # msgpack hands back a list; the field is a tuple everywhere else.
+            pfile, pline, pcol = position_raw
+            position = (d(pfile), pline, pcol)
         return _Semantic_DB.Record(EntityKind(kind), d(name), d(expr), d(sem), prov,
                                    consts, d(experience) if experience is not None else None,
                                    pats,
                                    bytes(digest_raw) if digest_raw is not None else None,
                                    [bytes(u) for u in deps_raw] if deps_raw is not None else None,
-                                   version, interpreted_at)
+                                   version, interpreted_at, position)
 
     @staticmethod
     def _encode(record: 'Record') -> bytes:
@@ -401,7 +425,8 @@ class _Semantic_DB:
                               record.semantic_digest,
                               record.deps,
                               record.version,
-                              record.interpreted_at))  # type: ignore[return-value]
+                              record.interpreted_at,
+                              record.position))  # type: ignore[return-value]
 
     # --- the global version counter (CHECK_OUTDATE_PLAN.md §3.3) ---
     # One single-byte key, NOT a Record.  Length keeps it apart from everything
@@ -666,6 +691,29 @@ class _Semantic_DB:
             return entity_document_text(rec)
         return rec.interpretation
 
+    def _raw_for_update(self, txn: Any, key: universal_key) -> 'bytes | None':
+        """The layered point read (plan §3.1) done INSIDE a write transaction:
+        user layer first -- where a TOMBSTONE reports absent without falling
+        through -- then the system layer.  ``_get_raw`` cannot be used here: it
+        opens a read transaction of its own, and these reads must see (and share)
+        the write transaction they belong to."""
+        raw = txn.get(key)
+        if raw is not None:
+            return None if is_tombstone(raw) else bytes(raw)
+        return self._system_get(key)
+
+    def _status_for_update(self, txn: Any, key: universal_key) -> dict:
+        """A theory-status record ready for read-modify-write inside ``txn``:
+        copy-up-then-modify, so a system-resident status is continued (its
+        cost/token/model fields carry forward) rather than restarted from the
+        zeroed template."""
+        raw = self._raw_for_update(txn, key)
+        return unpack_thy_status(raw) if raw else {
+            b"input_tokens": 0, b"cache_creation_tokens": 0,
+            b"cache_read_tokens": 0, b"output_tokens": 0,
+            b"cost_usd": 0.0, b"model": "",
+        }
+
     def is_thy_interpreted(self, key: universal_key,
                            process_id: 'str | None' = None,
                            serial: 'int | None' = None) -> bool:
@@ -714,16 +762,7 @@ class _Semantic_DB:
         if wip and (process_id is None or serial is None):
             return
         with self._ensure_env().begin(write=True) as txn:
-            raw = txn.get(key)
-            if raw is not None and is_tombstone(raw):
-                raw = None                       # tombstoned: start fresh
-            elif raw is None:
-                raw = self._system_get(key)      # copy-up: continue system status
-            data = unpack_thy_status(raw) if raw else {
-                b"input_tokens": 0, b"cache_creation_tokens": 0,
-                b"cache_read_tokens": 0, b"output_tokens": 0,
-                b"cost_usd": 0.0, b"model": "",
-            }
+            data = self._status_for_update(txn, key)
             if wip:
                 data.pop(b"finished", None)
                 data[b"process_id"] = process_id
@@ -731,6 +770,58 @@ class _Semantic_DB:
             else:
                 data[b"finished"] = True
             txn.put(key, msgpack.packb(data))  # type: ignore
+
+    def positions_done(self, key: universal_key) -> bool:
+        """Whether a theory's entity positions have already been backfilled
+        (ENTITY_POSITION_PLAN.md §8.4).  Layered read, like is_thy_interpreted: a
+        flag set in the system layer counts, a tombstoned status reads as not done.
+
+        No (process id, serial) pair: the backfill only runs over batch-loaded,
+        heap-resident theories, whose keys are persistent (§15.6(c))."""
+        raw = self._get_raw(key)
+        if not raw:
+            return False
+        return unpack_thy_status(raw).get(b"positions_done", False)
+
+    def backfill_positions(
+            self, key: universal_key,
+            entries: 'list[tuple[universal_key, tuple[str, int, int] | None]]',
+    ) -> tuple[int, int]:
+        """Write each entity position onto the record that already holds that key,
+        and mark the theory done -- in ONE write transaction, so `positions_done`
+        can never commit without the positions it claims (§8.3).
+
+        Returns (hit, missing): records found and updated, and enumerated keys with
+        no record.  A miss is legitimate -- that entity was simply never interpreted.
+
+        Explicitly untouched: interpretation, semantic_digest, deps, version,
+        interpreted_at, the global counter, and every vector store.
+
+        L6 -- WHY THIS DOES NOT GO THROUGH ``Semantic_DB[key] = rec``.  __setitem__
+        opens with an unconditional invalidate_vectors([key]), which tombstones the
+        key in every vector store.  Routing the ~1.35M backfilled records through it
+        would tombstone every vector accumulated so far, and nothing refills them
+        incrementally (contains reads a tombstone as absent, and
+        embed_all_entities_in_theories skips a theory already marked embedded), so
+        recovery would mean re-running the whole embedding pass.  It would also be
+        gratuitous: `position` does not feed document_text_of, so the text handed to
+        the embedding model does not change and no vector goes stale.  This is the
+        one exception to the vector-layer self-sufficiency invariant, approved
+        explicitly for this migration (ENTITY_POSITION_PLAN.md L6)."""
+        hit = missing = 0
+        with self._ensure_env().begin(write=True) as txn:
+            for uk, position in entries:
+                raw = self._raw_for_update(txn, uk)
+                if raw is None:
+                    missing += 1
+                    continue
+                rec = self._decode(raw)
+                txn.put(uk, self._encode(rec._replace(position=position)))
+                hit += 1
+            data = self._status_for_update(txn, key)
+            data[b"positions_done"] = True
+            txn.put(key, msgpack.packb(data))  # type: ignore
+        return hit, missing
 
     def clean_wip(self) -> int:
         """Remove all entries with non-persistent theory hashes."""
@@ -2479,6 +2570,25 @@ async def _is_interpreted(arg: Any, connection: Connection) -> bool:
 async def _mark_interpreted(arg: Any, connection: Connection) -> None:
     key, process_id, serial = bytes(arg[0]), arg[1], arg[2]
     Semantic_DB.mark_interpreted(key, process_id, serial)
+
+
+@isabelle_remote_procedure("Semantic_Store.positions_done")
+async def _positions_done(arg: Any, connection: Connection) -> bool:
+    return Semantic_DB.positions_done(bytes(arg))
+
+
+@isabelle_remote_procedure("Semantic_Store.backfill_positions")
+async def _backfill_positions(arg: Any, connection: Connection) -> tuple[int, int]:
+    """ENTITY_POSITION_PLAN.md §8.3.  The theory name rides along only so a failure
+    here can say which theory it was working on; ML owns the per-theory report."""
+    theory_key, theory_longname, entries = arg
+    try:
+        return Semantic_DB.backfill_positions(
+            bytes(theory_key),
+            [(bytes(uk), tuple(pos) if pos is not None else None)
+             for uk, pos in entries])
+    except Exception as e:
+        raise RuntimeError(f"backfill_positions failed for {theory_longname}: {e}") from e
 
 
 @isabelle_remote_procedure("Semantic_Store.clean_wip")

@@ -63,7 +63,8 @@ class _RecordingTask(InterpretationTask):
 
 def _entries(n: int) -> list[Entry]:
     return [Entry(kind=_KIND_CONSTANT, name=f"T.c{i}", prop_str="nat ⇒ nat",
-                  line_number=i + 1, universal_key=bytes([i]) + b"\x00" * 31)
+                  position=("$AFP/T/T.thy", i + 1, 1),
+                  universal_key=bytes([i]) + b"\x00" * 31)
             for i in range(n)]
 
 

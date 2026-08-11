@@ -224,7 +224,10 @@ class Entry(NamedTuple):
     kind: int            # _KIND_CONSTANT, _KIND_THEOREM, etc.
     name: str            # fully qualified name (Unicode)
     prop_str: str        # printed proposition / type signature (Unicode); stored as expr
-    line_number: int     # source line (-1 if unavailable)
+    # where the entity is declared, as (portable symbolic file path, line, byte
+    # column); None when it has none (ENTITY_POSITION_PLAN.md §10).  Stored in the
+    # semantic DB record; `line_number` below reads its line.
+    position: "tuple[str, int, int] | None"
     universal_key: universal_key
     prompt_extra: str = ""  # extra context shown to the agent only, NOT stored as expr
                             # (e.g. current members of a named_theorems collection,
@@ -245,6 +248,14 @@ class Entry(NamedTuple):
     # scan time on the ML side; empty for entries of persistent theories.
     # An entry is increment-tracked iff it carries a digest or any edges.
     deps: "list[bytes] | None" = None
+
+    @property
+    def line_number(self) -> int:
+        """Source line, -1 if unavailable -- the form the agent prompt speaks
+        (format_entries guards on line_number > 0).  A property, not a field: the
+        line now travels inside `position`, and a NamedTuple may carry properties
+        as long as the name is not also a field."""
+        return self.position[1] if self.position is not None else -1
 
 
 class CostSummary(NamedTuple):
@@ -363,7 +374,8 @@ class InterpretationTask:
             entry.locale_provenance, entry.theory_constituents,
             semantic_digest=entry.semantic_digest if tracked else None,
             deps=(entry.deps or []) if tracked else None,
-            version=version, interpreted_at=interpreted_at)
+            version=version, interpreted_at=interpreted_at,
+            position=entry.position)
 
     def historical_cost(self) -> tuple[int, int, int, int, float]:
         """Read cumulative cost from LMDB (without modifying it).  A layered
@@ -848,7 +860,7 @@ async def interpret_file(
         theory_longname: Fully qualified theory name (e.g. "HOL.List").
         theory_key: Universal key for the theory (used for cost tracking).
         entries: Entities to interpret, each with kind, name, prop_str,
-            line_number, and universal_key.
+            position, and universal_key.
         driver: The Isabelle side's `"<Driver>[.<model>]"` choice, "" if it made
             none; `_resolve_driver` decides what actually runs.
         dry_run: Mode 4 (CHECK_OUTDATE_PLAN.md §8): stop right after the cache
@@ -1236,7 +1248,10 @@ def _entries_of_wire(raw_entries: Any) -> list[Entry]:
             kind=kind,
             name=pretty_unicode(name),
             prop_str=pretty_unicode(prop),
-            line_number=lineno,
+            # The file is a filesystem path, NOT Isabelle source text: it does
+            # not go through pretty_unicode, which would rewrite a literal
+            # \<...> inside a path into a Unicode character.
+            position=(tuple(position) if position is not None else None),
             universal_key=bytes(uk),
             prompt_extra=pretty_unicode(hint),
             locale_provenance=(Provenance(
@@ -1250,7 +1265,7 @@ def _entries_of_wire(raw_entries: Any) -> list[Entry]:
             semantic_digest=bytes(digest) if digest is not None else None,
             deps=[bytes(u) for u in deps],
         )
-        for kind, name, prop, lineno, uk, hint, prov, consts, digest, deps
+        for kind, name, prop, position, uk, hint, prov, consts, digest, deps
         in raw_entries
     ]
 
