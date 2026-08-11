@@ -1198,14 +1198,24 @@ def cmd_release(args: argparse.Namespace) -> None:
 # collect
 # ---------------------------------------------------------------------------
 
-async def stream_app_messages(c) -> bool:
+async def stream_app_messages(c, sink=None) -> bool:
     """Print an Isa-REPL app's streamed output until its terminating unit arrives,
     and say whether anything came through as an error.
 
     One reader for every app registered through
     Tools/semantic_interpretation_app.ML's shared framing (`collect`,
     `backfill_positions`, ...): they all stream packString messages, mark failures
-    with an "ERROR:" prefix, and finish with packUnit."""
+    with an "ERROR:" prefix, and finish with packUnit.
+
+    `sink`, if given, receives every decoded message as well.  The position
+    backfill keeps the stream on disk: its per-theory lines are the only way to
+    attribute leftover records to theories afterwards, since a record cannot name
+    the theory that produced it (ENTITY_POSITION_PLAN.md §8.4)."""
+    def _emit(text: str, err: bool = False) -> None:
+        print(text, file=sys.stderr if err else sys.stdout, flush=True)
+        if sink is not None:
+            sink(text)
+
     has_error = False
     try:
         while True:
@@ -1214,7 +1224,7 @@ async def stream_app_messages(c) -> bool:
                 msg, err = raw
                 if err is not None and err != ():
                     err_str = err.decode("utf-8") if isinstance(err, bytes) else str(err)
-                    print(err_str, file=sys.stderr, flush=True)
+                    _emit(err_str, err=True)
                     has_error = True
                     continue
                 if msg is None or msg == ():
@@ -1225,14 +1235,14 @@ async def stream_app_messages(c) -> bool:
                     msg = msg.decode("utf-8", errors="replace")
                 if isinstance(msg, str):
                     if msg.startswith("ERROR:"):
-                        print(msg, file=sys.stderr, flush=True)
+                        _emit(msg, err=True)
                         has_error = True
                     else:
-                        print(msg, flush=True)
+                        _emit(msg)
             elif raw is None:
                 break
             else:
-                print(f"[unexpected: {raw!r}]", flush=True)
+                _emit(f"[unexpected: {raw!r}]")
     except Exception as e:
         print(f"Connection error: {e}", file=sys.stderr, flush=True)
         raise

@@ -81,11 +81,16 @@ fun register_streaming_app name body =
          state)\<close>
     end)
 
-(* The roots every app starts from: read the names, resolve them, register their
-   hashes (universal keys need them) and make the Python handlers available. *)
-fun read_roots read =
+(* Resolve the root theory names: register their hashes (universal keys need them)
+   and make the Python handlers available.
+
+   Deliberately does NOT read the names itself.  Every app drains its whole protocol
+   FIRST and only then does work that can fail, as the original collect app did: an
+   exception raised here -- Thy_Info.get_theory on a bad name, or a wedged RPC host
+   in `load` -- would otherwise leave the client's remaining msgpack values unread in
+   the socket, and the next command on that connection would unpack them as itself. *)
+fun resolve_roots thy_names =
   let
-    val thy_names = read (unpackList unpackString)
     val thys = map Thy_Info.get_theory thy_names
     val _ = List.app Theory_Hash.store_theory_hash thys
     val _ = Remote_Procedure_Calling.load ["Isabelle_Semantic_Embedding"]
@@ -96,8 +101,9 @@ val _ = register_streaming_app "Semantic_Store.collect" (fn cin =>
     fun read unpacker =
       let val (ret, cin') = doUnpack unpacker (!cin)
       in cin := cin'; ret end
-    val thys = read_roots read
+    val thy_names = read (unpackList unpackString)
     val force = read unpackBool
+    val thys = resolve_roots thy_names
     (* Batch collection has no user context of its own, so the first root theory
        serves as the one whose `declare [[Semantic_Embedding.interpretation_driver]]`
        governs the run; with no roots there is nothing to interpret anyway.  In
@@ -114,7 +120,8 @@ val _ = register_streaming_app "Semantic_Store.backfill_positions" (fn cin =>
     fun read unpacker =
       let val (ret, cin') = doUnpack unpacker (!cin)
       in cin := cin'; ret end
-    val thys = read_roots read
+    val thy_names = read (unpackList unpackString)
+    val thys = resolve_roots thy_names
     val total = Semantic_Store.backfill_cone thys
   in
     writeln ("[Semantic_Embedding] backfill_positions: " ^

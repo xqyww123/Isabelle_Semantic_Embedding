@@ -771,31 +771,25 @@ class _Semantic_DB:
                 data[b"finished"] = True
             txn.put(key, msgpack.packb(data))  # type: ignore
 
-    def positions_done(self, key: universal_key) -> bool:
-        """Whether a theory's entity positions have already been backfilled
-        (ENTITY_POSITION_PLAN.md §8.4).  Layered read, like is_thy_interpreted: a
-        flag set in the system layer counts, a tombstoned status reads as not done.
-
-        No (process id, serial) pair: the backfill only runs over batch-loaded,
-        heap-resident theories, whose keys are persistent (§15.6(c))."""
-        raw = self._get_raw(key)
-        if not raw:
-            return False
-        return unpack_thy_status(raw).get(b"positions_done", False)
-
     def backfill_positions(
             self, key: universal_key,
             entries: 'list[tuple[universal_key, tuple[str, int, int] | None]]',
     ) -> tuple[int, int]:
         """Write each entity position onto the record that already holds that key,
-        and mark the theory done -- in ONE write transaction, so `positions_done`
-        can never commit without the positions it claims (§8.3).
+        in ONE write transaction (§8.3).
 
         Returns (hit, missing): records found and updated, and enumerated keys with
         no record.  A miss is legitimate -- that entity was simply never interpreted.
 
+        NO BOOKKEEPING (plan L9).  No theory-status record is written or created, so
+        nothing here can disagree with the data, and an interrupted sweep is resumed
+        by running it again: re-encoding a record whose position is already the value
+        being written produces the same bytes.  `key` is carried only to name the
+        theory in a failure message.
+
         Explicitly untouched: interpretation, semantic_digest, deps, version,
-        interpreted_at, the global counter, and every vector store.
+        interpreted_at, every theory-status record, the global counter, and every
+        vector store.
 
         L6 -- WHY THIS DOES NOT GO THROUGH ``Semantic_DB[key] = rec``.  __setitem__
         opens with an unconditional invalidate_vectors([key]), which tombstones the
@@ -818,9 +812,6 @@ class _Semantic_DB:
                 rec = self._decode(raw)
                 txn.put(uk, self._encode(rec._replace(position=position)))
                 hit += 1
-            data = self._status_for_update(txn, key)
-            data[b"positions_done"] = True
-            txn.put(key, msgpack.packb(data))  # type: ignore
         return hit, missing
 
     def clean_wip(self) -> int:
@@ -2570,11 +2561,6 @@ async def _is_interpreted(arg: Any, connection: Connection) -> bool:
 async def _mark_interpreted(arg: Any, connection: Connection) -> None:
     key, process_id, serial = bytes(arg[0]), arg[1], arg[2]
     Semantic_DB.mark_interpreted(key, process_id, serial)
-
-
-@isabelle_remote_procedure("Semantic_Store.positions_done")
-async def _positions_done(arg: Any, connection: Connection) -> bool:
-    return Semantic_DB.positions_done(bytes(arg))
 
 
 @isabelle_remote_procedure("Semantic_Store.backfill_positions")

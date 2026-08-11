@@ -45,8 +45,8 @@ def _uk(name: str) -> bytes:
 
 
 def test_the_test_key_is_persistent():
-    """Guard: positions_done takes the persistent branch, so a WIP key would make
-    every assertion below test something else."""
+    """Guard: the sweep skips non-persistent theories outright, so a WIP key would
+    make every assertion below test something else."""
     assert is_persistent(THY_KEY)
 
 
@@ -82,7 +82,6 @@ def test_backfill_writes_the_position_and_touches_no_vector(isolated_db):
     before = _dump_vector_stores()
     assert before[vec_path][uk] == b"\x00\x01\x02\x03"
 
-    assert Semantic_DB.positions_done(THY_KEY) is False
     hit, missing = Semantic_DB.backfill_positions(THY_KEY, [(uk, ("$AFP/Foo/Bar.thy", 7, 3))])
     assert (hit, missing) == (1, 0)
 
@@ -95,20 +94,32 @@ def test_backfill_writes_the_position_and_touches_no_vector(isolated_db):
 
     assert Semantic_DB.contains([uk]) == [True]
     assert _dump_vector_stores() == before      # no tombstone, no deletion
-    assert Semantic_DB.positions_done(THY_KEY) is True
 
 
 def test_backfill_is_idempotent():
-    """A resumed sweep re-running a theory must produce the same store."""
+    """T12.  Under L9 this is the ENTIRE resume mechanism -- there is no flag and no
+    skip, so "resuming" an interrupted sweep means running it again.  A second pass
+    must leave the store byte-identical, not merely equivalent."""
     from Isabelle_Semantic_Embedding.semantics import Semantic_DB
 
     uk = _uk("Foo.c")
-    before = _dump_vector_stores()
+    before_vec = _dump_vector_stores()
+    before_rec = Semantic_DB._get_raw(uk)
     hit, missing = Semantic_DB.backfill_positions(THY_KEY, [(uk, ("$AFP/Foo/Bar.thy", 7, 3))])
     assert (hit, missing) == (1, 0)
-    rec = Semantic_DB[uk]
-    assert rec is not None and rec.position == ("$AFP/Foo/Bar.thy", 7, 3)
-    assert _dump_vector_stores() == before
+    assert Semantic_DB._get_raw(uk) == before_rec      # byte-identical
+    assert _dump_vector_stores() == before_vec
+
+
+def test_the_backfill_writes_no_theory_status_record():
+    """L9: the pass keeps no bookkeeping.  A theory-status key that did not exist
+    before must not exist after -- that is what makes the data the only source of
+    truth, and what keeps the published payload free of migration residue."""
+    from Isabelle_Semantic_Embedding.semantics import Semantic_DB
+
+    assert Semantic_DB._get_raw(THY_KEY) is None
+    Semantic_DB.backfill_positions(THY_KEY, [(_uk("Foo.c"), ("$AFP/Foo/Bar.thy", 7, 3))])
+    assert Semantic_DB._get_raw(THY_KEY) is None
 
 
 def test_a_key_with_no_record_is_counted_and_creates_nothing():
@@ -134,3 +145,42 @@ def test_a_position_of_none_is_stored_as_none():
     assert (hit, missing) == (1, 0)
     rec = Semantic_DB[uk]
     assert rec is not None and rec.position is None
+
+
+# --- T13: the completeness scan (ENTITY_POSITION_PLAN.md §8.4) ---
+
+WIP_THY = bytes([0x31]) + b"\x11" * 15          # LSB set: a WIP theory hash
+
+
+def test_the_completeness_scan_counts_the_right_things():
+    """T13.  The scan's two traps, both of which would silently invert its verdict:
+
+    * a 13-field record whose position is None has been REACHED (None is the
+      permanent, correct value for every §10 case) and must not count as outstanding;
+    * WIP-prefixed and EXPERIENCE records can never be reached by any sweep, and must
+      not sit in the denominator.
+    """
+    import msgpack
+    from Isabelle_Semantic_Embedding.semantics import Semantic_DB
+    from migrate_entity_positions import _scan, _scan_line
+
+    def put(key: bytes, n_fields: int, position=None) -> None:
+        vals = [int(EntityKind.CONSTANT), "n", None, "sem"] + [None] * (n_fields - 4)
+        if n_fields >= 13:
+            vals[12] = position
+        with Semantic_DB._ensure_env().begin(write=True) as txn:
+            txn.put(key, msgpack.packb(vals))
+
+    put(_uk("Scan.outstanding"), 12)                              # not reached
+    put(_uk("Scan.legacy"), 8)                                    # not reached, older stratum
+    put(_uk("Scan.done"), 13, ("$AFP/A/B.thy", 1, 1))             # reached, has a position
+    put(_uk("Scan.done_but_none"), 13, None)                      # reached, legitimately None
+    put(WIP_THY + bytes([int(EntityKind.CONSTANT)]) + b"w", 12)    # unreachable: WIP
+    put(THY_KEY + bytes([int(EntityKind.EXPERIENCE)]) + b"x", 8)   # unreachable: experience
+
+    c = _scan()
+    assert c["reachable_short"] == 2          # outstanding + legacy, NOT done_but_none
+    assert c["wip"] == 1
+    assert c["experience"] == 1
+    assert c["with_position"] >= 1
+    assert "short and reachable 2" in _scan_line(c)

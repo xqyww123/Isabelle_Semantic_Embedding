@@ -70,18 +70,19 @@ signature SEMANTIC_STORE = sig
      collected from the AFP their entity positions, with no LLM involved.  Route A
      -- the universal keys are RECOMPUTED by re-running the enumeration above,
      which is what makes the backfill agree with collection on which occurrence of
-     a duplicated proposition wins.  Resumable per theory via the `positions_done`
-     flag on the theory-status record. *)
-  val positions_done : theory -> bool
+     a duplicated proposition wins.  No bookkeeping: an interrupted sweep is
+     resumed by running it again (plan L9). *)
   type backfill_report =
     {theories: int,        (* theories whose positions were written *)
-     skipped: int,         (* already done, or not persistent *)
-     refused: int,         (* refused: the source-order tie-break was degraded (§8.6) *)
+     skipped: int,         (* not persistent -- a WIP theory has nothing to backfill *)
+     refused: int,         (* the source-order tie-break was degraded (§8.6) *)
+     hit_shortfall: int,   (* `finished` theories where NOT ONE entity had a record (§8.5) *)
      enumerated: int, hit: int, missing: int,
      no_position: int, unreadable: int, line_mismatch: int}
-  (* Raises when either stop condition fires: a refused theory, or a position whose
-     derived line disagrees with Isabelle's (§8.5).  Refused theories write nothing
-     and are not marked, so a later run retries them. *)
+  (* Raises when any stop condition fires: a refused theory, a position whose derived
+     line disagrees with Isabelle's, or a finished theory with no hits at all (§8.5).
+     Nothing is marked anywhere (L9), so a later run simply covers everything again;
+     the write is idempotent. *)
   val backfill_cone : theory list -> backfill_report
   val string_of_backfill_report : backfill_report -> string
 
@@ -339,20 +340,6 @@ fun mark_interpreted (thy : theory) : unit =
   mark_interpreted' (Universal_Key.key_of_theory' thy,
                      Theory_Hash.process_id (), Context.theory_identifier thy)
 
-(* No (process id, theory serial) pair, unlike is_interpreted: the backfill only
-   ever runs over batch-loaded, heap-resident theories, whose status records take
-   the persistent branch.  backfill_cone skips a WIP theory outright rather than
-   inventing a WIP variant of this flag (ENTITY_POSITION_PLAN.md §15.6(c)). *)
-fun positions_done' (key : Universal_Key.universal_key) : bool =
-  Remote_Procedure_Calling.call_command
-    {name = "Semantic_Store.positions_done",
-     arg_schema = packBytes, ret_schema = unpackBool,
-     callback = [], timeout = NONE}
-    key
-
-fun positions_done (thy : theory) : bool =
-  positions_done' (Universal_Key.key_of_theory' thy)
-
 fun clean_wip () : int =
   Remote_Procedure_Calling.call_command
     {name = "Semantic_Store.clean_wip",
@@ -452,10 +439,9 @@ val interpret_file_dry_run_cmd :
 }
 
 (* The position backfill (ENTITY_POSITION_PLAN.md §8.3).  Python writes each uk's
-   position onto the record it already has, and sets `positions_done` on the theory
-   status, in ONE write transaction -- so the flag can never commit without the
-   positions it claims.  Returns (hit, missing): records updated, and enumerated
-   keys with no record (legitimate -- never interpreted).
+   position onto the record it already has, in ONE write transaction per theory, and
+   touches no theory-status record at all (L9).  Returns (hit, missing): records
+   updated, and enumerated keys with no record (legitimate -- never interpreted).
 
    The theory long name rides along purely so a Python-side failure can say which
    theory it was working on; the ML-side counters stay here, where the per-theory
@@ -1836,17 +1822,20 @@ fun interpret_cone (driver : string) (force : bool) (cone : theory list) : usage
 (* --- the position backfill (ENTITY_POSITION_PLAN.md §8) --- *)
 
 type backfill_report =
-  {theories: int, skipped: int, refused: int,
+  {theories: int, skipped: int, refused: int, hit_shortfall: int,
    enumerated: int, hit: int, missing: int,
    no_position: int, unreadable: int, line_mismatch: int}
 
 val no_backfill : backfill_report =
-  {theories = 0, skipped = 0, refused = 0, enumerated = 0, hit = 0, missing = 0,
+  {theories = 0, skipped = 0, refused = 0, hit_shortfall = 0,
+   enumerated = 0, hit = 0, missing = 0,
    no_position = 0, unreadable = 0, line_mismatch = 0}
 
 fun add_backfill (a : backfill_report, b : backfill_report) : backfill_report =
   {theories = #theories a + #theories b, skipped = #skipped a + #skipped b,
-   refused = #refused a + #refused b, enumerated = #enumerated a + #enumerated b,
+   refused = #refused a + #refused b,
+   hit_shortfall = #hit_shortfall a + #hit_shortfall b,
+   enumerated = #enumerated a + #enumerated b,
    hit = #hit a + #hit b, missing = #missing a + #missing b,
    no_position = #no_position a + #no_position b,
    unreadable = #unreadable a + #unreadable b,
@@ -1857,6 +1846,7 @@ fun string_of_backfill_report (r : backfill_report) =
     [string_of_int (#theories r) ^ " theories written",
      string_of_int (#skipped r) ^ " skipped",
      string_of_int (#refused r) ^ " refused",
+     string_of_int (#hit_shortfall r) ^ " hit-shortfall",
      "enumerated " ^ string_of_int (#enumerated r),
      "hit " ^ string_of_int (#hit r),
      "missing " ^ string_of_int (#missing r),
@@ -1864,57 +1854,71 @@ fun string_of_backfill_report (r : backfill_report) =
      "unreadable " ^ string_of_int (#unreadable r),
      "line-mismatch " ^ string_of_int (#line_mismatch r)]
 
-(* One theory.  Refusal (§8.6) and a line mismatch (§5.2) both mean: write nothing,
-   do not set positions_done, count it -- and backfill_cone raises at the end, so
-   the operator sees the full extent rather than only the first occurrence.  A
-   later run retries exactly the theories that were refused. *)
+(* One theory.  There is no skip and no mark (L9): a repeat pass rewrites the same
+   bytes, so "resume" is "rerun".  A refusal (§8.6) and a line mismatch (§5.2) both
+   mean "write nothing and count it"; backfill_cone raises at the end rather than on
+   the first one, so the operator sees the full extent. *)
 fun backfill_theory (thy : theory) : backfill_report =
-  let
-    val skipped =
-      {theories = 0, skipped = 1, refused = 0, enumerated = 0, hit = 0, missing = 0,
-       no_position = 0, unreadable = 0, line_mismatch = 0} : backfill_report
-  in
-    if not (Theory_Hash.is_persistent (Theory_Hash.hash_of thy)) then
-      (warning ("backfill_positions: skipping the non-persistent theory " ^
-                Context.theory_long_name thy);
-       skipped)
-    else if positions_done thy then skipped
-    else
-      let
-        val {file_path = _, theory_longname, theory_key, entries, position_report,
-             tie_break_degraded} = enumerate_entries (Context.Theory thy)
-        val {no_file, unreadable, line_mismatch} = position_report
-        fun report (theories, refused, hit, missing) : backfill_report =
-          {theories = theories, skipped = 0, refused = refused,
-           enumerated = length entries, hit = hit, missing = missing,
-           no_position = no_file, unreadable = unreadable, line_mismatch = line_mismatch}
-      in
-        if tie_break_degraded then
-          (warning ("backfill_positions: refusing " ^ theory_longname ^
-                    " -- check_theorem_name_in_file degraded, so the source-order " ^
-                    "tie-break picked the wrong occurrence (ENTITY_POSITION_PLAN.md §8.6)");
-           report (0, 1, 0, 0))
-        else if line_mismatch > 0 then
-          (warning ("backfill_positions: refusing " ^ theory_longname ^ " -- " ^
-                    string_of_int line_mismatch ^ " positions disagree with Isabelle's " ^
-                    "own line, which is a bug in Entity_Position, not in the sources");
-           report (0, 0, 0, 0))
-        else
-          let
-            val (hit, missing) =
-              Remote_Procedure_Calling.call_command backfill_positions_cmd
-                {theory_key = theory_key, theory_longname = theory_longname,
-                 entries = map (fn (_, _, _, epos, uk, _, _, _, _, _) => (uk, epos)) entries}
-            val _ = writeln (String.concat
-              ["[Semantic_Embedding] ", theory_longname,
-               ": enumerated ", string_of_int (length entries),
-               ", hit ", string_of_int hit, ", missing ", string_of_int missing,
-               ", no-position ", string_of_int no_file,
-               ", unreadable ", string_of_int unreadable,
-               ", line-mismatch ", string_of_int line_mismatch])
-          in report (1, 0, hit, missing) end
-      end
-  end
+  (* The only skip: a WIP theory's records are a disposable cache (clean_wip
+     deletes them), so there is nothing to backfill.  Decided from the theory
+     value in hand -- no store access, no bookkeeping. *)
+  if not (Theory_Hash.is_persistent (Theory_Hash.hash_of thy)) then
+    (warning ("backfill_positions: skipping the non-persistent theory " ^
+              Context.theory_long_name thy);
+     {theories = 0, skipped = 1, refused = 0, hit_shortfall = 0, enumerated = 0,
+      hit = 0, missing = 0, no_position = 0, unreadable = 0, line_mismatch = 0})
+  else
+    let
+      val {file_path = _, theory_longname, theory_key, entries, position_report,
+           tie_break_degraded} = enumerate_entries (Context.Theory thy)
+      val {no_file, unreadable, line_mismatch} = position_report
+      fun report (theories, refused, hit_shortfall, hit, missing) : backfill_report =
+        {theories = theories, skipped = 0, refused = refused,
+         hit_shortfall = hit_shortfall,
+         enumerated = length entries, hit = hit, missing = missing,
+         no_position = no_file, unreadable = unreadable, line_mismatch = line_mismatch}
+    in
+      if tie_break_degraded then
+        (warning ("backfill_positions: refusing " ^ theory_longname ^
+                  " -- check_theorem_name_in_file degraded, so the source-order " ^
+                  "tie-break picked the wrong occurrence (ENTITY_POSITION_PLAN.md §8.6)");
+         report (0, 1, 0, 0, 0))
+      else if line_mismatch > 0 then
+        (warning ("backfill_positions: refusing " ^ theory_longname ^ " -- " ^
+                  string_of_int line_mismatch ^ " positions disagree with Isabelle's " ^
+                  "own line, which is a bug in Entity_Position, not in the sources");
+         report (0, 0, 0, 0, 0))
+      else
+        let
+          val (hit, missing) =
+            Remote_Procedure_Calling.call_command backfill_positions_cmd
+              {theory_key = theory_key, theory_longname = theory_longname,
+               entries = map (fn (_, _, _, epos, uk, _, _, _, _, _) => (uk, epos)) entries}
+          (* §8.5's sharp form: a theory the store calls `finished` should have a
+             record for essentially every entity it enumerates.  Zero hits means the
+             recomputed keys are not the collected keys -- a different Isabelle, or a
+             bug here -- and continuing would waste the rest of the sweep.  The
+             threshold stays at exactly zero until the canary (§8.7) produces the
+             hit-rate histogram; do not invent a percentage before then.  Under L9
+             this need not run inside the write transaction: with no flag, a wasted
+             pass costs only time. *)
+          val shortfall =
+            if hit = 0 andalso not (null entries) andalso is_interpreted thy then
+              (warning ("backfill_positions: " ^ theory_longname ^ " is finished but " ^
+                        "NONE of its " ^ string_of_int (length entries) ^ " enumerated " ^
+                        "entities has a record -- the recomputed keys do not match the " ^
+                        "collected ones (ENTITY_POSITION_PLAN.md §8.5)");
+               1)
+            else 0
+          val _ = writeln (String.concat
+            ["[Semantic_Embedding] ", theory_longname,
+             ": enumerated ", string_of_int (length entries),
+             ", hit ", string_of_int hit, ", missing ", string_of_int missing,
+             ", no-position ", string_of_int no_file,
+             ", unreadable ", string_of_int unreadable,
+             ", line-mismatch ", string_of_int line_mismatch])
+        in report (1, 0, shortfall, hit, missing) end
+    end
 
 fun backfill_cone (roots : theory list) : backfill_report =
   let
@@ -1924,10 +1928,12 @@ fun backfill_cone (roots : theory list) : backfill_report =
            (collect_cone roots))
         no_backfill
     val _ =
-      if #refused total = 0 andalso #line_mismatch total = 0 then ()
+      if #refused total = 0 andalso #line_mismatch total = 0
+         andalso #hit_shortfall total = 0 then ()
       else error ("backfill_positions stopped: " ^ string_of_int (#refused total) ^
                   " theories refused, " ^ string_of_int (#line_mismatch total) ^
-                  " line mismatches (ENTITY_POSITION_PLAN.md §8.5) -- " ^
+                  " line mismatches, " ^ string_of_int (#hit_shortfall total) ^
+                  " with no hits at all (ENTITY_POSITION_PLAN.md §8.5) -- " ^
                   string_of_backfill_report total)
   in total end
 

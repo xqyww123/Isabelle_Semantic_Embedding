@@ -13,12 +13,18 @@ lemma Pos_Test_Lemma: \<open>Pos_Test_A \<or> \<not> Pos_Test_A\<close>
 
 text \<open>Two lemmas with ONE proposition: their universal key is content-addressed and
   therefore identical, so the enumeration dedups them and the survivor's position is
-  the one that gets stored (ENTITY_POSITION_PLAN.md §8.6).\<close>
+  the one that gets stored (ENTITY_POSITION_PLAN.md §8.6).
 
-lemma Pos_Test_Dup_First: \<open>Pos_Test_B \<or> \<not> Pos_Test_B\<close>
+  The names are chosen so that ALPHABETICAL order is the REVERSE of source order.
+  \<open>Facts.dest_static\<close> ends in \<open>sort_by #1\<close>, so when the source-order tie-break is
+  degraded the dedup keeps the alphabetically-first entry -- \<open>..._A_Later\<close>.  With
+  names whose alphabetical order agreed with source order the assertion below would
+  pass either way and would test nothing.\<close>
+
+lemma Pos_Test_Dup_Z_Earlier: \<open>Pos_Test_B \<or> \<not> Pos_Test_B\<close>
   by (simp add: Pos_Test_B_def)
 
-lemma Pos_Test_Dup_Second: \<open>Pos_Test_B \<or> \<not> Pos_Test_B\<close>
+lemma Pos_Test_Dup_A_Later: \<open>Pos_Test_B \<or> \<not> Pos_Test_B\<close>
   by (simp add: Pos_Test_B_def)
 
 section \<open>Raw position plumbing\<close>
@@ -351,12 +357,14 @@ let
       val fact_space = Proof_Context.facts_of \<^context> |> Facts.space_of
       val pos = #pos (Name_Space.the_entry fact_space ("Entity_Position_Test." ^ nm))
     in the (Position.line_of pos) end
-  val first_line = line_of_lemma "Pos_Test_Dup_First"
-  val second_line = line_of_lemma "Pos_Test_Dup_Second"
+  val first_line = line_of_lemma "Pos_Test_Dup_Z_Earlier"
+  val second_line = line_of_lemma "Pos_Test_Dup_A_Later"
   val _ = @{assert} (first_line < second_line)
 
   (* Exactly ONE entry survives for the shared proposition, and it sits at the
-     first lemma's line -- source order, not Facts.dest_static order. *)
+     EARLIER lemma's line.  Since the names make alphabetical order the reverse of
+     source order, this discriminates: a degraded tie-break would keep
+     Pos_Test_Dup_A_Later instead. *)
   val dup_entries = entries |> map_filter (fn (_, nm, _, epos, _, _, _, _, _, _) =>
         if String.isPrefix "Entity_Position_Test.Pos_Test_Dup_" nm
         then SOME (nm, epos) else NONE)

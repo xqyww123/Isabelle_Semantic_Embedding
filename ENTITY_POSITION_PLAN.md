@@ -1,7 +1,7 @@
 # Entity positions in the semantic DB
 
-Status: **steps 1–4 implemented and green, then partly superseded by L9 — see §17.3
-for the outstanding work.** Step 5 (the `cslh19` canary and sweep) not started.
+Status: **steps 1–4 implemented, the L9 rework and the round-2/3 review fixes
+applied, all green.** Step 5 (the `cslh19` canary and sweep) not started.
 §16 records what landed; §17 records the round-2 code review, the L9 rework, and
 the round-3 review of the edit itself.
 Draft 4, 2026-08-11. Draft 1 was reviewed adversarially (two turns, four lenses)
@@ -1220,6 +1220,16 @@ expected column was confirmed to fail the build, so the ML assertions really run
 
 ### 16.4 Not yet verified
 
+- **T9's refusal half** — §12's T9 has two halves; only the positive one landed
+  (the deduplicated occurrence's position is the source-earliest). The second —
+  "with `check_theorem_name_in_file` stubbed to fail, the backfill **refuses** the
+  theory" — is still untested: forcing that state needs a failing RPC, and a test
+  that called `backfill_theory` would drive real RPCs against the developer's live
+  store. The refusal branch is three visible lines in `backfill_theory`. What T9
+  *does* now discriminate was proved by mutation: forcing `dominated = false`
+  (exactly what a degraded tie-break produces) makes the assertion fail, which it
+  did not before the duplicate lemmas were renamed so alphabetical order runs
+  against source order.
 - ~~**T10**~~ — **verified 2026-08-11, unplanned, on real data.** Another process
   in this shared tree restarted a REPL after the `.ML` edits and ran an ordinary
   collection, so the live path wrote **8,844 13-field records, 8,306 of them
@@ -1302,7 +1312,9 @@ Three things follow.
 
 ### 17.3 The work list
 
-Not yet done. Nothing here has been applied to the code.
+**All applied, 2026-08-11**, and verified with
+`isabelle build -d . -d Test Semantic_Embedding_Test` plus the Python suite (105
+tests). Kept as the record of what the rework consisted of.
 
 **From L9** — remove the flag:
 
