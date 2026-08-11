@@ -1,7 +1,9 @@
 # Entity positions in the semantic DB
 
-Status: **steps 1–4 implemented, the L9 rework and the round-2/3 review fixes
-applied, all green.** Step 5 (the `cslh19` canary and sweep) not started.
+Status: **done.** Steps 1–4 implemented, the L9 rework and the review fixes
+applied, and step 5 executed on `cslh19` on 2026-08-12: 9,955 theories swept,
+1,062,951 records now carry an entity position, zero line mismatches, zero vector
+tombstones. §18 has the numbers and the four corrections the run forced.
 §16 records what landed; §17 records the round-2 code review, the L9 rework, and
 the round-3 review of the edit itself.
 Draft 4, 2026-08-11. Draft 1 was reviewed adversarially (two turns, four lenses)
@@ -1417,3 +1419,110 @@ Three lenses independently raised the §8.3-vs-§8.5 contradiction and three
 separate skeptics each refuted it as "the sentence is scoped". The sentence did
 not say so; §8.3 now does. When independent readers trip on the same sentence,
 the sentence is the defect.
+
+## 18. The run on `cslh19` (2026-08-12)
+
+Step 5 executed. The canary and then the full sweep, under `AFP-ALL-4`, on a REPL
+restarted without `INTERPRETATION_DRIVER` (no LLM is involved).
+
+### 18.1 Results
+
+| | canary: `Main` | canary: `Gauss_Jordan` | **full sweep** |
+|---|---|---|---|
+| theories written | 96 | 219 | **9,955** (+22 skipped, all WIP) |
+| wall clock | 62 s | 66 s | **~80 min** |
+| enumerated | 18,584 | 37,610 | **1,303,856** |
+| hit / missing | 18,584 / 0 | 37,603 / 7 | **1,096,883 / 206,973** |
+| no-position | 37 | 1,275 | 17,334 |
+| unreadable | 0 | 0 | **2** |
+| **line mismatch** | **0** | **0** | **0** |
+| refused | 0 | 0 | **0** |
+
+Store afterwards, by the completeness scan and an independent pass:
+
+```
+1,362,343 entity records | interpretation intact 100 % | with a position 1,062,951 (78.0 %)
+malformed positions 0
+codec lengths  6:22,455 · 7:878 · 8:13,266 · 12:248,373 · 13:1,077,371
+short and reachable 1,295,486 -> 263,861     (excluded: 21,024 WIP, 87 experience)
+```
+
+**L6 held, decisively.** `vector_Qwen__Qwen3-Embedding-8B.lmdb` holds 1,363,067
+entries with **8,908 tombstones** — essentially the 8,844 records the *live* path
+had already rewritten (where invalidation is correct). Had the backfill gone
+through `__setitem__` there would be ~1.06 M tombstones.
+
+**L9 held.** 315 canary theories in 128 s is 0.41 s/theory; the full sweep's
+9,955 theories took ~80 min including two scans. A rerun — the entire resume
+mechanism — costs about that. The fallback done-list file is not needed. ML heap
+(poly RSS) was 15.3 GB before the second canary and 15.2 GB after: no growth,
+so §11.3's three unbounded caches did not bite at this scale.
+
+**§5.2's line assertion never fired**, over 1.3 M positions. Hand-checking 14
+random HOL positions against the raw bytes: 14/14 columns inside their line, 10
+landing on the first byte of the fact name, 4 at column 1 of a generating command
+(`datatype`, `inductive_set`, `bnf`, `sublocale`) — §10 rule 2, exactly.
+
+### 18.2 §8.5's threshold is settled: a percentage floor is NOT viable
+
+The open question was where to put the hit-rate floor. The sweep answers it.
+
+On `HOL` and `Gauss_Jordan` every theory hit 100 %, which suggested a floor
+around 90 %. **The AFP at large looks nothing like that.** Legitimate per-theory
+hit rates run all the way down: `CoSMeDis.Outer_Friend_Receiver_State_Indistinguishability`
+5/97, `CoCon.Traceback_Properties` 44/303, `JinjaThreads.JVM_Execute2` 262/1,856.
+A miss simply means that entity was never interpreted, and coverage across the
+AFP is deeply uneven. **A 90 % floor would have aborted the sweep in its first
+minutes.** Keep the zero threshold; do not add a percentage.
+
+### 18.3 What the guard found — a pre-existing inconsistency, not a sweep fault
+
+The run ended with `hit_shortfall = 135`: 135 theories whose status record says
+`finished` while **not one** of their enumerated entities has a record. The guard
+raises at the end of `backfill_cone`, after every theory is written, so the data
+landed in full; the exit status is a report.
+
+Concentrated in `HOL-CSP_PTick` (13), `JinjaThreads` (9), `HOL-CSP_RS` (9),
+`LocalLexing` (8), `AODV` (6), `Iptables_Semantics` (5). Probed three of them —
+`HOL-CSP.CSP_Monotonies`, `HOL-CSP_PTick.CSP_PTick_Laws`,
+`Q0_Metatheory.Elementary_Logic` — and the store holds **zero** records naming
+them anywhere, yet they are marked finished.
+
+This is a property of the **collection**, not of the backfill: `interpret_cone`
+marks a theory finished after `interpret'`, and `interpret'` returns early
+without sending anything when its enumeration is empty. Whatever produced that
+state, it predates this work. Recorded here as a finding for whoever owns the
+collection pipeline; nothing in this plan acts on it.
+
+### 18.4 Corrections this run forced
+
+- **§15.6(g) named the wrong target list.** `tools/Build_AFP_Image/afp_all4_theories.txt`
+  (9,621) is *wanted* theories; `afp_all4_roots.heap.txt` (10,614) is what the
+  image actually holds. **468 of the wanted are not in the heap** — e.g.
+  `AutoCorres2.AutoCorres_Main`, whose sibling theories load fine — and one
+  unresolvable name aborts the whole `load_theory`. The correct target is the
+  **intersection, 9,153**, which loads in one call with zero drops. A second
+  failure shape lives in that difference too: `ISABELLE_CAKEML_HOME` undefined,
+  reported with no theory name at all, only a path.
+- **A bare TCP connect kills the Isa-REPL server.** Measured: with no probe it
+  stays up; a `connect` + immediate `close` takes it down within 40 s. The
+  mechanism is `repl_server.sh`'s theory — `Isabelle_Thread.join
+  (REPL_Server.startup …); error "IGNORE THIS ERROR"` — so the join returning *is*
+  the shutdown. Any port scan or health check will fell it. Check liveness with
+  `ss`, never by connecting. (A defect in `contrib/Isa-REPL`, untouched here.)
+- **`~~` is ambiguous on `cslh19`.** `isabelle` on the login PATH is
+  **Isabelle2024** while the REPL, the image and the data are **Isabelle2025-2**.
+  Resolving a stored `~~/src/HOL/...` against the wrong distribution silently
+  yields wrong lines — it cost one round of false "position looks wrong" alarms.
+  Concrete evidence for §11.1: the position is advisory, and `~~` means only
+  "whatever the reader's ISABELLE_HOME is".
+- **Seven sibling submodules on `cslh19` were behind** and `Semantic_Embedding`
+  could not even load (`Structure (Dialogue) has not been declared`, from
+  `Isabelle_RPC`, 5 commits behind). All fast-forwarded on the user's
+  instruction. No ROOT file changed; `AutoCorrode` and `phi-system` are detached
+  with no upstream and were left alone.
+
+**The `AFP-ALL-4` heap was never touched**: last modified 2026-07-13, and nothing
+was written anywhere in the heap directory during this work. `repl_server.sh`
+builds a throwaway one-theory child session that *reuses* the image, which is
+what §9 established.
