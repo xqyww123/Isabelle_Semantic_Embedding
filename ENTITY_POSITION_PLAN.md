@@ -1526,3 +1526,45 @@ collection pipeline; nothing in this plan acts on it.
 was written anywhere in the heap directory during this work. `repl_server.sh`
 builds a throwaway one-theory child session that *reuses* the image, which is
 what §9 established.
+
+### 18.5 Coverage: what has a position, and why the rest cannot
+
+After a second pass over the 660 heap theories the first sweep's target list had
+missed (`HOL-MicroJava`, `HOL-ex`, `HOL-Auth`, `HOL-IMP`, `HOL-UNITY`, `HOL-Bali`,
+`IOA`, …; 2,137 theories once their cones are included):
+
+| | records | |
+|---|---|---|
+| **carry a position** | **1,092,855** | **80.2 %** |
+| reached, position legitimately `None` (§10) | ~14,000 | done — the answer *is* "no position" |
+| WIP-prefixed | 21,024 | not applicable: a disposable cache, `clean_wip` deletes it |
+| EXPERIENCE | 87 | not applicable: not an Isabelle entity, it has no declaration site |
+| **never reached** | **234,398** | see below |
+
+Every one of the 1,362,343 records still carries its interpretation.
+
+**The 234,398 are not a sweeping gap, and no further pass will close them.**
+99.7 % are theorem-alike (207,635 theorems + 26,160 rules); only **603** are
+name-addressed (594 constants, 5 types, 2 locales, 1 collection, 1 method). If
+whole theories had been missed, their constants would be missing too — they are
+not. So the theories were swept; those theorems' **keys** were not produced.
+
+A theorem-alike key is content-addressed: `thm128` of the statement, prefixed by
+the XOR of its constituent theory hashes. Measured on the store: of 8,329 distinct
+constituent theory names, **45 carry more than one hash**, and for **24 of them the
+reached and the unreached records use completely disjoint hashes** —
+`Abstract-Rewriting.Seq`, `Affine_Arithmetic.Counterclockwise`,
+`Affine_Arithmetic.Intersection`, … So the store holds records from **two versions
+of those theories**, and because the prefix XORs every constituent, one changed
+constituent moves the key of every theorem that depends on it. That cascade is
+what 207k unmatched theorem records are.
+
+Those records describe theorems as they stood in an earlier snapshot. The current
+sources cannot produce their keys, so nothing can position them; they are stale,
+and the sweep's own `missing 206,973` is the same mismatch seen from the other
+side. Deciding what to do with a dated stratum belongs to whoever owns the
+collection, not here.
+
+**Scope note.** All of this is `cslh19`'s copy of the store. The development
+machine's copy is untouched by the backfill (8,844 positioned, from the live path
+only) and would need either its own sweep or a snapshot sync.
