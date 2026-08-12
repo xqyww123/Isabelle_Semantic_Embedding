@@ -1543,6 +1543,29 @@ missed (`HOL-MicroJava`, `HOL-ex`, `HOL-Auth`, `HOL-IMP`, `HOL-UNITY`, `HOL-Bali
 
 Every one of the 1,362,343 records still carries its interpretation.
 
+By entity kind — the table that settles what "restored" means:
+
+| kind | has a position | `None` (§10) | not reached | total | covered |
+|---|---|---|---|---|---|
+| theorem | 817,985 | 8,515 | 221,580 | 1,048,080 | **78.0 %** |
+| constant | 176,940 | 0 | 5,144 | 182,084 | 97.2 % |
+| locale | 10,038 | 0 | 22 | 10,060 | 99.8 % |
+| class | 1,979 | 0 | 4 | 1,983 | 99.8 % |
+| collection | 989 | 0 | 5 | 994 | 99.5 % |
+| method | 836 | 2 | 6 | 844 | 99.1 % |
+| type | 9,480 | 0 | 565 | 10,045 | 94.4 % |
+| elim-rule | 21,992 | 90 | 6,932 | 29,014 | 75.8 % |
+| induct-rule | 6,760 | 0 | 2,598 | 9,358 | 72.2 % |
+| case-split-rule | 7,277 | 0 | 3,227 | 10,504 | 69.3 % |
+| intro-rule | 38,579 | 5,372 | 15,246 | 59,197 | 65.2 % |
+
+Theorem-alike overall: 892,593 of 1,156,153 (77.2 %).
+
+**This table is itself the evidence for the diagnosis below.** The name-addressed
+kinds — constant 97.2 %, locale and class 99.8 %, collection 99.5 %, method 99.1 %
+— are essentially complete, and only the content-addressed kinds fall away. A
+theory that had been missed would drag both down together; nothing here does.
+
 **The 234,398 are not a sweeping gap, and no further pass will close them.**
 99.7 % are theorem-alike (207,635 theorems + 26,160 rules); only **603** are
 name-addressed (594 constants, 5 types, 2 locales, 1 collection, 1 method). If
