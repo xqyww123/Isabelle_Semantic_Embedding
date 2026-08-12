@@ -936,7 +936,7 @@ _lmdb_lock = threading.Lock()
 # openers adopt the file's real size and ignore it.  Lives here rather than in
 # semantics.py because semantics imports this module, not the other way round.
 # Every writer of a vector store must open with this one value.
-VECTOR_MAP_SIZE: int = 1 << 34      # 16 GiB
+VECTOR_MAP_SIZE: int = 1 << 36      # 64 GiB
 
 
 # The store's own bytes are unusable.  Distinguished from everything else
