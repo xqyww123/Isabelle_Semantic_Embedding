@@ -811,20 +811,26 @@ fun build_entries (context : Context.generic)
       | is_thm_entity _ = false
 
     (* Constituent theories of theorem/rule entities (stored in the record for
-       deletion/migration by theory).  thm-carrying entities recompute through
-       the digest-level cache; name-carrying ones read the registry populated
-       when their key was built (in this session, by construction of raw). *)
+       deletion/migration by theory).  Both branches read the registry populated
+       when the key was built, eight lines above.  thm-carrying entities keep a
+       recompute fallback because retag_thm_key deliberately does not write the
+       registry (Universal_Key.ML's retag_thm_key comment); name-carrying ones
+       cannot be reached that way, so for them a miss is an error. *)
     fun registry_constituents uk name =
       (case Universal_Key.constituents_of uk of
          SOME cs => cs
        | NONE => error ("build_entries: no constituents registered for " ^ name))
+    fun thm_constituents uk thm =
+      (case Universal_Key.constituents_of uk of
+         SOME cs => cs
+       | NONE => #2 (Universal_Key.thm_constituents context thm))
     fun mk_constituents (entity, uk, name) =
       case entity of
-        Universal_Key.Theorem thm => #2 (Universal_Key.thm_constituents context thm)
-      | Universal_Key.Introduction_Rule thm => #2 (Universal_Key.thm_constituents context thm)
-      | Universal_Key.Elimination_Rule thm => #2 (Universal_Key.thm_constituents context thm)
-      | Universal_Key.Induction_Rule thm => #2 (Universal_Key.thm_constituents context thm)
-      | Universal_Key.Case_Split_Rule thm => #2 (Universal_Key.thm_constituents context thm)
+        Universal_Key.Theorem thm => thm_constituents uk thm
+      | Universal_Key.Introduction_Rule thm => thm_constituents uk thm
+      | Universal_Key.Elimination_Rule thm => thm_constituents uk thm
+      | Universal_Key.Induction_Rule thm => thm_constituents uk thm
+      | Universal_Key.Case_Split_Rule thm => thm_constituents uk thm
       | Universal_Key.Named_Theorem _ => registry_constituents uk name
       | Universal_Key.Named_Introduction_Rule _ => registry_constituents uk name
       | Universal_Key.Named_Elimination_Rule _ => registry_constituents uk name
@@ -943,8 +949,15 @@ fun process_facts_into_cache (context : Context.generic)
              in map_index (fn (i, thm) =>
                let val thm' = Thm.transfer thy thm
                in if is_infra_thm (name, thm') then NONE
-                  else SOME {
-                    uk = Universal_Key.key_of_theorem' NONE context thm',
+                  else let
+                    val uk = Universal_Key.key_of_theorem' NONE context thm'
+                    (* the constituent list built with that key, not a recompute *)
+                    val theories =
+                      (case Universal_Key.constituents_of uk of
+                         SOME cs => map #1 cs
+                       | NONE => map #1 (#2 (Universal_Key.thm_constituents context thm')))
+                  in SOME {
+                    uk = uk,
                     (* fact-position name: bare for a singleton fact, name(i) for
                        a multi-thm fact member.  Same n=1->0 convention as the
                        collect path (get_theorems_with_positions), so the cached
@@ -952,8 +965,9 @@ fun process_facts_into_cache (context : Context.generic)
                     name = Context_Callbacks.Fixed (name, if n = 1 then 0 else i + 1),
                     pos = epos,
                     thm = thm',
-                    theories = map #1 (#2 (Universal_Key.thm_constituents context thm'))
+                    theories = theories
                   } : Context_Callbacks.cached_thm_entry option
+                  end
                end) thms |> map_filter I
              end
       end) facts_to_process
@@ -1085,7 +1099,11 @@ fun process_dynamic_facts_into_cache (context : Context.generic)
           map_index (fn (j, thm) =>
             let val thm' = Thm.transfer thy thm
                 val uk0 = Universal_Key.key_of_theorem' NONE context thm'
-                val theories = map #1 (#2 (Universal_Key.thm_constituents context thm'))
+                (* the constituent list built with that key, not a recompute *)
+                val theories =
+                  (case Universal_Key.constituents_of uk0 of
+                     SOME cs => map #1 cs
+                   | NONE => map #1 (#2 (Universal_Key.thm_constituents context thm')))
                 fun entry (entity, uk) =
                   ({uk = uk, name = Context_Callbacks.Member_of_Dynamic coll,
                     pos = ("", 0, 0), thm = thm', theories = theories}
@@ -1937,6 +1955,16 @@ fun backfill_cone (roots : theory list) : backfill_report =
                   " line mismatches, " ^ string_of_int (#hit_shortfall total) ^
                   " with no hits at all (ENTITY_POSITION_PLAN.md §8.5) -- " ^
                   string_of_backfill_report total)
+    (* Process totals, not this run's: schedule_dag is parallel, so a per-theory
+       delta would not be attributable.  A non-zero skip count means some internal
+       name had no name-space entry and was left out of a key's XOR entirely
+       (BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md §A.4) -- the keys are then not
+       comparable with keys computed where the name did resolve. *)
+    val {skipped = names_skipped, empty_name_fallback} = Universal_Key.constituents_totals ()
+    val _ = writeln (String.concat
+      ["[Semantic_Embedding] constituent-name totals for this process: ",
+       string_of_int names_skipped, " names with no name-space entry, ",
+       string_of_int empty_name_fallback, " propositions using the context's own theory"])
   in total end
 
 (* Level 1 of the dry run, and the very filter interpret_with_parallel applies: the

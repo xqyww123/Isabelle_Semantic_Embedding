@@ -279,9 +279,14 @@ fun theory_of_name space name =
 
 (* Fall-back when a name is absent from its space -- measured: Fun.id_def_raw is
    in neither the fact space nor get_thm's reach.  Compare the leading name
-   component, the same approximation Universal_Key.theory_short_of uses
-   (Universal_Key.ML:464-467): "Fun.id_def_raw" and "Fun.id" agree on "Fun",
-   while "Nat.plus_nat_def" and "Groups.plus_class.plus" do not.
+   component: "Fun.id_def_raw" and "Fun.id" agree on "Fun", while
+   "Nat.plus_nat_def" and "Groups.plus_class.plus" do not.
+
+   A leading component is a theory BASE name, so two theories sharing one can make
+   this comparison say "same theory" wrongly.  Unlike the universal-key defect
+   (BUG_UNIVERSAL_KEY_SHORT_NAME.md) nothing is resolved or memoized here -- it is
+   a string comparison on the fallback path only, and the primary path above reads
+   the long name off the name-space entry.
 
    Do NOT "keep when the theory is unknown" instead.  It looks safer -- losing a
    definition is worse than admitting one -- but measured, the instance defs
