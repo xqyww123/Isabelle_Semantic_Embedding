@@ -86,6 +86,28 @@ signature SEMANTIC_STORE = sig
   val backfill_cone : theory list -> backfill_report
   val string_of_backfill_report : backfill_report -> string
 
+  (* The entity dump (BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md §B.3): re-enumerate
+     the cone with the REPAIRED universal keys and write every entity, keyed by its
+     new key, into a scratch LMDB of its own.  Reads no store and writes no store
+     the system uses; its output is the only source the join is allowed to trust.
+
+     It shares the backfill's per-theory skeleton (sweep_theory below) but differs
+     in three decided ways: there is no hit-shortfall gate (nothing is looked up --
+     the invariant is instead `written = enumerated`); a theory whose positions are
+     untrustworthy is dumped ANYWAY and the refusal recorded, because a leftover is
+     deleted (D10) and the position is advisory where the key is not; and two
+     theories that produce one key have both records kept and counted, since
+     enumerate_entries dedups only within a theory.
+     `duplicate` is that count -- such keys are ambiguous for the join. *)
+  type dump_report =
+    {theories: int,       (* theories whose entities were dumped *)
+     skipped: int,        (* not persistent -- as in the backfill *)
+     refused: int,        (* positions untrustworthy; entities dumped regardless *)
+     enumerated: int, written: int, duplicate: int,
+     no_position: int, unreadable: int, line_mismatch: int}
+  val dump_cone : theory list -> dump_report
+  val string_of_dump_report : dump_report -> string
+
   (* Whole-DB vector completion: embed every interpreted record that has no vector in
      the store of the connection's configured embedding model (config option >
      Isabelle env > host env > default; _resolve_embedding_config in semantics.py).
@@ -460,6 +482,71 @@ val backfill_positions_cmd :
                   packOption (packTuple3 (packString, packInt, packInt)))))
         (theory_longname, entries)),
   ret_schema = unpackPair (unpackInt, unpackInt),
+  callback = [],
+  timeout = NONE
+}
+
+(* The entity dump (BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md §B.3).  One call per
+   theory, one LMDB write transaction per call, into a scratch store of its own.
+
+   Everything the join needs and cannot get anywhere else travels here.  Per entity:
+   the new universal key, the name, the entity-kind int, the entity position, the
+   corrected constituents, and the PROPOSITION -- the last so the join can see that a
+   candidate old record's `expr` says something different.  Per theory: the long name
+   (the only trustworthy source of it, §1), the enumerated count, the 16-byte theory
+   key (theory-status records are keyed by theory hash and carry no name, so this is
+   how the join addresses them -- theory_hash.lmdb must never be inverted, it is
+   many-valued per name by design), the theory's own source file for §B.6's position
+   discriminator, and how far the positions can be trusted.
+
+   Returns (written, duplicate): entities written, and how many of them landed on a
+   key some other theory had already written. *)
+val dump_entities_cmd :
+    ({theory_longname: string, theory_key: Universal_Key.universal_key,
+      theory_file: string, tie_break_degraded: bool, line_mismatch: int,
+      entries: (Universal_Key.universal_key * string * int
+                * Entity_Position.entity_position option
+                * Universal_Key.constituent list * string) list},
+     int * int) Remote_Procedure_Calling.command = {
+  name = "Semantic_Store.dump_entities",
+  arg_schema =
+    (fn {theory_longname, theory_key, theory_file, tie_break_degraded, line_mismatch,
+         entries} =>
+      packTuple6 (packString, packBytes, packString, packBool, packInt,
+                  packList (packTuple6 (packBytes, packString, packInt,
+                              packOption (packTuple3 (packString, packInt, packInt)),
+                              packList (packPair (packString, packBytes)),
+                              packString)))
+        (theory_longname, theory_key, theory_file, tie_break_degraded, line_mismatch,
+         entries)),
+  ret_schema = unpackPair (unpackInt, unpackInt),
+  callback = [],
+  timeout = NONE
+}
+
+(* Claim the scratch store, and say which one was claimed.  This runs Python-side
+   because the guard has to run where the environment lives: the Isa-REPL driver is not
+   the process that writes -- an externally launched RPC host outlives it, and with no
+   host configured Isabelle forks an ephemeral one of its own -- so a path test in the
+   driver can neither see the handler's cached environment nor name the directory it
+   opened.  Refuses, rather than returning a flag: there is nothing sensible to do with
+   a "no". *)
+val dump_preflight_cmd : (unit, string) Remote_Procedure_Calling.command = {
+  name = "Semantic_Store.dump_preflight",
+  arg_schema = packUnit,
+  ret_schema = unpackString,
+  callback = [],
+  timeout = NONE
+}
+
+(* Read the committed dump back:
+   (theories, enumerated, untrustworthy, keys, records, ambiguous). *)
+val dump_scan_cmd :
+    (unit, int * int * int * int * int * int) Remote_Procedure_Calling.command = {
+  name = "Semantic_Store.dump_scan",
+  arg_schema = packUnit,
+  ret_schema =
+    unpackTuple6 (unpackInt, unpackInt, unpackInt, unpackInt, unpackInt, unpackInt),
   callback = [],
   timeout = NONE
 }
@@ -1874,23 +1961,34 @@ fun string_of_backfill_report (r : backfill_report) =
      "unreadable " ^ string_of_int (#unreadable r),
      "line-mismatch " ^ string_of_int (#line_mismatch r)]
 
+(* What every per-theory sweep does before the passes diverge: skip a theory that is
+   not persistent, then enumerate.  Shared by the position backfill and the entity
+   dump (BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md §B.3) so the two cannot drift on
+   which theories they cover.  A WIP theory's records are a disposable cache
+   (clean_wip deletes them), so neither pass has anything to do with one; the
+   decision is made from the theory value in hand, with no store access.
+
+   What a position-quality refusal MEANS is deliberately NOT shared -- see the two
+   bodies below. *)
+fun sweep_theory (pass : string) skip body thy =
+  if not (Theory_Hash.is_persistent (Theory_Hash.hash_of thy)) then
+    (warning (pass ^ ": skipping the non-persistent theory " ^
+              Context.theory_long_name thy);
+     skip ())
+  else body (enumerate_entries (Context.Theory thy))
+
 (* One theory.  There is no skip and no mark (L9): a repeat pass rewrites the same
    bytes, so "resume" is "rerun".  A refusal (§8.6) and a line mismatch (§5.2) both
    mean "write nothing and count it"; backfill_cone raises at the end rather than on
    the first one, so the operator sees the full extent. *)
 fun backfill_theory (thy : theory) : backfill_report =
-  (* The only skip: a WIP theory's records are a disposable cache (clean_wip
-     deletes them), so there is nothing to backfill.  Decided from the theory
-     value in hand -- no store access, no bookkeeping. *)
-  if not (Theory_Hash.is_persistent (Theory_Hash.hash_of thy)) then
-    (warning ("backfill_positions: skipping the non-persistent theory " ^
-              Context.theory_long_name thy);
-     {theories = 0, skipped = 1, refused = 0, hit_shortfall = 0, enumerated = 0,
-      hit = 0, missing = 0, no_position = 0, unreadable = 0, line_mismatch = 0})
-  else
+  sweep_theory "backfill_positions"
+    (fn () =>
+      {theories = 0, skipped = 1, refused = 0, hit_shortfall = 0, enumerated = 0,
+       hit = 0, missing = 0, no_position = 0, unreadable = 0, line_mismatch = 0})
+    (fn {file_path = _, theory_longname, theory_key = _, entries, position_report,
+         tie_break_degraded} =>
     let
-      val {file_path = _, theory_longname, theory_key = _, entries, position_report,
-           tie_break_degraded} = enumerate_entries (Context.Theory thy)
       val {no_file, unreadable, line_mismatch} = position_report
       fun report (theories, refused, hit_shortfall, hit, missing) : backfill_report =
         {theories = theories, skipped = 0, refused = refused,
@@ -1938,7 +2036,22 @@ fun backfill_theory (thy : theory) : backfill_report =
              ", unreadable ", string_of_int unreadable,
              ", line-mismatch ", string_of_int line_mismatch])
         in report (1, 0, shortfall, hit, missing) end
-    end
+    end)
+    thy
+
+(* Process totals, not one run's: schedule_dag is parallel, so a per-theory delta
+   would not be attributable.  A non-zero skip count means some internal name had no
+   name-space entry and was left out of a key's XOR entirely
+   (BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md §A.4) -- the keys are then not comparable
+   with keys computed where the name did resolve.  For the dump this is a §B.7 gate:
+   it must be zero. *)
+fun report_constituents_totals () =
+  let val {skipped, empty_name_fallback} = Universal_Key.constituents_totals () in
+    writeln (String.concat
+      ["[Semantic_Embedding] constituent-name totals for this process: ",
+       string_of_int skipped, " names with no name-space entry, ",
+       string_of_int empty_name_fallback, " propositions using the context's own theory"])
+  end
 
 fun backfill_cone (roots : theory list) : backfill_report =
   let
@@ -1955,16 +2068,192 @@ fun backfill_cone (roots : theory list) : backfill_report =
                   " line mismatches, " ^ string_of_int (#hit_shortfall total) ^
                   " with no hits at all (ENTITY_POSITION_PLAN.md §8.5) -- " ^
                   string_of_backfill_report total)
-    (* Process totals, not this run's: schedule_dag is parallel, so a per-theory
-       delta would not be attributable.  A non-zero skip count means some internal
-       name had no name-space entry and was left out of a key's XOR entirely
-       (BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md §A.4) -- the keys are then not
-       comparable with keys computed where the name did resolve. *)
-    val {skipped = names_skipped, empty_name_fallback} = Universal_Key.constituents_totals ()
+    val _ = report_constituents_totals ()
+  in total end
+
+
+(* --- the entity dump (BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md §B.3) --- *)
+
+type dump_report =
+  {theories: int, skipped: int, refused: int,
+   enumerated: int, written: int, duplicate: int,
+   no_position: int, unreadable: int, line_mismatch: int}
+
+val no_dump : dump_report =
+  {theories = 0, skipped = 0, refused = 0, enumerated = 0, written = 0, duplicate = 0,
+   no_position = 0, unreadable = 0, line_mismatch = 0}
+
+fun add_dump (a : dump_report, b : dump_report) : dump_report =
+  {theories = #theories a + #theories b, skipped = #skipped a + #skipped b,
+   refused = #refused a + #refused b,
+   enumerated = #enumerated a + #enumerated b,
+   written = #written a + #written b, duplicate = #duplicate a + #duplicate b,
+   no_position = #no_position a + #no_position b,
+   unreadable = #unreadable a + #unreadable b,
+   line_mismatch = #line_mismatch a + #line_mismatch b}
+
+fun string_of_dump_report (r : dump_report) =
+  String.concatWith ", "
+    [string_of_int (#theories r) ^ " theories dumped",
+     string_of_int (#skipped r) ^ " skipped",
+     string_of_int (#refused r) ^ " with untrustworthy positions",
+     "enumerated " ^ string_of_int (#enumerated r),
+     "written " ^ string_of_int (#written r),
+     "duplicate " ^ string_of_int (#duplicate r),
+     "no-position " ^ string_of_int (#no_position r),
+     "unreadable " ^ string_of_int (#unreadable r),
+     "line-mismatch " ^ string_of_int (#line_mismatch r)]
+
+fun dump_theory (thy : theory) : dump_report =
+  sweep_theory "dump_entities"
+    (fn () => {theories = 0, skipped = 1, refused = 0, enumerated = 0, written = 0,
+               duplicate = 0, no_position = 0, unreadable = 0, line_mismatch = 0})
+    (fn {file_path = _, theory_longname, theory_key, entries, position_report,
+         tie_break_degraded} =>
+    let
+      val {no_file, unreadable, line_mismatch} = position_report
+      (* The backfill refuses such a theory outright; the dump must not.  Both
+         conditions say the POSITIONS are wrong, and a dump entry's position is
+         advisory where its key is not -- refusing would turn every record of the
+         theory into a leftover, and a leftover is deleted (D10).  Dump, and carry
+         the refusal on the theory's completion record so the join can see it. *)
+      val refused = if tie_break_degraded orelse line_mismatch > 0 then 1 else 0
+      val _ =
+        if refused = 0 then ()
+        else warning (String.concat
+          ["dump_entities: the positions of ", theory_longname, " are untrustworthy",
+           if tie_break_degraded then
+             " (check_theorem_name_in_file degraded, so the source-order tie-break \
+             \picked the wrong occurrence, ENTITY_POSITION_PLAN.md §8.6)"
+           else "",
+           if line_mismatch > 0 then
+             " (" ^ string_of_int line_mismatch ^ " positions disagree with \
+             \Isabelle's own line)"
+           else "",
+           " -- its entities are dumped anyway \
+           \(BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md §B.3)"])
+      val (written, duplicate) =
+        Remote_Procedure_Calling.call_command dump_entities_cmd
+          {theory_longname = theory_longname,
+           theory_key = theory_key,
+           (* Entity_Position's own folding, not another File.* one: this string is
+              compared for equality against the file component of positions that
+              function wrote (§B.6's discriminator). *)
+           theory_file = Entity_Position.portable_path (Theory_Hash.get_theory_path thy),
+           tie_break_degraded = tie_break_degraded,
+           line_mismatch = line_mismatch,
+           entries = map (fn (ent, nm, prop, epos, uk, _, _, consts, _, _) =>
+                            (uk, nm, Universal_Key.entity_kind_int ent, epos, consts, prop))
+                       entries}
+      (* A wire-arity assertion across the msgpack boundary, and no more than that:
+         the handler counts the entries it received, and every real failure there
+         raises instead of returning a short count.  What actually guarantees a
+         theory landed is that its completion record shares a transaction with its
+         entities, so an uncommitted theory leaves no completion record. *)
+      val _ =
+        if written = length entries then ()
+        else error (String.concat
+          ["dump_entities: ", theory_longname, " enumerated ",
+           string_of_int (length entries), " entities but ", string_of_int written,
+           " were written"])
+      val _ = writeln (String.concat
+        ["[Semantic_Embedding] ", theory_longname,
+         ": enumerated ", string_of_int (length entries),
+         ", written ", string_of_int written,
+         ", duplicate ", string_of_int duplicate,
+         ", no-position ", string_of_int no_file,
+         ", unreadable ", string_of_int unreadable,
+         ", line-mismatch ", string_of_int line_mismatch])
+    in
+      {theories = 1, skipped = 0, refused = refused, enumerated = length entries,
+       written = written, duplicate = duplicate, no_position = no_file,
+       unreadable = unreadable, line_mismatch = line_mismatch}
+    end)
+    thy
+
+fun dump_cone (roots : theory list) : dump_report =
+  let
+    (* First, before anything expensive: claim the scratch store, and say which one.
+       The claim is made Python-side for the reason dump_preflight_cmd states. *)
+    val target = Remote_Procedure_Calling.call_command dump_preflight_cmd ()
+    val _ = writeln ("[Semantic_Embedding] dump_entities: writing to " ^ target)
+
+    val cone = collect_cone roots
+    (* Say both numbers, and name what was dropped.  §B.7's completeness gate is "the
+       dump's theory set equals the target list", and collect_cone drops the
+       infrastructure sessions and the three base theories from it -- exactly as
+       collection did, so the store's records for them are pre-filter fossils that the
+       join prunes under D10 (~923 of them, decided 2026-08-14).  The names are logged
+       rather than merely counted so that the gate can be evaluated against ML's own
+       answer instead of a second implementation of is_excluded_theory. *)
+    val dropped =
+      let
+        val in_cone = Inthashtab.empty (Int.max (16, length cone))
+        val _ = List.app (fn thy =>
+                  Inthashtab.update in_cone (Context.theory_identifier thy, ())) cone
+        val seen = Inthashtab.empty (Int.max (16, length roots))
+      in
+        filter (fn thy =>
+          let val id = Context.theory_identifier thy in
+            if Inthashtab.defined seen id then false
+            else (Inthashtab.update seen (id, ());
+                  not (Inthashtab.defined in_cone id))
+          end) roots
+      end
     val _ = writeln (String.concat
-      ["[Semantic_Embedding] constituent-name totals for this process: ",
-       string_of_int names_skipped, " names with no name-space entry, ",
-       string_of_int empty_name_fallback, " propositions using the context's own theory"])
+      ["[Semantic_Embedding] dump_entities: ", string_of_int (length cone),
+       " theories to dump, from ", string_of_int (length roots), " roots; ",
+       string_of_int (length dropped), " roots excluded from the cone",
+       if null dropped then ""
+       else ": " ^ commas (map Context.theory_long_name dropped)])
+
+    (* Snapshot before the sweep: constituents_totals is a process-global monotone
+       counter, and the driver loads Semantic_Collection_App from source first, whose
+       theory begins compute constituents of their own.  The gate is on the DELTA. *)
+    val {skipped = skipped_before, empty_name_fallback = fallback_before} =
+      Universal_Key.constituents_totals ()
+
+    val total =
+      fold (fn r => fn acc => add_dump (acc, r))
+        (schedule_dag "Semantic_Store.dump_entities" (fn thy => fn () => dump_theory thy) cone)
+        no_dump
+
+    (* Report EVERYTHING before any gate fires.  A run that stops is exactly the run
+       whose numbers are wanted, and putting the report after the `error` is the
+       defect Part C item 3 records against backfill_cone. *)
+    val (thys, enumerated, untrustworthy, keys, records, ambiguous) =
+      Remote_Procedure_Calling.call_command dump_scan_cmd ()
+    val _ = writeln (String.concat
+      ["[Semantic_Embedding] dump contents: ", string_of_int thys, " theories (",
+       string_of_int enumerated, " entities enumerated, ", string_of_int untrustworthy,
+       " with untrustworthy positions), ", string_of_int records,
+       " entity records on ", string_of_int keys, " keys (", string_of_int ambiguous,
+       " keys claimed by more than one theory)"])
+    val {skipped = skipped_after, empty_name_fallback = fallback_after} =
+      Universal_Key.constituents_totals ()
+    val skipped_delta = skipped_after - skipped_before
+    val _ = writeln (String.concat
+      ["[Semantic_Embedding] constituent-name totals for this sweep: ",
+       string_of_int skipped_delta, " names with no name-space entry, ",
+       string_of_int (fallback_after - fallback_before),
+       " propositions using the context's own theory"])
+
+    (* §B.7's gate. A skipped name was left out of a key's XOR entirely (§A.4), so the
+       affected keys are not the keys the same code computes anywhere else -- and §A.4
+       records that the prefix check cannot see it, since it recomputes the prefix from
+       the same truncated list.  This counter is the only detector there is. *)
+    val _ =
+      if skipped_delta = 0 then ()
+      else error ("dump_entities stopped: " ^ string_of_int skipped_delta ^
+                  " constituent names had no name-space entry during this sweep, so " ^
+                  "some keys were XORed from an incomplete constituent list " ^
+                  "(BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md §A.4) -- the dump is not " ^
+                  "usable")
+    val _ =
+      if #written total = #enumerated total then ()
+      else error ("dump_entities stopped: " ^ string_of_int (#enumerated total) ^
+                  " entities enumerated but " ^ string_of_int (#written total) ^
+                  " written -- " ^ string_of_dump_report total)
   in total end
 
 (* Level 1 of the dry run, and the very filter interpret_with_parallel applies: the

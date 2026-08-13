@@ -12,7 +12,13 @@
   positions (ENTITY_POSITION_PLAN.md §8.2).  No LLM is involved.
     Client sends: theory_names (msgpack string list — the roots to sweep)
 
-  Both:
+  Semantic_Store.dump_entities -- re-enumerate the cone with the repaired universal
+  keys and write every entity into a scratch LMDB of its own
+  (BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md §B.3).  Reads no store, writes no store
+  the system uses, and involves no LLM.
+    Client sends: theory_names (msgpack string list — the roots to sweep)
+
+  All three:
     Server streams: packString messages during the run (from tracing)
     Server sends:   packUnit when done successfully
     On error:       sends packString "ERROR: ..." then packUnit
@@ -126,6 +132,19 @@ val _ = register_streaming_app "Semantic_Store.backfill_positions" (fn cin =>
   in
     writeln ("[Semantic_Embedding] backfill_positions: " ^
              Semantic_Store.string_of_backfill_report total)
+  end)
+
+val _ = register_streaming_app "Semantic_Store.dump_entities" (fn cin =>
+  let
+    fun read unpacker =
+      let val (ret, cin') = doUnpack unpacker (!cin)
+      in cin := cin'; ret end
+    val thy_names = read (unpackList unpackString)
+    val thys = resolve_roots thy_names
+    val total = Semantic_Store.dump_cone thys
+  in
+    writeln ("[Semantic_Embedding] dump_entities: " ^
+             Semantic_Store.string_of_dump_report total)
   end)
 
 end

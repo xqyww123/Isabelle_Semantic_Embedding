@@ -12,6 +12,12 @@ signature ENTITY_POSITION = sig
   (* Batch: absolutizes once, walks each file once.  The result is parallel to
      the argument -- NONE wherever no position could be established (plan §10). *)
   val of_positions : Position.T list -> entity_position option list * report
+  (* The folding that produced the file component of EVERY stored position.
+     Exposed so that anything comparing a path of its own against a stored one
+     derives it the same way, instead of picking another File.* folding whose
+     output differs on the same file (BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md
+     §B.3, the dump's per-theory source path). *)
+  val portable_path : Path.T -> string
 end
 
 structure Entity_Position : ENTITY_POSITION = struct
