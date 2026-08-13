@@ -116,6 +116,8 @@ from Isabelle_RPC_Host.universal_key import xor_theory_prefix    # noqa: E402
 # ELIMINATION_RULE, INDUCTION_RULE, CASE_SPLIT_RULE, EXPERIENCE.
 XOR_TAGS = {0x02, 0x12, 0x22, 0x32, 0x42, 0x08}
 EXPERIENCE_TAG = 0x08
+# Every EntityKind, for telling a universal key from store metadata.
+ALL_TAGS = XOR_TAGS | {0x01, 0x03, 0x04, 0x05, 0x06, 0x07}
 
 # Record field positions in the stored msgpack array.  The codec is positional
 # tail-append (Semantic_DB._decode), so a short record simply lacks the tail.
@@ -619,12 +621,27 @@ def build_semantics(src: str, dest: str, cls: Classification) -> int:
     return written
 
 
-def build_vectors(src: str, dest: str, cls: Classification) -> tuple[int, int]:
+def is_universal_key(k: bytes) -> bool:
+    """16 bytes is a theory hash; 17+ with a known tag is an entity key.
+
+    Anything else is store metadata, not a key this migration can map.  The
+    vector store holds exactly one such entry today -- `\\x00__vector_format__`
+    = `q15/v1`, the Q1.15 provenance stamp written by migrate_float32_to_q15.py
+    -- and an earlier revision of this script dropped it silently, because it
+    dropped anything with no image in the key map.  `semantics.lmdb`'s counter
+    was handled by hand; nobody asked the same question of the vector store.
+    """
+    return len(k) == 16 or (len(k) >= 17 and k[16] in ALL_TAGS)
+
+
+def build_vectors(src: str, dest: str, cls: Classification) -> tuple[int, int, int]:
     """Keys only; values -- including the empty-value vector tombstones -- are
     copied verbatim.  Entity keys ride the per-record map, since their prefixes
     are XORs and not theory hashes; the 16-byte embed-status keys are theory
-    hashes and ride the theory table, which the record map already covers."""
-    written = dropped = 0
+    hashes and ride the theory table, which the record map already covers.
+    Entries whose key is not a universal key at all are copied verbatim and
+    counted, never silently discarded."""
+    written = dropped = metadata = 0
     src_env = lmdb.open(src, readonly=True, lock=False)
     dst_env = lmdb.open(dest, map_size=VECTOR_MAP_SIZE)
     src_txn = src_env.begin()
@@ -632,6 +649,11 @@ def build_vectors(src: str, dest: str, cls: Classification) -> tuple[int, int]:
     n = 0
     for k, v in src_txn.cursor():
         k = bytes(k); v = bytes(v)
+        if not is_universal_key(k):
+            dt.put(k, v)
+            metadata += 1
+            print(f"    store metadata copied verbatim: {k!r}", flush=True)
+            continue
         new = cls.newkey.get(k)
         if new is None:
             dropped += 1
@@ -649,7 +671,7 @@ def build_vectors(src: str, dest: str, cls: Classification) -> tuple[int, int]:
     dst_env.sync()
     dst_env.close()
     src_env.close()
-    return written, dropped
+    return written, dropped, metadata
 
 
 def build_theory_hash(src: str, dest: str, tab: Tables) -> tuple[int, int, int, int]:
@@ -887,7 +909,8 @@ def gate_counts(dest: str, src: str, src_th: str, vec_name: str,
     # value, so that `gates` can check a destination this process did not build.
     src_vec = lmdb.open(os.path.join(src, vec_name), readonly=True, lock=False)
     with src_vec.begin() as t:
-        want_vec = sum(1 for k, _ in t.cursor() if bytes(k) in cls.newkey)
+        want_vec = sum(1 for k, _ in t.cursor()
+                       if not is_universal_key(bytes(k)) or bytes(k) in cls.newkey)
     src_vec.close()
     check("vector store entries", os.path.join(dest, vec_name), want_vec)
 
@@ -921,7 +944,9 @@ def gate_vector_keys(dest_sem: str, dest_vec: str) -> int:
     orphan = 0
     with vec.begin() as t:
         for k, _ in t.cursor():
-            if bytes(k) not in keys:
+            k = bytes(k)
+            # store metadata is not a universal key and has no record by design
+            if is_universal_key(k) and k not in keys:
                 orphan += 1
     vec.close()
     print(f"  G4b vector keys with no record       {orphan}")
@@ -1103,9 +1128,9 @@ def main() -> None:
         n = build_semantics(sem_src, dest_sem, cls)
         print(f"  wrote {n} entries")
         print("building the new vector store ...", flush=True)
-        w, d = build_vectors(os.path.join(src, vec_name),
-                             os.path.join(args.dest, vec_name), cls)
-        print(f"  wrote {w}, dropped {d}")
+        w, d, m = build_vectors(os.path.join(src, vec_name),
+                                os.path.join(args.dest, vec_name), cls)
+        print(f"  wrote {w}, dropped {d}, {m} store-metadata entries copied verbatim")
         print("building the new theory_hash.lmdb ...", flush=True)
         w, d, c, m = build_theory_hash(os.path.join(src_th, "theory_hash.lmdb"),
                                        os.path.join(args.dest, "theory_hash.lmdb"), tab)
