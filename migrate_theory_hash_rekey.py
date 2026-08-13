@@ -129,13 +129,16 @@ THEORY_HASH_MAP_SIZE = 1 << 30   # 1 GiB, matching open_theory_hash_store
 
 
 def default_semantic_dir() -> str:
-    return os.environ.get(
-        "SEMANTIC_DB_DIR",
-        os.path.expanduser("~/.cache/Isabelle_Semantic_Embedding"))
+    from Isabelle_Semantic_Embedding._paths import semantic_DB_dir
+    return semantic_DB_dir()
 
 
 def default_theory_hash_dir() -> str:
-    return os.path.expanduser("~/.cache/Isabelle_Theory_Hash")
+    # Same expression as open_theory_hash_store.  NB a DIFFERENT platformdirs
+    # root from the semantic databases, with no environment override, so
+    # SEMANTIC_DB_DIR does NOT move theory_hash.lmdb -- hence --src-theory-hash.
+    import platformdirs
+    return platformdirs.user_cache_dir("Isabelle_Theory_Hash", "Qiyuan")
 
 
 def is_persistent(h: bytes) -> bool:
@@ -192,6 +195,10 @@ class Tables:
     def _compute(self, n: str) -> bytes:
         if n in self.old:
             return self.old[n]
+        if n not in self.info:
+            raise SystemExit(
+                f"{n} is a parent in the dependency table but has no row of its own"
+                + (" (it is marked not loaded)" if n in self.wip else ""))
         path, parents = self.info[n]
         parent_old = [self._compute(p) for p in parents]
         with open(path, "rb") as f:
@@ -339,13 +346,17 @@ class Classification:
             return
         if len(key) == 16:
             self.hash_names.setdefault(key, None)
+            # Theory-status records are never revived: see the module docstring.
             self._simple(key, key, b"", "theory-status", allow_rescue=False)
             return
         if key[16] in XOR_TAGS:
             self._xor(key, val)
             return
         self.hash_names.setdefault(key[:16], None)
-        self._simple(key, key[:16], key[16:], "name-addressed", allow_rescue=True)
+        # A name-addressed key can never be an EXPERIENCE, so only `all` revives
+        # it.  Reading the flag here is what makes `none` mean what it says.
+        self._simple(key, key[:16], key[16:], "name-addressed",
+                     allow_rescue=self.rescue_superseded == "all")
 
     def _simple(self, key: bytes, h: bytes, tail: bytes, what: str,
                 allow_rescue: bool) -> None:
@@ -641,23 +652,27 @@ def build_vectors(src: str, dest: str, cls: Classification) -> tuple[int, int]:
     return written, dropped
 
 
-def build_theory_hash(src: str, dest: str, tab: Tables) -> tuple[int, int, int]:
-    """Re-key the hash -> name diagnostic cache.  For a collapsed group the
-    store holds one entry for what are now two theories, so it can only follow
-    one successor; that is reported rather than left silent."""
-    written = dropped = collapsed = 0
+def build_theory_hash(src: str, dest: str, tab: Tables) -> tuple[int, int, int, int]:
+    """Re-key the hash -> name diagnostic cache.
+
+    Two ways entries merge, and both are counted rather than left silent.  A
+    collapsed group is two theories under one hash, so the single entry can
+    only follow one successor.  Superseded content generations are the reverse
+    -- one name under several hashes, all of which now key to that name's one
+    new hash; measured, this is over a quarter of the store.  The destination
+    key comes from the NAME, so the merge is inherent; what must not happen is
+    the run reporting more entries than it wrote, which is why this writes with
+    overwrite=False and counts the refusals.
+    """
+    mapped = dropped = collapsed = 0
     src_env = lmdb.open(src, readonly=True, lock=False)
     dst_env = lmdb.open(dest, map_size=THEORY_HASH_MAP_SIZE)
     with src_env.begin() as st, dst_env.begin(write=True) as dt:
         for k, v in st.cursor():
             k = bytes(k); v = bytes(v)
-            if len(k) != 16:
+            if len(k) != 16 or not is_persistent(k):
                 dt.put(k, v)
-                written += 1
-                continue
-            if not is_persistent(k):
-                dt.put(k, v)
-                written += 1
+                mapped += 1
                 continue
             m = msgpack.unpackb(v)
             name = m[0] if isinstance(m, (list, tuple)) else m
@@ -667,21 +682,70 @@ def build_theory_hash(src: str, dest: str, tab: Tables) -> tuple[int, int, int]:
                 continue
             if k in tab.shared:
                 collapsed += 1
-            dt.put(tab.new[name], v)
-            written += 1
+            # The current generation must win over a superseded one, so it
+            # overwrites and the others only fill a gap.
+            dt.put(tab.new[name], v, overwrite=(k == tab.old.get(name)))
+            mapped += 1
+    written = dst_env.stat()["entries"]
     dst_env.sync()
     dst_env.close()
     src_env.close()
-    return written, dropped, collapsed
+    return written, dropped, collapsed, mapped - written
 
 
 # --------------------------------------------------------------------------
 # gates over the built store
 # --------------------------------------------------------------------------
 
-def gate_g5_g6(dest_sem: str, cls: Classification, tab: Tables) -> int:
+def reference_census(sem_path: str, drop_keys: 'set[bytes]') -> tuple[
+        collections.Counter, collections.Counter]:
+    """Dangling references in a store, and references into a set of keys.
+
+    Run over the SOURCE, this is G6's baseline.  The second counter is what
+    makes the baseline usable: a reference whose target is about to be dropped
+    necessarily dangles afterwards, so the destination's dangling count MUST
+    exceed the source's by that much.  Comparing the two raw numbers, as an
+    earlier revision of the plan specified, would fail every correct run.
+    """
+    env = lmdb.open(sem_path, readonly=True, lock=False)
+    dangling: collections.Counter = collections.Counter()
+    into_drop: collections.Counter = collections.Counter()
+    with env.begin() as t:
+        live = {bytes(k) for k, _ in t.cursor()}
+        for k, v in t.cursor():
+            k = bytes(k); v = bytes(v)
+            if len(k) <= 16 or not v:
+                continue
+            vals = msgpack.unpackb(v)
+            targets = []
+            if len(vals) > F_PROV and isinstance(vals[F_PROV], dict):
+                for field in ("locale_uk", "template_uk"):
+                    u = vals[F_PROV].get(field)
+                    if u is not None:
+                        targets.append((field, bytes(u)))
+            if len(vals) > F_DEPS and vals[F_DEPS]:
+                targets += [("deps", bytes(d)) for d in vals[F_DEPS]]
+            for field, u in targets:
+                if u not in live:
+                    dangling[field] += 1
+                elif u in drop_keys:
+                    into_drop[field] += 1
+    env.close()
+    return dangling, into_drop
+
+
+def gate_g5_g6(dest_sem: str, src_sem: str, cls: Classification, tab: Tables) -> int:
     """G5: no old hash survives anywhere -- not as a key prefix, not as a
-    16-byte key, not inside theory_constituents / locale_uk / deps.
+    16-byte key, not inside theory_constituents / locale_uk / deps -- and every
+    persistent constituent's recorded hash is the one its recorded NAME maps to.
+
+    That last check is the only non-circular thing here.  Recomputing the XOR
+    prefix from the constituent list proves nothing on its own: the list and
+    the key came out of the same `_map_hash` calls, so they agree even when the
+    hash is wrong.  Constituents are stored as (long name, hash) pairs, so the
+    record's own name can cross-examine its own hash for free -- and it catches
+    a real hole, since `_map_hash` resolves through the hash and discards the
+    name the record carries.
 
     Two exemptions, both listed rather than passed silently.  The dangling
     template_uk values are left byte for byte by design.  And a locale_uk or
@@ -689,8 +753,9 @@ def gate_g5_g6(dest_sem: str, cls: Classification, tab: Tables) -> int:
     reference dangles either way, so its stale prefix is reported separately
     from the failures that must be zero.
 
-    G6: dangling-reference counts must not grow.  G5 proves nothing stale
-    survived; G6 proves nothing was pointed somewhere new and wrong.
+    G6: dangling-reference counts must not grow beyond what dropping records
+    forces.  G5 proves nothing stale survived; G6 proves nothing was pointed
+    somewhere new and wrong.
     """
     old_hashes = tab.reproducible
     new_hashes = set(tab.new.values())
@@ -721,10 +786,13 @@ def gate_g5_g6(dest_sem: str, cls: Classification, tab: Tables) -> int:
                 continue
             vals = msgpack.unpackb(v)
             if len(vals) > F_CONSTS and vals[F_CONSTS]:
-                for _n, h in vals[F_CONSTS]:
+                for n, h in vals[F_CONSTS]:
                     h = bytes(h)
+                    name = n if isinstance(n, str) else n.decode()
                     if h in old_hashes and h not in new_hashes:
                         bad["theory_constituents holds an old hash"] += 1
+                    if is_persistent(h) and tab.new.get(name) != h:
+                        bad["constituent's name and hash are different theories"] += 1
                 if k[16] in XOR_TAGS:
                     want = xor_theory_prefix([bytes(h) for _n, h in vals[F_CONSTS]])
                     if want != k[:16]:
@@ -760,18 +828,89 @@ def gate_g5_g6(dest_sem: str, cls: Classification, tab: Tables) -> int:
               " (expected, they dangle either way):")
         for kk, n in expected.most_common():
             print(f"        {kk:<45} {n}")
-    print("  G6  dangling references after the migration:")
+    print("  G6  measuring the source's dangling references ...", flush=True)
+    src_dangling, into_drop = reference_census(src_sem, set(cls.drop))
+    print("  G6  dangling references          source  + into the drop set "
+          "=  allowed   actual")
+    grew = 0
     for kk in ("locale_uk", "deps", "template_uk"):
-        print(f"        {kk:<45} {dangling[kk]}")
-    print("        (template_uk: the pre-existing dangling references are left"
-          " byte for byte by design)")
-    return sum(bad.values())
+        allowed = src_dangling[kk] + into_drop[kk]
+        over = max(0, dangling[kk] - allowed)
+        grew += over
+        print(f"        {kk:<20} {src_dangling[kk]:>8} {into_drop[kk]:>16} "
+              f"{allowed:>10} {dangling[kk]:>8}"
+              f"{'   !! GREW BY ' + str(over) if over else ''}")
+    print("        (a reference into a dropped record must dangle afterwards,"
+          " which is why the allowance is not the source count alone)")
+    return sum(bad.values()) + grew
+
+
+def gate_counts(dest: str, src: str, src_th: str, vec_name: str,
+                cls: Classification) -> int:
+    """G3: the destination must hold exactly what the classification says.
+
+    This is the gate the whole `gates` subcommand rests on, because every other
+    check over the destination is a predicate on whatever keys happen to be
+    there rather than a comparison against the intended set.  Without it a
+    truncated build passes: `build_vectors` is the one non-atomic builder --
+    it commits every 200,000 entries over an hours-long run -- so a kill leaves
+    a valid, self-consistent, incomplete environment, and a subset test over it
+    only looks cleaner the more data is missing.  It also catches a second
+    `apply` appending into a destination a previous run had already filled.
+    """
+    problems = 0
+
+    def count(path: str) -> int | None:
+        if not os.path.isdir(path):
+            return None
+        env = lmdb.open(path, readonly=True, lock=False)
+        n = env.stat()["entries"]
+        env.close()
+        return n
+
+    def check(label: str, path: str, want: int) -> None:
+        nonlocal problems
+        got = count(path)
+        if got is None:
+            print(f"  G3  {label:<30} MISSING at {path}")
+            problems += 1
+            return
+        print(f"  G3  {label:<30} {got:>9} (expected {want})"
+              f"{'   !! MISMATCH' if got != want else ''}")
+        if got != want:
+            problems += 1
+
+    check("semantics.lmdb entries", os.path.join(dest, "semantics.lmdb"),
+          len(cls.newkey) + len(cls.copy_verbatim))
+
+    # Recomputed from the source rather than taken from build_vectors' return
+    # value, so that `gates` can check a destination this process did not build.
+    src_vec = lmdb.open(os.path.join(src, vec_name), readonly=True, lock=False)
+    with src_vec.begin() as t:
+        want_vec = sum(1 for k, _ in t.cursor() if bytes(k) in cls.newkey)
+    src_vec.close()
+    check("vector store entries", os.path.join(dest, vec_name), want_vec)
+
+    dest_th = os.path.join(dest, "theory_hash.lmdb")
+    if count(dest_th) is None:
+        print(f"  G3  {'theory_hash.lmdb':<30} MISSING at {dest_th}")
+        problems += 1
+    else:
+        print(f"  G3  {'theory_hash.lmdb entries':<30} {count(dest_th):>9}"
+              f" (from {count(os.path.join(src_th, 'theory_hash.lmdb'))} source"
+              f" entries; names merge, so fewer is expected)")
+    return problems
 
 
 def gate_vector_keys(dest_sem: str, dest_vec: str) -> int:
     """Every key in the migrated vector store must name a key in the migrated
-    record store.  This is the check fsck's exit code deliberately does not
-    make."""
+    record store.
+
+    Weak on its own -- both stores are keyed from the same map, so the subset
+    holds mechanically for anything `apply` builds. It has teeth only over a
+    destination this process did not build, e.g. a half-swapped pair. The
+    counting gate above is what actually guards the vector store.
+    """
     sem = lmdb.open(dest_sem, readonly=True, lock=False)
     keys = set()
     with sem.begin() as t:
@@ -792,7 +931,15 @@ def gate_vector_keys(dest_sem: str, dest_vec: str) -> int:
 def verify_live(tab: Tables, hashes_path: str) -> int:
     """G4's live half: the hashes Isabelle mints under the new code must equal
     the ones this script computed, over the WHOLE table rather than a sample --
-    this is the only check that the two implementations agree."""
+    this is the only check that the two implementations agree.
+
+    `extra` is REPORTED, NOT RETURNED.  The G4 session is the dependency table's
+    image plus `Isabelle_RPC`, so it necessarily holds theories the table does
+    not -- `Performant_Isabelle_ML`, `Remote_Procedure_Calling` and the dump
+    theory itself at minimum.  Counting those as failures would make the one
+    gate that proves the live ML and this script agree cry wolf on a correct
+    run, which is how an operator learns to ignore an exit code.
+    """
     seen = mism = missing = extra = 0
     got: dict[str, str] = {}
     for line in open(hashes_path, encoding="utf-8"):
@@ -815,15 +962,24 @@ def verify_live(tab: Tables, hashes_path: str) -> int:
     print(f"  G4  theories compared                {seen}")
     print(f"  G4  mismatches                       {mism}")
     print(f"  G4  in the table, absent from Isabelle {missing}")
-    print(f"  G4  from Isabelle, absent in the table {extra}")
-    return mism + missing + extra
+    print(f"  G4  from Isabelle, absent in the table {extra}   (expected: the "
+          f"dump's session holds Isabelle_RPC, the table's image does not)")
+    return mism + missing
 
 
 # --------------------------------------------------------------------------
 # reporting
 # --------------------------------------------------------------------------
 
-def report(cls: Classification, tab: Tables, total: int) -> None:
+def report(cls: Classification, total: int) -> int:
+    """Print the classification, and return the problems in it.
+
+    The count identity below is close to a tautology -- every source key lands
+    in exactly one bucket by construction -- but `total` comes from a second,
+    independent open of the store, so a disagreement means something wrote to
+    the source between the two, which is the "no process holds semantics.lmdb"
+    precondition being violated.  Worth an exit code for that alone.
+    """
     print("\nclassification")
     for kk, n in sorted(cls.stats.items()):
         print(f"  {kk:<62} {n:>8}")
@@ -833,8 +989,10 @@ def report(cls: Classification, tab: Tables, total: int) -> None:
           f"({100.0 * len(cls.drop) / total:.3f}%)")
     print(f"  total                             {migrated + len(cls.drop):>8} "
           f"(store holds {total})")
+    problems = 0
     if migrated + len(cls.drop) != total:
         print("  !! G3 FAILED: migrated + dropped does not equal the store's entry count")
+        problems += 1
     print(f"  new-key collisions                {len(cls.collisions):>8}")
     for a, b, new in cls.collisions[:10]:
         print(f"        {a.hex()} and {b.hex()} both -> {new.hex()}")
@@ -842,6 +1000,7 @@ def report(cls: Classification, tab: Tables, total: int) -> None:
     print("\ndropped, by reason")
     for kk, n in by_reason.most_common():
         print(f"  {kk:<62} {n:>8}")
+    return problems
 
 
 def write_drop_list(cls: Classification, path: str) -> None:
@@ -896,7 +1055,7 @@ def main() -> None:
     env = lmdb.open(sem_src, readonly=True, lock=False)
     total = env.stat()["entries"]
     env.close()
-    report(cls, tab, total)
+    problems += report(cls, total)
     if args.drop_list:
         write_drop_list(cls, args.drop_list)
 
@@ -906,18 +1065,35 @@ def main() -> None:
 
     if not args.dest:
         raise SystemExit("apply/gates need --dest")
-    os.makedirs(args.dest, exist_ok=True)
     dest_sem = os.path.join(args.dest, "semantics.lmdb")
+    if args.command == "gates" and not os.path.isdir(dest_sem):
+        raise SystemExit(f"nothing to gate: no semantics.lmdb under {args.dest}")
 
-    vec_name = next((d for d in os.listdir(src)
-                     if d.startswith("vector_") and d.endswith(".lmdb")), None)
-    if vec_name is None:
+    # Every vector store, not the first one os.listdir happens to yield.  The
+    # package supports several models; migrating one and silently leaving the
+    # rest old-keyed would orphan all of their entries after the swap.
+    vec_names = sorted(d for d in os.listdir(src)
+                       if d.startswith("vector_") and d.endswith(".lmdb"))
+    if not vec_names:
         raise SystemExit(f"no vector_*.lmdb in {src}")
+    if len(vec_names) > 1:
+        raise SystemExit(
+            f"{len(vec_names)} vector stores in {src} ({', '.join(vec_names)}). "
+            "This script migrates one; extend it before running here, rather "
+            "than leaving the others keyed to the old scheme.")
+    vec_name = vec_names[0]
 
     if args.command == "apply":
         if problems or cls.collisions:
             raise SystemExit(f"refusing to write: {problems} gate problem(s), "
                              f"{len(cls.collisions)} collision(s)")
+        if os.path.isdir(args.dest) and os.listdir(args.dest):
+            raise SystemExit(
+                f"--dest {args.dest} is not empty. Building into a populated "
+                "directory can leave two generations of records side by side, "
+                "each self-consistent, which every gate downstream would pass. "
+                "Remove it and re-run from the untouched source.")
+        os.makedirs(args.dest, exist_ok=True)
         print("\nbuilding the new semantics.lmdb ...", flush=True)
         n = build_semantics(sem_src, dest_sem, cls)
         print(f"  wrote {n} entries")
@@ -926,13 +1102,15 @@ def main() -> None:
                              os.path.join(args.dest, vec_name), cls)
         print(f"  wrote {w}, dropped {d}")
         print("building the new theory_hash.lmdb ...", flush=True)
-        w, d, c = build_theory_hash(os.path.join(src_th, "theory_hash.lmdb"),
-                                    os.path.join(args.dest, "theory_hash.lmdb"), tab)
-        print(f"  wrote {w}, dropped {d}, of which {c} came from a collapsed group "
-              f"and could only follow one of the two successors")
+        w, d, c, m = build_theory_hash(os.path.join(src_th, "theory_hash.lmdb"),
+                                       os.path.join(args.dest, "theory_hash.lmdb"), tab)
+        print(f"  wrote {w}, dropped {d}; {c} came from a collapsed group and could "
+              f"only follow one of the two successors, and {m} more merged because "
+              f"several content generations of one name now key to one hash")
 
     print("\ngates over the built store")
-    problems += gate_g5_g6(dest_sem, cls, tab)
+    problems += gate_counts(args.dest, src, src_th, vec_name, cls)
+    problems += gate_g5_g6(dest_sem, sem_src, cls, tab)
     problems += gate_vector_keys(dest_sem, os.path.join(args.dest, vec_name))
     print(f"\n{problems} gate problem(s).")
     sys.exit(1 if problems else 0)
