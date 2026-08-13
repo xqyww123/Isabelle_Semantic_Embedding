@@ -955,10 +955,21 @@ def cmd_fsck(args: argparse.Namespace) -> None:
     row("legacy XOR record (no constituent list)", c.legacy_xor, "(run migrate_xor_thm_keys.py)")
     n_tombstones = _count_user_tombstones()
     row("tombstones in the user DB", n_tombstones)
+    # Silent below the threshold: a modest residue of orphan vectors is the
+    # normal cost of the lazy vector cache and reporting it is noise.  A vector
+    # store keyed differently from the record store, on the other hand, orphans
+    # essentially ALL of its entries, so the threshold is what separates the two.
+    # Report only -- it does not enter `problems` and must not move the exit code.
+    ORPHAN_VECTOR_WARN_AT = 10_000
     n_orphan_vectors = _count_vectors_with_no_visible_record()
-    if n_orphan_vectors:
+    if n_orphan_vectors > ORPHAN_VECTOR_WARN_AT:
         row("vectors whose record is gone", n_orphan_vectors,
             "(a missed invalidation; run remove again)")
+        print(f"      !! {n_orphan_vectors} is far past the {ORPHAN_VECTOR_WARN_AT} at which this "
+              "stops looking like\n"
+              "         missed invalidations. Check that the vector store is keyed the same "
+              "way as\n"
+              "         semantics.lmdb — a whole-store key change leaves exactly this trace.")
 
     db_bytes = os.path.getsize(os.path.join(SEMANTICS_DB_PATH, "data.mdb"))
     pct = 100.0 * db_bytes / SEMANTICS_MAP_SIZE
