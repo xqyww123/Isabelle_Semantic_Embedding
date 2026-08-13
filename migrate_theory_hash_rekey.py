@@ -1094,6 +1094,11 @@ def main() -> None:
                 "each self-consistent, which every gate downstream would pass. "
                 "Remove it and re-run from the untouched source.")
         os.makedirs(args.dest, exist_ok=True)
+        if not args.drop_list:
+            # Never leave a run with no record of what it decided to drop.  The
+            # untouched source keeps the records themselves (D7); this keeps the
+            # list of which ones, and why -- the input to any later top-up.
+            write_drop_list(cls, os.path.join(args.dest, "dropped_keys.tsv"))
         print("\nbuilding the new semantics.lmdb ...", flush=True)
         n = build_semantics(sem_src, dest_sem, cls)
         print(f"  wrote {n} entries")
