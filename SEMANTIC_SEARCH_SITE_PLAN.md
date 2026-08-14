@@ -311,6 +311,19 @@ ask before deviating.
   theory's authors. It may be imprecise or wrong; the statement above is
   authoritative." All three come from `site/design/IsaSearch.dc.html` rather
   than being invented here. This settles Q7.
+
+  **Amended by the user on 2026-08-14 — the second sentence changes.** The
+  disclosure now reads: *"Written by a language model from the formal statement,
+  not by the theory's authors. It may be imprecise or wrong. Where the
+  explanation and the statement disagree, the statement is the correct one."*
+  (D40's third sentence follows it; see `site/COPY.md` §3.2 for the whole
+  string.) Reason: two consecutive rounds of reader testing named
+  **`authoritative`** the worst word on the site. Its everyday sense is *sounds
+  expert*, so the original sentence can be read as praise for the explanation
+  rather than as ranking the formal statement above it — the reverse of its
+  purpose, in the single sentence that guards against trusting machine-written
+  prose about a formal statement. The first sentence and the site name are
+  unchanged, and the amendment does not reopen anything else in D30.
 - **D29** (2026-08-13) — three of Q11's choices, settled:
   - **Hybrid retrieval is on by default, fused with RRF** (reciprocal rank
     fusion). No weight to tune, and it covers the exact-name intent a

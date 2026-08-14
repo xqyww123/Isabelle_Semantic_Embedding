@@ -36,7 +36,8 @@ decimal point across most of continental Europe, and the audience is
 international. The corpus size is written **`1 300 000`**, not `1.3 million`: a
 decimal point groups thousands in several of the readers' languages.
 
-**Three open naming choices** are marked `[DECIDE]`. Everything else is settled.
+**Nothing in this file is open.** The four choices that draft 2 raised were
+settled by the user on 2026-08-14; §10 records them.
 
 ## 1. The landing page
 
@@ -154,15 +155,17 @@ mentioned `-`, never explained `excludes` at all, and left spacing unanswered.)*
 
 Eleven buttons, all selected by default (D29):
 
-> Theorem · Named theorems `[DECIDE 1]` · Constant · Type · Class · Locale ·
-> Proof method `[DECIDE 2]` · Introduction rule · Elimination rule · Induction
-> rule · Case split `[DECIDE 3]`
+> Theorem · Named theorems · Constant · Type · Class · Locale · Proof method ·
+> Introduction rule · Elimination rule · Induction rule · Case split
 
 Hover on **Named theorems**: *"A `named_theorems` declaration — a name that later
 proofs add theorems to, such as `approximation_preproc`."*
 Hover on **Introduction rule**: *"A theorem that also serves as an introduction
 rule is one entity with both labels, and one result card carrying both. Selecting
 only this button finds the entities that carry it."*
+Hover on **Case split**: *"A case rule, such as `list.cases` or `nat.exhaust`,
+which splits a proof into one case for each constructor. Rules named `.split`,
+such as `option.split`, are Theorems here."*
 
 When no kind is selected:
 
@@ -192,13 +195,13 @@ Similarity hover — **locked by D30 and D40, do not edit**:
 
 ### 3.2 The expanded explanation
 
-The first two sentences are **locked by D30**. The third is required by D40.
-`[DECIDE 4]` below asks whether the second sentence may change.
+The first sentence is **locked by D30**. The second is D30's, amended by the
+user on 2026-08-14 (see D30's amendment note). The third is required by D40.
 
 > Written by a language model from the formal statement, not by the theory's
-> authors. It may be imprecise or wrong; the statement above is authoritative.
-> isasearch searches this text as well, so a poor explanation can push an entity
-> down the result list.
+> authors. It may be imprecise or wrong. Where the explanation and the statement
+> disagree, the statement is the correct one. isasearch searches this text as
+> well, so a poor explanation can push an entity down the result list.
 
 No explanation:
 
@@ -452,33 +455,31 @@ output, and no one can interpret it without knowing what was indexed. §15.2.)*
   users (settled 2026-08-14). What this interface has to explain is this index,
   not the prover.
 
-## 10. Naming choices for the user
+## 10. The four labelling choices, settled 2026-08-14
 
-- **`[DECIDE 1]` `Collection` → `Named theorems`.** Measured: all 994 records of
-  this kind are `named_theorems` declarations — `Approximation.approximation_preproc`,
+- **`Collection` → `Named theorems`.** Measured: all 994 records of this kind are
+  `named_theorems` declarations — `Approximation.approximation_preproc`,
   `DFS.invar_holds_intros`, `Finiteness.finite`. Not `lemmas` bundles, and not
   attributes such as `simp`. "Named theorems" is Isabelle's own word for exactly
-  this, and it is the only label of the three that a reader can act on. Draft 1
-  proposed `Theorem collection`; the measurement makes `Named theorems` better.
-- **`[DECIDE 2]` `Method` → `Proof method`.** The landing page says "proof
-  methods" and the button says "Method"; and "Method" alone reads as a
-  programming-language method.
-- **`[DECIDE 3]` `Case split` → keep, or rename.** The kind is
-  `CASE_SPLIT_RULE`, 10504 records. An Isabelle reader reported that the label
-  does not distinguish `option.split`-style split rules from `nat.cases`-style
-  case rules, and said they use the two differently. Keeping the label costs
-  nothing if a hover says which one it is — but nobody has yet measured which of
-  the two is in there. Recommendation: keep the label, measure before writing the
-  hover.
-- **`[DECIDE 4]` the word `authoritative`, locked by D30.** Two consecutive
-  rounds of reader testing named this the single worst line on the site. In
-  everyday English "authoritative" means *sounds expert*, so the sentence can be
-  read as praising the explanation rather than as ranking the statement above it
-  — the exact opposite of its purpose, in the one sentence that guards against
-  trusting machine-written text about a formal statement. The proposed
-  replacement keeps the meaning and the register: *"It may be imprecise or wrong.
-  Where the explanation and the statement disagree, the statement is the correct
-  one."* This needs an amendment to D30.
+  this. Draft 1 proposed `Theorem collection`; the measurement made
+  `Named theorems` better.
+- **`Method` → `Proof method`.** The landing page said "proof methods" and the
+  button said "Method"; and "Method" alone reads as a programming-language method.
+- **`Case split` — kept, and the hover is now measured.** An Isabelle reader
+  reported that the label does not distinguish `option.split`-style split rules
+  from `nat.cases`-style case rules. Measured over all 10504 records of the kind:
+  the final name segment is `cases` 3659 times, `exhaust` 2472, then `rel_cases`,
+  `cases_scheme` and `set_cases` — and **exactly one** record has `split` in that
+  segment. Separately, the 1602 entities whose name ends in `.split` are
+  classified `THEOREM`, not this kind. So the kind holds case rules, the reader's
+  ambiguity is answerable, and §2.6's hover says which one it is.
+- **`authoritative` — D30's second sentence is amended.** Two consecutive rounds
+  of reader testing named this the worst line on the site. In everyday English
+  "authoritative" means *sounds expert*, so the sentence can be read as praising
+  the explanation rather than as ranking the statement above it — the opposite of
+  its purpose, in the one sentence that guards against trusting machine-written
+  text about a formal statement. The replacement keeps the meaning and the
+  register and is now in §3.2.
 
 ## 11. What the readers changed, and what they did not
 
