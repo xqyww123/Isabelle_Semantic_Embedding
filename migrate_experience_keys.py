@@ -240,6 +240,9 @@ async def recompute(records: 'list[ExpRecord]', repl_addr: str, session: str,
 
     async with Client(repl_addr, session, timeout=None) as c:
         await c.set_register_thy(False)
+        # The app registers when this theory loads; AFP-ALL-4 does not
+        # precompile it, so it (and the edited .ML) loads from source.
+        await c.load_theory(["Semantic_Embedding.Semantic_Collection_App"])
         await c.run_app("Semantic_Store.migrate_experience_constituents")
         await c._write(triples)
         with open(log_path, "w") as log:
