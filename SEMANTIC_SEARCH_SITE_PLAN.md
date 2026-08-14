@@ -1823,9 +1823,11 @@ chain: the site export is blocked on three prerequisites owned outside this plan
 snapshot). **Two pieces are unblocked and are the immediate work: the interface
 copy with the mockup, and the tokenizer freeze.**
 
-**Nothing here is committed to git.** `SEMANTIC_SEARCH_SITE_PLAN.md`, `site/`
-and everything under it are untracked in the `Semantic_Embedding` submodule. A
-lost working tree loses all of it. Committing is the first thing to do.
+**Superseded on 2026-08-14 — everything is committed**, in the submodule and in
+the super-repo pointer. §15.1 is **done** (see §16.0); §15.3's warning that the
+prototype lives only in a scratchpad is **obsolete** — it is in
+`site/prototype/`. Read **§16** for the current state; the rest of §15 is kept
+because §15.2 and §15.4 are still live.
 
 ### 15.1 The copy rewrite — do this first
 
@@ -2038,3 +2040,249 @@ Unrelated and outstanding: `contrib/Isa-Mini/statistics.py` was renamed to
 interpreter on import) and is staged but uncommitted, to go in with the next
 commit. The copy of it under `ICSE27/` is deliberately untouched — that tree is a
 frozen paper snapshot and must never be modified.
+
+## 16. Tokenizer freeze — detailed handover, 2026-08-14
+
+Written at a second context boundary, immediately before the tokenizer work
+begins. §15 remains valid except where this section says otherwise. Everything
+needed to start is here; nothing below should have to be recovered from the
+conversation that produced it.
+
+### 16.0 What changed since §15 was written
+
+**§15.1, the copy rewrite, is complete.** `site/COPY.md` is at draft 3 and is
+the authoritative source of every visitor-facing string.
+`site/design/IsaSearch.dc.html` has been brought in line with it. Both are
+committed. Do not re-derive copy from §9 of this plan or from the mockup — the
+mockup follows `COPY.md`, never the reverse.
+
+Three rounds of reader testing produced drafts 1→2→3; `COPY.md` §12 records what
+each round changed and, more importantly, **what was rejected and why**. Do not
+re-raise those.
+
+**Corrections landed in this plan**, each in place:
+
+- **D30 amended** by the user: the disclosure's second sentence loses the word
+  `authoritative`.
+- **D39's worked example corrected.** It gave
+  `HOL-Analysis.Path_Connected.path_image_join` as an indexed name. No such name
+  exists — an Isabelle fact's long name is qualified by the **theory base name**,
+  never by the session, and no entity name in the store carries a session prefix.
+  The export indexes the stored name unchanged. `theory_subtokens`, by contrast,
+  **is** session-qualified. The two fields genuinely differ and the interface
+  says so.
+- **§9.3 corrected.** There is no `etc/abbrevs` file. The abbreviations are the
+  `abbrev:` fields of `etc/symbols` (line 189 gives `\<Longrightarrow>` the
+  abbreviation `==>`). **The tokenizer does not convert `==>`** — measured,
+  `tokenize('==>')` returns `['==>']`. Only `\<…>` escapes are converted, by
+  `unicode_of_ascii` in pipeline step 3. `==>` works solely because the input
+  control rewrites the box before the condition is sent. This distinction is
+  load-bearing for both the JavaScript port and the copy.
+- **§6.5 corrected.** Its second reason for carrying BM25 — a degradation path
+  when the embedding budget is exhausted — was deleted by D35 and had been left
+  in. Also recorded there: BM25 indexes **only `interpretation`**, not the name
+  and not the expression.
+
+**The prototype and the probe harness are in the repository**, no longer in a
+scratchpad: `site/prototype/`, with a `README.md` saying what they are and when
+`isabelle_tokenizer.py` replaces them.
+
+### 16.1 The artefacts, and what each is for
+
+```
+site/prototype/subtoken_rule.py       the settled separator class + subtokens(), with the fallback clause
+site/prototype/tokenize_prototype.py  tokenize(), plus the superseded subtoken variants the measurements compared
+site/prototype/corpus_probe.py        counts how many entities a condition matches, on the real corpus
+site/prototype/README.md              what these are; delete none of them until the CI gate is green
+```
+
+`corpus_probe.py` reproduces every match count quoted in this plan and in
+`COPY.md`. Verified from its committed location on 2026-08-14: `?n + ?m = ?m + ?n`
+→ 0, `?a + ?b = ?b + ?a` → 15, in 25 s over 1 362 096 records. It resolves
+`ISABELLE_HOME` and the package paths relative to itself, so it runs from
+anywhere. **Use it rather than writing a new probe**; a differently-written probe
+is a second implementation of the matching rule and will disagree eventually.
+
+### 16.2 The facts a correct implementation must reproduce
+
+Every line below was measured on 2026-08-14 with the prototype. They are the
+seed of the test-vector file (§16.5) and the acceptance criteria for the port.
+`→` gives the **subtokens**, which is the only level that is indexed (D21).
+
+The separator class is **99 characters**: `_`, `.`, seven control symbols
+`⇩⇧⇘⇙⇗⇖❙`, and the 90 rendered sub/superscript characters that `SUBSUP_TRANS_TABLE`
+produces from `⇩` and `⇧`. It is derived from `etc/symbols`, never hand-written.
+
+```
+'sorted_wrt R ?xs'            → ['sorted','wrt','R','xs']
+'Kelly_1_39 ?C ?T ?a'         → ['Kelly','1','39','C','T','a']
+'Stirling_Formula.c = ln (2*pi)/2'
+                              → ['Stirling','Formula','c','=','ln','(','2','*','pi',')','/','2']
+'f x + y'                     → ['f','x','+','y']
+'x y'                         → ['x','y']
+'_wrt'                        → ['wrt']            ← a leading separator vanishes
+'F'                           → ['F']
+'\<Longrightarrow>'           → ['⟹']              ← escape converted in step 3
+'::'                          → ['::']             ← ASCII-symbolic run stays one token
+'-->'                         → ['-->']
+'==>'                         → ['==>']            ← NOT ⟹; see §16.0
+'x\<^sub>i + y\<^sup>T'      → ['x','+','y']      ← folded subscripts are separators
+'f\<^bsub>i\<^esub> = g'     → ['f','i','=','g']  ← bracketed sub/superscript controls likewise
+'\<^bold>x \<^bold>('        → ['𝐱','(']          ← bold folds into the letter; a stranded ❙ vanishes
+'[x]\<^sup>c\<^sup>e'        → ['[','x',']','ᶜᵉ'] ← THE FALLBACK CLAUSE, see below
+'f\<^sub>1'                  → ['f']
+'a?b'                         → ['a','b']          ← `?` divides as well as vanishing
+'?a + ?b' ≡ '?a+?b' ≡ 'a+b'  → ['a','+','b']      ← whitespace is not a boundary
+'HOL-Analysis.Path_Connected.path_image_join'
+                              → ['HOL','-','Analysis','Path','Connected','path','image','join']
+'Path_Connected.path_image_join'
+                              → ['Path','Connected','path','image','join']
+"f'"                          → ["f'"]             ← `'` is a quasi-letter, not a separator
+'x-y'                         → ['x','-','y']
+'%x. x'                       → ['%','x','x']      ← `%` is not converted to λ by the tokenizer
+'_'  '.'  '?'  '   '  '???'  '_.'  '\<^sub>'   → [] (all six)
+```
+
+**The fallback clause is the one piece of the rule that prose alone loses.**
+Splitting a token on the separator class normally yields its parts; but a token
+made **entirely** of rendered sub/superscript characters would yield nothing and
+disappear. Such a token survives whole instead — which is why
+`[x]\<^sup>c\<^sup>e` keeps `ᶜᵉ`. `subtoken_rule.py` implements it; §5.4 describes
+it; any reimplementation that omits it passes most tests and silently drops a
+class of real superscripted operators.
+
+**Matching, for completeness** (this is §6.3, not the tokenizer, but the copy and
+the tests depend on it): a condition matches when its subtokens appear as an
+**adjacent, ordered run** — whole parts only. Measured: `sorted` matches
+`sorted_wrt`; **`sort` does not**; `image_join` matches
+`Path_Connected.path_image_join`; `join_path` does not. `COPY.md` §0 states this
+for visitors and must not drift from it.
+
+Corpus scale, for sizing anything: 1 362 343 records carry a name, 1 362 096
+carry an expression, 1 362 163 are exportable (the difference is 180
+`EXPERIENCE` records, which are not published).
+
+### 16.3 Build order, with an acceptance test for each step
+
+Do these in order. Each step is finished when its test passes, not before.
+
+1. **`Isabelle_Semantic_Embedding/isabelle_tokenizer.py`** — the production
+   Python implementation, lifted from `site/prototype/` and changed in exactly
+   one respect: it reads its character classes from the emitted assets (§16.4)
+   instead of from Python built-ins and a live `Isabelle_RPC_Host` import.
+   *Accepted when* it reproduces every line of §16.2 and, run over the whole
+   corpus, produces subtoken arrays identical to the prototype's for all
+   1 362 096 expressions. Identical means equal element by element; compare with
+   a digest of the concatenated arrays, not by eyeballing samples.
+
+2. **Asset emission in the export** (§16.4). *Accepted when* the assets load
+   standalone, with `Isabelle_RPC_Host` and `ISABELLE_HOME` unavailable, and step
+   1's corpus comparison still passes.
+
+3. **`site/tokenizer/`** — the JavaScript port, reading the same assets.
+   *Accepted when* it passes the shared test-vector file (§16.5) with zero
+   mismatches. It must not consult any JavaScript built-in for character
+   classification — see D41 for the measured divergences that motivates this.
+
+4. **The shared test-vector file** (§16.5). Build it before step 3 so the port
+   has a target.
+
+5. **The CI gate** (§16.6).
+
+6. **`_truncate_to_token_limit`** — decide whether it is still needed. D29 caps
+   the query in *characters*, so it probably is not. If not, do not move it out
+   of `premise_selection.py`; leave it where it is and record that it is unused
+   by the site.
+
+### 16.4 What the assets are, and why they exist (D41)
+
+§5.2 defines the character classes by naming Python's `isalpha`, `isdigit`,
+`isnumeric` and `isspace`. JavaScript has no equivalent, and the obvious
+substitutes **disagree on real corpus characters** — this is measured, not
+hypothetical:
+
+- `²` (U+00B2, 640 occurrences in the corpus) satisfies Python's `isdigit()` but
+  is Unicode category `No`, so `\p{Nd}` disagrees.
+- U+001C–U+001F and U+0085 satisfy Python's `isspace()` but lie outside
+  JavaScript's `\s`.
+- U+FEFF is the reverse: inside `\s`, outside `isspace()`.
+
+So the export emits, beside the symbol table, the explicit code-point sets for:
+**letters** (including the `letter` and `greek` group symbols of `etc/symbols`),
+**digits**, **quasi-letters** (`_` and `'`), **the separator class** (all 99
+characters), and **the ASCII-symbolic set** (`! # $ % & * + - / : < = > @ \ ^ | ~`).
+Neither implementation may consult a language built-in for any of these.
+
+Emit the abbreviation table too, from the `abbrev:` fields of `etc/symbols` —
+the interface needs it for live replacement in the condition box (§9.3), and it
+is already being read. Note that an abbreviation with more than one expansion
+(`.>` and `<.` each serve four or more arrows) cannot be replaced without
+asking, so the interface uses the unambiguous ones only.
+
+### 16.5 The test-vector file
+
+At least **10 000 triples** — input, tokens, subtokens — sampled from real entity
+expressions, **plus** synthetic cases, because real expressions cannot exercise
+pipeline steps 1 and 3 at all: §3.4 established the store is 100 % NFC and that
+`unicode_of_ascii` is the identity on it. A port that omits NFC normalisation and
+escape conversion therefore passes a purely-real-data gate byte for byte, and
+then returns nothing for `\<Longrightarrow>` — one of the two input routes §9.3
+promises.
+
+The synthetic cases must include, at minimum: every line of §16.2; ASCII-escaped
+input; NFD input; sub/superscripts that have no fold entry; separator-only
+conditions; the `²` and U+FEFF boundary characters; U+001C–U+001F and U+0085; and
+a token made entirely of rendered superscripts, for the fallback clause.
+
+Pin the file's **encoding, ordering, count and digest**, so that "both
+implementations passed" is itself a checkable claim rather than a report.
+
+### 16.6 The CI gate
+
+Runs both implementations against the test-vector file and fails on any
+mismatch. It must also fail if the file's digest changes without the count
+changing, which catches a vector file quietly edited to match a broken
+implementation.
+
+### 16.7 Run this review first
+
+Per §15.4, **a narrow adversarial review of §5 and D41, before writing
+`isabelle_tokenizer.py`.** Small scope, deep agents. The specific question to
+ask, because it is the failure mode that a test-vector gate cannot catch:
+
+> Find constructions where two implementations both pass the test vectors and
+> still behave differently on real input.
+
+Give the review §5 in full, D41, D21, `site/prototype/`, and §16.2. Ask
+specifically about: the fallback clause; the boundary between "letter" as
+`isalpha()` and as an `etc/symbols` group membership; whether `symbol_explode`
+can produce a symbol that the separator class splits in half; and NFC stability
+of every symbol value (§3.4 checked this once — have the review check the check).
+
+**Method fix, and it is not optional.** In the 2026-08-13 review the rebuttal
+round deleted **none** of 35 findings, because the defender was told that killing
+a true finding is worse than keeping a weak one, and so passed everything
+through. Give the defender an **explicit deletion quota with justification**, and
+state the judge's bar **before** the round rather than after.
+
+### 16.8 Sub-questions to settle during the work, not before
+
+- **Does turbopuffer store and index a whitespace-only element in a
+  `pre_tokenized_array`?** §6.3 puts `"\n"` between theory names in
+  `theory_subtokens` precisely because the tokenizer can never emit it. Untested.
+  One upsert against a test namespace settles it; if it is dropped, choose a
+  non-whitespace separator the tokenizer cannot emit.
+- **What number does the RRF fusion return per row?** One `multi_query` against a
+  live namespace settles it. D40 already fixes what is *displayed* — the vector
+  leg's cosine similarity — so this affects plumbing only.
+- **Does the f16 conversion change the ranking?** D31 says its reasoning is
+  analysis rather than measurement, and that converting the real stored vectors
+  and measuring the ranking change should happen before the export publishes.
+
+### 16.9 What is still blocked, and by whom
+
+Unchanged from §12.2: the site export waits on the key repair (D33), the
+theory-hash registry, and entity positions in the published snapshot — all three
+owned by the user. **The tokenizer freeze touches no keys and waits on none of
+them.** After it, the next unblocked thing is the export's asset emission, which
+is step 2 above.
