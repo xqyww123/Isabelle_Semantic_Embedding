@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  body { margin: 0; background: #eceae5; font-family: 'IBM Plex Sans', system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  a { color: oklch(0.5 0.09 250); text-decoration: none; border-bottom: 1px solid oklch(0.5 0.09 250 / 0.3); }
+  a:hover { color: oklch(0.42 0.11 250); border-bottom-color: oklch(0.42 0.11 250 / 0.6); }
+  input, button, textarea { font: inherit; color: inherit; }
+  ::selection { background: oklch(0.85 0.09 95); }
+</style>
+</helmet>
+
+<div style="padding: 56px 48px 120px; display: flex; flex-direction: column; gap: 64px; align-items: flex-start">
+
+<div style="max-width: 760px; display: flex; flex-direction: column; gap: 6px">
+  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #8a877f">Isabelle/HOL + AFP semantic search &mdash; UI specification</div>
+  <div style="font-size: 26px; font-weight: 600; color: #1b1b19; letter-spacing: -0.01em">isasearch</div>
+  <div style="font-size: 14px; line-height: 1.55; color: #5f5d57; text-wrap: pretty">Six screens, desktop 1440. Dense typographic treatment: IBM Plex Sans for chrome, monospace for every entity name, theory and expression. Colour is reserved for kind, score and match highlighting.</div>
+</div>
+
+<!-- ============ 1. LANDING ============ -->
+<section style="display: flex; flex-direction: column; gap: 10px">
+  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a877f; letter-spacing: 0.08em">01 &nbsp;LANDING &mdash; the search box is the whole page, filters open by default</div>
+  <div style="width: 1440px; background: #faf9f7; border: 1px solid #d9d6cf; box-shadow: 0 1px 0 rgba(0,0,0,0.03); color: #1b1b19">
+
+    <div style="display: flex; align-items: center; justify-content: space-between; padding: 0 28px; height: 46px; border-bottom: 1px solid #e5e3de">
+      <div style="display: flex; align-items: baseline; gap: 10px">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 600; letter-spacing: -0.01em">isasearch</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a877f">1,352,441 entities &middot; AFP 2026-06 &middot; Isabelle2026</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 18px; font-size: 12px; color: #5f5d57">
+        <a href="#syntax" style="color: #5f5d57; border-bottom-color: rgba(0,0,0,0.15)">query syntax</a>
+        <a href="#about" style="color: #5f5d57; border-bottom-color: rgba(0,0,0,0.15)">about the index</a>
+        <button style="display: flex; align-items: center; gap: 6px; background: transparent; border: 1px solid #d9d6cf; padding: 3px 9px; font-size: 11px; font-family: 'IBM Plex Mono', monospace; color: #5f5d57; cursor: pointer" style-hover="border-color: #b3afa6">
+          <span>&#9789;</span><span>dark</span>
+        </button>
+      </div>
+    </div>
+
+    <div style="padding: 74px 0 0; display: flex; flex-direction: column; align-items: center">
+      <div style="width: 840px; display: flex; flex-direction: column; gap: 14px">
+        <div style="display: flex; flex-direction: column; gap: 7px; margin-bottom: 12px">
+          <h1 style="margin: 0; font-size: 30px; font-weight: 600; letter-spacing: -0.02em; color: #1b1b19">Isabelle Semantic Search</h1>
+          <div style="font-size: 14px; line-height: 1.6; color: #5f5d57; max-width: 66ch; text-wrap: pretty">Find theorems, constants, types, classes, locales and proof methods across the Isabelle/HOL distribution and the Archive of Formal Proofs &mdash; by describing them in English rather than naming them.</div>
+        </div>
+        <label for="q-landing" style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #8a877f">Describe what you are looking for</label>
+        <div style="display: flex; border: 1px solid #b3afa6; background: #ffffff">
+          <input id="q-landing" value="{{ landingQuery }}" onChange="{{ onLandingQuery }}" placeholder="theorems about continuity of paths" style="flex: 1; border: 0; outline: none; padding: 18px 20px; font-size: 19px; background: transparent" />
+          <button style="border: 0; border-left: 1px solid #e5e3de; background: #1b1b19; color: #faf9f7; padding: 0 30px; font-size: 14px; font-weight: 500; cursor: pointer" style-hover="background: oklch(0.35 0.06 250)">Search</button>
+        </div>
+        <div style="font-size: 12.5px; color: #75736c; line-height: 1.6; max-width: 640px; text-wrap: pretty">A natural-language query is required &mdash; results are ranked by semantic similarity to your description. Filters narrow that ranking, they cannot replace it.</div>
+
+        <div style="margin-top: 16px; border: 1px solid #d9d6cf; background: #f4f2ee">
+          <div style="display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid #e5e3de">
+            <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: #5f5d57">Syntactic filters</span>
+            <span style="flex: 1"></span>
+            <span style="font-size: 11.5px; color: #8a877f">optional &middot; literal text matching &mdash; no variables, no patterns</span>
+          </div>
+          <div style="display: grid; grid-template-columns: 100px 1fr; gap: 12px 16px; padding: 13px 14px 15px; align-items: start">
+
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: #5f5d57; padding-top: 7px">Entity Name</div>
+            <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-start">
+              <sc-for list="{{ lnameRows }}" as="row" hint-placeholder-count="1">
+                <div style="display: flex; align-items: stretch; gap: 6px">
+                  <sc-if value="{{ row.isInclude }}" hint-placeholder-val="{{ true }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 150); border: 1px solid oklch(0.83 0.06 150); border-bottom-width: 2px; color: oklch(0.4 0.09 150); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 150); border-color: oklch(0.7 0.09 150)" title="click to switch to excludes"><span>contains</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <sc-if value="{{ row.isExclude }}" hint-placeholder-val="{{ false }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 25); border: 1px solid oklch(0.85 0.06 25); border-bottom-width: 2px; color: oklch(0.45 0.11 25); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 25); border-color: oklch(0.72 0.1 25)" title="click to switch to contains"><span>excludes</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <input value="{{ row.text }}" onChange="{{ row.onText }}" placeholder="sorted_wrt_append" style="width: 470px; border: 1px solid #d9d6cf; background: #ffffff; padding: 5px 9px; font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 13px; outline: none" />
+                  <button onClick="{{ row.onRemove }}" style="width: 28px; background: transparent; border: 1px solid #e0ddd6; color: #8a877f; font-size: 13px; cursor: pointer">&times;</button>
+                </div>
+              </sc-for>
+              <button onClick="{{ addLName }}" style="background: transparent; border: 1px dashed #cfcbc2; padding: 4px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #5f5d57; cursor: pointer">+ add condition</button>
+            </div>
+
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: #5f5d57; padding-top: 7px">Expression</div>
+            <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-start">
+              <sc-for list="{{ lexprRows }}" as="row" hint-placeholder-count="1">
+                <div style="display: flex; align-items: stretch; gap: 6px">
+                  <sc-if value="{{ row.isInclude }}" hint-placeholder-val="{{ true }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 150); border: 1px solid oklch(0.83 0.06 150); border-bottom-width: 2px; color: oklch(0.4 0.09 150); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 150); border-color: oklch(0.7 0.09 150)" title="click to switch to excludes"><span>contains</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <sc-if value="{{ row.isExclude }}" hint-placeholder-val="{{ false }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 25); border: 1px solid oklch(0.85 0.06 25); border-bottom-width: 2px; color: oklch(0.45 0.11 25); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 25); border-color: oklch(0.72 0.1 25)" title="click to switch to contains"><span>excludes</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <input value="{{ row.text }}" onChange="{{ row.onText }}" placeholder="continuous_on" style="width: 470px; border: 1px solid #d9d6cf; background: #ffffff; padding: 5px 9px; font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',monospace; font-size: 13px; outline: none" />
+                  <button onClick="{{ row.onRemove }}" style="width: 28px; background: transparent; border: 1px solid #e0ddd6; color: #8a877f; font-size: 13px; cursor: pointer" style-hover="border-color: #8a877f; color: #1b1b19" title="remove condition">&times;</button>
+                </div>
+              </sc-for>
+              <button onClick="{{ addLexpr }}" style="background: transparent; border: 1px dashed #cfcbc2; padding: 4px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #5f5d57; cursor: pointer" style-hover="border-color: #8a877f; color: #1b1b19">+ add condition</button>
+            </div>
+
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: #5f5d57; padding-top: 7px">Theory Name</div>
+            <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-start">
+              <sc-for list="{{ lthyRows }}" as="row" hint-placeholder-count="1">
+                <div style="display: flex; align-items: stretch; gap: 6px">
+                  <sc-if value="{{ row.isInclude }}" hint-placeholder-val="{{ true }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 150); border: 1px solid oklch(0.83 0.06 150); border-bottom-width: 2px; color: oklch(0.4 0.09 150); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 150); border-color: oklch(0.7 0.09 150)" title="click to switch to excludes"><span>contains</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <sc-if value="{{ row.isExclude }}" hint-placeholder-val="{{ false }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 25); border: 1px solid oklch(0.85 0.06 25); border-bottom-width: 2px; color: oklch(0.45 0.11 25); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 25); border-color: oklch(0.72 0.1 25)" title="click to switch to contains"><span>excludes</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <input value="{{ row.text }}" onChange="{{ row.onText }}" placeholder="HOL-Analysis.Path_Connected" style="width: 470px; border: 1px solid #d9d6cf; background: #ffffff; padding: 5px 9px; font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 13px; outline: none" />
+                  <button onClick="{{ row.onRemove }}" style="width: 28px; background: transparent; border: 1px solid #e0ddd6; color: #8a877f; font-size: 13px; cursor: pointer">&times;</button>
+                </div>
+              </sc-for>
+              <button onClick="{{ addLthy }}" style="background: transparent; border: 1px dashed #cfcbc2; padding: 4px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #5f5d57; cursor: pointer">+ add condition</button>
+            </div>
+            <div></div>
+            <sc-if value="{{ theoryCaveat }}" hint-placeholder-val="{{ true }}">
+              <div style="max-width: 600px; margin-top: -4px; padding: 6px 10px; background: oklch(0.97 0.035 85); border: 1px solid oklch(0.86 0.07 85); border-left-width: 3px; font-size: 11.5px; line-height: 1.5; color: oklch(0.42 0.09 70); text-wrap: pretty">
+                Theorems have no declaring theory. For a theorem this matches the theories of the constants its statement uses &mdash; often several, sometimes dozens.
+              </div>
+            </sc-if>
+
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: #5f5d57; padding-top: 7px">All</div>
+            <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-start">
+              <sc-for list="{{ lallRows }}" as="row" hint-placeholder-count="1">
+                <div style="display: flex; align-items: stretch; gap: 6px">
+                  <sc-if value="{{ row.isInclude }}" hint-placeholder-val="{{ true }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 150); border: 1px solid oklch(0.83 0.06 150); border-bottom-width: 2px; color: oklch(0.4 0.09 150); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 150); border-color: oklch(0.7 0.09 150)" title="click to switch to excludes"><span>contains</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <sc-if value="{{ row.isExclude }}" hint-placeholder-val="{{ false }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 25); border: 1px solid oklch(0.85 0.06 25); border-bottom-width: 2px; color: oklch(0.45 0.11 25); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 25); border-color: oklch(0.72 0.1 25)" title="click to switch to contains"><span>excludes</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <input value="{{ row.text }}" onChange="{{ row.onText }}" placeholder="continuous_on" style="width: 470px; border: 1px solid #d9d6cf; background: #ffffff; padding: 5px 9px; font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 13px; outline: none" />
+                  <button onClick="{{ row.onRemove }}" style="width: 28px; background: transparent; border: 1px solid #e0ddd6; color: #8a877f; font-size: 13px; cursor: pointer">&times;</button>
+                </div>
+              </sc-for>
+              <button onClick="{{ addLAll }}" style="background: transparent; border: 1px dashed #cfcbc2; padding: 4px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #5f5d57; cursor: pointer">+ add condition</button>
+            </div>
+            <div></div>
+            <div style="max-width: 600px; margin-top: -4px; font-size: 11.5px; line-height: 1.5; color: #8a877f">
+              Matches in Entity Name, Expression or Theory Name.
+            </div>
+
+            
+
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: #5f5d57; padding-top: 5px">Kind</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px">
+              <sc-for list="{{ lchips }}" as="c" hint-placeholder-count="11">
+                <sc-if value="{{ c.on }}" hint-placeholder-val="{{ false }}">
+                  <button onClick="{{ c.onClick }}" style="display: inline-flex; align-items: center; gap: 6px; background: #1b1b19; border: 1px solid #1b1b19; color: #faf9f7; padding: 4px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer">
+                    <span style="width: 6px; height: 6px; background: {{ c.color }}"></span>{{ c.label }}
+                  </button>
+                </sc-if>
+                <sc-if value="{{ c.off }}" hint-placeholder-val="{{ true }}">
+                  <button onClick="{{ c.onClick }}" style="display: inline-flex; align-items: center; gap: 6px; background: #ffffff; border: 1px solid #d9d6cf; color: #5f5d57; padding: 4px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="border-color: #8a877f; color: #1b1b19">
+                    <span style="width: 6px; height: 6px; background: {{ c.color }}"></span>{{ c.label }}
+                  </button>
+                </sc-if>
+              </sc-for>
+            </div>
+          </div>
+          <div style="padding: 0 14px 13px; font-size: 12px; color: #75736c; line-height: 1.65; max-width: 78ch; text-wrap: pretty">
+            Type the symbols directly, or use ASCII escapes &mdash; they are converted as you type: <span style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 12px; background: #ffffff; border: 1px solid #e0ddd6; padding: 1px 5px">\&lt;Longrightarrow&gt;</span> and the abbreviation <span style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 12px; background: #ffffff; border: 1px solid #e0ddd6; padding: 1px 5px">==&gt;</span> both become <span style="font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',monospace; font-size: 13px">&#10233;</span>; <span style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 12px; background: #ffffff; border: 1px solid #e0ddd6; padding: 1px 5px">\&lt;^sub&gt;M</span> becomes <span style="font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',monospace; font-size: 13px">&#8681;M</span>.
+          </div>
+        </div>
+
+        <div style="margin-top: 26px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; font-size: 12.5px; color: #75736c">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: #8a877f">Try</span>
+          <a href="#r" style="font-size: 12.5px">theorems about continuity of paths</a>
+          <span style="color: #cfcbc2">/</span>
+          <a href="#r" style="font-size: 12.5px">measurability of cuts in a product measure</a>
+          <span style="color: #cfcbc2">/</span>
+          <a href="#r" style="font-size: 12.5px">no infinite descending chain in a finite type</a>
+        </div>
+
+        <div style="margin-top: 96px; padding-top: 14px; border-top: 1px solid #e5e3de; display: flex; justify-content: space-between; gap: 24px; font-size: 11.5px; color: #8a877f; line-height: 1.6">
+          <span style="max-width: 620px; text-wrap: pretty">English explanations of entities are <strong style="font-weight: 500; color: #5f5d57">machine-generated</strong> from the formal statement and are not part of the Isabelle sources. Treat them as a reading aid, never as authority &mdash; the expression is the truth.</span>
+          <span style="font-family: 'IBM Plex Mono', monospace; flex: none">index built 2026-06-14</span>
+        </div>
+      </div>
+    </div>
+    <div style="height: 60px"></div>
+  </div>
+</section>
+
+<!-- ============ 2. RESULTS, FILTERS COLLAPSED ============ -->
+<section style="display: flex; flex-direction: column; gap: 10px">
+  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a877f; letter-spacing: 0.08em">02 &nbsp;RESULTS &mdash; FILTERS COLLAPSED (state summarised, never hidden)</div>
+  <div style="width: 1440px; background: #faf9f7; border: 1px solid #d9d6cf; color: #1b1b19">
+
+    <div style="display: flex; align-items: center; gap: 20px; padding: 0 28px; height: 46px; border-bottom: 1px solid #e5e3de">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 600">isasearch</span>
+      <div style="flex: 1; display: flex; border: 1px solid #d9d6cf; background: #ffffff; height: 30px">
+        <input defaultValue="theorems about continuity of paths" style="flex: 1; border: 0; outline: none; padding: 0 12px; font-size: 13.5px; background: transparent" />
+        <button style="border: 0; background: #1b1b19; color: #faf9f7; padding: 0 18px; font-size: 12.5px; cursor: pointer">Search</button>
+      </div>
+      <button style="background: transparent; border: 1px solid #d9d6cf; padding: 3px 9px; font-size: 11px; font-family: 'IBM Plex Mono', monospace; color: #5f5d57; cursor: pointer">&#9789; dark</button>
+    </div>
+
+    <div style="padding: 14px 28px 0">
+      <button onClick="{{ onFilters }}" style="width: 100%; display: flex; align-items: center; gap: 12px; background: #f4f2ee; border: 1px solid #e5e3de; padding: 8px 12px; cursor: pointer; text-align: left" style-hover="border-color: #cfcbc2">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #5f5d57">&#9656;</span>
+        <span style="font-size: 13px; font-weight: 500">Syntactic filters</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; padding: 1px 7px; background: oklch(0.93 0.04 250); color: oklch(0.42 0.09 250); border: 1px solid oklch(0.86 0.05 250)">{{ filterSummary }}</span>
+        <span style="flex: 1"></span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a877f">expression: continuous_on, &minus;linepath &nbsp;&middot;&nbsp; theory: Path_Connected &nbsp;&middot;&nbsp; kind: Theorem, Introduction rule</span>
+      </button>
+    </div>
+
+    <div style="display: flex; align-items: baseline; justify-content: space-between; padding: 16px 28px 8px">
+      <div style="font-size: 12.5px; color: #75736c">
+        <strong style="font-family: 'IBM Plex Mono', monospace; font-weight: 600; color: #1b1b19">1,204</strong> matches ranked by semantic similarity &middot; 61&thinsp;ms
+      </div>
+      <div style="display: flex; align-items: center; gap: 16px; font-size: 11.5px; color: #8a877f">
+        <span>Explanations are machine-generated. <a href="#about" style="font-size: 11.5px">how</a></span>
+        <span style="font-family: 'IBM Plex Mono', monospace">rows 1&ndash;8 of 200</span>
+      </div>
+    </div>
+
+    <div style="border-top: 1px solid #e5e3de">
+      <sc-for list="{{ results }}" as="r" hint-placeholder-count="8">
+        <div style="display: grid; grid-template-columns: 1fr 120px; gap: 20px; padding: 13px 28px 14px; border-bottom: 1px solid #e9e7e2; background: #faf9f7" style-hover="background: #ffffff">
+          <div style="min-width: 0; display: flex; flex-direction: column; gap: 7px">
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px">
+              <a href="#entity" style="font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',Menlo,monospace; font-size: 14.5px; font-weight: 500; color: #1b1b19; border-bottom: 1px solid #cfcbc2; letter-spacing: -0.005em">{{ r.name }}</a>
+              <div style="display: flex; flex-wrap: wrap; gap: 10px">
+                <sc-for list="{{ r.kinds }}" as="k" hint-placeholder-count="1">
+                  <span style="display: inline-flex; align-items: center; gap: 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: #5f5d57">
+                    <span style="width: 6px; height: 6px; background: {{ k.color }}"></span>{{ k.label }}
+                  </span>
+                </sc-for>
+              </div>
+            </div>
+            <sc-if value="{{ r.showTheory }}" hint-placeholder-val="{{ true }}">
+              <div style="display: flex; align-items: baseline; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #75736c">
+                <sc-if value="{{ r.matchedOnly }}" hint-placeholder-val="{{ false }}">
+                  <span style="color: #8a877f">matches</span>
+                </sc-if>
+                <span>{{ r.theory }}</span>
+                <a href="#theories" style="font-size: 11.5px; color: #8a877f; border-bottom-color: rgba(0,0,0,0.12)">{{ r.moreLabel }}</a>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ r.clipped }}" hint-placeholder-val="{{ false }}">
+              <div style="position: relative">
+                <pre style="margin: 0; max-height: 96px; overflow: hidden; padding: 9px 11px; background: #f4f2ee; border: 1px solid #e9e7e2; border-left: 2px solid #cfcbc2; font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',Menlo,monospace; font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal">{{ r.expr }}</pre>
+                <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 46px; background: linear-gradient(to bottom, rgba(244,242,238,0), #f4f2ee 78%); pointer-events: none"></div>
+              </div>
+              <button onClick="{{ r.onExpr }}" style="align-self: flex-start; background: transparent; border: 1px solid #e0ddd6; padding: 2px 8px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #5f5d57; cursor: pointer" style-hover="border-color: #8a877f">{{ r.longNote }}</button>
+            </sc-if>
+            <sc-if value="{{ r.full }}" hint-placeholder-val="{{ true }}">
+              <pre style="margin: 0; max-height: 420px; overflow: auto; padding: 9px 11px; background: #f4f2ee; border: 1px solid #e9e7e2; border-left: 2px solid #cfcbc2; font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',Menlo,monospace; font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal">{{ r.expr }}</pre>
+            </sc-if>
+            <sc-if value="{{ r.collapseExpr }}" hint-placeholder-val="{{ false }}">
+              <button onClick="{{ r.onExpr }}" style="align-self: flex-start; background: transparent; border: 1px solid #e0ddd6; padding: 2px 8px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #5f5d57; cursor: pointer">collapse expression</button>
+            </sc-if>
+
+            <sc-if value="{{ r.explClosed }}" hint-placeholder-val="{{ true }}">
+              <button onClick="{{ r.onExpl }}" style="align-self: flex-start; background: transparent; border: 0; padding: 0; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: #8a877f; cursor: pointer" style-hover="color: #1b1b19">&#9656; explanation</button>
+            </sc-if>
+            <sc-if value="{{ r.explOpen }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; flex-direction: column; gap: 4px">
+                <button onClick="{{ r.onExpl }}" style="align-self: flex-start; background: transparent; border: 0; padding: 0; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: #8a877f; cursor: pointer">&#9662; explanation &mdash; machine-generated</button>
+                <div style="font-size: 13px; line-height: 1.6; color: #45443f; max-width: 76ch; padding-left: 11px; border-left: 2px solid #e9e7e2; text-wrap: pretty">{{ r.expl }}</div>
+              </div>
+            </sc-if>
+          </div>
+
+          <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 8px">
+            <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-weight: 600; color: oklch(0.5 0.09 250)">{{ r.score }}</span>
+            <button onClick="{{ r.onCopy }}" style="background: transparent; border: 1px solid #e0ddd6; padding: 2px 8px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #5f5d57; cursor: pointer" style-hover="border-color: #8a877f; color: #1b1b19">{{ r.copyLabel }}</button>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="display: flex; align-items: center; justify-content: center; gap: 10px; padding: 18px 28px 26px">
+      <button style="background: transparent; border: 1px solid #d9d6cf; padding: 5px 14px; font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #5f5d57; cursor: pointer" style-hover="border-color: #8a877f">load 8 more</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 3. FILTERS EXPANDED ============ -->
+<section style="display: flex; flex-direction: column; gap: 10px">
+  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a877f; letter-spacing: 0.08em">03 &nbsp;RESULTS &mdash; FILTERS EXPANDED, THREE CONDITIONS ACTIVE (live: rows, chips, add/remove; clear the Theory Name row and the theory line disappears from every theorem card)</div>
+  <div style="width: 1440px; background: #faf9f7; border: 1px solid #d9d6cf; color: #1b1b19">
+
+    <div style="display: flex; align-items: center; gap: 20px; padding: 0 28px; height: 46px; border-bottom: 1px solid #e5e3de">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 600">isasearch</span>
+      <div style="flex: 1; display: flex; border: 1px solid #d9d6cf; background: #ffffff; height: 30px">
+        <input defaultValue="theorems about continuity of paths" style="flex: 1; border: 0; outline: none; padding: 0 12px; font-size: 13.5px; background: transparent" />
+        <button style="border: 0; background: #1b1b19; color: #faf9f7; padding: 0 18px; font-size: 12.5px; cursor: pointer">Search</button>
+      </div>
+      <button style="background: transparent; border: 1px solid #d9d6cf; padding: 3px 9px; font-size: 11px; font-family: 'IBM Plex Mono', monospace; color: #5f5d57; cursor: pointer">&#9789; dark</button>
+    </div>
+
+    <div style="padding: 14px 28px 0">
+      <div style="border: 1px solid #d9d6cf; background: #f4f2ee">
+        <button onClick="{{ onFilters }}" style="width: 100%; display: flex; align-items: center; gap: 12px; background: transparent; border: 0; border-bottom: 1px solid #e5e3de; padding: 8px 12px; cursor: pointer; text-align: left">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #5f5d57">{{ caret }}</span>
+          <span style="font-size: 13px; font-weight: 500">Syntactic filters</span>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; padding: 1px 7px; background: oklch(0.93 0.04 250); color: oklch(0.42 0.09 250); border: 1px solid oklch(0.86 0.05 250)">{{ filterSummary }}</span>
+          <span style="flex: 1"></span>
+          <span style="font-size: 11.5px; color: #8a877f">literal text matching &mdash; no variables, no patterns</span>
+        </button>
+
+        <sc-if value="{{ filtersOpen }}" hint-placeholder-val="{{ true }}">
+          <div style="display: grid; grid-template-columns: 108px 1fr; gap: 14px 18px; padding: 14px 16px 16px; align-items: start">
+
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: #5f5d57; padding-top: 7px">Entity Name</div>
+            <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-start">
+              <sc-for list="{{ nameRows }}" as="row" hint-placeholder-count="1">
+                <div style="display: flex; align-items: stretch; gap: 6px">
+                  <sc-if value="{{ row.isInclude }}" hint-placeholder-val="{{ true }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 150); border: 1px solid oklch(0.83 0.06 150); border-bottom-width: 2px; color: oklch(0.4 0.09 150); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 150); border-color: oklch(0.7 0.09 150)" title="click to switch to excludes"><span>contains</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <sc-if value="{{ row.isExclude }}" hint-placeholder-val="{{ false }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 25); border: 1px solid oklch(0.85 0.06 25); border-bottom-width: 2px; color: oklch(0.45 0.11 25); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 25); border-color: oklch(0.72 0.1 25)" title="click to switch to contains"><span>excludes</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <input value="{{ row.text }}" onChange="{{ row.onText }}" placeholder="sorted_wrt_append" style="width: 460px; border: 1px solid #d9d6cf; background: #ffffff; padding: 5px 9px; font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 13px; outline: none" />
+                  <button onClick="{{ row.onRemove }}" style="width: 28px; background: transparent; border: 1px solid #e0ddd6; color: #8a877f; font-size: 13px; cursor: pointer">&times;</button>
+                </div>
+              </sc-for>
+              <button onClick="{{ addName }}" style="background: transparent; border: 1px dashed #cfcbc2; padding: 4px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #5f5d57; cursor: pointer">+ add condition</button>
+            </div>
+
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: #5f5d57; padding-top: 7px">Expression</div>
+            <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-start">
+              <sc-for list="{{ exprRows }}" as="row" hint-placeholder-count="2">
+                <div style="display: flex; align-items: stretch; gap: 6px">
+                  <sc-if value="{{ row.isInclude }}" hint-placeholder-val="{{ true }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 150); border: 1px solid oklch(0.83 0.06 150); border-bottom-width: 2px; color: oklch(0.4 0.09 150); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 150); border-color: oklch(0.7 0.09 150)" title="click to switch to excludes"><span>contains</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <sc-if value="{{ row.isExclude }}" hint-placeholder-val="{{ false }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 25); border: 1px solid oklch(0.85 0.06 25); border-bottom-width: 2px; color: oklch(0.45 0.11 25); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 25); border-color: oklch(0.72 0.1 25)" title="click to switch to contains"><span>excludes</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <input value="{{ row.text }}" onChange="{{ row.onText }}" placeholder="continuous_on" style="width: 460px; border: 1px solid #d9d6cf; background: #ffffff; padding: 5px 9px; font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',monospace; font-size: 13px; outline: none" />
+                  <button onClick="{{ row.onRemove }}" style="width: 28px; background: transparent; border: 1px solid #e0ddd6; color: #8a877f; font-size: 13px; cursor: pointer" style-hover="border-color: #8a877f; color: #1b1b19" title="remove condition">&times;</button>
+                </div>
+              </sc-for>
+              <button onClick="{{ addExpr }}" style="background: transparent; border: 1px dashed #cfcbc2; padding: 4px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #5f5d57; cursor: pointer" style-hover="border-color: #8a877f; color: #1b1b19">+ add condition</button>
+            </div>
+
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: #5f5d57; padding-top: 7px">Theory Name</div>
+            <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-start">
+              <sc-for list="{{ thyRows }}" as="row" hint-placeholder-count="1">
+                <div style="display: flex; align-items: stretch; gap: 6px">
+                  <sc-if value="{{ row.isInclude }}" hint-placeholder-val="{{ true }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 150); border: 1px solid oklch(0.83 0.06 150); border-bottom-width: 2px; color: oklch(0.4 0.09 150); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 150); border-color: oklch(0.7 0.09 150)" title="click to switch to excludes"><span>contains</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <sc-if value="{{ row.isExclude }}" hint-placeholder-val="{{ false }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 25); border: 1px solid oklch(0.85 0.06 25); border-bottom-width: 2px; color: oklch(0.45 0.11 25); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 25); border-color: oklch(0.72 0.1 25)" title="click to switch to contains"><span>excludes</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <input value="{{ row.text }}" onChange="{{ row.onText }}" placeholder="HOL-Analysis.Path_Connected" style="width: 460px; border: 1px solid #d9d6cf; background: #ffffff; padding: 5px 9px; font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 13px; outline: none" />
+                  <button onClick="{{ row.onRemove }}" style="width: 28px; background: transparent; border: 1px solid #e0ddd6; color: #8a877f; font-size: 13px; cursor: pointer">&times;</button>
+                </div>
+              </sc-for>
+              <button onClick="{{ addThy }}" style="background: transparent; border: 1px dashed #cfcbc2; padding: 4px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #5f5d57; cursor: pointer">+ add condition</button>
+            </div>
+            <div></div>
+            <sc-if value="{{ theoryCaveat }}" hint-placeholder-val="{{ true }}">
+              <div style="max-width: 600px; margin-top: -4px; padding: 6px 10px; background: oklch(0.97 0.035 85); border: 1px solid oklch(0.86 0.07 85); border-left-width: 3px; font-size: 11.5px; line-height: 1.5; color: oklch(0.42 0.09 70); text-wrap: pretty">
+                Theorems have no declaring theory. For a theorem this matches the theories of the constants its statement uses &mdash; often several, sometimes dozens.
+              </div>
+            </sc-if>
+
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: #5f5d57; padding-top: 7px">All</div>
+            <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-start">
+              <sc-for list="{{ allRows }}" as="row" hint-placeholder-count="1">
+                <div style="display: flex; align-items: stretch; gap: 6px">
+                  <sc-if value="{{ row.isInclude }}" hint-placeholder-val="{{ true }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 150); border: 1px solid oklch(0.83 0.06 150); border-bottom-width: 2px; color: oklch(0.4 0.09 150); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 150); border-color: oklch(0.7 0.09 150)" title="click to switch to excludes"><span>contains</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <sc-if value="{{ row.isExclude }}" hint-placeholder-val="{{ false }}">
+                    <button onClick="{{ row.onMode }}" style="width: 104px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; background: oklch(0.95 0.04 25); border: 1px solid oklch(0.85 0.06 25); border-bottom-width: 2px; color: oklch(0.45 0.11 25); font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="background: oklch(0.91 0.06 25); border-color: oklch(0.72 0.1 25)" title="click to switch to contains"><span>excludes</span><span style="font-size: 12px; opacity: 0.65">⇄</span></button>
+                  </sc-if>
+                  <input value="{{ row.text }}" onChange="{{ row.onText }}" placeholder="continuous_on" style="width: 460px; border: 1px solid #d9d6cf; background: #ffffff; padding: 5px 9px; font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 13px; outline: none" />
+                  <button onClick="{{ row.onRemove }}" style="width: 28px; background: transparent; border: 1px solid #e0ddd6; color: #8a877f; font-size: 13px; cursor: pointer">&times;</button>
+                </div>
+              </sc-for>
+              <button onClick="{{ addAll }}" style="background: transparent; border: 1px dashed #cfcbc2; padding: 4px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #5f5d57; cursor: pointer">+ add condition</button>
+            </div>
+            <div></div>
+            <div style="max-width: 600px; margin-top: -4px; font-size: 11.5px; line-height: 1.5; color: #8a877f">
+              Matches in Entity Name, Expression or Theory Name.
+            </div>
+
+            
+
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: #5f5d57; padding-top: 5px">Kind</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px; max-width: 900px">
+              <sc-for list="{{ chips }}" as="c" hint-placeholder-count="11">
+                <sc-if value="{{ c.on }}" hint-placeholder-val="{{ false }}">
+                  <button onClick="{{ c.onClick }}" style="display: inline-flex; align-items: center; gap: 6px; background: #1b1b19; border: 1px solid #1b1b19; color: #faf9f7; padding: 4px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer">
+                    <span style="width: 6px; height: 6px; background: {{ c.color }}"></span>{{ c.label }}
+                  </button>
+                </sc-if>
+                <sc-if value="{{ c.off }}" hint-placeholder-val="{{ true }}">
+                  <button onClick="{{ c.onClick }}" style="display: inline-flex; align-items: center; gap: 6px; background: #ffffff; border: 1px solid #d9d6cf; color: #5f5d57; padding: 4px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; cursor: pointer" style-hover="border-color: #8a877f; color: #1b1b19">
+                    <span style="width: 6px; height: 6px; background: {{ c.color }}"></span>{{ c.label }}
+                  </button>
+                </sc-if>
+              </sc-for>
+            </div>
+
+            <div></div>
+            <div style="display: flex; align-items: center; gap: 14px; padding-top: 2px">
+              <button style="background: #1b1b19; border: 1px solid #1b1b19; color: #faf9f7; padding: 6px 16px; font-size: 12.5px; cursor: pointer">Apply filters</button>
+              <button style="background: transparent; border: 1px solid #d9d6cf; padding: 6px 12px; font-size: 12.5px; color: #5f5d57; cursor: pointer">Clear all</button>
+              <span style="font-size: 11.5px; color: #8a877f; line-height: 1.5; max-width: 460px; text-wrap: pretty">Conditions are matched literally against the printed text of the field they sit in. Case-sensitive.</span>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: baseline; justify-content: space-between; padding: 16px 28px 8px">
+      <div style="font-size: 12.5px; color: #75736c"><strong style="font-family: 'IBM Plex Mono', monospace; font-weight: 600; color: #1b1b19">37</strong> matches after filters &middot; 44&thinsp;ms</div>
+      <div style="font-size: 11.5px; color: #8a877f">Explanations are machine-generated. <a href="#about" style="font-size: 11.5px">how</a></div>
+    </div>
+
+    <div style="border-top: 1px solid #e5e3de">
+      <sc-for list="{{ resultsDark }}" as="r" hint-placeholder-count="5">
+        <div style="display: grid; grid-template-columns: 1fr 120px; gap: 20px; padding: 13px 28px 14px; border-bottom: 1px solid #e9e7e2" style-hover="background: #ffffff">
+          <div style="min-width: 0; display: flex; flex-direction: column; gap: 7px">
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px">
+              <a href="#entity" style="font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',Menlo,monospace; font-size: 14.5px; font-weight: 500; color: #1b1b19; border-bottom: 1px solid #cfcbc2">{{ r.name }}</a>
+              <div style="display: flex; flex-wrap: wrap; gap: 10px">
+                <sc-for list="{{ r.kinds }}" as="k" hint-placeholder-count="1">
+                  <span style="display: inline-flex; align-items: center; gap: 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: #5f5d57">
+                    <span style="width: 6px; height: 6px; background: {{ k.color }}"></span>{{ k.label }}
+                  </span>
+                </sc-for>
+              </div>
+            </div>
+            <sc-if value="{{ r.showTheory }}" hint-placeholder-val="{{ true }}">
+              <div style="display: flex; align-items: baseline; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #75736c">
+                <sc-if value="{{ r.matchedOnly }}" hint-placeholder-val="{{ false }}">
+                  <span style="color: #8a877f">matches</span>
+                </sc-if>
+                <span>{{ r.theory }}</span>
+                <a href="#theories" style="font-size: 11.5px; color: #8a877f; border-bottom-color: rgba(0,0,0,0.12)">{{ r.moreLabel }}</a>
+              </div>
+            </sc-if>
+            <sc-if value="{{ r.clipped }}" hint-placeholder-val="{{ false }}">
+              <div style="position: relative">
+                <pre style="margin: 0; max-height: 96px; overflow: hidden; padding: 9px 11px; background: #f4f2ee; border: 1px solid #e9e7e2; border-left: 2px solid #cfcbc2; font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',Menlo,monospace; font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere">{{ r.expr }}</pre>
+                <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 46px; background: linear-gradient(to bottom, rgba(244,242,238,0), #f4f2ee 78%); pointer-events: none"></div>
+              </div>
+              <button onClick="{{ r.onExpr }}" style="align-self: flex-start; background: transparent; border: 1px solid #e0ddd6; padding: 2px 8px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #5f5d57; cursor: pointer">{{ r.longNote }}</button>
+            </sc-if>
+            <sc-if value="{{ r.full }}" hint-placeholder-val="{{ true }}">
+              <pre style="margin: 0; max-height: 420px; overflow: auto; padding: 9px 11px; background: #f4f2ee; border: 1px solid #e9e7e2; border-left: 2px solid #cfcbc2; font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',Menlo,monospace; font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere">{{ r.expr }}</pre>
+            </sc-if>
+            <sc-if value="{{ r.explClosed }}" hint-placeholder-val="{{ true }}">
+              <button onClick="{{ r.onExpl }}" style="align-self: flex-start; background: transparent; border: 0; padding: 0; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: #8a877f; cursor: pointer">&#9656; explanation</button>
+            </sc-if>
+            <sc-if value="{{ r.explOpen }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; flex-direction: column; gap: 4px">
+                <button onClick="{{ r.onExpl }}" style="align-self: flex-start; background: transparent; border: 0; padding: 0; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: #8a877f; cursor: pointer">&#9662; explanation &mdash; machine-generated</button>
+                <div style="font-size: 13px; line-height: 1.6; color: #45443f; max-width: 76ch; padding-left: 11px; border-left: 2px solid #e9e7e2; text-wrap: pretty">{{ r.expl }}</div>
+              </div>
+            </sc-if>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 8px">
+            <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-weight: 600; color: oklch(0.5 0.09 250)">{{ r.score }}</span>
+            <button onClick="{{ r.onCopy }}" style="background: transparent; border: 1px solid #e0ddd6; padding: 2px 8px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #5f5d57; cursor: pointer">{{ r.copyLabel }}</button>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="height: 22px"></div>
+  </div>
+</section>
+
+<!-- ============ 4. LITERAL-MATCH EMPTY STATE ============ -->
+<section style="display: flex; flex-direction: column; gap: 10px">
+  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a877f; letter-spacing: 0.08em">04 &nbsp;EMPTY STATE &mdash; SCHEMATIC VARIABLES IN A LITERAL FILTER</div>
+  <div style="width: 1440px; background: #faf9f7; border: 1px solid #d9d6cf; color: #1b1b19">
+
+    <div style="display: flex; align-items: center; gap: 20px; padding: 0 28px; height: 46px; border-bottom: 1px solid #e5e3de">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 600">isasearch</span>
+      <div style="flex: 1; display: flex; border: 1px solid #d9d6cf; background: #ffffff; height: 30px">
+        <input defaultValue="implication with two premises" style="flex: 1; border: 0; outline: none; padding: 0 12px; font-size: 13.5px; background: transparent" />
+        <button style="border: 0; background: #1b1b19; color: #faf9f7; padding: 0 18px; font-size: 12.5px; cursor: pointer">Search</button>
+      </div>
+      <button style="background: transparent; border: 1px solid #d9d6cf; padding: 3px 9px; font-size: 11px; font-family: 'IBM Plex Mono', monospace; color: #5f5d57; cursor: pointer">&#9789; dark</button>
+    </div>
+
+    <div style="padding: 14px 28px 0">
+      <div style="display: flex; align-items: center; gap: 12px; background: #f4f2ee; border: 1px solid #e5e3de; padding: 8px 12px">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #5f5d57">&#9662;</span>
+        <span style="font-size: 13px; font-weight: 500">Syntactic filters</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; padding: 1px 7px; background: oklch(0.93 0.04 250); color: oklch(0.42 0.09 250); border: 1px solid oklch(0.86 0.05 250)">1 filter active</span>
+        <span style="flex: 1"></span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a877f">expression: ?P &#10233; ?Q</span>
+      </div>
+    </div>
+
+    <div style="padding: 44px 28px 80px; display: flex; justify-content: center">
+      <div style="width: 880px; display: flex; flex-direction: column; gap: 20px">
+
+        <div style="display: flex; align-items: baseline; gap: 12px">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: oklch(0.5 0.13 60)">0 results</span>
+          <span style="font-size: 19px; font-weight: 600; letter-spacing: -0.01em">Your expression filter contains schematic variables</span>
+        </div>
+
+        <div style="border: 1px solid oklch(0.86 0.06 60); background: oklch(0.975 0.02 75); padding: 18px 20px; display: flex; flex-direction: column; gap: 14px">
+          <div style="font-size: 14px; line-height: 1.65; color: #3d3b36; max-width: 74ch; text-wrap: pretty">
+            The <strong style="font-weight: 600">Expression</strong> filter is <strong style="font-weight: 600">literal substring matching</strong>, not higher-order pattern matching. It compares the characters you typed against the printed expression. A schematic variable such as
+            <span style="font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',monospace; background: #ffffff; border: 1px solid #e0ddd6; padding: 1px 5px; font-size: 13px">?P</span>
+            matches only an entity that literally prints the two characters <span style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 13px">?P</span> &mdash; it does not stand for &ldquo;any proposition&rdquo;.
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #e0ddd6; border: 1px solid #e0ddd6">
+            <div style="background: #ffffff; padding: 12px 14px; display: flex; flex-direction: column; gap: 7px">
+              <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; color: oklch(0.5 0.11 25)">You searched for</span>
+              <pre style="margin: 0; font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',monospace; font-size: 14px; white-space: pre-wrap">?P &#10233; ?Q</pre>
+              <span style="font-size: 12px; color: #75736c; line-height: 1.55">Read as five literal tokens. Almost nothing prints exactly this.</span>
+            </div>
+            <div style="background: #ffffff; padding: 12px 14px; display: flex; flex-direction: column; gap: 7px">
+              <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; color: oklch(0.45 0.1 150)">Try instead</span>
+              <pre style="margin: 0; font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',monospace; font-size: 14px; white-space: pre-wrap">&#10233;</pre>
+              <span style="font-size: 12px; color: #75736c; line-height: 1.55">Filter on the fixed part only &mdash; a connective, a constant name, an operator &mdash; and let the natural-language query carry the shape.</span>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+            <span style="font-size: 12.5px; color: #5f5d57">One click:</span>
+            <button style="background: #ffffff; border: 1px solid #b3afa6; padding: 4px 10px; font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 12.5px; cursor: pointer" style-hover="border-color: #1b1b19">strip <span style="color: oklch(0.5 0.11 25)">?</span>-variables &rarr; &nbsp;&#10233;</button>
+            <button style="background: #ffffff; border: 1px solid #d9d6cf; padding: 4px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: #5f5d57; cursor: pointer" style-hover="border-color: #8a877f">drop the expression filter, keep the query</button>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: #8a877f">What the filter can and cannot do</span>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px 28px; font-size: 12.5px; line-height: 1.6; color: #45443f">
+            <div style="display: flex; gap: 9px"><span style="color: oklch(0.45 0.1 150); font-family: monospace">yes</span><span>Substrings of the printed expression: <span style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace">continuous_on</span>, <span style="font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',monospace">&#10214;</span>, <span style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace">borel_measurable</span></span></div>
+            <div style="display: flex; gap: 9px"><span style="color: oklch(0.5 0.11 25); font-family: monospace">no&nbsp;</span><span>Unification or variables: <span style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace">?f ?x</span>, <span style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace">_ + _</span></span></div>
+            <div style="display: flex; gap: 9px"><span style="color: oklch(0.45 0.1 150); font-family: monospace">yes</span><span>ASCII escapes, converted before matching: <span style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace">==&gt;</span>, <span style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace">\&lt;lambda&gt;</span></span></div>
+            <div style="display: flex; gap: 9px"><span style="color: oklch(0.5 0.11 25); font-family: monospace">no&nbsp;</span><span>Regular expressions or wildcards: <span style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace">.*</span>, <span style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace">cont*</span></span></div>
+          </div>
+        </div>
+
+        <div style="font-size: 12px; color: #8a877f; line-height: 1.6">Need real pattern matching over terms? That is what Isabelle&rsquo;s own <span style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace">find_theorems</span> and <span style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace">sledgehammer</span> do inside the prover. <a href="#syntax" style="font-size: 12px">How the two differ</a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 5. ENTITY PAGE ============ -->
+<section style="display: flex; flex-direction: column; gap: 10px">
+  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a877f; letter-spacing: 0.08em">05 &nbsp;ENTITY PAGE &mdash; permanent, shareable, indexable</div>
+  <div style="width: 1440px; background: #faf9f7; border: 1px solid #d9d6cf; color: #1b1b19">
+
+    <div style="display: flex; align-items: center; gap: 20px; padding: 0 28px; height: 46px; border-bottom: 1px solid #e5e3de">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 600">isasearch</span>
+      <div style="flex: 1; display: flex; border: 1px solid #d9d6cf; background: #ffffff; height: 30px">
+        <input placeholder="Describe what you are looking for" style="flex: 1; border: 0; outline: none; padding: 0 12px; font-size: 13.5px; background: transparent" />
+        <button style="border: 0; background: #1b1b19; color: #faf9f7; padding: 0 18px; font-size: 12.5px; cursor: pointer">Search</button>
+      </div>
+      <button style="background: transparent; border: 1px solid #d9d6cf; padding: 3px 9px; font-size: 11px; font-family: 'IBM Plex Mono', monospace; color: #5f5d57; cursor: pointer">&#9789; dark</button>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 372px; gap: 0; align-items: start">
+      <div style="padding: 30px 34px 60px; display: flex; flex-direction: column; gap: 24px; min-width: 0">
+
+        <div style="display: flex; flex-direction: column; gap: 10px">
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a877f">Error_Function &nbsp;/&nbsp; theorem</div>
+          <h1 style="margin: 0; font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',Menlo,monospace; font-size: 27px; font-weight: 600; letter-spacing: -0.015em; line-height: 1.25; overflow-wrap: anywhere">Error_Function.continuous_on_linepath'</h1>
+          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px">
+            <span style="display: inline-flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: #5f5d57"><span style="width: 7px; height: 7px; background: oklch(0.55 0.10 250)"></span>Theorem</span>
+            <span style="display: inline-flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: #5f5d57"><span style="width: 7px; height: 7px; background: oklch(0.55 0.10 290)"></span>Introduction rule</span>
+            <span style="width: 1px; height: 14px; background: #e0ddd6"></span>
+            <button style="background: transparent; border: 1px solid #d9d6cf; padding: 3px 9px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #5f5d57; cursor: pointer" style-hover="border-color: #8a877f; color: #1b1b19">copy permalink</button>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 16px">
+            <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: #8a877f">Statement</span>
+            <button onClick="{{ entity.onCopy }}" style="background: transparent; border: 1px solid #e0ddd6; padding: 2px 9px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #5f5d57; cursor: pointer" style-hover="border-color: #8a877f; color: #1b1b19">{{ entity.copyLabel }}</button>
+          </div>
+          <pre style="margin: 0; padding: 16px 18px; background: #f4f2ee; border: 1px solid #e5e3de; border-left: 2px solid oklch(0.55 0.10 250); font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',Menlo,monospace; font-size: 15px; line-height: 1.62; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 560px; overflow: auto">&#10214;continuous_on ?A ?f; continuous_on ?A ?g; continuous_on ?A ?h&#10215;
+&#10233; continuous_on ?A (&#955;x. linepath (?f x) (?g x) (?h x))</pre>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <div style="display: flex; align-items: center; gap: 10px">
+            <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: #8a877f">In English</span>
+            <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.05em; padding: 1px 7px; background: oklch(0.96 0.03 75); border: 1px solid oklch(0.88 0.05 75); color: oklch(0.45 0.09 60)">MACHINE-GENERATED</span>
+          </div>
+          <p style="margin: 0; font-size: 15px; line-height: 1.68; color: #33322e; max-width: 74ch; text-wrap: pretty">If functions f, g, and h are each continuous on a set A, then the map x &#8614; linepath (f x) (g x) (h x) is continuous on A. The linepath combinator constructs the straight-line path between two points, so continuity of the endpoint functions transfers to continuity of the parametrised path.</p>
+          <p style="margin: 0; font-size: 12px; line-height: 1.6; color: #8a877f; max-width: 82ch; text-wrap: pretty">Written by a language model from the formal statement, not by the theory&rsquo;s authors. It may be imprecise or wrong; the statement above is authoritative. <a href="#about" style="font-size: 12px">How explanations are produced</a></p>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: #8a877f">Source</span>
+          <div style="border: 1px solid #e5e3de; background: #ffffff; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px">
+            <div style="font-size: 13px; color: #45443f; line-height: 1.6">Generated by the command at <a href="#src" style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 13px">Path_Connected.thy:1204</a></div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px">
+              <a href="#src" style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; border: 1px solid #d9d6cf; padding: 3px 9px; color: #5f5d57; border-bottom-color: #d9d6cf">view theory source &#8599;</a>
+              <a href="#afp" style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; border: 1px solid #d9d6cf; padding: 3px 9px; color: #5f5d57; border-bottom-color: #d9d6cf">AFP entry: Error_Function &#8599;</a>
+            </div>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: #8a877f">Theories &mdash; 5</span>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px 8px">
+            <a href="#t" style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 12px; border: 1px solid #e0ddd6; background: #ffffff; padding: 3px 9px; color: #45443f; border-bottom-color: #e0ddd6">HOL-Analysis.Path_Connected</a>
+            <a href="#t" style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 12px; border: 1px solid #e0ddd6; background: #ffffff; padding: 3px 9px; color: #45443f; border-bottom-color: #e0ddd6">HOL-Analysis.Convex_Euclidean_Space</a>
+            <a href="#t" style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 12px; border: 1px solid #e0ddd6; background: #ffffff; padding: 3px 9px; color: #45443f; border-bottom-color: #e0ddd6">HOL.Topological_Spaces</a>
+            <a href="#t" style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 12px; border: 1px solid #e0ddd6; background: #ffffff; padding: 3px 9px; color: #45443f; border-bottom-color: #e0ddd6">Error_Function.Error_Function</a>
+            <a href="#t" style="font-family: 'DejaVu Sans Mono','IBM Plex Mono',monospace; font-size: 12px; border: 1px solid #e0ddd6; background: #ffffff; padding: 3px 9px; color: #45443f; border-bottom-color: #e0ddd6">HOL-Analysis.Elementary_Topology</a>
+          </div>
+        </div>
+      </div>
+
+      <aside style="border-left: 1px solid #e5e3de; padding: 30px 26px 60px; display: flex; flex-direction: column; gap: 12px; align-self: stretch; background: #f7f6f3">
+        <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 10px">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: #8a877f">Related entities</span>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #a8a49b">by similarity</span>
+        </div>
+        <div style="display: flex; flex-direction: column">
+          <sc-for list="{{ related }}" as="e" hint-placeholder-count="10">
+            <a href="#entity" style="display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; padding: 9px 0; border-bottom: 1px solid #e9e7e2; border-radius: 0; color: #1b1b19">
+              <span style="font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',monospace; font-size: 12.5px; overflow-wrap: anywhere; line-height: 1.4">{{ e.name }}</span>
+              <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: oklch(0.5 0.09 250); font-weight: 600">{{ e.score }}</span>
+              <span style="display: inline-flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #8a877f; grid-column: 1 / -1">
+                <span style="width: 6px; height: 6px; background: {{ e.color }}"></span>{{ e.kind }}
+                <span style="color: #c4c0b7">&middot;</span>{{ e.theory }}
+              </span>
+            </a>
+          </sc-for>
+        </div>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 6. DARK THEME RESULTS ============ -->
+<section style="display: flex; flex-direction: column; gap: 10px">
+  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a877f; letter-spacing: 0.08em">06 &nbsp;RESULTS &mdash; DARK THEME</div>
+  <div style="width: 1440px; background: #131416; border: 1px solid #2a2d31; color: #e6e5e2">
+
+    <div style="display: flex; align-items: center; gap: 20px; padding: 0 28px; height: 46px; border-bottom: 1px solid #26292d">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 600">isasearch</span>
+      <div style="flex: 1; display: flex; border: 1px solid #34383d; background: #1b1d20; height: 30px">
+        <input defaultValue="theorems about continuity of paths" style="flex: 1; border: 0; outline: none; padding: 0 12px; font-size: 13.5px; background: transparent; color: #e6e5e2" />
+        <button style="border: 0; background: #e6e5e2; color: #131416; padding: 0 18px; font-size: 12.5px; cursor: pointer">Search</button>
+      </div>
+      <button style="background: transparent; border: 1px solid #34383d; padding: 3px 9px; font-size: 11px; font-family: 'IBM Plex Mono', monospace; color: #9b9a94; cursor: pointer" style-hover="border-color: #55595f">&#9788; light</button>
+    </div>
+
+    <div style="padding: 14px 28px 0">
+      <div style="display: flex; align-items: center; gap: 12px; background: #1a1c1f; border: 1px solid #26292d; padding: 8px 12px">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #9b9a94">&#9656;</span>
+        <span style="font-size: 13px; font-weight: 500">Syntactic filters</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; padding: 1px 7px; background: oklch(0.32 0.05 250); color: oklch(0.85 0.06 250); border: 1px solid oklch(0.42 0.06 250)">3 filters active</span>
+        <span style="flex: 1"></span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #78766f">expression: continuous_on, &minus;linepath &nbsp;&middot;&nbsp; kind: Theorem</span>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: baseline; justify-content: space-between; padding: 16px 28px 8px">
+      <div style="font-size: 12.5px; color: #9b9a94"><strong style="font-family: 'IBM Plex Mono', monospace; font-weight: 600; color: #e6e5e2">1,204</strong> matches ranked by semantic similarity &middot; 61&thinsp;ms</div>
+      <div style="font-size: 11.5px; color: #78766f">Explanations are machine-generated. <a href="#about" style="font-size: 11.5px; color: oklch(0.75 0.09 250); border-bottom-color: oklch(0.75 0.09 250 / 0.35)">how</a></div>
+    </div>
+
+    <div style="border-top: 1px solid #26292d">
+      <sc-for list="{{ results }}" as="r" hint-placeholder-count="8">
+        <div style="display: grid; grid-template-columns: 1fr 120px; gap: 20px; padding: 13px 28px 14px; border-bottom: 1px solid #212428" style-hover="background: #191b1e">
+          <div style="min-width: 0; display: flex; flex-direction: column; gap: 7px">
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px">
+              <a href="#entity" style="font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',Menlo,monospace; font-size: 14.5px; font-weight: 500; color: #f0efec; border-bottom: 1px solid #3d4145">{{ r.name }}</a>
+              <div style="display: flex; flex-wrap: wrap; gap: 10px">
+                <sc-for list="{{ r.kinds }}" as="k" hint-placeholder-count="1">
+                  <span style="display: inline-flex; align-items: center; gap: 5px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: #9b9a94">
+                    <span style="width: 6px; height: 6px; background: {{ k.color }}; filter: brightness(1.5)"></span>{{ k.label }}
+                  </span>
+                </sc-for>
+              </div>
+            </div>
+            <sc-if value="{{ r.showTheory }}" hint-placeholder-val="{{ true }}">
+              <div style="display: flex; align-items: baseline; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #9b9a94">
+                <sc-if value="{{ r.matchedOnly }}" hint-placeholder-val="{{ false }}">
+                  <span style="color: #78766f">matches</span>
+                </sc-if>
+                <span>{{ r.theory }}</span>
+                <a href="#theories" style="font-size: 11.5px; color: #78766f; border-bottom-color: rgba(255,255,255,0.15)">{{ r.moreLabel }}</a>
+              </div>
+            </sc-if>
+            <sc-if value="{{ r.clipped }}" hint-placeholder-val="{{ false }}">
+              <div style="position: relative">
+                <pre style="margin: 0; max-height: 96px; overflow: hidden; padding: 9px 11px; background: #1b1d20; border: 1px solid #26292d; border-left: 2px solid #3d4145; font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',Menlo,monospace; font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; color: #dedcd7">{{ r.expr }}</pre>
+                <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 46px; background: linear-gradient(to bottom, rgba(27,29,32,0), #1b1d20 78%); pointer-events: none"></div>
+              </div>
+              <button onClick="{{ r.onExpr }}" style="align-self: flex-start; background: transparent; border: 1px solid #34383d; padding: 2px 8px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #9b9a94; cursor: pointer" style-hover="border-color: #6d7176; color: #e6e5e2">{{ r.longNote }}</button>
+            </sc-if>
+            <sc-if value="{{ r.full }}" hint-placeholder-val="{{ true }}">
+              <pre style="margin: 0; max-height: 420px; overflow: auto; padding: 9px 11px; background: #1b1d20; border: 1px solid #26292d; border-left: 2px solid #3d4145; font-family: 'DejaVu Sans Mono','JuliaMono','IBM Plex Mono',Menlo,monospace; font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; color: #dedcd7">{{ r.expr }}</pre>
+            </sc-if>
+            <sc-if value="{{ r.explClosed }}" hint-placeholder-val="{{ true }}">
+              <button onClick="{{ r.onExpl }}" style="align-self: flex-start; background: transparent; border: 0; padding: 0; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: #78766f; cursor: pointer" style-hover="color: #e6e5e2">&#9656; explanation</button>
+            </sc-if>
+            <sc-if value="{{ r.explOpen }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; flex-direction: column; gap: 4px">
+                <button onClick="{{ r.onExpl }}" style="align-self: flex-start; background: transparent; border: 0; padding: 0; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: #78766f; cursor: pointer">&#9662; explanation &mdash; machine-generated</button>
+                <div style="font-size: 13px; line-height: 1.6; color: #c7c5bf; max-width: 76ch; padding-left: 11px; border-left: 2px solid #26292d; text-wrap: pretty">{{ r.expl }}</div>
+              </div>
+            </sc-if>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 8px">
+            <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-weight: 600; color: oklch(0.75 0.09 250)">{{ r.score }}</span>
+            <button onClick="{{ r.onCopy }}" style="background: transparent; border: 1px solid #34383d; padding: 2px 8px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #9b9a94; cursor: pointer" style-hover="border-color: #6d7176; color: #e6e5e2">{{ r.copyLabel }}</button>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="height: 24px"></div>
+  </div>
+</section>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;showScores&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;scoreFormat&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;percent&quot;,&quot;decimal&quot;],&quot;default&quot;:&quot;percent&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;relatedCount&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:10,&quot;min&quot;:3,&quot;max&quot;:10,&quot;tsType&quot;:&quot;number&quot;}}">
+const KINDS = ["Theorem","Constant","Type","Class","Locale","Method","Collection","Introduction rule","Elimination rule","Induction rule","Case split"];
+
+const HUE = {
+  "Theorem": "oklch(0.55 0.10 250)",
+  "Constant": "oklch(0.55 0.10 150)",
+  "Type": "oklch(0.55 0.10 70)",
+  "Class": "oklch(0.55 0.10 330)",
+  "Locale": "oklch(0.55 0.10 25)",
+  "Method": "oklch(0.55 0.10 200)",
+  "Collection": "oklch(0.55 0.10 110)",
+  "Introduction rule": "oklch(0.55 0.10 290)",
+  "Elimination rule": "oklch(0.55 0.10 290)",
+  "Induction rule": "oklch(0.55 0.10 290)",
+  "Case split": "oklch(0.55 0.10 290)"
+};
+
+const LONG_EXPR = "\u27e6simple_path ?g; pathfinish ?g = pathstart ?g; ?a \u2208 path_image ?g; ?b \u2208 path_image ?g; ?a \u2260 ?b;\n  \u2200x\u2208path_image ?g. \u2203\u03b5>0. ball x \u03b5 \u2229 path_image ?g \u2286 \u27e6arc ?h; path_image ?h \u2286 path_image ?g\u27e7;\n  connected_component (- path_image ?g) ?a ?b\u27e7\n\u27f9 (\u2203\u03b3\u2081 \u03b3\u2082. arc \u03b3\u2081 \u2227 arc \u03b3\u2082 \u2227 pathstart \u03b3\u2081 = ?a \u2227 pathfinish \u03b3\u2081 = ?b \u2227 pathstart \u03b3\u2082 = ?b \u2227 pathfinish \u03b3\u2082 = ?a\n     \u2227 path_image \u03b3\u2081 \u2229 path_image \u03b3\u2082 = {?a, ?b} \u2227 path_image \u03b3\u2081 \u222a path_image \u03b3\u2082 = path_image ?g\n     \u2227 (\u2200z. z \u2209 path_image ?g \u27f6 (winding_number ?g z = winding_number (\u03b3\u2081 +++ reversepath \u03b3\u2082) z))\n     \u2227 (\u2200\u03b5>0. \u2203\u03b4>0. \u2200z. dist z ?a < \u03b4 \u27f6 (\u2203w\u2208path_image \u03b3\u2081. dist z w < \u03b5)))";
+
+// D14/D26: a theorem has no declaring theory, so its theory line is suppressed
+// unless a theory condition is active, in which case we show what it matched.
+const THEOREM_ALIKE = ["Theorem", "Introduction rule", "Elimination rule",
+                       "Induction rule", "Case split"];
+
+const RESULTS = [
+  { id: "r1", name: "Error_Function.continuous_on_linepath'", kinds: ["Theorem","Introduction rule"],
+    theory: "HOL-Analysis.Path_Connected", more: 4, score: 0.914,
+    expr: "\u27e6continuous_on ?A ?f; continuous_on ?A ?g; continuous_on ?A ?h\u27e7\n\u27f9 continuous_on ?A (\u03bbx. linepath (?f x) (?g x) (?h x))",
+    expl: "If functions f, g, and h are each continuous on a set A, then the map x \u21a6 linepath (f x) (g x) (h x) is continuous on A. The linepath combinator builds the straight-line path between two points, so continuity of the endpoints transfers to continuity of the parametrised path." },
+  { id: "r2", name: "Path_Connected.path_image_join", kinds: ["Theorem"],
+    theory: "HOL-Analysis.Path_Connected", more: 2, score: 0.887,
+    expr: "pathfinish ?g\u2081 = pathstart ?g\u2082 \u27f9 path_image (?g\u2081 +++ ?g\u2082) = path_image ?g\u2081 \u222a path_image ?g\u2082",
+    expl: "When the endpoint of the first path coincides with the starting point of the second, the image of the joined path is exactly the union of the two images." },
+  { id: "r3", name: "Green.simple_path_split_arcs", kinds: ["Theorem","Elimination rule"],
+    theory: "HOL-Analysis.Jordan_Curve", more: 11, score: 0.861, long: true,
+    expr: LONG_EXPR,
+    expl: "A simple closed path passing through two distinct points can be decomposed into two arcs meeting exactly at those points, whose union is the original path image and whose winding numbers agree with the original." },
+  { id: "r4", name: "Stochastic_Processes.proc_source.finite_measure_cut_measurable", kinds: ["Theorem"],
+    theory: "HOL-Analysis.Binary_Product_Measure", more: 8, score: 0.834,
+    expr: "?Q \u2208 sets (?N \u2a02\u21e9M proc_source ?X)\n\u27f9 (\u03bbx. emeasure (proc_source ?X) (Pair x -` ?Q)) \u2208 borel_measurable ?N",
+    expl: "For a set Q measurable in the binary product of N with the source measure of the process X, the function sending x to the measure of the cut of Q at x is Borel measurable with respect to N." },
+  { id: "r5", name: "Strong_Late_Sim.derivative", kinds: ["Constant"],
+    theory: "Pi_Calculus.Strong_Late_Sim", more: 0, score: 0.802,
+    expr: "pi \u21d2 pi \u21d2 subject \u21d2 name \u21d2 (pi \u00d7 pi) set \u21d2 bool",
+    expl: "Relates a process, its residual, the subject of the action, a bound name, and a simulation relation, holding when the residual is a valid derivative under late simulation." },
+  { id: "r6", name: "Topological_Spaces.continuous_on_compose2", kinds: ["Theorem","Introduction rule"],
+    theory: "HOL.Topological_Spaces", more: 5, score: 0.781,
+    expr: "\u27e6continuous_on ?t ?g; continuous_on ?s ?f; ?f ` ?s \u2286 ?t\u27e7 \u27f9 continuous_on ?s (\u03bbx. ?g (?f x))",
+    expl: "Composition preserves continuity: if g is continuous on t, f is continuous on s, and f maps s into t, then the composite is continuous on s." },
+  { id: "r7", name: "MC.no_infinite_subset_chain2", kinds: ["Theorem"],
+    theory: "HOL.Finite_Set", more: 6, score: 0.744,
+    expr: "\u27e6finite UNIV; mono ?\u03c4; \u2200i. (?\u03c4 ^^ (i + 1)) UNIV \u2282 (?\u03c4 ^^ i) UNIV\u27e7 \u27f9 False",
+    expl: "In a finite universe there is no strictly decreasing infinite chain produced by iterating a monotone operator, so the assumptions are contradictory." },
+  { id: "r8", name: "Path_Connected.continuous_on_paths_imp_path", kinds: ["Theorem","Induction rule"],
+    theory: "HOL-Analysis.Path_Connected", more: 1, score: 0.723,
+    expr: "continuous_on {0..1} ?g \u27f9 path ?g",
+    expl: "A function continuous on the unit interval is a path; this is the defining introduction principle for the predicate path." }
+];
+
+const RELATED = [
+  { name: "Path_Connected.continuous_on_linepath", kind: "Theorem", theory: "HOL-Analysis.Path_Connected", score: 0.962 },
+  { name: "Path_Connected.linepath_continuous", kind: "Theorem", theory: "HOL-Analysis.Path_Connected", score: 0.948 },
+  { name: "Convex_Euclidean_Space.linepath", kind: "Constant", theory: "HOL-Analysis.Convex", score: 0.933 },
+  { name: "Error_Function.continuous_on_linepath_bilinear", kind: "Theorem", theory: "HOL-Analysis.Path_Connected", score: 0.921 },
+  { name: "Topological_Spaces.continuous_on_compose2", kind: "Theorem", theory: "HOL.Topological_Spaces", score: 0.905 },
+  { name: "Path_Connected.path_join_imp", kind: "Theorem", theory: "HOL-Analysis.Path_Connected", score: 0.891 },
+  { name: "Henstock_Kurzweil.continuous_on_imp_integrable", kind: "Theorem", theory: "HOL-Analysis.Integration", score: 0.878 },
+  { name: "Path_Connected.arc_linepath", kind: "Theorem", theory: "HOL-Analysis.Path_Connected", score: 0.864 },
+  { name: "Ordered_Euclidean_Space.closed_segment_eq_linepath", kind: "Theorem", theory: "HOL-Analysis.Convex", score: 0.851 },
+  { name: "Path_Connected.pathstart_linepath", kind: "Theorem", theory: "HOL-Analysis.Path_Connected", score: 0.840 }
+];
+
+class Component extends DCLogic {
+  state = {
+    expl: {}, expr: {}, copied: "",
+    landingQuery: "",
+    filtersOpen: true,
+    rows: {
+      name: [{ m: "include", t: "" }],
+      expr: [{ m: "include", t: "continuous_on" }, { m: "exclude", t: "linepath" }],
+      thy: [{ m: "include", t: "Path_Connected" }],
+      all: [{ m: "include", t: "" }],
+      lname: [{ m: "include", t: "" }],
+      lexpr: [{ m: "include", t: "" }],
+      lthy: [{ m: "include", t: "" }],
+      lall: [{ m: "include", t: "" }]
+    },
+    kinds: ["Theorem", "Introduction rule"],
+    lkinds: [],
+    paletteOpen: false
+  };
+
+  fmt(s) {
+    if (this.props.scoreFormat === "decimal") return s.toFixed(3);
+    return Math.round(s * 100) + "%";
+  }
+
+  toggle(bag, id) {
+    this.setState(st => ({ [bag]: Object.assign({}, st[bag], { [id]: !st[bag][id] }) }));
+  }
+
+  copy(item, key) {
+    if (navigator.clipboard) navigator.clipboard.writeText(item.expr).catch(() => {});
+    this.setState({ copied: key });
+    clearTimeout(this._t);
+    this._t = setTimeout(() => this.setState({ copied: "" }), 1400);
+  }
+
+  cards(list, ns, alwaysTheory) {
+    const st = this.state;
+    const theoryActive = st.rows.thy.some(x => x.t) || st.rows.all.some(x => x.t);
+    return list.map(r => {
+      const key = ns + r.id;
+      const exprOpen = !!this.state.expr[key];
+      const thmAlike = r.kinds.some(k => THEOREM_ALIKE.indexOf(k) >= 0);
+      // A name-addressed entity always shows its one declaring theory.  A
+      // theorem shows nothing -- its constituent theories repeat a word the
+      // name already carries -- until a theory condition is active, when what
+      // it matched is exactly what the user wants to see.
+      const matchedOnly = thmAlike && !alwaysTheory && theoryActive;
+      return {
+        name: r.name,
+        showTheory: alwaysTheory || !thmAlike || theoryActive,
+        matchedOnly: matchedOnly,
+        theory: r.theory,
+        moreLabel: (matchedOnly || !r.more) ? "" : "(+" + r.more + " more)",
+        score: this.props.showScores === false ? "" : this.fmt(r.score),
+        expr: r.expr,
+        expl: r.expl,
+        kinds: r.kinds.map(k => ({ label: k, color: HUE[k] })),
+        clipped: !!r.long && !exprOpen,
+        full: !(!!r.long && !exprOpen),
+        longNote: r.long ? r.expr.length.toLocaleString() + " characters \u2014 show all" : "",
+        isLong: !!r.long,
+        collapseExpr: r.long && exprOpen,
+        onExpr: () => this.toggle("expr", key),
+        explOpen: !!this.state.expl[key],
+        explClosed: !this.state.expl[key],
+        onExpl: () => this.toggle("expl", key),
+        copyLabel: this.state.copied === key ? "copied" : "copy",
+        onCopy: () => this.copy(r, key)
+      };
+    });
+  }
+
+  renderVals() {
+    const st = this.state;
+    const activeCount = ["name", "expr", "thy", "all"]
+      .reduce((n, b) => n + st.rows[b].filter(r => r.t).length, 0) + st.kinds.length;
+    // D15: the theory filter means one thing for name-addressed entities and
+    // another for theorem-alike ones.  Say so, but only when it can bite --
+    // a theorem-alike kind is in play AND a condition reaches the theory field
+    // (directly, or through All, which Ors it in).
+    const theoryCaveat =
+      st.kinds.some(k => THEOREM_ALIKE.indexOf(k) >= 0) &&
+      (st.rows.thy.some(r => r.t) || st.rows.all.some(r => r.t));
+    const mkRows = (bag) => st.rows[bag].map((row, i) => ({
+      text: row.t,
+      isInclude: row.m === "include",
+      isExclude: row.m !== "include",
+      onMode: () => this.setState(s => {
+        const next = s.rows[bag].map((x, j) => j === i ? { m: x.m === "include" ? "exclude" : "include", t: x.t } : x);
+        return { rows: Object.assign({}, s.rows, { [bag]: next }) };
+      }),
+      onText: (e) => {
+        const v = e.target.value;
+        this.setState(s => {
+          const next = s.rows[bag].map((x, j) => j === i ? { m: x.m, t: v } : x);
+          return { rows: Object.assign({}, s.rows, { [bag]: next }) };
+        });
+      },
+      onRemove: () => this.setState(s => {
+        const next = s.rows[bag].filter((x, j) => j !== i);
+        return { rows: Object.assign({}, s.rows, { [bag]: next.length ? next : [{ m: "include", t: "" }] }) };
+      })
+    }));
+    const mkChips = (key) => KINDS.map(k => ({
+      label: k, color: HUE[k],
+      on: st[key].indexOf(k) >= 0, off: st[key].indexOf(k) < 0,
+      onClick: () => this.setState(s => ({
+        [key]: s[key].indexOf(k) >= 0 ? s[key].filter(x => x !== k) : s[key].concat([k])
+      }))
+    }));
+    const addRow = (bag) => () => this.setState(s => ({
+      rows: Object.assign({}, s.rows, { [bag]: s.rows[bag].concat([{ m: "include", t: "" }]) })
+    }));
+
+    return {
+      results: this.cards(RESULTS, "a"),
+      resultsDark: this.cards(RESULTS.slice(0, 5), "d"),
+      entity: this.cards([RESULTS[0]], "e", true)[0],
+      related: RELATED.slice(0, this.props.relatedCount ?? 10).map(r => ({
+        name: r.name, kind: r.kind, color: HUE[r.kind], theory: r.theory,
+        score: this.props.showScores === false ? "" : this.fmt(r.score)
+      })),
+      landingQuery: st.landingQuery,
+      onLandingQuery: (e) => this.setState({ landingQuery: e.target.value }),
+      chips: mkChips("kinds"),
+      lchips: mkChips("lkinds"),
+      nameRows: mkRows("name"),
+      exprRows: mkRows("expr"),
+      thyRows: mkRows("thy"),
+      allRows: mkRows("all"),
+      addName: addRow("name"),
+      addExpr: addRow("expr"),
+      addThy: addRow("thy"),
+      addAll: addRow("all"),
+      lnameRows: mkRows("lname"),
+      lexprRows: mkRows("lexpr"),
+      lthyRows: mkRows("lthy"),
+      lallRows: mkRows("lall"),
+      addLName: addRow("lname"),
+      addLexpr: addRow("lexpr"),
+      addLthy: addRow("lthy"),
+      addLAll: addRow("lall"),
+      theoryCaveat: theoryCaveat,
+      filterSummary: activeCount + (activeCount === 1 ? " filter active" : " filters active"),
+      filtersOpen: st.filtersOpen,
+      filtersClosed: !st.filtersOpen,
+      onFilters: () => this.setState(s => ({ filtersOpen: !s.filtersOpen })),
+      caret: st.filtersOpen ? "\u25be" : "\u25b8"
+    };
+  }
+}
+</script>
+</body>
+</html>
