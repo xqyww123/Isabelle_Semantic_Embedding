@@ -120,19 +120,29 @@ def dec(v: Any) -> Any:
 # fail, and `--dry-run` is how the number is obtained in the first place.  Filling
 # one in is a deliberate act -- never paste in whatever the last run printed
 # without checking it against the plan.
+#
+# Fixed 2026-08-14 from the dry run on cslh19.  Two of them are NOT code checking
+# itself: `pruned_keys` 37,316 and `fill_sources` 1,323,365 were written into §B.7
+# before this file existed, by a separate route entirely, and the join reproduced
+# both to the digit.  `entity_records` is likewise a cross-check rather than a
+# restatement -- it is compared against the WRITTEN store while 1,137,701 + 198,953
+# comes from the decision phase, so it catches a write path that drops what phase 2
+# decided.  `fanout_copies`, `gap_keys`, `gap_theories` and `position_none` are
+# reconstructions, agreed by three independent reviewers; they gate the wet run
+# against the dry run and no further.
 GATES: dict[str, 'int | None'] = {
     "dump_theories": 10570,          # §B.7 gate 1
     "theory_keys_shared": 10550,     # gate 2
-    "entity_records": None,          # gate 3 (†, moved by B.6's rewrite)
+    "entity_records": 1336654,       # gate 3 = 1,137,701 filled + 198,953 verbatim
     "theory_status_records": 11417,  # gate 3 / gate 6
-    "pruned_keys": None,             # gate 4 (†)
-    "fill_sources": None,            # gate 5 (†)
-    "fanout_copies": None,           # gate 5 (†)
+    "pruned_keys": 37316,            # gate 4 = 8,063 + 81 + 29,172 WIP
+    "fill_sources": 1323365,         # gate 5 = 1,124,412 + 198,953
+    "fanout_copies": 13289,          # gate 5
     "wip_theory_status": 867,        # gate 7
-    "position_none": None,           # gate 9 (†)
+    "position_none": 14125,          # gate 9 = 14,123 thm-alike + 2 name-addressed
     "zero_length_values": 0,         # gate 10
-    "gap_theories": None,            # gate 13 (†)
-    "gap_keys": None,                # gate 13 (†)
+    "gap_theories": 33,              # gate 13
+    "gap_keys": 371,                 # gate 13 = 91 name-addressed + 280 unfilled
 }
 
 
