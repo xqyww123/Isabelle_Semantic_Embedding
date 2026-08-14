@@ -73,6 +73,11 @@ kF2 = xor_theory_prefix([THY[c] for c in C3]) + tailF
 put_dump(kF1, [drec("List.f_thm", T, ("list.thy", 1, 1), C2, "PROP F", "HOL.List")])
 put_dump(kF2, [drec("List.f_thm", T, ("ziplist.thy", 1, 1), C3, "PROP F", "Zip.List")])
 
+# 4b. A tail resolved entirely by B.0 -- must NOT be suspect
+kE = key(C1, T, b"E" * 15)
+put_dump(kE, [drec("func.e_thm", T, ("f.thy", 20, 1), C1, "PROP E", "ZF.func"),
+              drec("ArithSimp.e_alias", T, ("arith.thy", 21, 1), C1, "PROP E", "ZF.ArithSimp")])
+
 # 5. Case C: a new key whose tail carries no old record at all
 kC = key(["A.Solo", "Pure"], T, b"C" * 15)
 put_dump(kC, [drec("Solo.c_thm", T, ("solo.thy", 3, 1), ["A.Solo", "Pure"], "PROP C", "A.Solo")])
@@ -112,6 +117,8 @@ oldX = key(["ZF.ArithSimp", "Pure"], T, b"X" * 15)
 store[oldX] = enc(rec("nobody.matches", "PROP X", "the X text",
                       ["ZF.ArithSimp", "Pure"], None))
 store[kF1] = enc(rec("List.f_thm", "PROP F", "the F text", C2, ("list.thy", 1, 1)))
+store[kE] = enc(rec("func.e_thm", "PROP E", "the E text", ["ZF.func", "Pure"],
+                    ("f.thy", 20, 1)))
 # a WIP record sharing tail A -- must not enter the tail table
 wipA = bytes([xor_theory_prefix([THY["ZF.ArithSimp"], THY["Pure"]])[0] | 1]) \
     + key(["ZF.ArithSimp", "Pure"], T, b"A" * 15)[1:]
@@ -165,6 +172,14 @@ def check(what, got, want):
         fails.append(f"{what}: got {got!r}, want {want!r}")
     else:
         print(f"  ok  {what} = {got!r}")
+
+def R2(k):
+    e = lmdb.open(os.path.join(out, "semantics.lmdb"), readonly=True, lock=False)
+    with e.begin() as tt:
+        raw = tt.get(k)
+        out_ = dec(bytes(raw)) if raw is not None else None
+    e.close()
+    return out_
 
 env = lmdb.open(os.path.join(out, "semantics.lmdb"), readonly=True, lock=False)
 with env.begin() as t:
@@ -236,9 +251,13 @@ check("pick marked arbitrary", counts["pick_arbitrary"], 1)
 pruned = open(os.path.join(out, "pruned_keys.txt")).read().split()
 # "Pruned" is an old record whose interpretation fed NO new key -- a lost text,
 # which is what gate 4 counts.  oldA/oldM/oldX each fed a moved key and are not lost.
-check("pruned keys", sorted(pruned), sorted([orphan.hex(), kNmoved_old.hex()]))
+# The WIP record is pruned by D10 and belongs in the file: "pruned records are
+# recoverable" is what the file is for.
+check("pruned keys", sorted(pruned),
+      sorted([orphan.hex(), kNmoved_old.hex(), wipA.hex()]))
 susp = [json.loads(l) for l in open(os.path.join(out, "suspect_list.jsonl"))]
-check("suspect tails", len(susp), 3)   # M, X, F; A is Case A and C has no old record
+check("suspect tails", len(susp), 3)   # M, X, F; A is Case A, C has no old record,
+                                      # and E is resolved entirely by B.0
 marks = {s["mark"] for s in susp}
 # A tail is named by its WEAKEST binding: F has an exact hit and a fan-out copy,
 # and it is the copy that makes the tail worth revisiting.
@@ -246,6 +265,20 @@ check("suspect marks", marks, {"forced-pairing", "copied"})
 mrow = [s for s in susp if s["tail"] == (bytes([int(T)]) + b"M" * 15).hex()][0]
 check("suspect row carries every claimant",
       sorted(c["theory"] for c in mrow["new"][0]["claimants"]), ["ZF.ArithSimp", "ZF.func"])
+cl = mrow["new"][0]["claimants"][0]
+check("suspect row carries the theory's source file", cl["theory_file"] is not None, True)
+check("suspect row carries a proposition digest", cl["prop_digest"] is not None, True)
+check("suspect row carries the old interpretation digest",
+      mrow["old"][0]["interp_digest"] is not None, True)
+check("B.0-only tail is not suspect",
+      any(s["tail"] == (bytes([int(T)]) + b"E" * 15).hex() for s in susp), False)
+check("E kept its own record", R2(kE).interpretation, "the E text")
+
+# The name-addressed gap keys must be billed to a real theory, not to "<unknown>".
+check("no unknown bucket in the gap list", "<unknown>" in gap["by_theory"], False)
+check("gap theories", sorted(gap["by_theory"]),
+      ["A.Solo", "ZF.ArithSimp", "ZF.func"])
+check("unfilled keys counted", counts["mark_unfilled"], 0)
 
 print()
 if fails:

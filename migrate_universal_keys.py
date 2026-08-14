@@ -49,6 +49,7 @@ Scaffolding for one migration; delete with the rest of Part B (see the plan's
 
 import argparse
 import collections
+import hashlib
 import json
 import os
 import sys
@@ -128,11 +129,9 @@ GATES: dict[str, 'int | None'] = {
     "fill_sources": None,            # gate 5 (†)
     "fanout_copies": None,           # gate 5 (†)
     "wip_theory_status": 867,        # gate 7
-    "prefix_checked": None,          # gate 8 (†)
     "position_none": None,           # gate 9 (†)
     "zero_length_values": 0,         # gate 10
-    "vectors_without_record": 693,   # gate 11
-    "experience_records": 6768,      # gate 12 -- §B.10's pass, not this one
+    "gap_theories": None,            # gate 13 (†)
     "gap_keys": None,                # gate 13 (†)
 }
 
@@ -141,21 +140,27 @@ GATES: dict[str, 'int | None'] = {
 # Phase 1
 # ---------------------------------------------------------------------------
 
-class OldDetail(NamedTuple):
-    """What a contested tail needs to know about one old record.
+def digest(s: 'str | None') -> 'str | None':
+    """A short content digest, for suspect rows.  Digests, not text: §B.5a's
+    memory budget.  A key-only reconstruction of phases 1 and 2 peaked at 3.6 GiB
+    RSS against 16.2 GiB available on the box that runs this, so the corpus must
+    not become Python objects.  Values are re-read from LMDB when they are written."""
+    if s is None:
+        return None
+    return hashlib.blake2b(s.encode(), digest_size=8).hexdigest()
 
-    Digests, not text: §B.5a's memory budget.  A key-only reconstruction of
-    phases 1 and 2 peaked at 3.6 GiB RSS against 16.2 GiB available on the box
-    that runs this, so the corpus must not become Python objects.  Values are
-    re-read from LMDB when they are written."""
+
+class OldDetail(NamedTuple):
     name: str
     position: 'tuple[str, int, int] | None'
+    interp: 'str | None'      # digest of the interpretation
 
 
 class DumpDetail(NamedTuple):
     name: str
     position: 'tuple[str, int, int] | None'
     theory: str
+    prop: 'str | None'        # digest of the printed proposition
 
 
 class Tables:
@@ -177,6 +182,11 @@ class Tables:
         self.dump_named: set[bytes] = set()          # name-addressed dump keys
         self.dump_theory_keys: set[bytes] = set()    # 16-byte theory-completion keys
         self.dump_theory_names: dict[str, bytes] = {}   # long name -> theory key
+        # The theory's own source path, folded by Entity_Position.portable_path --
+        # the same function that wrote the file component of every stored position.
+        # A suspect row needs it: without it §B.6's "stored position names a file
+        # belonging to another claimant of the same tail" cannot be re-queried.
+        self.dump_theory_files: dict[str, str] = {}
         self.dump_records_total = 0
         self.dump_other: list[bytes] = []            # unknown tags, never dropped silently
 
@@ -184,7 +194,7 @@ class Tables:
         self.store_named: dict[bytes, list[bytes]] = collections.defaultdict(list)
         self.store_named_keys: set[bytes] = set()
         self.store_short: set[bytes] = set()         # theory-status keys and the counter
-        self.store_wip_entities = 0
+        self.store_wip_keys: list[bytes] = []
         self.store_experiences = 0
         self.store_other: list[bytes] = []
 
@@ -204,6 +214,7 @@ class Tables:
                         self.dump_theory_keys.add(k)
                         rec = msgpack.unpackb(bytes(v))
                         self.dump_theory_names[dec(rec[0])] = k
+                        self.dump_theory_files[dec(rec[0])] = dec(rec[2])
                         continue
                     recs = msgpack.unpackb(bytes(v))
                     self.dump_records_total += len(recs)
@@ -243,7 +254,10 @@ class Tables:
                         # interpreted_at, four fields a content-addressed persistent
                         # key must never carry.  Costs nothing: the dump produced
                         # zero WIP keys, so no WIP key can exist in the new store.
-                        self.store_wip_entities += 1
+                        # They are pruned by D10 regardless, but "pruned records are
+                        # recoverable" is the whole point of the artefact, so they are
+                        # named there.  Gate 4's 37,316 = 8,063 + 81 + 29,172 exactly.
+                        self.store_wip_keys.append(k)
                         continue
                     if is_thm_alike(k):
                         self.store_tails[k[16:]].append(k)
@@ -275,7 +289,8 @@ class Tables:
                     pos = vals[F_POSITION]
                     if pos is not None:
                         pos = (dec(pos[0]), pos[1], pos[2])
-                    self.old_detail[k] = OldDetail(dec(vals[F_NAME]), pos)
+                    self.old_detail[k] = OldDetail(dec(vals[F_NAME]), pos,
+                                                   digest(dec(vals[F_INTERP])))
         finally:
             env.close()
 
@@ -291,7 +306,8 @@ class Tables:
                         pos = r[D_POS]
                         if pos is not None:
                             pos = (dec(pos[0]), pos[1], pos[2])
-                        out.append(DumpDetail(dec(r[D_NAME]), pos, dec(r[D_THEORY])))
+                        out.append(DumpDetail(dec(r[D_NAME]), pos, dec(r[D_THEORY]),
+                                              digest(dec(r[D_PROP]))))
                     self.dump_detail[k] = out
         finally:
             env.close()
@@ -429,9 +445,16 @@ def decide(tab: Tables) -> Plan:
         for nk in news:
             if nk not in plan.source:
                 plan.gap.append(nk)
+                plan.mark[nk] = "unfilled"
                 marks.append("unfilled")
 
-        plan.suspect_tails[tail] = _dominant(marks)
+        # A tail every one of whose new keys took its own byte-identical old key has
+        # nothing to adjudicate: nothing moved.  §B.6's own figure says so -- adding
+        # B.0 "cuts the suspect list from 37,754 tails to 16,783", which is only
+        # reachable if these are off the list.  Measured: 19,318 such tails, whose
+        # rows would otherwise bury the 16,935 that carry a real question.
+        if set(marks) != {"exact"}:
+            plan.suspect_tails[tail] = _dominant(marks)
 
     return plan
 
@@ -528,8 +551,8 @@ class Counts(dict):
 
 
 def build_store(tab: Tables, plan: Plan, verbatim: 'list[bytes]',
-                out_dir: str, counts: Counts) -> 'set[bytes]':
-    """Write the new semantics.lmdb.  Returns the keys whose vector must be dropped.
+                out_dir: str, counts: Counts, drop_vec: 'set[bytes]') -> None:
+    """Write the new semantics.lmdb.
 
     A filled theorem-alike record takes the dump's name, entity position and
     CORRECTED constituents; interpretation and every remaining field come from the
@@ -539,7 +562,6 @@ def build_store(tab: Tables, plan: Plan, verbatim: 'list[bytes]',
     `pretty_print + interpretation` and `pretty_print` renders the name, and
     `_auto_embed` fires only on ABSENT vectors, so a stale one is never refreshed.
     """
-    drop_vec: set[bytes] = set()
     src = lmdb.open(tab.store_path, readonly=True, lock=False)
     dmp = lmdb.open(tab.dump_path, readonly=True, lock=False)
     dst = lmdb.open(os.path.join(out_dir, "semantics.lmdb"), map_size=SEMANTICS_MAP_SIZE)
@@ -601,13 +623,6 @@ def build_store(tab: Tables, plan: Plan, verbatim: 'list[bytes]',
                 dpos = (dec(dpos[0]), dpos[1], dpos[2])
             consts = [(dec(a), bytes(b)) for a, b in drec[D_CONSTS]]
 
-            if dname != old.name:
-                counts.bump("name_divergence")
-                drop_vec.add(nk)
-            if dprop != old.expr:
-                counts.bump("expr_divergence")
-                drop_vec.add(nk)
-
             wt.put(nk, encode(old._replace(
                 name=dname, expr=dprop, theory_constituents=consts, position=dpos)))
             counts.bump("thm_filled")
@@ -622,7 +637,6 @@ def build_store(tab: Tables, plan: Plan, verbatim: 'list[bytes]',
     finally:
         st.abort(); dt_dump.abort()
         dst.sync(); dst.close(); src.close(); dmp.close()
-    return drop_vec
 
 
 def gap_theory_keys(tab: Tables, plan: Plan) -> 'set[bytes]':
@@ -664,13 +678,20 @@ def build_vectors(tab: Tables, plan: Plan, drop_vec: 'set[bytes]',
                 wt.put(k, bytes(raw))
                 counts.bump("vec_embed_status")
 
+        # KEYS ONLY.  Cursoring this store with values faults the whole 16 GiB
+        # mapping in and takes RSS to ~18.7 GiB -- clean file-backed pages, so it
+        # cannot OOM, but it evicts the page cache for nothing.  Exactly one key
+        # reaches this branch today, `\x00__vector_format__`.
         with src.begin() as meta:
-            for k, v in meta.cursor():
+            for k in meta.cursor().iternext(keys=True, values=False):
                 k = bytes(k)
                 if len(k) == 16 or is_thm_alike(k) or is_name_addressed(k) \
                         or (len(k) > 16 and k[16] == EXPERIENCE_TAG):
                     continue
-                wt.put(k, bytes(v))
+                raw = meta.get(k)
+                if raw is None:
+                    continue
+                wt.put(k, bytes(raw))
                 counts.bump("vec_metadata")
                 print(f"    vector-store metadata copied verbatim: {k!r}", flush=True)
 
@@ -735,7 +756,8 @@ def write_artefacts(tab: Tables, plan: Plan, drop_vec: 'set[bytes]',
                 "mark": mark,
                 "old": [{"key": ok.hex(),
                          "name": tab.old_detail[ok].name if ok in tab.old_detail else None,
-                         "position": tab.old_detail[ok].position if ok in tab.old_detail else None}
+                         "position": tab.old_detail[ok].position if ok in tab.old_detail else None,
+                         "interp_digest": tab.old_detail[ok].interp if ok in tab.old_detail else None}
                         for ok in olds],
                 "new": [{"key": nk.hex(),
                          "took": plan.source[nk].hex() if nk in plan.source else None,
@@ -743,8 +765,11 @@ def write_artefacts(tab: Tables, plan: Plan, drop_vec: 'set[bytes]',
                          "picked": plan.pick.get(nk),
                          "pick_mark": plan.pick_mark.get(nk),
                          "vector_dropped": nk in drop_vec,
-                         "claimants": [{"theory": d.theory, "name": d.name,
-                                        "position": d.position}
+                         "claimants": [{"theory": d.theory,
+                                        "theory_file": tab.dump_theory_files.get(d.theory),
+                                        "name": d.name,
+                                        "position": d.position,
+                                        "prop_digest": d.prop}
                                        for d in tab.dump_detail.get(nk, ())]}
                         for nk in news],
             }
@@ -758,6 +783,11 @@ def write_artefacts(tab: Tables, plan: Plan, drop_vec: 'set[bytes]',
         (k for ks in tab.store_tails.values() for k in ks if k not in used),
         key=bytes.hex)
     pruned += sorted(k for k in tab.store_named_keys if k not in tab.dump_named)
+    # The 29,172 WIP entity records.  D10 prunes them regardless and the dump
+    # produced zero WIP keys, so the loss is intended -- but "pruned records are
+    # recoverable" is what this file is for, and omitting them left it naming 22 %
+    # of what was actually pruned.  Gate 4's 37,316 = 8,063 + 81 + 29,172.
+    pruned += sorted(tab.store_wip_keys)
     with open(os.path.join(out_dir, "pruned_keys.txt"), "w") as f:
         for k in pruned:
             f.write(k.hex() + "\n")
@@ -768,13 +798,16 @@ def write_artefacts(tab: Tables, plan: Plan, drop_vec: 'set[bytes]',
     counts["gap_theories"] = len(by_theory)
     counts["suspect_tails"] = len(plan.suspect_tails)
     counts["case_a_tails"] = plan.case_a
-    counts["fill_sources"] = len(used)
+    # Name-addressed keys are filled too -- verbatim, from themselves.  Counting
+    # only the theorem-alike sources made this 1,124,412 against §B.7's 1,323,365,
+    # and the difference is exactly the 198,953 verbatim copies.
+    counts["fill_sources"] = len(used) + len(tab.store_named_keys & tab.dump_named)
     counts["fanout_copies"] = len(plan.source) - len(used)
     counts["vectors_dropped"] = len(drop_vec)
     counts["dump_theories"] = len(tab.dump_theory_keys)
     counts["dump_records_total"] = tab.dump_records_total
     counts["dump_multi_record_keys"] = len(tab.dump_multi)
-    counts["store_wip_entities"] = tab.store_wip_entities
+    counts["store_wip_entities"] = len(tab.store_wip_keys)
     counts["store_experiences"] = tab.store_experiences
     counts["theory_keys_shared"] = len(tab.dump_theory_keys & tab.store_short)
     counts["pick_arbitrary"] = len(plan.pick_mark)
@@ -788,7 +821,8 @@ def write_artefacts(tab: Tables, plan: Plan, drop_vec: 'set[bytes]',
 # §B.7
 # ---------------------------------------------------------------------------
 
-def check_gates(out_dir: str, counts: Counts, dry: bool) -> int:
+def check_gates(tab: Tables, plan: Plan, drop_vec: 'set[bytes]', out_dir: str,
+                vec_name: str, counts: Counts, dry: bool) -> int:
     """Evaluate §B.7 against the join's own artefacts and the new store.
 
     A gate whose constant is None in GATES has not been fixed yet: it reports and
@@ -813,13 +847,29 @@ def check_gates(out_dir: str, counts: Counts, dry: bool) -> int:
     gate("fill_sources", counts.get("fill_sources", 0))
     gate("fanout_copies", counts.get("fanout_copies", 0))
     gate("gap_keys", counts.get("gap_keys", 0))
+    gate("gap_theories", counts.get("gap_theories", 0))
+    # Gate 4's other half: a pruned key that is not in the source store would mean
+    # the artefact is naming keys nobody can go back and read.
+    absent = 0
+    env = lmdb.open(tab.store_path, readonly=True, lock=False)
+    with env.begin() as txn:
+        for line in open(os.path.join(out_dir, "pruned_keys.txt")):
+            if txn.get(bytes.fromhex(line.strip())) is None:
+                absent += 1
+    env.close()
+    if absent:
+        print(f"  [FAIL] pruned keys absent from the source store: {absent}")
+        problems += 1
+    else:
+        print("  [ ok ] every pruned key is present in the source store")
     if dry:
         print("  (--dry-run: the store-side gates 3, 6, 7, 8, 9, 10, 11 need a store)")
         return problems
 
     from Isabelle_RPC_Host.universal_key import xor_theory_prefix
     env = lmdb.open(os.path.join(out_dir, "semantics.lmdb"), readonly=True, lock=False)
-    entities = short = wip = zero_len = pos_none = prefix_bad = 0
+    entities = short = wip = zero_len = pos_none = prefix_bad = thm_seen = 0
+    new_short: set[bytes] = set()
     try:
         with env.begin() as txn:
             for k, v in txn.cursor():
@@ -828,6 +878,7 @@ def check_gates(out_dir: str, counts: Counts, dry: bool) -> int:
                     zero_len += 1
                 if len(k) <= 16:
                     short += 1
+                    new_short.add(k)
                     if k != COUNTER_KEY and is_wip(k):
                         wip += 1
                     continue
@@ -838,6 +889,7 @@ def check_gates(out_dir: str, counts: Counts, dry: bool) -> int:
                 if rec.position is None:
                     pos_none += 1
                 if is_thm_alike(k):
+                    thm_seen += 1
                     if rec.theory_constituents is None or \
                             xor_theory_prefix([h for _, h in rec.theory_constituents]) != k[:16]:
                         prefix_bad += 1
@@ -853,10 +905,59 @@ def check_gates(out_dir: str, counts: Counts, dry: bool) -> int:
               f"constituents do not XOR to the key prefix")
         problems += 1
     else:
-        print(f"  [ ok ] prefix check: 0 mismatches over {entities} entity records")
+        # The denominator is the number of keys the check actually looked at, not the
+        # store's record count: the name-addressed keys carry no XOR prefix and are
+        # skipped, and printing the larger number was the unstated-denominator failure
+        # §B.7 was rewritten to remove.
+        print(f"  [ ok ] prefix check: 0 mismatches over {thm_seen} theorem-alike keys")
     # Gate 7 is exact: the dump produced zero WIP keys, so the only WIP keys in the
     # new store are the theory-status records copied verbatim.
     gate("wip_theory_status", wip)
+
+    # Gate 6's substance: the 16-byte key set must be byte-identical to the old one.
+    # A count alone passes even if the join swapped one theory's status record for
+    # another's, after which `is_thy_interpreted` answers about the wrong theory.
+    if new_short != tab.store_short:
+        print(f"  [FAIL] 16-byte key set differs from the old store: "
+              f"{len(new_short - tab.store_short)} added, "
+              f"{len(tab.store_short - new_short)} missing")
+        problems += 1
+    else:
+        print(f"  [ ok ] 16-byte key set byte-identical to the old store ({len(new_short)})")
+    if COUNTER_KEY not in new_short:
+        print("  [FAIL] the counter key is absent")
+        problems += 1
+
+    # Gate 11.  Without it the whole 16 GiB half of the output is unverified: a
+    # failure inside build_vectors leaves a complete semantics.lmdb beside a
+    # truncated vector store and every other gate still passes.
+    vpath = os.path.join(out_dir, vec_name)
+    if not os.path.isdir(vpath):
+        print("  [FAIL] no vector store was written")
+        return problems + 1
+    venv = lmdb.open(vpath, readonly=True, lock=False)
+    with venv.begin() as vt:
+        have = {bytes(k) for k in vt.cursor().iternext(keys=True, values=False)}
+    venv.close()
+    missing = {k for k in plan.source if k not in have}
+    if missing != drop_vec:
+        print(f"  [FAIL] keys with no vector: {len(missing)}, divergence-drop list: "
+              f"{len(drop_vec)}; symmetric difference "
+              f"{len(missing ^ drop_vec)}")
+        problems += 1
+    else:
+        print(f"  [ ok ] vectors: the {len(drop_vec)} keys with none are exactly the "
+              f"divergence drops, over {len(have)} vector keys")
+    # Only entity-shaped keys.  The store-metadata stamp `\x00__vector_format__` is
+    # 19 bytes long, so a bare `len(k) > 16` test flags the one entry that is
+    # deliberately copied verbatim -- and the 16-byte embed-status keys are theory
+    # hashes, not entities.
+    orphan = sum(1 for k in have
+                 if (is_thm_alike(k) or is_name_addressed(k))
+                 and k not in plan.source and k not in tab.store_named_keys)
+    if orphan:
+        print(f"  [FAIL] {orphan} vector keys with no entity record carried forward")
+        problems += 1
     return problems
 
 
@@ -908,7 +1009,7 @@ def main() -> None:
     tab.scan_store()
     print(f"  {len(tab.store_tails)} theorem-alike tails, {len(tab.store_named_keys)} "
           f"name-addressed, {len(tab.store_short)} short keys, "
-          f"{tab.store_wip_entities} WIP entity records skipped, "
+          f"{len(tab.store_wip_keys)} WIP entity records skipped, "
           f"{tab.store_experiences} experiences left to §B.10, "
           f"{time.time() - t0:.1f}s", flush=True)
     if tab.store_other:
@@ -923,7 +1024,15 @@ def main() -> None:
             continue
         if len(olds) > 1 or len(news) > 1 or news[0] in tab.dump_multi:
             contested.add(tail)
-    want_keys = {k for t in contested for k in tab.dump_tails[t]} | set(plan_gap_keys(tab))
+    # `dump_named - store_named_keys` is §B.6a's gap: the keys `decide_named` will
+    # put on the gap list.  Without them `dump_detail` holds no name-addressed key,
+    # all 91 land in gap_list.json's "<unknown>" bucket, `gap_theory_keys` returns
+    # nothing for them, and the one of their 11 theories that has a theory-status
+    # record keeps `finished = True` -- so §B.8's collection never revisits it and
+    # those 7 `Real_Vector_Spaces.real_vector.*` constants have no path back.
+    want_keys = ({k for t in contested for k in tab.dump_tails[t]}
+                 | set(plan_gap_keys(tab))
+                 | (tab.dump_named - tab.store_named_keys))
     print(f"phase 1b: loading details for {len(contested)} contested tails "
           f"({len(want_keys)} dump keys) ...", flush=True)
     tab.load_details(contested, want_keys)
@@ -941,10 +1050,19 @@ def main() -> None:
           f"({len(named_gap)} of them name-addressed), {len(verbatim)} name-addressed "
           f"copied verbatim, {time.time() - t0:.1f}s", flush=True)
 
-    drop_vec: set[bytes] = set()
+    # The divergence set is computed BEFORE anything is written, in both modes: the
+    # artefacts have to be complete before the store is opened for writing, so that
+    # a crash in phase 3 leaves no half-written store with no record of what was
+    # decided -- and `--out is not empty` would then refuse the re-run (§B.5a).
+    drop_vec = divergence(tab, plan, counts)
+    write_artefacts(tab, plan, drop_vec, args.out, counts)
+    print(f"  artefacts written, {counts.get('name_divergence', 0)} name and "
+          f"{counts.get('expr_divergence', 0)} expression divergences, "
+          f"{len(drop_vec)} vectors to drop, {time.time() - t0:.1f}s", flush=True)
+
     if not args.dry_run:
         print("phase 3: writing the new semantics.lmdb ...", flush=True)
-        drop_vec = build_store(tab, plan, verbatim, args.out, counts)
+        build_store(tab, plan, verbatim, args.out, counts, drop_vec)
         print(f"  {counts.get('thm_filled', 0)} theorem-alike, "
               f"{counts.get('named_verbatim', 0)} name-addressed, "
               f"{counts.get('theory_status_written', 0)} theory-status, "
@@ -954,12 +1072,8 @@ def main() -> None:
         print(f"  {counts.get('vec_written', 0)} vectors, "
               f"{counts.get('vec_dropped_divergence', 0)} dropped on divergence, "
               f"{time.time() - t0:.1f}s", flush=True)
-    else:
-        # The divergence set is needed for the artefacts even in a dry run.
-        drop_vec = dry_divergence(tab, plan, counts)
-
-    write_artefacts(tab, plan, drop_vec, args.out, counts)
-    problems = check_gates(args.out, counts, args.dry_run)
+    problems = check_gates(tab, plan, drop_vec, args.out,
+                           os.path.basename(args.vectors), counts, args.dry_run)
     print(f"\n{problems} gate problem(s); artefacts in {args.out}")
     sys.exit(1 if problems else 0)
 
@@ -971,8 +1085,14 @@ def plan_gap_keys(tab: Tables) -> 'list[bytes]':
             if not tab.store_tails.get(tail) for k in ks]
 
 
-def dry_divergence(tab: Tables, plan: Plan, counts: Counts) -> 'set[bytes]':
-    """The divergence-drop set, without writing a store."""
+def divergence(tab: Tables, plan: Plan, counts: Counts) -> 'set[bytes]':
+    """The keys whose vector must be dropped, computed before anything is written.
+
+    Where the dump's proposition differs from the chosen old record's `expr`, or the
+    dump's name from its name, the dump's is carried and the key's vector goes --
+    both, not expr alone, because the embedded document is `pretty_print +
+    interpretation` and `pretty_print` renders the name, and `_auto_embed` fires only
+    on ABSENT vectors, so a stale one is never refreshed."""
     drop: set[bytes] = set()
     src = lmdb.open(tab.store_path, readonly=True, lock=False)
     dmp = lmdb.open(tab.dump_path, readonly=True, lock=False)
