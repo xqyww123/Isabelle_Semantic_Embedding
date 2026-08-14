@@ -38,7 +38,7 @@
     <div style="display: flex; align-items: center; justify-content: space-between; padding: 0 28px; height: 46px; border-bottom: 1px solid #e5e3de">
       <div style="display: flex; align-items: baseline; gap: 10px">
         <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 600; letter-spacing: -0.01em">isasearch</span>
-        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a877f">1,352,441 entities &middot; AFP 2026-06 &middot; Isabelle2026</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a877f">1 362 163 entities &middot; Isabelle release 2025-2 &middot; AFP snapshot 2026-05-13</span>
       </div>
       <div style="display: flex; align-items: center; gap: 18px; font-size: 12px; color: #5f5d57">
         <a href="#syntax" style="color: #5f5d57; border-bottom-color: rgba(0,0,0,0.15)">query syntax</a>
@@ -182,7 +182,7 @@
 
         <div style="margin-top: 96px; padding-top: 14px; border-top: 1px solid #e5e3de; display: flex; justify-content: space-between; gap: 24px; font-size: 11.5px; color: #8a877f; line-height: 1.6">
           <span style="max-width: 620px; text-wrap: pretty">English explanations of entities are <strong style="font-weight: 500; color: #5f5d57">machine-generated</strong> from the formal statement and are not part of the Isabelle sources. Treat them as a reading aid, never as authority &mdash; the expression is the truth.</span>
-          <span style="font-family: 'IBM Plex Mono', monospace; flex: none">index built 2026-06-14</span>
+          <span style="font-family: 'IBM Plex Mono', monospace; flex: none">index built 2026-08-20</span>
         </div>
       </div>
     </div>
@@ -732,7 +732,10 @@
 </div>
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props="{&quot;showScores&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;scoreFormat&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;percent&quot;,&quot;decimal&quot;],&quot;default&quot;:&quot;percent&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;relatedCount&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:10,&quot;min&quot;:3,&quot;max&quot;:10,&quot;tsType&quot;:&quot;number&quot;}}">
-const KINDS = ["Theorem","Constant","Type","Class","Locale","Method","Collection","Introduction rule","Elimination rule","Induction rule","Case split"];
+// Labels settled by the user 2026-08-14: "Collection" -> "Named theorems"
+// (measured: all 994 records of the kind are named_theorems declarations),
+// "Method" -> "Proof method". See site/COPY.md §2.6 and §10.
+const KINDS = ["Theorem","Constant","Type","Class","Locale","Proof method","Named theorems","Introduction rule","Elimination rule","Induction rule","Case split"];
 
 const HUE = {
   "Theorem": "oklch(0.55 0.10 250)",
@@ -740,8 +743,8 @@ const HUE = {
   "Type": "oklch(0.55 0.10 70)",
   "Class": "oklch(0.55 0.10 330)",
   "Locale": "oklch(0.55 0.10 25)",
-  "Method": "oklch(0.55 0.10 200)",
-  "Collection": "oklch(0.55 0.10 110)",
+  "Proof method": "oklch(0.55 0.10 200)",
+  "Named theorems": "oklch(0.55 0.10 110)",
   "Introduction rule": "oklch(0.55 0.10 290)",
   "Elimination rule": "oklch(0.55 0.10 290)",
   "Induction rule": "oklch(0.55 0.10 290)",
@@ -750,8 +753,10 @@ const HUE = {
 
 const LONG_EXPR = "\u27e6simple_path ?g; pathfinish ?g = pathstart ?g; ?a \u2208 path_image ?g; ?b \u2208 path_image ?g; ?a \u2260 ?b;\n  \u2200x\u2208path_image ?g. \u2203\u03b5>0. ball x \u03b5 \u2229 path_image ?g \u2286 \u27e6arc ?h; path_image ?h \u2286 path_image ?g\u27e7;\n  connected_component (- path_image ?g) ?a ?b\u27e7\n\u27f9 (\u2203\u03b3\u2081 \u03b3\u2082. arc \u03b3\u2081 \u2227 arc \u03b3\u2082 \u2227 pathstart \u03b3\u2081 = ?a \u2227 pathfinish \u03b3\u2081 = ?b \u2227 pathstart \u03b3\u2082 = ?b \u2227 pathfinish \u03b3\u2082 = ?a\n     \u2227 path_image \u03b3\u2081 \u2229 path_image \u03b3\u2082 = {?a, ?b} \u2227 path_image \u03b3\u2081 \u222a path_image \u03b3\u2082 = path_image ?g\n     \u2227 (\u2200z. z \u2209 path_image ?g \u27f6 (winding_number ?g z = winding_number (\u03b3\u2081 +++ reversepath \u03b3\u2082) z))\n     \u2227 (\u2200\u03b5>0. \u2203\u03b4>0. \u2200z. dist z ?a < \u03b4 \u27f6 (\u2203w\u2208path_image \u03b3\u2081. dist z w < \u03b5)))";
 
-// D14/D26: a theorem has no declaring theory, so its theory line is suppressed
-// unless a theory condition is active, in which case we show what it matched.
+// D14/D26: a theorem is identified by its statement rather than by where it is
+// written, so isasearch does not filter it by the theory that proves it and its
+// theory line is suppressed — unless a Theory Name condition is active, in which
+// case we show the constituent theory that matched, labelled as such.
 const THEOREM_ALIKE = ["Theorem", "Introduction rule", "Elimination rule",
                        "Induction rule", "Case split"];
 
