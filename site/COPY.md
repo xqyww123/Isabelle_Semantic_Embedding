@@ -627,17 +627,16 @@ that both alternatives are worse (§7.2 of the plan). The 200-match limit and th
 per-network daily limit were both called out as leaving a user with no move; they
 are D29 and D35.
 
-## 13. One thing the copy assumes and the export must confirm
+## 13. Why the two name forms differ
 
-§3.1's Entity Name hover tells visitors that an entity name has **no session
-prefix** — `Path_Connected.path_image_join`, not
-`HOL-Analysis.Path_Connected.path_image_join`. That matches the store: of
-1 362 343 records, 1 266 (0.09 %) have a hyphen in the first segment of the name,
-so names are `Theory.rest`.
+§3.1's Entity Name hover tells visitors that an entity name is qualified by the
+theory's base name and carries no session prefix — `Path_Connected.path_image_join`
+— while the Theory Name panel takes the session-qualified form,
+`HOL-Analysis.Path_Connected`. That is not an inconsistency to fix: an Isabelle
+fact's long name is theory-qualified, and the theory field holds theory long
+names, which are session-qualified. The interface states both, because a visitor
+copying a theory off a card into Entity Name would otherwise match nothing.
 
-**D39's worked example says the opposite**, giving
-`HOL-Analysis.Path_Connected.path_image_join` as the indexed long name. Both
-cannot be right. If the export prepends the session, §3.1, §3.4 and §8 all need
-the session prefix restored; if it does not, D39's example needs correcting. This
-is the one place where the copy is waiting on an implementation decision, and it
-is cheap to settle: it is decided by what the export writes into `name_subtokens`.
+D39 was first written with `HOL-Analysis.Path_Connected.path_image_join` as its
+worked example, which is not a name that exists; it has been corrected in the
+plan.

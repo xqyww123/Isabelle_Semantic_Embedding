@@ -215,13 +215,28 @@ ask before deviating.
   on a page is noise.
 - **D39** (2026-08-14) — **`name_subtokens` indexes the long name only**, and
   the interface speaks in long names. Measured: subtoken splitting decomposes
-  `HOL-Analysis.Path_Connected.path_image_join` into
-  `['HOL','-','Analysis','Path','Connected','path','image','join']`, so the short
-  name is an adjacent run inside it and `path_image_join`,
-  `Path_Connected.path_image_join` and the full long name all match. Indexing
-  both forms was considered and is unnecessary. Accepted consequence: a
-  condition like `List` in `Entity Name` matches everything whose long name
-  begins with that theory, so `Entity Name` and `Theory Name` overlap.
+  `Path_Connected.path_image_join` into
+  `['Path','Connected','path','image','join']`, so the short name is an adjacent
+  run inside it and `path_image_join`, `image_join` and the full long name all
+  match. Indexing both forms was considered and is unnecessary. Accepted
+  consequence: a condition like `List` in `Entity Name` matches everything whose
+  long name begins with that theory, so `Entity Name` and `Theory Name` overlap.
+
+  **Example corrected, 2026-08-14.** This decision was first written with
+  `HOL-Analysis.Path_Connected.path_image_join` as the worked example, which is
+  not a name that exists. An Isabelle fact's long name is qualified by the
+  **theory base name**, not by the session — that is simply how Isabelle names
+  facts — and the store agrees: no entity name in the 1 362 343 records carries a
+  session prefix. (The 1 266 names with a hyphen in their first segment are
+  theories whose own base name contains one, such as `Nominal-HOLCF.Def_eqvt` and
+  `HOLCF-Utils.fun_upd_cont`.) The export therefore indexes the stored name
+  unchanged and adds nothing. Nothing else in D39 changes.
+
+  Worth noting for the interface, since the two fields differ: `theory_subtokens`
+  **is** session-qualified — 8 329 distinct theory long names, of which only
+  `Pure`, `FOL`, `IFOL` and `ZF` carry no session. So the same theory is written
+  `Path_Connected` inside an entity name and `HOL-Analysis.Path_Connected` in the
+  theory field, and `site/COPY.md` §3.1 tells the visitor so.
 - **D38** (2026-08-14) — **selected Kind chips are OR-ed**: ticking several
   means "any of these kinds". Text conditions are AND-ed (§6.3), so the two
   controls combine differently and the interface has to say so. Under the
