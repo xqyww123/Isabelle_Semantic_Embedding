@@ -1037,11 +1037,25 @@ Unmeasured, and deliberately not a design input: whether turbopuffer bills a
 
 ### 6.5 BM25 over the interpretation
 
-Worth carrying for two reasons: hybrid keyword+vector retrieval measurably helps
+Worth carrying because hybrid keyword+vector retrieval measurably helps
 exact-name intents ("the one called `sorted_wrt_append`"), which a bi-encoder
-alone handles poorly; and it is the **degradation path** when the daily
-embedding budget is exhausted (§11.2) — BM25 costs no Fireworks call, so the
-site keeps working as a keyword search engine instead of failing.
+alone handles poorly.
+
+**Stale text removed, 2026-08-14.** This section used to give a second reason:
+that BM25 is the degradation path when the embedding budget is exhausted.
+**D35 deleted that path** — the user rejected it on 2026-08-14 ("this
+degradation is pointless and only adds code complexity"), and every limit now
+returns 429. §11.1 already says so; this section did not.
+
+**What BM25 indexes matters for the interface, and it is only
+`interpretation`** (§8.1's field table). Not the name, not the entity
+expression. So a visitor who half-remembers a name and types it into the search
+box is relying on the interpretation happening to contain it — the reliable
+route is to type the name into an `Entity Name` condition and let the query
+rank what survives. **The interface must say this**: §13b's Isabelle reader
+named the required query as the single thing that would send them back to
+`find_theorems`, and their need is fully served by the design as it stands.
+This is a copy defect, not a case for reopening D7.
 
 ## 7. Theories for filtering
 
@@ -1248,7 +1262,25 @@ This is easy to miss because a developer's own machine has the fonts installed.
 
 Input needs three routes: pasting Unicode; typing the ASCII escape
 `\<Longrightarrow>` (already handled by the tokenizer); and live abbreviation
-replacement (`==>` → `⟹`) driven by the distribution's `etc/abbrevs`.
+replacement (`==>` → `⟹`).
+
+**Correction, 2026-08-14.** The abbreviations are **not** in a file named
+`etc/abbrevs` — no such file exists in the distribution. They are the `abbrev:`
+fields of `etc/symbols` itself, e.g. line 189
+`\<Longrightarrow>  code: 0x0027f9  group: arrow  abbrev: .>  abbrev: ==>`.
+So the export emits them from the table it already reads, and the site needs no
+second asset.
+
+The distinction matters for the copy, and §13b's draft got it wrong: the
+tokenizer does **not** convert `==>`. Measured — `tokenize('==>')` returns
+`['==>']`, an ASCII symbolic token, which matches `⟹` nowhere. Only the escape
+`\<Longrightarrow>` is converted, by `unicode_of_ascii` in step 2. `==>` works
+solely because the input control replaces the text in the box before the
+condition is ever sent. The interface may therefore say *"the box turns `==>`
+into `⟹` while you type"*; it may never say that `==>` **is** `⟹`. A second
+consequence: an abbreviation with more than one expansion (`.>` and `<.` each
+serve four or more arrows) cannot be replaced without asking, so live
+replacement covers the unambiguous abbreviations only.
 
 ### 9.4 Entity pages
 
@@ -1768,6 +1800,35 @@ and everything under it are untracked in the `Semantic_Embedding` submodule. A
 lost working tree loses all of it. Committing is the first thing to do.
 
 ### 15.1 The copy rewrite — do this first
+
+**Status, 2026-08-14: drafted. `site/COPY.md` draft 1 carries every
+visitor-facing string.** It closes all five false statements, rebuilds the empty
+state on a measured example, and writes the states that had no copy at all. Two
+labelling choices are marked `[DECIDE]` in it and are the only things left open.
+The measurements it rests on, all taken over the full 1362096 expressions of
+`semantics.lmdb` with the §5 tokenizer and the D21 subtoken rule:
+
+| Expression condition | Subtokens | Matches |
+|---|---|---|
+| `?P ⟹ ?Q` (the old example) | `P ⟹ Q` | **60** |
+| `?n + ?m = ?m + ?n` (the new example) | `n + m = m + n` | **0** |
+| `?a + ?b = ?b + ?a` | `a + b = b + a` | **15**, one of them `Groups.ab_semigroup_add_class.add.commute` |
+| `?x + ?y = ?y + ?x` | `x + y = y + x` | 41 |
+| `?m * ?n = ?n * ?m` | `m * n = n * m` | **0** |
+| `?a * ?b = ?b * ?a` | `a * b = b * a` | 12 |
+| `⟹` (the old suggestion) | `⟹` | **617652**, 45.34 % |
+| `continuous_on` | `continuous on` | 2269 |
+| `sorted_wrt` | `sorted wrt` | 813 |
+
+The new example is the strongest available because the theorem the visitor wants
+**is in the index** and the condition still returns nothing, for exactly one
+reason: the variable names differ. Nothing else has to be explained.
+
+The harness is `site/prototype/`; the probe scripts that produced the table are
+`zero_probe.py` and `zero_probe2.py` in the 2026-08-14 session scratchpad, and
+they are cheap to rewrite from the prototype if that directory is cleaned.
+
+The rest of this section is the specification the draft was written against.
 
 It depends on no data, and §13b showed the current copy states things that are
 false, so anything built from it now would be built wrong.
