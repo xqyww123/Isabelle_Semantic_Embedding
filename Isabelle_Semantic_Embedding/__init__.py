@@ -26,7 +26,6 @@ from .semantics import (
     # with an unknown-procedure error (ENTITY_POSITION_PLAN.md §15.6(e)).
     _backfill_positions,
 )
-from .rekey_dump import _dump_entities, _dump_preflight, _dump_scan
 from . import semantics
 
 __all__ = [

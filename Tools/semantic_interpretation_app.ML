@@ -12,13 +12,7 @@
   positions (ENTITY_POSITION_PLAN.md §8.2).  No LLM is involved.
     Client sends: theory_names (msgpack string list — the roots to sweep)
 
-  Semantic_Store.dump_entities -- re-enumerate the cone with the repaired universal
-  keys and write every entity into a scratch LMDB of its own
-  (BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md §B.3).  Reads no store, writes no store
-  the system uses, and involves no LLM.
-    Client sends: theory_names (msgpack string list — the roots to sweep)
-
-  All three:
+  Both:
     Server streams: packString messages during the run (from tracing)
     Server sends:   packUnit when done successfully
     On error:       sends packString "ERROR: ..." then packUnit
@@ -132,83 +126,6 @@ val _ = register_streaming_app "Semantic_Store.backfill_positions" (fn cin =>
   in
     writeln ("[Semantic_Embedding] backfill_positions: " ^
              Semantic_Store.string_of_backfill_report total)
-  end)
-
-val _ = register_streaming_app "Semantic_Store.dump_entities" (fn cin =>
-  let
-    fun read unpacker =
-      let val (ret, cin') = doUnpack unpacker (!cin)
-      in cin := cin'; ret end
-    val thy_names = read (unpackList unpackString)
-    val thys = resolve_roots thy_names
-    val total = Semantic_Store.dump_cone thys
-  in
-    writeln ("[Semantic_Embedding] dump_entities: " ^
-             Semantic_Store.string_of_dump_report total)
-  end)
-
-(* Semantic_Store.migrate_experience_constituents -- recompute the constituent
-   theories of EXPERIENCE records with the repaired Universal_Key
-   (BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md §B.10).  Pure computation: reads no
-   store, writes no store, needs no RPC host; the driving script
-   (migrate_experience_keys.py) owns every LMDB read and write.
-
-   Client sends: one msgpack list of (id, theory long names, goal_patterns).
-     id is opaque (the record's key, hex); the theory names are the record's OLD
-     constituent list -- the only thing on the record that names any context.
-   Server streams, one line per record, hex-armoured so no delimiter can occur
-   in a theory name or an error message:
-     EXPMIG OK <id> <hex(name)>:<hex(hash16)>,...     (empty last field = [])
-     EXPMIG FAIL <id> <hex(message)>
-   A FAIL is a per-record REPORT, never an exception through the batch: §B.10
-   clears exactly these records, so the failure must reach the report file.
-
-   Scaffolding for one migration; delete with the rest of Part B. *)
-val _ = register_streaming_app "Semantic_Store.migrate_experience_constituents" (fn cin =>
-  let
-    fun read unpacker =
-      let val (ret, cin') = doUnpack unpacker (!cin)
-      in cin := cin'; ret end
-    val records = read (unpackList (unpackTuple3
-                    (unpackString, unpackList unpackString, unpackList unpackString)))
-    fun hex_of_string s =
-      String.translate (fn c => StringCvt.padLeft #"0" 2
-                                  (Int.fmt StringCvt.HEX (Char.ord c))) s
-    fun hex_of_hash (h : Theory_Hash.hash) =
-      String.concat (map (StringCvt.padLeft #"0" 2 o Word8.fmt StringCvt.HEX)
-                         (Word8Vector.foldr (op ::) [] h))
-    fun run_one (id, thy_names, patterns) =
-      (case Exn.capture (fn () =>
-              let
-                val thys = map Thy_Info.get_theory thy_names
-                (* One scratch merge per record: the record's own old list is the
-                   only available approximation of the context it was written in.
-                   §B.10 measured the merge feasible for every record (403 names,
-                   403 distinct base names, all in one AFP-ALL-4 image). *)
-                val thy =
-                  (case thys of
-                     [] => error "empty theory list; empty-constituent records \
-                                 \are copied verbatim, not sent here"
-                   | [t] => t
-                   | ts => Theory.begin_theory
-                             ("Semantic_Embedding.Experience_Migration_Scratch",
-                              Position.none) ts)
-              in Context_Callbacks.experience_constituents (Context.Theory thy)
-                   patterns
-              end) () of
-         Exn.Res consts =>
-           writeln ("EXPMIG OK " ^ id ^ " " ^
-                    String.concatWith ","
-                      (map (fn (n, h) => hex_of_string n ^ ":" ^ hex_of_hash h)
-                           consts))
-       | Exn.Exn exn =>
-           if Exn.is_interrupt exn then Exn.reraise exn
-           else writeln ("EXPMIG FAIL " ^ id ^ " " ^
-                         hex_of_string (Runtime.exn_message exn)))
-    val _ = List.app run_one records
-  in
-    writeln ("[Semantic_Embedding] migrate_experience_constituents: " ^
-             string_of_int (length records) ^ " record(s) processed")
   end)
 
 end
