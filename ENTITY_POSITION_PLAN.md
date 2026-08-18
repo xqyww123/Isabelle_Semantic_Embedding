@@ -1714,105 +1714,258 @@ rest are this population. §18.5's 80.2 % and its 234,398 "never reached" are go
 universal-key repair re-keyed the corpus and §B.6 took each record's name and position
 from a fresh dump, which dissolved the stale stratum §18.5 blamed.
 
-### 19.4 The recovery rate, measured — and why the estimate had to be redone
+### 19.4 The recovery rate, measured three times, and what the third measurement settled
 
-`Thm.get_name_hint` (`Pure/more_thm.ML:657`, `"??.unknown"` when absent) returns the
-member's ORIGINAL fact name, whose own entry has the real proof site. Counted as a hit
-only when that name resolves to a real file position.
+`Thm.get_name_hint` (`Pure/more_thm.ML:657`, returning a `Thm_Name.T` and defaulting
+to `("??.unknown", 0)`) reads the member's ORIGINAL fact name off a `Markup.nameN` tag;
+that name's own name-space entry carries the real proof site. Counted as a hit here only
+when the name resolves to a real file position.
 
-`Thm.derivation_name` (`thm.ML:1159`) must NOT be used instead: `Global_Theory.name_thm`
-(`global_theory.ML:257-266`) calls `Thm.name_derivation` unconditionally under `official2`
-(`:253`), so `lemmas foo = a b` renames the members to `foo(1)`/`foo(2)`.
+`Thm.derivation_name` (`thm.ML:1159`) is the wrong instrument, but **not for the reason
+first written here**. It is not that `official2` renames unconditionally while the hint
+survives — under `official2` (`post = true`) both clauses of `Global_Theory.name_thm`
+fire (`global_theory.ML:263-266`), so that argument proves nothing. What actually saves
+the hint is ordering inside `apply_facts` (`:318-341`): the attributes — the only route
+into a bin — run within `app_facts` on the `official1` copy (`:330-333`), and the
+`official2` pass at `:338` applies to that call's result, i.e. to the copy that enters
+the fact table rather than the one the `Item_Net` keeps. Under `official1` the hint is
+written only when the thm has none already, so a member of `lemmas foo [coll] = a b`
+keeps the hint `a`.
 
-**A first estimate of ~57 % was measured on `Complex_Main` and is void** — its sample
-contained none of the large AFP automation bins. Re-measured on the actual population,
-in the theory of each collection's own session where the bin is LARGEST (the bin is
-declared empty and filled downstream: `Record_Intf.icf_rec_unf` has 0 members in its
-declaring theory and 1,327 in `Collections.Collections`):
+**A caveat that the two-state wording must carry.** When a member had no prior hint —
+`lemmas foo [coll] = a[of x]`, because `gen_instantiate` resets `tags = []`
+(`thm.ML:1947`) — `official1` stamps `foo(1)`. That is a real name resolving to a real
+entry, and the proposition at `foo(1)` IS the member's, so nothing is misattributed; but
+the position is the `lemmas` command's, not the original `lemma`'s. So a recovered name
+is "a name under which this proposition is recorded", which is weaker than "the theorem's
+own declaration site".
 
-| collection | records | members probed | recovered |
+**First estimate, ~57 %, measured on `Complex_Main`: superseded.** Not because it was
+computed wrongly but because its sample cannot represent the population — only 17 of the
+137 collections concerned are declared anywhere under HOL, covering at most 16.6 % of the
+residue; the other 8,002 records belong to 120 AFP collections.
+
+**Second measurement, per collection, in the theory of the collection's own session where
+the bin is largest** (a bin is declared empty and filled downstream: `Record_Intf.icf_rec_unf`
+has 0 members in its declaring theory and 1,327 in `Collections.Collections`). Two columns
+matter and the first version of this section conflated them: *hint* is the name-hint route
+alone, *either* also counts the proposition-matching Termtab described in §19.5.
+
+| collection | residue records | members probed | hint | either |
+|---|---|---|---|---|
+| `Record_Intf.icf_rec_unf` | 1,354 | 1,327 | 0 | 0 |
+| `Nominal2_Base.eqvts_raw` | 898 | 92 | 1 | 1 |
+| `HeapLift.update_commute` | 884 | 884 | 0 | 0 |
+| `Autoref_Id_Ops.autoref_itype` | 801 | 74 | 0 | 0 |
+| `Deriv.derivative_eq_intros` | 674 | 94 | 0 | 0 |
+| `Sepref_Translate.sepref_fr_rules` | 533 | 350 | 6 | 13 |
+| `Topological_Spaces.tendsto_eq_intros` | 516 | 52 | 0 | 0 |
+| `Refine_Mono_Prover.refine_mono` | 425 | 70 | 47 | 51 |
+| `Topological_Spaces.continuous_intros` | 392 | 150 | 150 | 150 |
+| `Bounded_Linear_Function.bounded_linear_intros` | 324 | 27 | 15 | 15 |
+| `Autoref_Fix_Rel.autoref_rules_raw` | 298 | 94 | 86 | 87 |
+
+Weighted by the residue counts: hint 1,148 = 16.17 %, either 1,187 = 16.72 %. **Neither
+figure answers the question the section was asking**, because the rate is measured over a
+bin's live members while the weight is residue records, and those are different sets:
+§19.3's repair had already removed part of the population. Measured per collection, that
+skim is `continuous_intros` 855 → 392 records (463 removed) and `bounded_linear_intros`
+353 → 324 (29); for the other nine, zero.
+
+**Third measurement, which settles it.** The probe was re-run emitting, per member, the
+member's theorem-kind universal key (`Universal_Key.key_of_theorem'`) beside the hint
+verdict; since records of one proposition differ only in the kind byte, every kind face is
+derived from that key, and only members whose key is a RESIDUE key are counted. Of the
+**7,099** residue records in the eleven collections, the probe's members covered **3,049**,
+and **0** were named — while the same run produced **305** members with resolving names
+(`continuous_intros` 150, `autoref_rules_raw` 86, `refine_mono` 47, `bounded_linear_intros`
+15, `sepref_fr_rules` 6, `eqvts_raw` 1; e.g. `Param_HOL.param_takeWhile`). The 305 exist;
+none of them is in the residue.
+
+| collection | residue | residue covered by the probe | named |
 |---|---|---|---|
-| `Record_Intf.icf_rec_unf` | 1,354 | 1,327 | 0 % |
-| `Nominal2_Base.eqvts_raw` | 898 | 92 | 1.1 % |
-| `HeapLift.update_commute` | 884 | 884 | 0 % |
-| `Autoref_Id_Ops.autoref_itype` | 801 | 74 | 0 % |
-| `Deriv.derivative_eq_intros` | 674 | 94 | 0 % |
-| `Sepref_Translate.sepref_fr_rules` | 533 | 350 | 3.7 % |
-| `Topological_Spaces.tendsto_eq_intros` | 516 | 52 | 0 % |
-| `Refine_Mono_Prover.refine_mono` | 425 | 70 | 72.9 % |
-| `Topological_Spaces.continuous_intros` | 392 | 150 | 100 % |
-| `Bounded_Linear_Function.bounded_linear_intros` | 324 | 27 | 55.6 % |
-| `Autoref_Fix_Rel.autoref_rules_raw` | 298 | 94 | 92.6 % |
+| `Record_Intf.icf_rec_unf` | 1,354 | 1,327 | 0 |
+| `Nominal2_Base.eqvts_raw` | 898 | 88 | 0 |
+| `HeapLift.update_commute` | 884 | 884 | 0 |
+| `Autoref_Id_Ops.autoref_itype` | 801 | 74 | 0 |
+| `Deriv.derivative_eq_intros` | 674 | 188 | 0 |
+| `Sepref_Translate.sepref_fr_rules` | 533 | 334 | 0 |
+| `Topological_Spaces.tendsto_eq_intros` | 516 | 104 | 0 |
+| `Refine_Mono_Prover.refine_mono` | 425 | 19 | 0 |
+| `Bounded_Linear_Function.bounded_linear_intros` | 324 | 24 | 0 |
+| `Autoref_Fix_Rel.autoref_rules_raw` | 298 | 7 | 0 |
+| `Topological_Spaces.continuous_intros` | 392 | 0 | — |
 
-**Weighted over the 7,099 records these cover: 16.2 % by name hint** (~1,148 records).
-The distribution is bimodal with nothing in between: a bin whose members are DECLARED
-(`lemma foo [coll]`) recovers almost fully, a bin whose members are COMPUTED
-(`tendsto_eq_rhs OF [thm]` and kin) recovers ~0, because composition drops the tag. The
-zeros are the largest bins, which is why the corpus figure is 16 % and not 57 %.
+**Why zero, structurally.** A hint resolves exactly when the theorem is also recorded
+somewhere as a named static fact — which is the same condition under which §19.3's sibling
+repair found a positioned record of the same proposition and renamed the member face. The
+two criteria are one criterion seen from two sides, so the repair did not merely take some
+of what the hint could take: **it took all of it.** `continuous_intros` is the clean
+extreme — 150 of 150 members named, 0 residue records covered, because the 463 records the
+repair removed were precisely its nameable half.
 
-Two limits on this number, stated so it is not over-read. A record cannot name the theory
-that produced it (§8.4), so "the theory where the bin is largest" is a proxy for the union
-our sweeps saw; and for several collections the probe context holds far fewer members than
-we have records (74 vs 801, 52 vs 516). The figure is trusted because members of one bin
-are homogeneous in origin — all declared or all computed — not because the samples are
-large.
+An independent bound reached the same conclusion from the other direction before the probe
+ran: since a hint names a PROPOSITION while the residue counts RECORDS, the largest number
+of residue records that `hit` propositions could possibly cover is 485 of 7,099 (6.83 %),
+computed from the residue's record-per-proposition multiplicities. The measurement puts the
+true figure at 0.
 
-### 19.5 The design, and what was rejected
+**Limits of the third measurement.** The eleven collections hold 7,099 of the 9,597
+unnameable records (74 %); 126 collections and 2,498 records are unmeasured. The result is
+nonetheless expected to hold for them, because the reason is structural rather than a
+property of these bins. Separately, the earlier claim that bins are "bimodal in origin,
+nothing in between" is neither confirmed nor refuted here: the proxy used against it
+measures sweep COVERAGE, not origin, so it cannot settle origin either way — and the
+proposition §19.4 actually needed was never bimodality but "a bin's residue recovers at the
+rate its live members do", which the third measurement refutes outright.
 
-**Do:** in `process_dynamic_facts_into_cache`, try `Thm.get_name_hint` per member; when it
-yields a name that resolves, build the entry as `Fixed` with that name and the position
-of its name-space entry, and suppress the member index so A6 does not append one
-(`member_entries` at `semantic_store.ML:1394-1411` currently passes `SOME i`
-unconditionally). Cost: a tag read per member, no table, no build step. It also REDUCES
-per-query work, because `resolve_name` takes its trivial first branch
-(`context.ML:198`) instead of a `Facts.lookup` plus a linear `find_index`.
+**Corrections to the figures elsewhere in this section.** Coverage after §19.3's repair is
+**98.78 %, 16,368 records without a position** (the 98.45 % / 20,892 first written here was
+the pre-repair snapshot, and reported the repair as having changed nothing). Of those,
+6,768 are EXPERIENCE records, 9,598 carry a `coll(i)` name, and **2** are the methods
+`Named_Simpsets.simp` and `Named_Simpsets.simp_all`. Of the 9,598, **9,597 have no name
+available anywhere and one now does**: `Topological_Spaces.tendsto_intros(123)`, whose
+theorem face `Limits.LIMSEQ_realpow_zero` (`~~/src/HOL/Limits.thy:2803`) was positioned by a
+same-key rename during the pass itself — so **the repair is not a fixpoint, and a second run
+of `rename_dynamic_members.py` would find one more target.** Finally,
+`Deriv.derivative_eq_intros` is TWO collections, HOL's and a re-declaration in Zippy's
+benchmark theory (12 collection names are duplicated this way), so its 674-record row pools
+two bins from different sessions; this also gives an alternative explanation for
+`derivative_intros(210)` in §19.2, whose evidential weight there now rests on
+`tendsto_intros(104)` alone.
 
-**Do:** store `coll(_)` rather than `coll(i)` for the residue, so the record states "a
-member of this collection" instead of offering digits that read as a citation. The
-constraint to respect: `coll(_)` cannot be the interpretation-run payload name, because
-that label carries answer routing and the uniqueness assert (§19.2); it must be the
-STORED name, which means the write path stores a name different from the routing key.
-This costs nothing agent-facing, since `_apply_live_name` already overrides the stored
-name at query time.
+### 19.5 The design, restated after the third measurement
 
-Together these leave a two-state invariant: **a stored name is either the theorem's own
-recorded name, or an explicit statement that we do not know it.** Nothing in between.
+The third measurement changes what each part of the design is FOR. `Thm.get_name_hint`
+recovers **0** records of today's store: everything it could name, §19.3 already named. It
+is therefore **prophylactic, not remedial** — its value is that a future sweep stops
+MANUFACTURING the records this section is about, not that it repairs any. And since nothing
+in the system reads a stored record's `position` (traced: only tests and the migration
+scripts; every LLM-visible line number comes from the live sweep's `Entry`, and
+`entities_of`'s position element is discarded by all three of its consumers), the
+position half of the design has no consumer to serve either, in the store as it stands.
 
-**Rejected: give the member the collection's position.** Mechanically easy — all 14,122
-bare-name records exist and are positioned, over 251 collections. But the collection's
-position is its `named_theorems` line, not the member's declaration:
-`Topological_Spaces.tendsto_intros(104)` is really
-`LList_CCPO_Topology.tendsto_lextup` at
+What follows is therefore not one design but four separable pieces, listed with what each
+costs and what it buys. None is a precondition for another.
+
+**1. Stop the misleading name reaching an LLM. Cheap, immediate, no data change.** The
+agent-facing retrieval path already overrides the stored name (`_apply_live_name`,
+`semantics.py:2046-2051`, and on the reranker path `:2114`; the exact-name bundle path
+substitutes `ref_name`, `model.py:2198-2201`). Three paths do not: the pattern-only query
+branch (`model.py:2318-2323`), which keeps `rec` although the live name is in the loop
+header; `_query_entity_core` (`retrieval.py:937`), reachable with any kind through
+`IsaMini.query_by_name` (`toplevel.py:65-73`); and the interpretation agent's own `query`
+tool (`semantics.py:1441-1521` → `entity_document_text` → `pretty_print`), which shows the
+deformalizer the stored name verbatim. Two are one-line fixes. A fourth, conditional site:
+`lookup`'s `Restricted` branch does not populate `candidate_names` (`semantics.py:2022-2033`).
+
+**2. `Thm.get_name_hint` in the enumeration, WITH a proposition-equality check.** The check
+is not a quality nicety. If a hint resolves to a different fact of the same name in the
+sweep's context, the member gets a real name whose proposition differs from its own; the
+key differs while the `(kind, name)` label collides, and the label-uniqueness assert
+(`semantic_store.ML:1557-1596`, not `:603`, which is only the comment naming it) raises
+`error` and aborts the whole `interpret'` run for that theory. Both theorems are in hand,
+so the check is one `aconv`. The tag itself cannot outlive a change of proposition —
+`renamed_prop` is guarded by `if prop aconv prop'` (`thm.ML:716-720`), `transfer`/`weaken`/
+`strip_shyps`/`solve_constraints` copy tags without touching `prop`, and every
+prop-changing primitive resets `tags = []` — so name RESOLUTION is the only exposure, and
+the check closes it. Two further corrections to the first version of this design: the entry
+must be built as `Fixed` with the pair `Thm.get_name_hint` returns, **not** `Fixed (nm, 0)`,
+which would collapse `foo(1)` and `foo(2)` onto one label and trip the same assert; and the
+static path's own guards belong here too (reject `#concealed`, reject a name hidden under
+`Long_Name.is_hidden`, reject the `"??."` marker). Benefit: future sweeps only. Cost: the
+member index must be suppressed when a real name is used (`member_entries` passes `SOME i`
+unconditionally, `semantic_store.ML:1379-1411`), and a real `Position.T` must reach the raw
+tuple — which is simpler than first written, since that tuple's third slot already IS a
+`Position.T` hard-coded to `Position.none`. It also removes per-query work, because
+`resolve_name` takes its trivial branch (`context.ML:198`) instead of a `Facts.lookup` plus
+a linear `find_index` — at the price of the staleness drop that branch performs
+(`context.ML:190-197`, `:1291`), which is a semantic change to be ruled on, not a free win.
+
+**3. `coll(_)` as the stored name for the residue.** This is the only piece that changes
+existing data, and it is the expensive one. The stored name and the interpretation-run
+routing label are ONE field today — `build_entries` emits a single `disp_name`
+(`semantic_store.ML:852-856`), `Entry` carries one `name`, `_label` derives the routing key
+from it (`semantic_interpretation.py:205-211`), and the record is written from it — so
+`coll(_)` requires splitting them: a field in the raw and entries tuples, in the exported
+`build_entries` signature, in the msgpack schema, and in `Entry`. Applied to the existing
+9,597 records it needs a one-off pass (nothing in the live path ever rewrites a record's
+name; only `update_expr` exists, `semantics.py:649`) plus a re-embed, because the name is
+the head of the embedded document — scaling §19.3's measured 4,524 records / 744,481 tokens
+gives roughly 1.6 M tokens. It also silently disables `rename_dynamic_members.py`, whose
+member test is `^(.*)\((\d+)\)$` and whose two safety guards then stop firing;
+`theory_structure.py:92` carries the same regex. In its favour: as a string `coll(_)` is
+right, because `Isar/parse.ML:471-473` parses a theorem selection as a number only, so a
+citation of `coll(_)` fails loudly instead of resolving to the wrong theorem — which a bare
+`coll` would not do, besides colliding with the collection's own record.
+
+**4. `resolve_name`'s memo as a `Termtab`** — see §19.6, unchanged and independent: it names
+nothing, so none of the argument below touches it.
+
+#### What was rejected, and on what ground
+
+**Giving a member the collection's declaration position — rejected, and it is not a double
+standard.** §10 rule 2 already stores a position that is not the fact's own site (a
+generated fact gets the generating command's), but that records Isabelle's OWN semantics:
+one command, one derived fact. Pointing 1,327 distinct AFP theorems at one `named_theorems`
+line is our invention, and it would falsify §11.1's advisory contract — "a good place to
+start looking" — for 100 % of its users. Measured counterexample:
+`Topological_Spaces.tendsto_intros(104)` is really `LList_CCPO_Topology.tendsto_lextup` at
 `$AFP/Coinductive/Examples/LList_CCPO_Topology.thy:612`, while the bin is declared at
-`~~/src/HOL/Topological_Spaces.thy:787`. Every member of a bin would point at one line,
-and §10's rule — a position is stored only when it is real, nothing is guessed — forbids
-it. What it wants can be had honestly at DISPLAY time instead: a renderer may fall back
-to the collection's declaration and SAY that is what it is.
+`~~/src/HOL/Topological_Spaces.thy:787`. What this option wants can be had honestly at
+DISPLAY time: a renderer may fall back to the collection's declaration and say that is what
+it is.
 
-**Rejected: fill the name-hint gap by matching propositions against static facts.** A
-`Termtab` is the efficient form of that search and would have cost almost nothing to add:
-`Term_Ord`'s comparisons match `Abs (_, T, t)` (`General/term_ord.ML:91,149,208`), ignoring
-the binder name, so a Termtab key is exactly an aconv class — O(log n) per lookup after one
-pass over the static facts, 49–259 ms to build per theory (measured), lookups below the
-timer's resolution. It was measured to work: it lifts recovery from 16.2 % to 16.7 %,
-about 39 more records.
+**Filling the gap by matching propositions against static facts (a `Termtab`) — rejected,
+but the first version's reason was wrong and is replaced.** The efficient form is standard:
+`Termtab` is keyed by `Term_Ord.fast_term_ord` (`Pure/term_ord.ML:227,234`), whose `Abs`
+cases ignore the binder name (`:69,78,91`), so a key is exactly an aconv class; building it
+costs 49-259 ms per theory, lookups below the timer's resolution. The first version rejected
+it because "an inferred name can belong to another theorem", and that ground does not
+survive: with the proposition-equality check of piece 2 applied to both routes, both state
+truly that the proposition is recorded under the name they give. **The asymmetry is in the
+POSITION.** The hint gives the position of the fact this theorem was tagged as; the term
+match gives the position of whichever aconv-equal fact `Facts.dest_static` happened to
+yield first (`Termtab.default`) — a real line for a different declaration, which is exactly
+what §10's "nothing is guessed" forbids and exactly the ground on which the collection's
+position was rejected above. An earlier claim in this investigation that the term route is
+"never worse" was wrong and is retracted. Measured while rejecting it, and kept so the
+question is not reopened cheaply: the cheap variant that builds the table from a theory's
+OWN new static facts recovers almost nothing (`sepref_fr_rules` 13 → 0,
+`autoref_rules_raw` 87 → 0, `continuous_intros` 150 → 7), because a bin's members are
+declared upstream and a theory's own new facts number 0-394 against 25k-76k inherited.
 
-It is rejected on the two-state invariant, not on cost. The two routes answer different
-questions: the name hint READS what this theorem was called; the term match INFERS a name
-from "some static fact has the same proposition", and among aconv-equal facts
-`Termtab.default` keeps whichever `Facts.dest_static` yielded first. Propositions shared
-by several facts are ordinary here — all 59 collision pairs above are exactly that — so the
-inferred name can belong to another theorem, and once stored it is indistinguishable from a
-read name. That would add a third state nobody downstream can tell from the first, which is
-the same defect as `coll(i)` looking like a citation. **An earlier claim in this
-investigation that the term route is "never worse" was wrong and is retracted here.** 39
-records of 9,597 do not buy a third state; they stay `coll(_)`, which is honest.
+**Recording membership in the `Provenance` map instead of in the name — a live option for
+pieces 2 and 3's position half, not a replacement for the name.** Adding a `collection_uk`
+would let a display-time renderer name the bin from a LINK rather than a parsed string, and
+it avoids the re-embed entirely, since provenance is not part of the embedded document
+(`pretty_print` is kind + name + expr, `semantics.py:279-283`). Two findings keep it from
+being free, and both were checked. The DB encoding is a msgpack map with `None` fields
+omitted (`semantics.py:411-419`, read by key at `:386-392`), so a new reader tolerates an
+old record — but a NEW writer with an OLD reader doing read-modify-write drops the field
+silently, and because the tuple's length does not change, **no arity check can ever detect
+the loss**, unlike the `position` field's. And the ML→Python wire is positional —
+`packOption (packTuple3 (packOption packBytes, packOption packBytes, packString))` inside a
+`packTuple10` (`semantic_store.ML:378-383`), read as `prov[0..2]` — so a fourth field is a
+lockstep ML+Python change, which is precisely what the proposal claimed to avoid. It also
+overloads a field whose name and docstring say *locale-interpretation* provenance. And it
+leaves the misleading name in place, including in the embedded document.
 
-Measured while rejecting it, and kept because it decides the question for good: an
-own-facts-only table (what the enumeration already walks) recovers almost nothing —
-`sepref_fr_rules` 13 → 0, `autoref_rules_raw` 87 → 0, `continuous_intros` 150 → 7 — because
-a bin's members are declared upstream and the theory's own new static facts number 0–394
-against 25k–76k inherited. So the cheap variant is not an option either.
+#### The two-state invariant, demoted
+
+The first version of this design justified rejecting 39 records with an invariant: a stored
+name is either the theorem's own recorded name or an explicit statement that we do not know
+it. That is an aspiration, not a property of the store, and it was used as though it were
+the latter. Nothing enforces it — `check_consistency` (`semantics.py:893-958`) never reads
+`name`, nor do the release gates (`snapshot_sync.py:360-394`) nor the export filter — and
+the store already contains **16,725** `(kind, name)` pairs shared by records of DIFFERENT
+propositions, for reasons unrelated to collections. Against that background it cannot carry
+a veto over 39 records. It is retained as a goal, and if it is to become real the check is
+cheap and exact: for theorem-alike kinds the proposition is `key[17:]`, so "same
+`(kind, name)`, different `key[17:]`" is computable, and it belongs in `check_consistency`
+as a **non-regression count against a recorded baseline** — the strong form would fail
+38,003 times on its first run. Recorded for scale: §19.3's repair moved shared pairs from
+38,601 to 38,003.
 
 ### 19.6 Left open
 
@@ -1820,18 +1973,44 @@ against 25k–76k inherited. So the cheap variant is not an option either.
    argument because it names nothing: it replaces the per-collection `thm list` memo
    (`context.ML:1243`) with a proposition→index table, so the per-member `find_index`
    linear scan (`:211`) becomes a lookup. `Termtab.default` preserves today's
-   first-match-wins semantics exactly (`semantic_store.ML:1094-1097`). About 7 lines
-   touched, net +2, one file, no signature change; on a 1,327-member bin a member's
-   lookup goes from up to 1,327 `aconv` comparisons to ~11 term comparisons, and the
-   biggest bins are exactly those the name hint cannot help. **Awaiting a ruling**: the
-   instruction to drop Termtab was given about the naming use, and this one was not
-   separately decided.
-2. **Two misleading comments** to correct: `bare_name`'s (`context.ML:69-71`) and
-   `_apply_live_name`'s docstring (`semantics.py:2046-2051`); and the over-claim at
-   `semantics.py:2110-2111`.
-3. **Two paths that show the stored name** where the live one is available
-   (`model.py:2318-2322`, `retrieval.py:937` via `toplevel.py:64-72`) — whether to give
-   them the same override `lookup` applies.
-4. **The 127 groups** whose positioned records disagree on the name (§19.3), not examined.
-5. **The development machine's store** is still pre-re-key; §18.5's scope note stands, and
-   catching it up is a snapshot sync, not a backfill.
+   first-match-wins semantics exactly. Roughly 7 lines touched, net +6 to +8, one file,
+   no signature change; on a 1,327-member bin a member's lookup goes from up to 1,327
+   `aconv` comparisons to about 11 term comparisons — and the biggest bins are exactly
+   the ones the name hint cannot help, so this is the one change whose benefit lands
+   where the population is. **Awaiting a ruling**: the instruction to drop the Termtab
+   was given about the naming use, and this one was not separately decided.
+2. **Three misleading comments** to correct: `bare_name`'s (`context.ML:69-71`), which
+   says the DB-storable name has no live index while A6 re-attaches a snapshot one;
+   `_apply_live_name`'s docstring (`semantics.py:2046-2051`), which says it overrides
+   "the stored bare name"; and the claim at `semantics.py:2110-2111` that the reranker
+   scores the same text that was embedded, which for these records it need not.
+3. **The 127 groups** whose several positioned records disagree on the name (§19.3):
+   exactly 127 renamed records are affected, and a sample showed the disagreement is
+   between a theorem-face `X.axioms(n)` and an elimination-face `XD(n)` naming the same
+   proposition, so the deterministic `(kind, name)` minimum is defensible. Not examined
+   in full.
+4. **A second run of `rename_dynamic_members.py`** would find one further target
+   (§19.4): the pass is not a fixpoint, because its scan completed before its own
+   writes.
+5. **The unmeasured tail of §19.4's third measurement** — 126 collections holding 2,498
+   of the 9,597 unnameable records were not probed.
+6. **The development machine's store** is still pre-re-key; §18.5's scope note stands,
+   and catching it up is a snapshot sync, not a backfill.
+
+### 19.7 Review record
+
+Four adversarial reviewers over two rounds (mechanism and citations; measurements and
+inference; the design decision; implementation risk), then a third measurement run to
+settle what the debate could not. What the review changed is recorded above in place
+rather than as a list of amendments, but the load-bearing reversals are worth naming so
+they are not silently re-proposed: the recovery figure fell from ~57 % to 16.2 % to **0**
+on today's store; `Fixed (nm, 0)` was wrong; "changing the enumeration repairs the store"
+was wrong, since nothing rewrites an existing record's name; the reason for rejecting the
+proposition-matching Termtab moved from the name to the position; the reason for
+preferring the name hint over `derivation_name` moved from `official2` to `apply_facts`'s
+ordering; the label-uniqueness assert was mis-cited to a comment; the coverage figures
+were the pre-repair snapshot; and the two-state invariant was demoted from a justification
+to an aspiration. Reviewers also verified as CORRECT the citation chain of §19.1, the
+key-safety of renaming, the dichotomy and collision statistics of §19.3, and the
+`rename_dynamic_members.py` pass itself under two independent attacks (regrouping by
+digest alone finds no extra target; the borrowed `X(i)` names are genuine static bundles).
