@@ -393,10 +393,12 @@ The reference block beneath, on both variants:
 >   `⟦`
 > ✓ Whole parts of a name, in order: `sorted` matches `sorted_wrt`; `sort` does
 >   not, because part of a part is not a part
-> ✓ Isabelle's ASCII form. `\<Longrightarrow>` is always understood as `⟹`, and
->   is the form to use if you are unsure. Abbreviations such as `==>` are
+> ✓ Isabelle's ASCII form, for every symbol Isabelle draws as a character:
+>   `\<Longrightarrow>` is understood as `⟹`. Abbreviations such as `==>` are
 >   converted inside the condition box while you type; an abbreviation with more
->   than one meaning is left alone, so type the `\<…>` form for those.
+>   than one meaning is left alone, so type the `\<…>` form for those. A few markup
+>   escapes — `\<^named_theorems>` and its kind — have no character of their own,
+>   and are matched as you typed them.
 >
 > ✗ Variables and unification: `?f ?x`, `_ + _`
 > ✗ Regular expressions and wildcards: `.*`, `cont*`

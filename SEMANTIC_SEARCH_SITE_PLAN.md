@@ -176,6 +176,20 @@ ask before deviating.
   (§11.1's rate limiting included). §9 stays in this document as the agreed
   design but is **not** to be built yet, and the questions it raises need no
   answer to unblock anything.
+- **D46** (2026-08-18) — **the tokenizer asset carries the export machine's whole
+  symbol table, component files included.** phi-System contributes 112 symbols that no
+  published entity uses, since D24 excludes every phi-System entity from the corpus. They
+  ship anyway: a visitor who pastes `\<big_ast>` out of a phi-System buffer then gets
+  `✱` rather than a condition split into three parts, and the alternative — filtering the
+  asset to symbols the corpus uses — makes the asset depend on the corpus as well as on
+  the installation, for no gain a visitor can see. What was **not** acceptable was
+  leaving this to chance: before this decision the asset's contents depended on which
+  components happened to be registered on whichever machine ran the export, which is an
+  accident, not a policy. The operational consequence follows from D45 and is stated here
+  because it is surprising: **registering or unregistering an unrelated Isabelle component
+  changes the asset digest, and therefore the namespace name, even though not one
+  published document changes.** An export that finds a different component set than the
+  declared one must fail rather than quietly build a differently-named namespace.
 - **D45** (2026-08-18) — **the tokenizer's data ships as one stamped asset, and
   the namespace name carries its digest.** Step 3 needs the symbol table and the
   fold table; §5.2 needs the letter, digit, quasi-letter and ASCII-symbolic sets;
@@ -341,8 +355,20 @@ ask before deviating.
   store under corrected keys, so any export run before it would publish wrong
   theory data under document ids that the rebuild then changes — taking every
   permanent entity-page URL D25 ships with it. §7.2's "already in the DB, 100 %"
-  cell is wrong until that plan has run. The user will complete the repair before
-  execution begins.
+  cell is wrong until that plan has run.
+
+  **Done, 2026-08-18.** The store on `cslh19` has been migrated: a persistent theory's
+  hash is now `clear_lsb(xxh128(long_name ++ 0x00 ++ file bytes ++ parent hashes))`, with
+  parents contributing their own new hashes so the long name — which is session-qualified
+  — propagates down the ancestor DAG. Verified on the authoritative store, read-only:
+  `fsck` passes every invariant over 1,343,793 records, **including "XOR key prefix
+  disagrees with constituents: 0"**, which is the self-check the original defect used to
+  pass silently and which only became meaningful once two theories sharing a base name
+  stopped sharing an identity. `orphans` reports **84 records (0.006 %)** owned by a
+  theory hash no local name claims, against the defect's original signature of 234,398.
+  Not re-verified: G1 of `THEORY_HASH_REKEY_PLAN.md` — that every stored hash is
+  reproducible from the `.thy` file by today's algorithm — which needs the dependency
+  table dumped from an Isabelle image, and that file is no longer on disk.
 - **D32** (2026-08-13) — **D20 is lifted, and the work is staged: the whole
   data side first, the web application after.** The phase boundary is §12.2's
   step 5/6 line. Phase one is the tokenizer module, the site export, the
