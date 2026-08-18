@@ -176,18 +176,65 @@ ask before deviating.
   (§11.1's rate limiting included). §9 stays in this document as the agreed
   design but is **not** to be built yet, and the questions it raises need no
   answer to unblock anything.
+- **D45** (2026-08-18) — **the tokenizer's data ships as one stamped asset, and
+  the namespace name carries its digest.** Step 3 needs the symbol table and the
+  fold table; §5.2 needs the letter, digit, quasi-letter and ASCII-symbolic sets;
+  §5.4 needs the separator class; the condition box needs the abbreviations. All
+  of it is emitted once at export time and read by both implementations, which may
+  carry none of it themselves (§5.5). The asset also records **where it came
+  from** — the `ISABELLE_SYMBOLS` file list, and the Unicode version of the
+  character classes — because the file list depends on which components are
+  registered, so identical code loads different tables on two machines, and the
+  classes depend on the Python release (`isalpha()` is 136,104 code points under
+  Unicode 15.0 and node's `\p{L}` is 145,672). Rather than check the asset against
+  the index at run time, **the turbopuffer namespace name embeds the asset's
+  digest**: a Worker holding an older asset addresses the namespace that asset
+  built, so "new index, old asset" is not a state that can be constructed. The
+  alternative considered and rejected was moving step 3 out of the tokenizer
+  altogether — the interface would rewrite `\<Longrightarrow>` while typing, as it
+  already rewrites `==>` (§9.3), and the export would normalise the stored text.
+  It was rejected because the symbol table is needed either way and that plan only
+  moves it to the browser, where the conversion becomes a second implementation
+  with no gate over it, whereas inside the tokenizer it is covered by the
+  test-vector gate that must exist regardless.
+- **D44** (2026-08-17) — **a private-use code point is not substituted.** Step 3
+  leaves such a symbol as its literal `\<name>`. A private-use code point means
+  only what the font declaring it draws — phi-System draws 135 keywords that way
+  from U+E000 to U+E086, and no other symbol in the distribution or in that
+  component uses the range — so substituting it would put a character in the index
+  that renders as a blank box outside jEdit and that no visitor can type, while
+  the escape at least spells the word. `Isabelle_RPC_Host.pretty_unicode`
+  implements this; its reverse direction still names a raw private-use character,
+  because text dragged out of jEdit carries one and naming it is a repair. Both
+  directions settle: `ascii_of_unicode` then `pretty_unicode` is a fixed point.
+- **D43** (2026-08-18) — **the tokenizer is defined over characters, not Isabelle
+  symbols.** The `symbol_explode` step is dropped, and with it the claim that a
+  `\<foo>` "can never be cut in half" — false of the subtoken level, the only one
+  indexed, since §5.4 splits at `_` regardless of symbol boundaries. Measured: the
+  change moves 0.23 % of subtoken arrays (3,135 of 1,362,096 expressions), all of
+  them escapes left literal by step 3, and every move is an improvement, since
+  `\<^named_theorems>` stops indexing as the unsearchable `['\<^named','theorems>']`.
+  Two review findings dissolve with the step: that §5.1's justification was false,
+  and that the treatment of a malformed or unterminated `\<` was unspecified —
+  `\<=` is now simply one symbolic run. §5.3's eleven equivalences and §16.2's
+  thirty-two cases were re-run under the new definition and all still hold.
 - **D42** (2026-08-14) — **every result card carries a source link**, not just
   the entity page (§9.4). It resolves through the entity position, whose coverage
   is **80.2 %**, so roughly one card in five has no link and needs a defined
   absent form — the link is not to be rendered dead or blank without a word.
   Visible only once prerequisite C lands (§12.2).
-- **D41** (2026-08-14) — **the tokenizer's character classes ship as data, and
+- **D41** (2026-08-14, extended by D45) — **the tokenizer's character classes ship as data, and
   the test vectors must contain synthetic input.** §5.2 defined its classes by
   naming Python's `isalpha`, `isdigit`, `isnumeric` and `isspace`, which have no
   JavaScript equivalent, so §5.5's required port could not be written from this
   document without hard-coding exactly what §5.5 forbids. Measured divergences
-  that follow from the obvious substitutes: `²` (U+00B2, 640 occurrences in the
-  corpus) satisfies `isdigit()` but is category `No`, so `\p{Nd}` disagrees;
+  that follow from the obvious substitutes: `²` (U+00B2 — this said "640
+  occurrences in the corpus", which is the count over §3.3's 230,944-document test
+  namespace; over the whole corpus it is **3,955**) satisfies `isdigit()` but is
+  category `No`, so `\p{Nd}` disagrees; **`\p{L}` is not `isalpha()` either** —
+  136,104 code points against node's 145,672, a 9,568 gap that is pure Unicode
+  version drift (15.0 against 17.0) and exists across Python releases too, which is
+  why D45's asset records the version it was built under;
   U+001C-U+001F and U+0085 satisfy `isspace()` but lie outside `\s`; U+FEFF is
   the reverse. So the export emits the letter, digit, quasi-letter, separator and
   ASCII-symbolic code-point sets as assets beside the symbol table, and neither
@@ -584,13 +631,38 @@ collision classes out of 1,353,348 (0.015 %)**, and inspection of all 200 found
 **none** whose two source texts differ by anything other than whitespace. So
 discarding whitespace introduces no semantic false positive on this corpus.
 
-`unicode_of_ascii(expr) == expr` for all 1,353,394 records: the stored text is
-already in Unicode form, so highlight offsets map straight back to `expr`.
+**NFC, measured 2026-08-14 — it was not measured here before.** §5.1, D41 and
+§16.5 each cite this subsection for "the store is 100 % NFC", and until that date
+no NFC figure appeared in it. The claim is true: `NFC(expr) != expr` for **0 of
+1,362,096** records and `NFC(name) != name` for **0 of 1,362,343**. It is recorded
+here so the three citations have something to point at.
+
+**`unicode_of_ascii(expr) == expr` held for all 1,353,394 records, and no longer
+holds.** Since the loader began reading the symbol table Isabelle actually
+presents on 2026-08-17, component files included, step 3 changes **1,056 of
+1,362,096** stored expressions — the records carrying a phi-System component
+symbol such as `\<big_ast>`. Two things that leaned on the old identity need
+re-reading: highlight offsets no longer map straight back to `expr`, and D41's
+argument for synthetic test vectors ("real data cannot exercise steps 1 and 3")
+now holds for step 1 only.
 
 Character hygiene: **0** private-use-area characters in `expr`, `name` or
-`interpretation` (also none in three symbol tables checked); **1,140 records
-(0.08 %)** still contain a literal `\<…>` for a symbol with no code point, of 32
-distinct kinds; **238 records** contain U+007F (§10); **835** occurrences of CR.
+`interpretation` — still true after the widening, because D44 leaves a
+private-use symbol as its escape rather than substituting it. **238 records**
+contain U+007F (§10); **835** occurrences of CR.
+
+**Literal `\<…>` escapes, re-measured 2026-08-17, and re-characterised.** The
+earlier figure — 1,140 records "for a symbol with no code point", 32 kinds —
+named the wrong class. The operative distinction is not "in the table without a
+`code:` field" but **"not in the table at all"**, and the two behave identically
+for the tokenizer while having very different sizes. Of the 3,562 records whose
+raw text carries an escape: 77 carry one that the distribution's table defines
+without a code point; 1,056 carry one defined only in `contrib/phi-system/symbols`
+(these now convert, and are the 1,056 above); 3,059 carry one declared in **no**
+`symbols` file anywhere in this repository — `\<Empt>`, `\<PR>`, `\<aA>` and 68
+other kinds — which no choice of asset can ever convert. After step 3 with the
+widened table, **1,155 records** still carry a literal escape, and 17 of those
+carry one the §5.4 split cuts at an underscore.
 
 ### 3.5 The query embedding is network, not compute
 
@@ -742,30 +814,76 @@ long names, and every user-supplied filter string:
    split identifiers. **NFKC must not be used**: it maps `₁`→`1` and `𝐚`→`a`,
    destroying Isabelle subscript semantics.
 2. Replace U+007F with a space (a stop-gap until §10 lands; harmless after).
-3. `unicode_of_ascii(s)` — so a user may type `\<Longrightarrow>` or `⟹`.
-   Identity on stored text (§3.4).
-4. `symbol_explode(s)` (`Isabelle_RPC_Host.position`) — split into Isabelle
-   symbols. A `\<foo>` with no code point stays **one** symbol and can therefore
-   never be cut in half. This is what makes the matching genuinely
-   symbol-level rather than character-level.
-5. Group into tokens per §5.2.
+3. **Symbol conversion, which is two passes in this order, not one.**
+   a. Replace each `\<name>` by the code point the symbol table gives it, so a
+      user may type `\<Longrightarrow>` or `⟹`. A symbol the table does not
+      define, and a symbol whose code point is private-use, are both left as the
+      literal `\<name>` (D44).
+   b. Replace each `⇩x`, `⇧x`, `❙x` pair by the character the fold table gives
+      it, so that `x⇩1` and `x\<^sub>1` become the same text. §5.4's separator
+      class is defined over the characters this pass produces, so **without this
+      pass §5.4 has no meaning** — an earlier draft named only pass (a) and left
+      the fold undocumented while the rest of §5 depended on it.
+   Both tables come from the assets of §5.5, and neither implementation may carry
+   its own (D45). `Isabelle_RPC_Host.unicode_of_ascii` is the reference.
+   **This step is no longer the identity on stored text**: since the loader began
+   reading the symbol table Isabelle actually presents, component files included,
+   it changes 1,056 of 1,362,096 stored expressions. §3.4 records the old figure
+   and the sections that cite it are corrected there.
+4. Group into tokens per §5.2, **one character at a time**.
+
+**The tokenizer is defined over characters** (D43). An earlier draft inserted a
+`symbol_explode` step here, so that a `\<foo>` left literal by step 3 stayed one
+indivisible unit, and justified it with the claim that such a symbol "can
+therefore never be cut in half". That claim was false of the only level that is
+indexed: §5.4 splits at `_` without regard to symbol boundaries, so
+`\<^const_name>` became `['\<^const','name>']`. Dropping the step changes 0.23 %
+of subtoken arrays (3,135 of 1,362,096 expressions) and every change is an
+improvement — `\<^named_theorems>` indexed as the unsearchable pair
+`['\<^named','theorems>']` and now indexes as `['\<^','named','theorems','>']`,
+so a visitor who types `named_theorems` finds it.
 
 ### 5.2 Token formation
 
-Whitespace produces **no output at all**; token boundaries come from the
-grouping, not from whitespace. That is what makes `x + y` and `x+y` identical
-while keeping `f x` and `fx` distinct.
+A **character** here is a Unicode **code point**, never a UTF-16 code unit. The
+JavaScript port must iterate code points: 4.17 % of expressions (56,797 of
+1,362,096) carry a character above U+FFFF — `𝒮` from `\<S>`, `𝔄` from `\<AA>`,
+124 of the 439 code-point-bearing symbols are astral — and a port that iterates
+code units emits unpaired surrogates, which JSON transports intact and no query
+can ever match.
 
-- **discard**: any symbol for which `isspace()` holds, and the symbol `?` (D4).
+Whitespace produces no token of its own, and it **is** a boundary: `x + y` and
+`x+y` are identical because an identifier run and a symbolic run cannot merge in
+either spelling, while `f x` and `fx` differ because the space ends the run. Any
+discarded character ends the run in progress, which is why `a?b` is `['a','b']`
+and not `['ab']`. (An earlier draft said the opposite — "token boundaries come
+from the grouping, not from whitespace" — which contradicted both `f x` ≢ `fx`
+in §5.3 and the `a?b` line in §16.2.)
+
+- **discard**: any character for which `isspace()` holds, and `?` (D4). Both end
+  the current token.
 - **identifier token**: a maximal run beginning with a *letter* and continuing
-  with letters, digits or quasi-letters. *Letter* = a single character for which
-  `isalpha()` holds, or one of the `letter`/`greek` group symbols of
-  `etc/symbols` (`get_LETTER_SYMBOLS`, which the codebase already loads).
-  *Digit* = `isdigit()` or `isnumeric()` (so `₁` continues an identifier).
-  *Quasi* = `_` and `'`.
+  with letters, digits or quasi-letters. *Letter* = a character for which
+  `isalpha()` holds. *Digit* = `isdigit()` or `isnumeric()` (so `₁` continues an
+  identifier). *Quasi* = `_` and `'`.
 - **symbolic token**: a maximal run of characters from
   `! # $ % & * + - / : < = > @ \ ^ | ~` (D8).
-- **anything else**: one symbol, one token — including a whole `\<foo>`.
+- **anything else**: one character, one token.
+
+The letter and digit sets are **not disjoint**: 81 code points, the CJK
+ideographic numerals, satisfy both. The order of the tests is therefore
+normative — *letter* is tested first, so `一二三` is one identifier token and not
+three. D45's assets must preserve the overlap rather than partition it.
+
+A quasi-letter cannot **begin** an identifier, only continue one. So Isabelle's
+type variable `'a` is two tokens, `["'", 'a']`, and `_wrt` is `['_','wrt']` whose
+first token then disappears in §5.4. Both are load-bearing and neither is
+obvious; §16.2 carries a case for each.
+
+The `letter`/`greek` groups of `etc/symbols` are **not** consulted, though an
+earlier draft said they were. All 164 of their members already satisfy
+`isalpha()`, so the union added nothing; and every one of them has a code point,
+so step 3 substitutes it before token formation ever sees it.
 
 Neither `.` nor `?` is an identifier character. `.` must not be, or
 `λx. P x` and `λx.P x` would differ.
@@ -793,9 +911,13 @@ filter ever sees.
 **The rule.** Split each token on `_`, `.` and sub/superscript characters, and
 discard those separators. Discard nothing else: a token that is an operator, a
 bracket or any other punctuation survives unchanged, because it is a legitimate
-thing to filter on. A token consisting only of separators disappears entirely,
-which is what makes the user's query `_wrt` compile to `['wrt']` rather than to
-`['_','wrt']`.
+thing to filter on. A token consisting only of separators disappears entirely.
+That is what makes the user's query `_wrt` compile to `['wrt']` — though not by
+the route the wording suggests: `_wrt` is already **two** tokens by §5.2, since a
+quasi-letter cannot begin an identifier, and it is the separator-only first token
+that disappears here. The example does not discriminate between that reading and
+one where `_wrt` is a single token split by the rule, so do not use it to check
+an implementation's token boundaries.
 
 ```
 ['sorted_wrt','R','xs']        → ['sorted','wrt','R','xs']
@@ -813,8 +935,15 @@ stands — only the example is fabricated. It is kept, labelled, because it show
 both folding behaviours in one line.
 
 **The separator character class**, settled by measurement on 2026-08-12 (§3.6).
-99 characters, derived from `etc/symbols` — never hand-written, because a
-hand-written class is exactly what went wrong before:
+99 characters, **derived rather than typed out by hand** — a hand-written class
+is exactly what went wrong before. Derived from what, precisely: 9 of them (`_`,
+`.` and the seven control characters) come from `etc/symbols`, and the other 90
+come from `SUBSUP_TRANS_TABLE`, a 142-entry dict in
+`Isabelle_RPC_Host/unicode.py`. That table **is** hand-maintained, and no symbol
+file carries folding information of any kind, so an earlier claim here that the
+whole class derives from `etc/symbols` was wrong. The consequence is D45's: the
+fold table has to ship in the asset, or the JavaScript port cannot fold at all
+and cannot reconstruct the class.
 
 ```python
 from Isabelle_RPC_Host.unicode import get_SYMBOLS_AND_REVERSED, SUBSUP_TRANS_TABLE
@@ -850,7 +979,13 @@ splits to nothing normally disappears — that is what makes the query `_wrt`
 compile to `['wrt']`. But a token made *entirely* of rendered sub/superscripts
 is real content, not decoration: `ₚₜᵣ` (317 occurrences), `ᶜᵉ` (336), `ᵢₛₒ`
 (178), `ₜᵣₛ` (164), `²` (640), `₁` (1,281). Without the clause, 108 such tokens
-in **7,346 documents (3.18 %)** become unsearchable. Restricting it to rendered
+in **7,346 documents (3.18 %)** become unsearchable. **Every percentage in this
+subsection has a denominator of 230,944** — the §3.3 test namespace, 17 % of the
+corpus — not the 1,362,096 expressions §16.2 gives as the corpus scale; an
+earlier draft named no denominator at all. Re-measured over the whole corpus the
+same quantity is 51,891 documents (3.81 %) and 154 distinct tokens, and the raw
+occurrence counts move too: `²` is 3,955, not 640, and `₁` is 7,023, not 1,281.
+D41 repeats the 640 as "occurrences in the corpus", where it is six times low. Restricting it to rendered
 characters is equally load-bearing: the obvious unrestricted version ("keep any
 token that splits to nothing") was measured and **breaks the `_wrt`
 counter-example outright** — `_` would survive, the query would become
@@ -897,12 +1032,32 @@ include/exclude toggle — because both let a user enter two conditions.
 The site export runs the Python implementation; the Worker runs a JavaScript
 port. To stop them drifting:
 
-- `etc/symbols` is compiled into **one JSON asset at export time**, read by
-  both. Neither implementation may hard-code a symbol table.
-- The export emits a **shared test vector file** — at least 10,000
-  `(input, tokens, subtokens)` triples sampled from real entity expressions —
-  and both implementations must reproduce it exactly in CI.
-- The test vector file is versioned with the data.
+- **One asset, emitted at export time, read by both** (D45). It carries the
+  symbol table, the fold table, the letter / digit / quasi-letter /
+  ASCII-symbolic / separator sets, and the abbreviations the condition box needs.
+  Neither implementation may hard-code any of it, and neither may consult a
+  language built-in for a character class — §5.2 names Python predicates to
+  *define* the sets, not to be called at run time.
+
+  Naming the source files is not optional bookkeeping. `etc/symbols` is not one
+  file: Isabelle assembles `ISABELLE_SYMBOLS` by appending, so every registered
+  component contributes, and rebuilding the list from `ISABELLE_HOME` instead —
+  which the loader did until 2026-08-17 — silently drops all of them. The asset
+  therefore records the exact file list and the Unicode version of the classes,
+  and `Isabelle_RPC_Host.unicode.get_SYMBOL_FILES()` reports the former.
+
+- **The namespace name embeds the asset's digest** (D45), so an index and the
+  asset that built it cannot come apart. This replaces a run-time consistency
+  check: there is nothing to check, because a Worker carrying an older asset
+  addresses the namespace that asset built.
+
+- The export emits a **shared test vector file** and both implementations must
+  reproduce it exactly in CI — see §16.5 for what it must contain and §16.6 for
+  what the gate must assert. Sampling real expressions is necessary but not
+  sufficient: real data cannot exercise pipeline steps 1 and 2 at all, and the
+  gate must assert **coverage of named features**, not merely a sample size.
+
+- The test vector file is versioned with the data, and so is the asset.
 
 ## 6. turbopuffer schema and queries
 
