@@ -158,18 +158,26 @@ on every future snapshot, and its failure mode is silent — a static bundle's s
 rendered as an invented form. The enumeration knows the answer for certain at the moment it
 invents the name, so that is where it is recorded. The costs in §3 are accepted.
 
-**D1 — `Thm.get_name_hint` in the enumeration.** A member's theorem often carries a tag
-naming the fact it was declared as, and that name has a real position. Using it would give
-future members a real name and a real position instead of an invented form. It recovers
-nothing for the records already in the store — measured, zero of the residue — so its value
-is that future sweeps stop producing these records. If it is done: pass through the
-`Thm_Name.T` the tag yields rather than forcing an index of 0; verify that the named fact's
-proposition equals the member's, because a name that resolves to a different fact of the
-same name would produce two entries with one label and abort the sweep; and apply the same
-guards the static path applies (reject concealed names, hidden names, and the unknown
-marker).
+**Settled: `Thm.get_name_hint` is used in the enumeration.** A member's theorem often
+carries a tag naming the fact it was declared as, and that name has a real position; where it
+resolves, the member gets that name and that position instead of an invented form, and the
+member index is not appended. Where it does not resolve, the name stays `coll(i)` and §2.2's
+field is set. It recovers nothing for the 9,598 records already in the store — that is
+measured and is not a reason against it, because its purpose is that future sweeps stop
+producing them.
 
-**D2 — the order of work.** §2.1 is independent of everything else and can be done now.
+Three things it must do, which the measurements settled:
+
+- Pass through the `Thm_Name.T` the tag yields. Do not force an index of 0: that would
+  collapse `foo(1)` and `foo(2)` onto one label, and two entries with one label abort the
+  sweep on the label-uniqueness assert.
+- Verify that the named fact's proposition equals the member's, with one `aconv` — both
+  theorems are in hand. A name that resolves to a different fact of the same name in the
+  sweep's context would otherwise produce that same aborting collision.
+- Apply the guards the static path applies: reject a concealed name, a name hidden under
+  `Long_Name.is_hidden`, and the unknown marker the tag defaults to.
+
+**D1 — the order of work.** §2.1, §2.2 and the enumeration change above are independent of anything undecided and can be done now.
 §2.2 is independent too. §2.3 lands when the search front end's display layer exists.
 
 ## 5. What was already done to the store
