@@ -1708,9 +1708,9 @@ against the dump too: of the 14,122 keys, 14,112 hold only positionless dump rec
 (the 10 exceptions are the contested keys above). So the absence is not something the
 join lost — it was absent at enumeration.
 
-**Coverage after the repair**: 1,343,793 entity records, 98.45 % with a position. Of the
-20,892 without, 6,768 are EXPERIENCE records (agent-written, no declaration site) and the
-rest are this population. §18.5's 80.2 % and its 234,398 "never reached" are gone: the
+**Coverage after the repair** — the figures first written here (98.45 %, 20,892 without)
+were a PRE-repair snapshot and reported this repair as having changed nothing; the correct
+post-repair figures are in §19.4's closing paragraph (98.78 %, 16,368 without). §18.5's 80.2 % and its 234,398 "never reached" are gone: the
 universal-key repair re-keyed the corpus and §B.6 took each record's name and position
 from a fresh dump, which dissolved the stale stratum §18.5 blamed.
 
@@ -1810,10 +1810,36 @@ of residue records that `hit` propositions could possibly cover is 485 of 7,099 
 computed from the residue's record-per-proposition multiplicities. The measurement puts the
 true figure at 0.
 
+**The third measurement, corrected and strengthened by review.** The probe above chose,
+per collection, the theory of its own SESSION where the bin is largest — and that missed the
+largest bins, which are downstream and cross-session. A census over all 10,602 theories the
+`AFP-ALL-4` image holds found `Topological_Spaces.continuous_intros` at 436 members in
+`Kraus_Maps.Kraus_Families` against the 150 probed, `Autoref_Fix_Rel.autoref_rules_raw` at
+817 against 94, `Refine_Mono_Prover.refine_mono` at 438 against 70. Re-probing 30 further
+(collection, theory) pairs at the maximal bins — 14,467 more members — raises residue
+coverage from 3,049 to **5,768 of 7,099 (81.3 %)** and leaves the result unchanged: **0 named,
+in every collection**. `continuous_intros`, the row above had to leave blank, is now 368 of
+392 covered and 0 named.
+
+Four checks make the 0 an instrument reading rather than an artefact. The key-face splice is
+exact: `key_of_rule` (`Universal_Key.ML:932-936`) is `build_thm_key`, which digests
+`Term_Digest.thm128 thm` and writes the tag at byte 16 with no rule normalisation, and every
+residue group carries a theorem face, for which the splice is the identity. The missing hints
+are genuinely missing: of 14,467 members, **11,342 carry no `Markup.nameN` tag at all**, which
+is not the same as a tag that resolves badly. The converse holds too — of the members whose
+hint does resolve, 3,097 sit on records that already have a position, 27 are absent from the
+store, and **0 are residue**. And `Thm.transfer` before the key computation changes nothing
+(0 differences over 14,467 members). So §19.4's structural claim is now measured over 17,681
+members rather than argued.
+
 **Limits of the third measurement.** The eleven collections hold 7,099 of the 9,597
-unnameable records (74 %); 126 collections and 2,498 records are unmeasured. The result is
+unnameable records (74 %); within them 1,331 residue keys (18.7 %) stay uncovered even at the
+maximal bins, and 126 collections holding 2,498 records were never probed. The result is
 nonetheless expected to hold for them, because the reason is structural rather than a
-property of these bins. Separately, the earlier claim that bins are "bimodal in origin,
+property of these bins — with the condition named: a hint resolves in the SWEEP's context
+while the repair needs a positioned record in OUR STORE, and the two coincide because the
+sweep was AFP-wide. Also recorded: 102 of the 17,681 probed members have keys absent from
+the store altogether (27 of them named), a live-versus-store divergence worth its own look. Separately, the earlier claim that bins are "bimodal in origin,
 nothing in between" is neither confirmed nor refuted here: the proxy used against it
 measures sweep COVERAGE, not origin, so it cannot settle origin either way — and the
 proposition §19.4 actually needed was never bimodality but "a bin's residue recovers at the
@@ -1873,7 +1899,14 @@ the check closes it. Two further corrections to the first version of this design
 must be built as `Fixed` with the pair `Thm.get_name_hint` returns, **not** `Fixed (nm, 0)`,
 which would collapse `foo(1)` and `foo(2)` onto one label and trip the same assert; and the
 static path's own guards belong here too (reject `#concealed`, reject a name hidden under
-`Long_Name.is_hidden`, reject the `"??."` marker). Benefit: future sweeps only. Cost: the
+`Long_Name.is_hidden`, reject the `"??."` marker). Benefit: future sweeps only — which is worth more than it sounds. If a hint resolves
+exactly when the sibling repair could have named the record (§19.4, measured over 17,681
+members), then WITHOUT this piece every future sweep re-manufactures precisely the records
+that then need `rename_dynamic_members.py`, and that clean-up drops and re-buys their vectors:
+measured, 4,524 records cost 744,481 tokens. This piece makes the same correction free, at
+write time. The equivalence carries a condition worth stating: the hint resolves in the
+SWEEP's context while the repair needs a positioned record in OUR STORE, and the two coincide
+because the sweep is AFP-wide. Cost: the
 member index must be suppressed when a real name is used (`member_entries` passes `SOME i`
 unconditionally, `semantic_store.ML:1379-1411`), and a real `Position.T` must reach the raw
 tuple — which is simpler than first written, since that tuple's third slot already IS a
@@ -1883,7 +1916,26 @@ a linear `find_index` — at the price of the staleness drop that branch perform
 (`context.ML:190-197`, `:1291`), which is a semantic change to be ruled on, not a free win.
 
 **3. `coll(_)` as the stored name for the residue.** This is the only piece that changes
-existing data, and it is the expensive one. The stored name and the interpretation-run
+existing data, it is the expensive one, and review plus one further measurement demoted it
+from an honesty repair to a retrieval-quality tweak.
+
+What it does NOT do: stop the misleading name reaching an LLM. The split keeps `coll(i)` as
+the routing label, and that label is exactly what the interpreting agent is shown —
+`format_entries` prints `[line N] {kind} {name}` (`semantic_interpretation.py:481`) and the
+prompt says each translation must describe the statement "next to that exact name" (`:789`).
+So future interpretations go on being written with the index in view.
+
+What it does do, measured: the index appears in the embedded document's HEAD only. Of the
+9,598 member-named records, **0 have an interpretation that mentions the index**; 101 mention
+the collection name without it, and 9,497 mention neither. So the stored English is clean and
+does NOT need re-interpretation — an earlier reading that it might was checked and is false —
+and renaming plus re-embedding really would remove the index from the embedded text
+altogether. The benefit is therefore bounded and concrete: a few tokens at the head of a
+document whose body, which carries the meaning, does not change. Recommendation: do not spend
+~1.6 M tokens on that alone; carry it along the next whole-store re-embed that happens for
+another reason, at which point it is free.
+
+The cost, unchanged: The stored name and the interpretation-run
 routing label are ONE field today — `build_entries` emits a single `disp_name`
 (`semantic_store.ML:852-856`), `Entry` carries one `name`, `_label` derives the routing key
 from it (`semantic_interpretation.py:205-211`), and the record is written from it — so
@@ -1963,9 +2015,38 @@ propositions, for reasons unrelated to collections. Against that background it c
 a veto over 39 records. It is retained as a goal, and if it is to become real the check is
 cheap and exact: for theorem-alike kinds the proposition is `key[17:]`, so "same
 `(kind, name)`, different `key[17:]`" is computable, and it belongs in `check_consistency`
-as a **non-regression count against a recorded baseline** — the strong form would fail
-38,003 times on its first run. Recorded for scale: §19.3's repair moved shared pairs from
+as a **non-regression count against a recorded baseline of 16,725** — the strong form,
+which forbids any shared `(kind, name)`, would fail 38,003 times on its first run and be
+switched off within a day. Recorded for scale: §19.3's repair moved shared pairs from
 38,601 to 38,003.
+
+#### The recommendation
+
+Stated because the section otherwise leaves a reader with four options and no question to
+answer. This is a recommendation, not a decision.
+
+**Do piece 1** (stop the stored name reaching an LLM). It is cheap, changes no data, and two
+of its three sites are one-line fixes.
+
+**Do piece 2** (`get_name_hint` with the proposition check, the parsed `Thm_Name.T`, and the
+static path's guards). Not for today's store, where it recovers nothing, but because without
+it every future sweep re-manufactures the records whose clean-up has a measured price.
+
+**Do not do piece 3** (`coll(_)`) on its own; carry it along the next whole-store re-embed.
+Its remaining benefit is the head of the embedded document, and the body is already clean.
+Two ordering constraints if it is ever done: it must follow the second run of
+`rename_dynamic_members.py` (§19.6), whose member test it disables, and it must state whether
+its one-off pass drops vectors under §19.3's L6 exception or honours the vector-layer
+self-sufficiency invariant.
+
+**Piece 4** (`resolve_name`'s memo) is independent of all of the above and is the only one
+whose benefit lands where the population is; it awaits its own ruling (§19.6).
+
+**One conflict to settle before piece 2 is written.** §19.5 argues that the position half of
+the design has no consumer, and L8 says there is no public read API for the position "for
+now; it is an internal field" — the entire §8 backfill was done ahead of any reader, on
+purpose. Either L8's premise covers dynamic-collection members too, in which case "no
+consumer" is not a reason to drop anything, or L8 is being narrowed here and should say so.
 
 ### 19.6 Left open
 
@@ -1996,6 +2077,12 @@ as a **non-regression count against a recorded baseline** — the strong form wo
    of the 9,597 unnameable records were not probed.
 6. **The development machine's store** is still pre-re-key; §18.5's scope note stands,
    and catching it up is a snapshot sync, not a backfill.
+7. **102 of 17,681 probed members have keys absent from the store** (27 of them carrying a
+   resolving name) — the one place where "a sweep saw something we cannot match" is
+   demonstrably real, and unexplained.
+8. **The residue still uncovered by measurement**: 1,331 keys (18.7 %) inside the eleven
+   probed collections even at their maximal bins, plus 126 collections holding 2,498
+   records never probed.
 
 ### 19.7 Review record
 
