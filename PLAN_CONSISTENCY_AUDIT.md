@@ -167,3 +167,105 @@ itself — was still running when this was written. Append its findings here whe
     convention implies; one is cited without its extension.
 55. The companion's §15.1 sends the reader to probe scripts in a deleted scratchpad; the
     live answer is `site/prototype/corpus_probe.py`. Same at §15.3 for the prototype files.
+
+---
+
+# Second audit: the plan against the code and the corpus
+
+Run 2026-08-18. Figures measured on **this machine's** store, never on `cslh19`, so a
+disagreement may be snapshot age rather than a defect — the report says which it checked.
+It confirms a long list of figures reproduce exactly; only the failures are recorded here.
+
+## Errors in decisions, not just drift
+
+**A. D43's cost claim is wrong, and materially.** It says the 17 records that lose a
+subtoken are "all in phi-System theories that D24 excludes from the export". Three are
+not: `AbsCFCorrect.lemma6` and `AbsCFCorrect.contour_a_class.abs_cnt_initial` are AFP
+`Shivers-CFA`, which D24 **exports**, and `Matrix.matrix` is likewise an AFP entry. So
+D43's cost is not confined to material the site never publishes. The decision still
+stands on 3,118 refinements against 17 losses; the sentence excusing the losses does not.
+
+**B. §16.3 step 1's acceptance test cannot pass.** It requires the production tokenizer to
+produce "subtoken arrays identical to the prototype's for all 1 362 096 expressions",
+compared by digest. By D43 the two **must** differ, on exactly 3,135. The step gates the
+production tokenizer on agreeing with the rule §5 replaced. It also says the lift changes
+the prototype "in exactly one respect" (reading classes from assets); it is two — the
+other is dropping `symbol_explode`.
+
+**C. §3.2's "0 private-use characters in `expr`" is now 1.** `IDE_CP_Core.φlemmata`
+carries U+E015, U+E057, U+E028, U+E068. `name` and `interpretation` are still 0. D44's
+justification survives; the number does not.
+
+## Stale paths
+
+- `entity_source` (§3.2) exists nowhere in `contrib/` except this document.
+- `semantic_store.ML` no longer computes `Position.line_of`; it moved to
+  `Tools/entity_position.ML:98` and `Tools/pide_state.ML:108,730`.
+- §6.3 says `site/DESIGN_PROMPT.md`'s deliverable 5 "must lose" a notice it has already
+  lost; deliverable 5 is now "An entity page".
+- **D11's fix has not happened.** `Tools/pide_state.ML:553` still uses `Token.source_of`
+  where D11 says it "will be fixed to `Token.unparse`", with the comment the companion's
+  §10.1 calls wrong still above it. §10's "done" is true of the data, not of the cause.
+- **The plan never mentions `site/review/`**, though it is committed and holds the review
+  §16.7 demands. §16.7 still reads as future work, and the companion's §15.4 still says
+  D33-D42 have never been reviewed.
+- `site/prototype/README.md` describes "these two files", omitting `corpus_probe.py`, and
+  cites §15.3, which has moved to the companion; the live build order is §16.3.
+
+## Figures that no longer hold
+
+Ordered by how far off they are.
+
+- §3.1's vector store: **110,329 vectors** → **1,355,257 live** plus 7,810 tombstones.
+- §3.1's max expression length **32,228** → **88,517**, off by 2.7×.
+- §14.7's primed-name figures, **150,679 expressions and 41,554 names (3.05 %)** → 158,120
+  and 47,766 (3.51 %) on one reading, 165,010 and 50,307 on another; **neither** gives the
+  document's pair, while the same paragraph's other figures reproduce to the record. Not
+  store drift — something else.
+- D46's "phi-System contributes **112 symbols**" is not reconstructible from any stated
+  rule: the two files contribute 185 names, ~113 appear nowhere in the store, and under
+  D24 the count of symbols no *published* entity uses is 185.
+- D37's subtoken frequencies: `P` **10.80 %** → 12.82 %, `a` 17.50 % → 16.55 %. Consistent
+  with the figures coming from the 230,944-document namespace, which D37 does not say.
+- §3.1's absolute counts are the 2026-08-09 figures throughout (1,353,574 records →
+  1,362,343; theorem-alike 1,148,833 → 1,156,153; name-addressed 204,741 → 206,010).
+  Percentages hold. §7.2 and §12.2 repeat them.
+- §7.2's **8,299** distinct theory long names against D39's 8,329 — §7.2 is the stale half.
+- §8.1's gate: 8,908 records (0.65 %) with no vector → **7,810 (0.57 %)**; "all of them
+  tombstoned" holds exactly.
+- §7.3's 11,415 per-theory records → 11,474; local registry 3,145 → 3,844.
+- §6.1/§6.3's array sizes (expr 37.72, name 6.30) are the 230,944-document figures used
+  without their denominator; whole-corpus they are 39.17 and 6.77.
+- The **1,981** word-glyph-escape records (§3.4) → 1,980. One apart.
+
+## What reproduces, so nobody re-measures it
+
+The whole of §16.2 — **32 inputs, 0 mismatches**, and 0 mismatches *also* under a
+character-level implementation of §5.2/§5.4 as now written, so no line of that table is
+wrong or prototype-stale. All 11 of §5.3's relations likewise. The companion's §15.1 table
+entire, including 617,652 = 45.34 %. D43's 3,135 / 3,118 / 17. D39's 8,329 and the
+no-session-prefix finding. D44's 135 private-use symbols at U+E000–U+E086. The separator
+class 99 = 2 + 7 + 90. `get_LETTER_SYMBOLS()` = 190, table 624 with 151 astral. §14.7's
+13.20 % and 169,005 interior. Zero U+007F, zero non-NFC, 835 CR, and the escape
+classification 3,562 / 77 / 1,056 / 1,078 / 3,135 / 17. §6.2's 88,798 base64-long keys
+(89,137 today). D24's 17,883 (17,865 under the base-logic clause). And
+`corpus_probe.py`, run unmodified from its committed location, reproduces §16.1's own
+verification: `?n + ?m = ?m + ?n` → 0, `?a + ?b = ?b + ?a` → 15.
+
+Also confirmed correct: `symbol.scala:318`'s name regex is exactly what §5.1 describes and
+exactly what `unicode.py:232` now uses; `etc/symbols` line 189 is byte-for-byte what §9.3
+quotes; `SUBSUP_TRANS_TABLE` is 142 entries; `conda/recipe.yaml`'s allow-list means `site/`
+cannot leak.
+
+## Prototype staleness, and its blast radius
+
+`site/prototype/` is pre-D43 in both the ways expected: it calls `symbol_explode`, and
+`_is_letter` consults the `etc/symbols` letter groups §5.2 says are not consulted.
+
+The blast radius is **exactly the 3,135 records D43 names** — the two definitions agree on
+the other 1,358,961 — so no other corpus figure in the plan is at risk from it. But the
+plan treats it as current in four places: §16.2 calls it the measuring instrument for the
+acceptance criteria; §16.1 mandates `corpus_probe.py` "rather than writing a new probe",
+and that probe imports the pre-D43 rule; §16.3 makes it the corpus-wide oracle (finding B);
+§16.7 asks a question about a deleted step. §8.3 also still explains a CR behaviour by
+`symbol_explode`; the conclusion survives on a different ground.
