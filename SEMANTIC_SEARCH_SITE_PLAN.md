@@ -641,10 +641,14 @@ here so the three citations have something to point at.
 holds.** Since the loader began reading the symbol table Isabelle actually
 presents on 2026-08-17, component files included, step 3 changes **1,056 of
 1,362,096** stored expressions — the records carrying a phi-System component
-symbol such as `\<big_ast>`. Two things that leaned on the old identity need
-re-reading: highlight offsets no longer map straight back to `expr`, and D41's
-argument for synthetic test vectors ("real data cannot exercise steps 1 and 3")
-now holds for step 1 only.
+symbol such as `\<big_ast>`. One thing that leaned on the old identity is simply
+gone: highlight offsets no longer map straight back to `expr` for those records.
+D41's argument for synthetic test vectors survives — see the paragraph on the
+export scope below — but its wording needs care, so state it once here and cite
+this: **on the published corpus, pipeline steps 1, 2 and 3 are all the identity.**
+Step 1 because the store is 100 % NFC; step 2 because the U+007F repair is done
+(§12.2 step 1 — the 238 records counted below are the 2026-08-09 figure, before
+it ran); step 3 because every record it changes is excluded by D24.
 
 Character hygiene: **0** private-use-area characters in `expr`, `name` or
 `interpretation` — still true after the widening, because D44 leaves a
@@ -657,12 +661,29 @@ named the wrong class. The operative distinction is not "in the table without a
 `code:` field" but **"not in the table at all"**, and the two behave identically
 for the tokenizer while having very different sizes. Of the 3,562 records whose
 raw text carries an escape: 77 carry one that the distribution's table defines
-without a code point; 1,056 carry one defined only in `contrib/phi-system/symbols`
-(these now convert, and are the 1,056 above); 3,059 carry one declared in **no**
-`symbols` file anywhere in this repository — `\<Empt>`, `\<PR>`, `\<aA>` and 68
-other kinds — which no choice of asset can ever convert. After step 3 with the
-widened table, **1,155 records** still carry a literal escape, and 17 of those
-carry one the §5.4 split cuts at an underscore.
+without a code point; 1,056 carry one defined only in `contrib/phi-system/symbols`,
+and those are exactly the 1,056 that now convert. Of the rest, **1,981** carry a
+word-glyph escape that `contrib/phi-system/symbols-words` **does** define — with a
+private-use code point, so D44 leaves it alone deliberately — and **1,078**, in 20
+distinct kinds, carry one declared in no `symbols` file in this repository at all
+(`\<Empt>`, `\<PR>`, `\<aA>`), which no asset can ever convert. The three reasons
+an escape survives are therefore different in kind, and only the last is a gap.
+
+After step 3 with the widened table, **3,135 records** still carry a literal
+escape, and 17 of those carry one the §5.4 split cuts at an underscore. (An
+earlier draft of this paragraph said 1,155, which is `77 + 1,078` — it counted
+only the escapes absent from the loaded table and silently dropped the 1,981 that
+D44 keeps. 3,135 is also the figure D43 quotes for the subtoken arrays the
+character-level rule moves; the two are the same set, and the draft had them
+disagreeing.)
+
+**All 1,056 newly-converting records are phi-System theories** — `Phi_Types` 716,
+`Phi_BI` 74, `Algebras` 49, `Arrow_st` 46, `Len_Intvl` 42, `Phi_Type` 39, and so
+on — and **D24 excludes every one of them from the export**, since phi-System is
+neither AFP nor the distribution. So on the corpus that is actually published,
+step 3 remains the identity, and D41's argument for synthetic vectors survives
+intact for the sample §16.5 draws. The asset must still carry phi-System's names,
+or a visitor pasting one would tokenize it differently from anything indexed.
 
 ### 3.5 The query embedding is network, not compute
 
@@ -838,17 +859,30 @@ indivisible unit, and justified it with the claim that such a symbol "can
 therefore never be cut in half". That claim was false of the only level that is
 indexed: §5.4 splits at `_` without regard to symbol boundaries, so
 `\<^const_name>` became `['\<^const','name>']`. Dropping the step changes 0.23 %
-of subtoken arrays (3,135 of 1,362,096 expressions) and every change is an
-improvement — `\<^named_theorems>` indexed as the unsearchable pair
-`['\<^named','theorems>']` and now indexes as `['\<^','named','theorems','>']`,
-so a visitor who types `named_theorems` finds it.
+of subtoken arrays (3,135 of 1,362,096 expressions), and 3,118 of those 3,135 are
+pure refinements: every old subtoken is preserved or split further, so
+`\<^named_theorems>` stops indexing as the unsearchable pair
+`['\<^named','theorems>']` and indexes as `['\<^','named','theorems','>']`, which a
+visitor typing `named_theorems` now finds.
+
+**The remaining 17 lose a subtoken**, and an earlier draft of this decision
+claimed there were none. Where an escape sits against an ASCII-symbolic
+character, the escape's closing `>` now merges into a symbolic run with it:
+`['\<param>',':']` becomes `['\<','param','>:']`, and the standalone `':'` that
+used to be indexed is gone. Nine such patterns occur, all in phi-System theories
+that D24 excludes from the export — `Calculus_of_Programming.φapply_proc`,
+`PLPR.Premise_const_True(4)` and their siblings. The decision stands on 3,118
+refinements against 17 losses of bare punctuation, but it does not stand on the
+absolute claim.
 
 ### 5.2 Token formation
 
 A **character** here is a Unicode **code point**, never a UTF-16 code unit. The
 JavaScript port must iterate code points: 4.17 % of expressions (56,797 of
 1,362,096) carry a character above U+FFFF — `𝒮` from `\<S>`, `𝔄` from `\<AA>`,
-124 of the 439 code-point-bearing symbols are astral — and a port that iterates
+and 151 of the 624 code-point-bearing symbols in the loaded table are astral (124
+of 439 counting the distribution's file alone, which is not the table D45 ships) —
+and a port that iterates
 code units emits unpaired surrogates, which JSON transports intact and no query
 can ever match.
 
@@ -936,8 +970,9 @@ both folding behaviours in one line.
 
 **The separator character class**, settled by measurement on 2026-08-12 (§3.6).
 99 characters, **derived rather than typed out by hand** — a hand-written class
-is exactly what went wrong before. Derived from what, precisely: 9 of them (`_`,
-`.` and the seven control characters) come from `etc/symbols`, and the other 90
+is exactly what went wrong before. Derived from what, precisely: seven of them,
+the control characters, are read from a symbols file; `_` and `.` are ASCII
+literals in the rule itself; and the other 90
 come from `SUBSUP_TRANS_TABLE`, a 142-entry dict in
 `Isabelle_RPC_Host/unicode.py`. That table **is** hand-maintained, and no symbol
 file carries folding information of any kind, so an earlier claim here that the
@@ -979,10 +1014,12 @@ splits to nothing normally disappears — that is what makes the query `_wrt`
 compile to `['wrt']`. But a token made *entirely* of rendered sub/superscripts
 is real content, not decoration: `ₚₜᵣ` (317 occurrences), `ᶜᵉ` (336), `ᵢₛₒ`
 (178), `ₜᵣₛ` (164), `²` (640), `₁` (1,281). Without the clause, 108 such tokens
-in **7,346 documents (3.18 %)** become unsearchable. **Every percentage in this
-subsection has a denominator of 230,944** — the §3.3 test namespace, 17 % of the
-corpus — not the 1,362,096 expressions §16.2 gives as the corpus scale; an
-earlier draft named no denominator at all. Re-measured over the whole corpus the
+in **7,346 documents (3.18 %)** become unsearchable. **Every figure carried over
+from the 2026-08-12 measurement — that is, every one in this subsection except
+where the next sentence gives a whole-corpus replacement — is against 230,944
+documents**, the §3.3 test namespace, not the 1,362,096 expressions §16.2 gives as
+the corpus scale; an earlier draft named no denominator at all, and a later one
+claimed the 230,944 denominator for the replacements too. Re-measured over the whole corpus the
 same quantity is 51,891 documents (3.81 %) and 154 distinct tokens, and the raw
 occurrence counts move too: `²` is 3,955, not 640, and `₁` is 7,023, not 1,281.
 D41 repeats the 640 as "occurrences in the corpus", where it is six times low. Restricting it to rendered
@@ -1054,8 +1091,9 @@ port. To stop them drifting:
 - The export emits a **shared test vector file** and both implementations must
   reproduce it exactly in CI — see §16.5 for what it must contain and §16.6 for
   what the gate must assert. Sampling real expressions is necessary but not
-  sufficient: real data cannot exercise pipeline steps 1 and 2 at all, and the
-  gate must assert **coverage of named features**, not merely a sample size.
+  sufficient: real data cannot exercise pipeline steps 1, 2 or 3 at all (§3.4),
+  and the gate must assert **coverage of named features**, not merely a sample
+  size.
 
 - The test vector file is versioned with the data, and so is the asset.
 
