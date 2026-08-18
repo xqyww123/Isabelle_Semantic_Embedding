@@ -120,11 +120,22 @@ below should have to be re-derived from the conversation that produced it.
 
 ### 15.0 Where the work stands
 
-D1-D42 are settled and §13 has no open questions. §12.2 shows the dependency
-chain: the site export is blocked on three prerequisites owned outside this plan
-(the key repair, the theory-hash registry, entity positions in the published
-snapshot). **Two pieces are unblocked and are the immediate work: the interface
-copy with the mockup, and the tokenizer freeze.**
+**As written on 2026-08-14** — read the live plan's §16 and §12.2 for the current
+state, and treat every status claim in this subsection as historical. It said: D1-D42
+are settled and §13 has no open questions; §12.2 shows the dependency chain, the site
+export being blocked on three prerequisites owned outside this plan (the key repair,
+the theory-hash registry, entity positions in the published snapshot); and two pieces
+are unblocked and are the immediate work, the interface copy with the mockup and the
+tokenizer freeze.
+
+**What has happened since.** The interface copy and the mockup are **done** and
+committed. **D43-D46 exist** (2026-08-17/18) and change §5 structurally — the
+tokenizer is defined over characters, a private-use code point is not substituted, and
+the tokenizer's data ships as one stamped asset whose digest names the turbopuffer
+namespace. **Prerequisite A, the key repair, is done** (2026-08-18). So the sentence
+above should be read as: of the two unblocked pieces, one is finished and the other,
+the tokenizer freeze, is the live work — and it now has four more decisions to
+implement than it did when this was written.
 
 **Superseded on 2026-08-14 — everything is committed**, in the submodule and in
 the super-repo pointer. §15.1 is **done** (see §16.0); §15.3's warning that the
@@ -157,9 +168,15 @@ The new example is the strongest available because the theorem the visitor wants
 **is in the index** and the condition still returns nothing, for exactly one
 reason: the variable names differ. Nothing else has to be explained.
 
-The harness is `site/prototype/`; the probe scripts that produced the table are
-`zero_probe.py` and `zero_probe2.py` in the 2026-08-14 session scratchpad, and
-they are cheap to rewrite from the prototype if that directory is cleaned.
+The harness is `site/prototype/`, and the probe that reproduces this table is
+**`site/prototype/corpus_probe.py`**, committed. (This paragraph used to send the
+reader to `zero_probe.py` and `zero_probe2.py` in the 2026-08-14 session scratchpad,
+which is gone; `corpus_probe.py` is the durable replacement and the live plan's §16.1
+requires it to be used rather than a fresh probe.) Verified from its committed
+location on 2026-08-14 and again on 2026-08-19: `?n + ?m = ?m + ?n` → 0,
+`?a + ?b = ?b + ?a` → 15. Note that `corpus_probe.py` implements the **pre-D43** rule;
+the live plan's §16.1 states that this makes no difference outside the 3,135 records
+D43 names, and none of the rows in this table is one of them.
 
 The rest of this section is the specification the draft was written against.
 
@@ -276,12 +293,14 @@ settled directly rather than raised. Recorded so the decisions are traceable:
 
 Per D41 and §5. It touches no keys, so the key repair does not gate it.
 
-**The working prototype is in a session scratchpad and will not survive**:
-`.../scratchpad/rev/recommended.py` holds the settled separator class and the
-`subtokens` implementation with its fallback clause; `isa_tok_rev.py` holds
-`tokenize`. **Copy both into the repository before anything cleans that
-directory** — §5.4 carries the rule in prose, but the validated code is only
-there.
+**Done, and this warning is obsolete.** The prototype is committed at
+`site/prototype/` — `subtoken_rule.py` holds the separator class and the `subtokens`
+implementation with its fallback clause, `tokenize_prototype.py` holds `tokenize`, and
+`corpus_probe.py` holds the match-count harness. (This paragraph used to point at
+`.../scratchpad/rev/recommended.py` and `isa_tok_rev.py` in a session scratchpad and
+warn that they would not survive; they did not, and the copy was made first.) The
+committed files implement the **pre-D43** rule — see the live plan's §16.1 for exactly
+what that costs, which is the 3,135 records D43 names and nothing else.
 
 Then, in order:
 
@@ -303,8 +322,15 @@ cap needs it — D29 now caps in characters, so it may not.
 
 ### 15.4 Two reviews, at named moments
 
-The 2026-08-13 adversarial review covered the plan up to roughly D32. **D33-D42
-have never been reviewed**, and several are structural: D5's reversal changed the
+**Superseded — the first of the two reviews below has run.** It ran on 2026-08-14 as
+a narrow adversarial review of §5 and D41, and its brief, its frozen bar, its four
+lens reports and its rebuttal are committed under `site/review/`; the live plan's
+§16.7 records what it settled. What has **not** been reviewed is **D43-D46**, which
+did not exist when this was written. Read the rest of this subsection as the reasoning
+that produced both rounds, not as work outstanding.
+
+The 2026-08-13 adversarial review covered the plan up to roughly D32. D33-D42 had
+never been reviewed at the time of writing, and several are structural: D5's reversal changed the
 unit of indexing for the whole corpus, D24's rule was rewritten, and D35, D36 and
 D41 are entirely new. The defect rate observed so far does not support skipping
 this: that review found five blockers in a document already carefully drafted,
@@ -324,10 +350,14 @@ before the round rather than after.
 
 ### 15.5 Files, and their state
 
+**These "UNTRACKED" markings were true on 2026-08-14 and are not true now** — all of
+it is committed, and the live plan's §12.1 carries the current inventory, which also
+includes `site/COPY.md`, `site/prototype/` and `site/review/`.
+
 ```
-SEMANTIC_SEARCH_SITE_PLAN.md      this document — UNTRACKED
-site/DESIGN_PROMPT.md             the designer brief — UNTRACKED, partly synced
-site/design/IsaSearch.dc.html     the delivered mockup, edited — UNTRACKED
+SEMANTIC_SEARCH_SITE_PLAN.md      this document — was UNTRACKED, now committed
+site/DESIGN_PROMPT.md             the designer brief — was UNTRACKED, now committed
+site/design/IsaSearch.dc.html     the delivered mockup, edited — now committed
 site/design/IsaSearch.dc.html.bak the mockup as delivered, before any edit
 site/design/support.js            the Claude Design runtime, generated, do not edit
 ```

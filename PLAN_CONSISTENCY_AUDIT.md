@@ -9,7 +9,40 @@ disagree about.
 quoted text instead.
 
 A second audit — the plan checked against the code and the corpus rather than against
-itself — was still running when this was written. Append its findings here when it lands.
+itself — is appended below.
+
+## Repaired 2026-08-19
+
+**Every item on both lists below has been acted on**, in
+`SEMANTIC_SEARCH_SITE_PLAN.md`, `SEMANTIC_SEARCH_SITE_PLAN_DONE.md` and
+`site/prototype/README.md`. The lists are kept because they say what was wrong and are
+the record of it; they are no longer a work list. Two things a reader should know about
+how the repair was done:
+
+- **Every figure was re-measured rather than transcribed from these findings.** Twenty
+  of them turned out to be right and were used; four were not, and the plan carries
+  the numbers measured on 2026-08-19: the vector store holds **1,354,534 real vectors
+  plus 7,809 tombstones**, which is one key per entity record exactly (this audit
+  reported 1,355,257 / 7,810, having counted 723 per-theory `finished` markers as
+  vectors); §14.7's primed-name figures are **158,120 expressions and 47,768 names**;
+  D46's phi-System contribution is **185 symbols**, not 112, being the difference
+  between the distribution's 439 and the loaded 624; and the word-glyph-escape count
+  is **1,980**.
+- **Two claims were verified by running them rather than accepted**: D43's
+  3,135 / 3,118 / 17 split reproduced to the record, with the three AFP records among
+  the 17 confirmed as `AbsCFCorrect.lemma6` and
+  `AbsCFCorrect.contour_a_class.abs_cnt_initial` in `Shivers-CFA` and `Matrix.matrix`
+  in `Kleene_Algebra`; and §16.2's 32 cases plus §5.3's 11 relations ran clean under
+  **both** the prototype's `symbol_explode` rule and the character-level rule §5 now
+  specifies — 0 mismatches under either, which is what made §16.3 step 1's acceptance
+  test repairable rather than merely wrong.
+
+**What the repair could not close, because it is code and not prose:** D11's fix.
+`Tools/pide_state.ML` still calls `Token.source_of` where D11 says `Token.unparse`, and
+the comment above it still asserts the thing §10.1 disproves. The plan now states this
+plainly under D11 instead of leaving §10's "done" to imply otherwise. It is a two-line
+change on a fallback path and wants a test, so it is left as work rather than folded
+into a documentation pass.
 
 ## Already fixed, commit 5a42646
 

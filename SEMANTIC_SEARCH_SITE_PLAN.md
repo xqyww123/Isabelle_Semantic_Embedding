@@ -2,7 +2,10 @@
 
 Draft 3, 2026-08-12. This document is the design agreed in conversation on
 2026-08-09 and revised on 2026-08-12; it is written to be reviewed
-adversarially, **which has still not happened**. Draft 2 recorded the decisions
+adversarially, and **two rounds have run**: a full review on 2026-08-13 covering
+the plan up to roughly D32, and a narrow review of §5 and D41 on 2026-08-14 whose
+evidence is committed under `site/review/` (§16.7). D43-D46 postdate both and have
+not been reviewed. Draft 2 recorded the decisions
 D13–D19, corrected the treatment of theories for theorem-alike entities (§7,
 which draft 1 got wrong), and added the Fireworks latency measurements (§3.5)
 that moved the region decision. Draft 3 records D21 — the collapse of the two
@@ -26,8 +29,10 @@ both machines and in the published snapshot. `ENTITY_POSITION_PLAN.md` is
 backfill finished *after* the Hugging Face snapshot was packaged, so those
 positions exist only on `cslh19`; this machine holds 8,306. **Prerequisite A of §12.2 —
 the key repair, D33 — is also done, 2026-08-18.** `site/COPY.md` and
-`site/design/IsaSearch.dc.html` exist and are authoritative for the interface copy, and
-`site/prototype/` holds the measured tokenizer prototype. Everything else in §12.2 is
+`site/design/IsaSearch.dc.html` exist and are authoritative for the interface copy;
+`site/prototype/` holds the measured tokenizer prototype, which is **pre-D43** and
+whose blast radius is stated in §16.1; and `site/review/` holds the evidence of the
+§5 review that §16.7 required. Everything else in §12.2 is
 unstarted: no tokenizer module, no site export, no Worker, no served site.
 
 Orientation for a reader arriving with no other context: §2 is the settled
@@ -36,6 +41,17 @@ decisions (do not reopen), §3 is the measured evidence every decision rests on,
 name **functions and files, not line numbers** — this is a shared working tree
 and line numbers move (the convention `VECTOR_INVALIDATION_PLAN.md` and
 `ENTITY_POSITION_PLAN.md` both adopted).
+
+**Where the numbers were measured.** Every corpus figure in this document was taken
+on **this** machine's copy of the database unless it says otherwise, and this
+machine is not the authority — `cslh19` is (D19), and it publishes to Hugging Face.
+The figures re-measured on 2026-08-19 are stamped with that date; the earlier ones,
+stamped 2026-08-09 or 2026-08-12, predate the D33 key repair and the entity-position
+backfill and are kept only where the older reading is itself the point. A figure
+about a *document frequency* always names the population it was counted over —
+either the whole corpus or §3.3's 230,944-document test namespace — because those
+two denominators differ by six times and an unlabelled percentage from the second
+has been mistaken for the first three times already.
 
 **Relationship to `ENTITY_POSITION_PLAN.md`**: that plan (approved, being
 implemented as of 2026-08-09 19:21 — `position` is already the 13th record
@@ -56,7 +72,7 @@ filter (D7).
 
 It may be narrowed by **syntactic conditions**, every one of them
 `contains` / `excludes` matched as an adjacent ordered run of **Isabelle
-subtokens** (D21, §5.4), in four panels plus a kind filter (D22):
+subtokens** (D21, §5.4), in five filter panels (D22):
 
 1. **Entity Name** — the entity's own name;
 2. **Expression** — the printed entity expression;
@@ -67,8 +83,9 @@ subtokens** (D21, §5.4), in four panels plus a kind filter (D22):
 
 Serving is fully serverless: Cloudflare Pages + Worker for the front end,
 turbopuffer for vectors *and* filtering, Fireworks for the query embedding. No
-server to operate. A one-off **site export** derives the published index from
-the semantic DB.
+server to operate. A **site export** derives the published index from the semantic
+DB; it runs whenever the data or the tokenizer asset changes, and §8 requires it to
+be re-runnable and deterministic.
 
 ## 1. Glossary — canonical names, never paraphrased
 
@@ -79,17 +96,40 @@ the semantic DB.
 | **declaring theory** | The theory whose source declares the entity, named by its **session-qualified long name** (e.g. `HOL-Library.Sorted_Sort`). **Applies only to name-addressed entities.** Theorem-alike entities are content-addressed and have no declaring theory in this data model (§7). Never "owning theory", "home theory". |
 | **constituent theories** | The `theory_constituents` field: the theories of the **constants occurring in the entity expression**, as `(long name, 16-byte hash)` pairs. Present on every theorem-alike and experience record. **Not** a declaring theory. |
 | **the associated theories** | The set of theories a *site document* is filtered by (D14): its declaring theory when name-addressed, its constituent theories when theorem-alike. **This exact phrase, always** — never "related theories", "relevant theories", "theory domains", or any other paraphrase. The word "domain" is specifically excluded: `dom`, `Dom` and `domain` name unrelated Isabelle concepts (the domain of a map or relation, and HOLCF's `domain` command) in about 27,500 entities of this very corpus, and "domain" also reads as "subject area", a plausible but wrong meaning. |
-| **the tokenizer** | The single normalisation described in §5, applied identically to stored text and to user queries. Never "the analyser", "the lexer", "the splitter". |
+| **theorem-alike entity** | A record of kind `Theorem`, `Introduction rule`, `Elimination rule`, `Induction rule` or `Case split rule`. Such a record is **content-addressed**: its key is the statement's digest under an XOR pseudo-theory prefix, so it has no declaring theory (D13, §7.1). 1,156,153 of 1,362,343 records, 84.9 %. Never "theorem-like", "a fact", "a lemma record". |
+| **name-addressed entity** | A record of kind `Constant`, `Type`, `Class`, `Locale`, `Theorem collection` or `Proof method`. Its universal key carries its declaring theory's 16-byte hash as the prefix, so the declaring theory is recoverable from the key alone once §7.3's table is available. 206,010 records, 15.1 %. The two categories partition the corpus apart from the 180 `EXPERIENCE` records, which are never published. |
+| **universal key** | A record's key in `semantics.lmdb`, constructed by `Isabelle_RPC_Host.universal_key`: a 16-byte theory-or-XOR prefix, one kind byte, and the addressing tail that kind uses. Never "record key", "entity id". The turbopuffer document id is a 128-bit hash **of** the universal key, not the key itself (§6.2). |
+| **the tokenizer** | The single normalisation described in §5, applied identically to stored text and to user queries. Never "the analyser", "the lexer", "the splitter". Its reference implementation of symbol conversion is `Isabelle_RPC_Host.pretty_unicode`; this document names that function and never `unicode_of_ascii`, which is a one-line alias of it in the same module. |
 | **token** | One output element of the tokenizer. |
 | **subtoken** | One output element of the second-level split described in §5.4. Under D21 this is the only level that is indexed or queried. |
+| **interpretation** | The `interpretation` field of the record: the English text a language model wrote from the formal statement. **This word, always**, for the field and for what a card shows — never "explanation", "description" or "summary" in this document. (`site/COPY.md` may and does choose a different word for visitors, who do not read this plan; that is its call, not a second name for the field.) |
+| **the machine-generated disclosure** | The one locked sentence pair that must appear wherever an interpretation is shown, fixed by D30 as amended and D40 and reproduced verbatim in `site/COPY.md` §4.2. **This exact phrase for it** — never "the disclaimer", "the disclosure sentence" or "the notice". |
 | **site export** | The batch job (§8) that turns the semantic DB into the turbopuffer namespace and its attributes. Never "publish", "sync", "ingest". |
 | **site document** | One turbopuffer document, one per exported *record* (D5, reversed 2026-08-13). Records sharing a `(name, entity expression)` are collapsed into one card in the response, not in the index. |
 | **entity page** | The server-rendered permanent page for one site document (§9.4). |
 
+**The unit of counting is the record**, and it is worth stating because four words
+have been used for it. There are **1,362,343** entity records; each exported one
+becomes exactly one **site document** (D5 as reversed); **1,362,096** of them carry
+an entity expression and **1,362,343** carry a name, so a figure about expressions
+has a different denominator from a figure about names; and **1,362,163** are
+exportable before D24's scope test, the difference being the 180 `EXPERIENCE`
+records. "Entity", "document" and "expression" are not interchangeable units in this
+document, and a count that does not say which one it means is a defect.
+
 ## 2. LOCKED decisions
 
-D1–D20 taken by the user on 2026-08-09, D21 on 2026-08-12. Do not re-litigate;
-ask before deviating.
+D1–D20 were taken by the user on 2026-08-09, D21 on 2026-08-12, D22–D31 on
+2026-08-12/13, D32–D42 on 2026-08-13/14, and D43–D46 on 2026-08-17/18. Do not
+re-litigate; ask before deviating.
+
+**The list is not in one order, and that is deliberate.** It opens with D1–D20 in
+ascending order, as they were first written, and then continues from **D46
+downwards** to D21, so that the newest decision is the first one a reader meets
+after the original twenty. Two of the early entries are struck through in place
+rather than deleted — D20, superseded by D32, and D28, cancelled the same day it
+was taken — because §9 and §12.2 were written under D20 and §11.1b under D28, and a
+reader of those sections needs to find the decision that used to govern them.
 
 - **D1** — **turbopuffer** hosts both the vectors and the syntactic filtering.
   Cloudflare Vectorize was rejected: it supports no substring matching and no
@@ -115,8 +155,12 @@ ask before deviating.
   inside the embedded text via `pretty_print`). Collapsing after ranking makes
   that choice non-arbitrary: the ranking picks the representative.
   Consequences, all accepted: the namespace grows ~9.7 % (1,362,343 records
-  against 1,241,679 merged documents), which at f16 is ~11.9 GB against
-  ~10.83 GB and is invisible beside a full-length query's embedding cost; a
+  against 1,241,679 merged documents), which at D31's f16 is **11.16 GB of vectors
+  against 10.17 GB**, a difference of about one gigabyte and invisible beside a
+  full-length query's embedding cost (§11.1b recomputes the whole cost model on the
+  1,362,343; the ~11.9 / ~10.83 GB this sentence used to give were the same
+  calculation with a namespace overhead folded in and did not match §11.1b's own
+  arithmetic); a
   200-row fetch collapses to ~182 distinct entities on average, so D29's "200
   results" reads as **at most** 200 entities and there is no over-fetch; and the
   `kind` filter becomes an unambiguous single-valued test instead of the
@@ -129,13 +173,27 @@ ask before deviating.
   query is rejected rather than falling back to some other ordering.
 - **D8** — **runs of ASCII symbolic characters merge into one token**
   (Isabelle's `sym_ident` rule): `::` is one token, not two colons.
-- **D9** — **entity pages exist**, server-rendered, one per site document, for
-  search-engine discoverability (§9.4).
+- **D9** — **entity pages exist**, server-rendered, **one per `group`** — that is,
+  one per distinct `(name, entity expression)` pair, which is exactly what a result
+  card collapses to (D5 as reversed, §6.1) — for search-engine discoverability
+  (§9.4). This decision said "one per site document" until 2026-08-19, which was
+  written under the original D5 where the two coincided; under the reversal a site
+  document is one per *record* and several records can share a `group`.
 - **D10** — **displayed fields are the entity name and the entity expression.**
   The interpretation is present but collapsed by default.
 - **D11** — **`Token.source_of` in `pide_state.ML` is a defect and will be
   fixed** to `Token.unparse` (§10.1). It is our own file, not part of the
   Isabelle distribution.
+
+  **Not done as of 2026-08-19.** `Tools/pide_state.ML` still calls
+  `Token.source_of`, and the comment above the call still asserts that `source_of`
+  returns each token's original text — the assertion the companion's §10.1 disproves
+  by measurement. §10's "done" is a statement about the **data**: D12 repaired the
+  238 affected records one at a time, and zero records carry U+007F today. The
+  **cause** is untouched, so a fresh collection run over a theory containing a
+  delimited token can reintroduce the character through the fallback path. That is
+  why §5.1's pipeline step 2 stays in the tokenizer rather than being deleted as a
+  no-op.
 - **D12** — **the 238 records containing U+007F are repaired surgically**, by
   reading the true text back out of the theory source, and the repaired DB is
   re-uploaded to Hugging Face (§10.2).
@@ -174,15 +232,19 @@ ask before deviating.
 - **D20** — ~~the web application is deferred~~ — **superseded by D32 on
   2026-08-13.** Kept for the record because §9 and §12.2 were written under it.
   Original text: Work proceeds on the data side
-  only: the repair (§10), the hash-to-name table (§7.3), the tokenizer (§5), the
+  only: the repair (§10), the theory-hash registry (§7.3), the tokenizer (§5), the
   site export (§8), the turbopuffer namespace (§6), and the Worker's search API
   (§11.1's rate limiting included). §9 stays in this document as the agreed
   design but is **not** to be built yet, and the questions it raises need no
   answer to unblock anything.
 - **D46** (2026-08-18) — **the tokenizer asset carries the export machine's whole
-  symbol table, component files included.** phi-System contributes 112 symbols that no
-  published entity uses, since D24 excludes every phi-System entity from the corpus. They
-  ship anyway: a visitor who pastes `\<big_ast>` out of a phi-System buffer then gets
+  symbol table, component files included.** On this machine that means
+  `contrib/phi-system/symbols` and `contrib/phi-system/symbols-words` on top of the
+  distribution's own `etc/symbols`: measured 2026-08-19, the distribution file defines
+  **439** symbols with a code point and the two phi-System files add **185** more, for
+  a loaded table of **624**. Not one of the 185 is used by a published entity, since
+  D24 excludes every phi-System entity from the corpus (135 of them are the private-use
+  word glyphs of D44, and the other 50 are ordinary symbols). They ship anyway: a visitor who pastes `\<big_ast>` out of a phi-System buffer then gets
   `✱` rather than a condition split into three parts, and the alternative — filtering the
   asset to symbols the corpus uses — makes the asset depend on the corpus as well as on
   the installation, for no gain a visitor can see. What was **not** acceptable was
@@ -192,7 +254,12 @@ ask before deviating.
   because it is surprising: **registering or unregistering an unrelated Isabelle component
   changes the asset digest, and therefore the namespace name, even though not one
   published document changes.** An export that finds a different component set than the
-  declared one must fail rather than quietly build a differently-named namespace.
+  declared one must fail rather than quietly build a differently-named namespace. **The declared
+  set is the `ISABELLE_SYMBOLS` file list recorded inside the committed asset from
+  the previous export** — §8.2 states the comparison and what the first export does
+  instead, since it has nothing to compare against. This decision mandated the
+  failure and did not say where the declaration lives; that gap is closed there, not
+  here.
 - **D45** (2026-08-18) — **the tokenizer's data ships as one stamped asset, and
   the namespace name carries its digest.** Step 3 needs the symbol table and the
   fold table; §5.2 needs the letter, digit, quasi-letter and ASCII-symbolic sets;
@@ -227,14 +294,21 @@ ask before deviating.
 - **D43** (2026-08-18) — **the tokenizer is defined over characters, not Isabelle
   symbols.** The `symbol_explode` step is dropped, and with it the claim that a
   `\<foo>` "can never be cut in half" — false of the subtoken level, the only one
-  indexed, since §5.4 splits at `_` regardless of symbol boundaries. Measured: the
-  change moves 0.23 % of subtoken arrays (3,135 of 1,362,096 expressions), all of
-  them escapes left literal by step 3, and every move is an improvement, since
-  `\<^named_theorems>` stops indexing as the unsearchable `['\<^named','theorems>']`.
+  indexed, since §5.4 splits at `_` regardless of symbol boundaries. Measured, and re-measured
+  independently on 2026-08-19 with the same result: the change moves 0.23 % of
+  subtoken arrays (3,135 of 1,362,096 expressions), all of them escapes left literal
+  by step 3. **3,118 of the 3,135 are pure refinements** — `\<^named_theorems>` stops
+  indexing as the unsearchable `['\<^named','theorems>']` — and the remaining **17
+  lose one subtoken of bare punctuation**, of which **three are AFP entries that D24
+  exports**: see §5.1 for the pattern and the three names.
   Two review findings dissolve with the step: that §5.1's justification was false,
   and that the treatment of a malformed or unterminated `\<` was unspecified —
   `\<=` is now simply one symbolic run. §5.3's eleven equivalences and §16.2's
-  thirty-two cases were re-run under the new definition and all still hold.
+  thirty-two cases were re-run under the new definition and all still hold, and were
+  re-run again on 2026-08-19 with zero mismatches, so no line of either table is
+  stale. **The prototype in `site/prototype/` still implements the old, pre-D43
+  rule**, and the difference between the two is exactly these 3,135 records and
+  nothing else — see §16.1 for what that means for anything the prototype measured.
 - **D42** (2026-08-14) — **every result card carries a source link**, not just
   the entity page (§9.4). It resolves through the entity position, whose coverage
   is **80.2 %**, so roughly one card in five has no link and needs a defined
@@ -254,8 +328,11 @@ ask before deviating.
   why D45's asset records the version it was built under;
   U+001C-U+001F and U+0085 satisfy `isspace()` but lie outside `\s`; U+FEFF is
   the reverse. So the export emits the letter, digit, quasi-letter, separator and
-  ASCII-symbolic code-point sets as assets beside the symbol table, and neither
-  implementation may consult a language built-in. Separately, §5.5's 10,000 test
+  ASCII-symbolic code-point sets into **the asset** alongside the symbol table, and
+  neither implementation may consult a language built-in. (D45 later fixed that this
+  is **one file**, and this document says "the asset", singular, everywhere: the
+  digest that names the turbopuffer namespace is the digest of one file, so a plural
+  would leave it undefined which one is meant.) Separately, §5.5's 10,000 test
   triples are all sampled from real entity expressions, on which pipeline steps 1
   and 3 are provably the identity (§3.4: the store is 100 % NFC and
   `unicode_of_ascii` is identity on it) — so a port that omits NFC normalisation
@@ -290,14 +367,14 @@ ask before deviating.
   `HOL-Analysis.Path_Connected.path_image_join` as the worked example, which is
   not a name that exists. An Isabelle fact's long name is qualified by the
   **theory base name**, not by the session — that is simply how Isabelle names
-  facts — and the store agrees: no entity name in the 1 362 343 records carries a
-  session prefix. (The 1 266 names with a hyphen in their first segment are
+  facts — and the store agrees: no entity name in the 1,362,343 records carries a
+  session prefix. (The 1,266 names with a hyphen in their first segment are
   theories whose own base name contains one, such as `Nominal-HOLCF.Def_eqvt` and
   `HOLCF-Utils.fun_upd_cont`.) The export therefore indexes the stored name
   unchanged and adds nothing. Nothing else in D39 changes.
 
   Worth noting for the interface, since the two fields differ: `theory_subtokens`
-  **is** session-qualified — 8 329 distinct theory long names, of which only
+  **is** session-qualified — 8,329 distinct theory long names, of which only
   `Pure`, `FOL`, `IFOL` and `ZF` carry no session. So the same theory is written
   `Path_Connected` inside an entity name and `HOL-Analysis.Path_Connected` in the
   theory field, and `site/COPY.md` §3.1 tells the visitor so.
@@ -316,17 +393,22 @@ ask before deviating.
 - **D37** (2026-08-14) — **variable names stay in the index; the noise is
   accepted.** D4 discards `?`, which demotes a schematic variable to an ordinary
   name, so `P`, `Q`, `x`, `f` are indexed exactly like constant names. The cost
-  is measured and real: `x` is a subtoken of 22.95 % of documents, `a` 17.50 %,
-  `P` 10.80 %, `f` 10.49 %, so a user filtering on `f` matches a tenth of the
-  corpus, nearly all of it accidental. Excluding variable positions was
+  is measured and real: over §3.3's 230,944-document test namespace, `x` is a
+  subtoken of 22.95 % of documents, `a` 17.50 %, `P` 10.80 % and `f` 10.49 %. That
+  denominator was not stated here before, and it matters: over the whole corpus the
+  same quantities move — `P` up to about 12.8 % and `a` down to about 16.6 % — so a
+  user filtering on `f` matches roughly a tenth of the corpus either way, nearly all
+  of it accidental, which is the point and is robust to which population is counted. Excluding variable positions was
   considered and not taken — the records store printed text, not term structure,
   and a free variable is indistinguishable from a constant in that text, so
   excluding them would mean changing what the collection side records, not the
   export. Reinstating `?` was also rejected: it would reverse D4, whose reason
   (users do not type the question mark) still holds, and it would not help with
-  free variables anyway. **Consequence to act on:** §13b's empty-state page is
-  premised on `?P ⟹ ?Q` matching nothing, which is false — it matches 60 records
-  — so that page needs an example that genuinely returns nothing.
+  free variables anyway. **Consequence, discharged 2026-08-14:** §13b's empty-state page was premised on
+  `?P ⟹ ?Q` matching nothing, which is false — it matches 60 records. The page was
+  rebuilt on `?n + ?m = ?m + ?n`, measured 0, paired with `?a + ?b = ?b + ?a`,
+  measured 15, so that the reason for the miss is visible. `site/COPY.md` §5.1 carries
+  the result and is authoritative; nothing is outstanding here.
 - **D36** (2026-08-14) — **hybrid retrieval is one `multi_query`, RRF-fused by
   turbopuffer, with the filter tree attached to both legs**, 200 rows per leg
   truncated to 200 after fusion, RRF constant 60 (§6.6). Attaching the filter to
@@ -349,8 +431,11 @@ ask before deviating.
   documents mentioning the constant `f⇩C` — and the user has judged it
   acceptable rather than narrow D21's rule again. **Do not re-raise this**; it is
   a known, deliberate limitation of the single-mechanism design.
-- **D33** (2026-08-13) — **`BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN` is a
-  prerequisite of the whole of phase one.** Its defect — a process-global
+- **D33** (2026-08-13) — **`BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md` is a
+  prerequisite of everything in phase one that touches the store**, which is §12.2's
+  steps 4 and 5. It is **not** a prerequisite of step 3, the tokenizer freeze, which
+  touches no keys: §12.2 says so and this decision used to say "the whole of phase
+  one", which contradicted it. Its defect — a process-global
   first-writer-wins memo on theory short names — leaves 234,398 records holding
   keys the current process cannot reproduce and mis-targets anything that
   selects records by theory, which is precisely what the theory filter does
@@ -370,8 +455,14 @@ ask before deviating.
   stopped sharing an identity. `orphans` reports **84 records (0.006 %)** owned by a
   theory hash no local name claims, against the defect's original signature of 234,398.
   Not re-verified: G1 of `THEORY_HASH_REKEY_PLAN.md` — that every stored hash is
-  reproducible from the `.thy` file by today's algorithm — which needs the dependency
-  table dumped from an Isabelle image, and that file is no longer on disk.
+  reproducible from the `.thy` file by today's algorithm — because it needs the
+  dependency table dumped from an Isabelle image, and that file is no longer on disk.
+  **To regenerate it**: on `cslh19`, feed the SML snippet of `THEORY_HASH_REKEY_PLAN.md`
+  §9.1 to `isabelle console -l AFP-ALL-4 -n` on stdin (`-n` suppresses any build; the
+  image takes about four minutes to load), strip the `Poly/ML>` prompts, and keep the
+  `DEP`-prefixed rows as `deps.tsv` — 10,598 of them, `Pure` included by the parent
+  closure. Then build the tables per §9.2 of that plan and run G1. It is a read-only
+  check and needs no rebuild.
 - **D32** (2026-08-13) — **D20 is lifted, and the work is staged: the whole
   data side first, the web application after.** The phase boundary is §12.2's
   step 5/6 line. Phase one is the tokenizer module, the site export, the
@@ -384,8 +475,9 @@ ask before deviating.
 - **D31** (2026-08-13) — **the published vector is f16, 4096 dimensions.**
   Not a reduction in dimension: only in dtype. turbopuffer counts f16 at 2
   bytes per dimension for storage and queries, halving the namespace from
-  ~21 GB to ~10.8 GB and the per-query charge from $0.000021 to $0.0000108
-  (§11.1b). Dimension reduction, which would have cut a further 5×, is **not**
+  ~23 GB to ~11.5 GB and the per-query charge from $0.000023 to $0.0000115 on
+  1,362,343 documents (§11.1b — these read ~21 GB and $0.000021 while that
+  subsection was still computed on the merged count D5's reversal replaced). Dimension reduction, which would have cut a further 5×, is **not**
   taken — it discards information, its recall cost is unmeasured, and D3 leaves
   no reranker to absorb the loss. f16 is the option that costs nothing to
   reason about: the local store already holds Q1.15 int16, and for the
@@ -407,8 +499,8 @@ ask before deviating.
   disclosure now reads: *"Written by a language model from the formal statement,
   not by the theory's authors. It may be imprecise or wrong. Where the
   explanation and the statement disagree, the statement is the correct one."*
-  (D40's third sentence follows it; see `site/COPY.md` §3.2 for the whole
-  string.) Reason: two consecutive rounds of reader testing named
+  (D40's third sentence follows it; see `site/COPY.md` §4.2, "The expanded
+  explanation", for the whole string.) Reason: two consecutive rounds of reader testing named
   **`authoritative`** the worst word on the site. Its everyday sense is *sounds
   expert*, so the original sentence can be read as praise for the explanation
   rather than as ranking the formal statement above it — the reverse of its
@@ -478,8 +570,9 @@ ask before deviating.
 - **D27** (2026-08-13) — **no cache warming.** `hint_cache_warm` is not to be
   used. It is free only when the namespace is already warm — that is, only when
   the search it precedes would have been fast anyway — and when the namespace is
-  cold it "is billed as a query that returns zero rows", which at 21 GB costs
-  exactly what a real search costs (§11.1b). It therefore charges full price
+  cold it "is billed as a query that returns zero rows", which at the shipped
+  f16 namespace of ~11.5 GB costs $0.0000115, exactly what a real search's queried
+  term costs (§11.1b). It therefore charges full price
   precisely when it would help, and a visitor who loads a page and searches once
   pays twice. Accepted cost: the first query after an idle period pays cold
   latency, which turbopuffer's own figures put at ~300 ms, p90 1,214 ms on large
@@ -517,7 +610,11 @@ ask before deviating.
   for a name-addressed one it is its declaring theory. No `AFP-ALL-4` chain
   resolution and no entity position is needed.
 
-  Measured 2026-08-13 over 1,156,333 theorem-alike records: **30,304 (2.62 %)**
+  Measured 2026-08-13 over 1,156,333 records — which is the 1,156,153 theorem-alike
+  records of §3.1 **plus the 180 `EXPERIENCE` records**, since the scan took every
+  record carrying `theory_constituents`; the 180 are excluded from the export
+  separately by step 0 of §8.1, so they cannot change the outcome, only the
+  denominator by 0.016 %. Of those: **30,304 (2.62 %)**
   fall outside, of which 12,421 are the `IFOL` false positive the base-logic
   clause above fixes, leaving **17,883 (1.55 %)** genuinely outside. They are two
   families: the why3/NTP4VC generated material (`pearl_*`, `Why3STD`,
@@ -573,31 +670,64 @@ ask before deviating.
 
 ## 3. Measured evidence
 
-Everything in this section was measured on 2026-08-09, not assumed. A reviewer
-should treat any claim elsewhere in this document that is *not* here as an
-assumption.
+Everything in this section was measured, not assumed. A reviewer should treat any
+claim elsewhere in this document that is *not* here as an assumption. The first pass
+was taken on 2026-08-09; §3.1's counts, §3.2's prefix arithmetic and §3.4's character
+figures were re-measured on **2026-08-19** and each says so where it differs from the
+original reading. All of it is this machine's copy of the database, which is not the
+authority (`cslh19` is, per D19) — so a figure here can be one snapshot behind
+what the export will actually see.
 
 ### 3.1 The corpus
 
+**Re-measured 2026-08-19.** Every count in this subsection moved between 2026-08-09
+and today, because collection continued and because the D33 key repair rebuilt the
+store. The percentages did not move at all. The figures below are the current ones;
+the 2026-08-09 readings they replace are given in the right-hand column, because
+several other sections still quote them and this is where a reader finds out that
+they are old.
+
 ```
-semantics.lmdb            1,364,990 entries;  1,353,574 entity records;  1.7 GB
-  theorem-alike           1,148,833  (84.9 %)
-  name-addressed            204,741  (15.1 %)
-vector store (Qwen3-8B)     110,329 vectors × 4096 dims × int16 = 862 MiB
-                            (a lazy cache; the full run is in progress on cslh19)
-entity expression        169.7 M characters total; mean 126, median 75, p95 375, max 32,228
-interpretation           ~0.40 GB total
+                              2026-08-19        was 2026-08-09
+semantics.lmdb, all entries    1,373,817          1,364,990
+  entity records               1,362,343          1,353,574
+    theorem-alike              1,156,153 (84.9 %) 1,148,833 (84.9 %)
+    name-addressed               206,010 (15.1 %)   204,741 (15.1 %)
+    EXPERIENCE                       180             — never published (D24)
+  per-theory cost records         11,474             11,415   (§7.3, not entity records)
+vector store (Qwen3-8B)
+  real vectors                 1,354,534            110,329
+  tombstones                       7,809                  —
+  keys, i.e. both together     1,362,343            110,329
+entity expression
+  records carrying one         1,362,096          1,353,394
+  characters total               170.5 M            169.7 M
+  mean / median / p95              125 / 73 / 379   126 / 75 / 375
+  longest expression              88,517             32,228
+interpretation                  ~0.40 GB total (2026-08-09; not re-measured)
 ```
 
-At full coverage the vectors are 1,353,570 × 8192 B = **11.1 GB**.
+**The vector store is no longer a hole.** It carries exactly one key per entity
+record — 1,354,534 real vectors of 8,192 B each (4096 dimensions × int16) plus 7,809
+tombstones, and 1,354,534 + 7,809 = 1,362,343 is the record count to the record. The
+2026-08-09 reading of 110,329 was a lazy cache mid-fill and is what this subsection
+used to report as 8 % coverage; do not size anything from it. §8.1's completeness gate is
+therefore 7,809 records short (0.57 %), all of them tombstoned, not 8,908 (0.65 %).
+
+At full coverage the vectors are 1,362,343 × 8,192 B = **11.2 GB**.
 
 ### 3.2 What the DB does *not* contain
 
-- **No position.** Raw msgpack tuples have 6, 7, 8 or 12 fields, all accounted
-  for by the twelve named `Record` fields. `semantic_store.ML` computes
-  `Position.line_of` but passes it only to the interpreting agent's prompt.
-  `entity_source` obtains source by asking a **live Isabelle** through
-  `command_at_position`. → `ENTITY_POSITION_PLAN.md` fixes this.
+- **No position — fixed since, and the fix is deployed.** As measured on
+  2026-08-09 the raw msgpack tuples had 6, 7, 8 or 12 fields, all accounted for by
+  the twelve named `Record` fields, and nothing carried a position: `semantic_store.ML`
+  computed `Position.line_of` only to put it in the interpreting agent's prompt, and
+  source text was obtained by asking a **live Isabelle** through
+  `PIDE_State.command_at_position`. `ENTITY_POSITION_PLAN.md` fixed this and is done:
+  `position` is the 13th `Record` field and 1,092,855 records (80.2 %) carry one on
+  `cslh19`. The line computation has moved with it, to `Tools/entity_position.ML` and
+  `Tools/pide_state.ML`; `semantic_store.ML` no longer performs it. What is **not**
+  done is prerequisite C of §12.2 — those positions reaching the published snapshot.
 - **No declaring theory for theorem-alike records.** Their key prefix is an XOR
   pseudo-theory. Matching the first segment of `name` against the constituent
   theories' base names resolves **85.3 %** uniquely, **0 %** ambiguously, and
@@ -605,11 +735,16 @@ At full coverage the vectors are 1,353,570 × 8192 B = **11.1 GB**.
   constant to the statement. Example: `Abstract_Reachability_Analysis.max_Var_floatariths_concat`,
   whose constituents are five other theories.
 - **Partial declaring theory for name-addressed records.** The key prefix *is*
-  the declaring theory's hash. Harvesting `(long name, hash)` pairs from every
-  theorem-alike record's constituent theories yields 8,336 mappings, which
-  resolve **8,311 of the 9,148** distinct prefixes → **192,244 of 204,741
-  records (93.9 %)**. The remaining **12,497 records (0.9 % of the corpus)**, in
-  837 theories, keep only the theory base name from their own long name.
+  the declaring theory's hash. Measured 2026-08-19, the 206,010 name-addressed
+  records carry **9,188 distinct prefixes**, of which **8,697 are persistent** —
+  and a persistent prefix is the only kind that ships. The 2026-08-09 reading of
+  this bullet, kept because §7.3's arithmetic still quotes it, was that harvesting
+  `(long name, hash)` pairs out of theorem-alike records' constituent theories
+  yields 8,336 mappings resolving 8,311 of the then 9,148 prefixes, i.e. 192,244 of
+  204,741 records (93.9 %), leaving 12,497 records in 837 theories with nothing but
+  a theory base name. **That harvest is not needed and is not part of this plan** —
+  the Draft 3 correction in the next bullet explains why, and §7.3 states the
+  measurement that replaced it.
   **Draft 3 correction.** This bullet then said the theory-hash registry
   `~/.cache/Isabelle_Theory_Hash/theory_hash.lmdb` "does not help: 2,910
   entries, 9.9 % hit rate". Both figures were measured on **this** machine,
@@ -626,7 +761,8 @@ Namespaces `isa-tok-semantics-test` (10 documents) and `isa-scale-test`
 (230,944 documents) in `aws-us-east-1`. *Draft 3 correction:* the document
 text is real, the vectors are not — every document carries the same constant
 8-dimension vector, so none of the timings below involved vector search, and
-230,944 is 18.6 % of the real corpus (D5).
+230,944 is **17.0 %** of the real corpus — 18.6 % was against the merged
+1,241,679 of the original D5, which D5's reversal replaced with 1,362,343 (§1).
 
 | Question | Result |
 |---|---|
@@ -644,20 +780,35 @@ Wall-clock from the developer machine was ~900 ms against `server_total_ms` of
 
 ### 3.4 The tokenizer, on real data
 
+**Every figure in this block is over §3.3's 230,944-document test namespace, not
+over the corpus**, and the two lines that disagree do so because they were taken
+against different samples of it — the caveat is now on each line that needs it rather
+than on one of them.
+
 ```
-230,944 documents          mean 37.0 tokens, max 6,981
-distinct tokens            56,336 (in a 150 k sample)
+230,944 documents          mean 39.0 tokens before ASCII symbolic runs are merged,
+                           37.0 after (the merge is the line below); max 6,981
+distinct tokens            56,336 (in a 150 k sample of the 230,944)
 document frequency of the commonest tokens
    '(' ')' 65 %   '.' 53 %   '=' 50 %   '⟹' 42 %   ';' 26 %   '⟦' '⟧' 25 %
 merging ASCII symbolic runs changes little   39.0 → 38.5 tokens, 56,336 → 56,455 vocabulary
-   but creates 130 distinct operators: '::' 9.1 % (9.89 % on the full 230,944;
-   this line came from a 150 k sample), ':=' 1.4 %, '::=' 0.3 %, '=>', '->', '**', …
+   but creates 130 distinct operators: '::' **9.89 %** of the 230,944 documents
+   (9.1 % was the reading on a 150 k sample of them, and is the number to drop),
+   ':=' 1.4 %, '::=' 0.3 %, '=>', '->', '**', … — the last three from the sample
    and shortens the ':' postings list from 12.8 % of documents to 2.4 %
 ```
 
-Whitespace erasure was checked for collisions across the whole corpus: **200
-collision classes out of 1,353,348 (0.015 %)**, and inspection of all 200 found
-**none** whose two source texts differ by anything other than whitespace. So
+The `⟹` frequency in the table above, **42 %**, is likewise over these 230,944
+documents; §3.6 gives it as 42.35 % against the same population, and over the whole
+corpus it is **617,652 documents, 45.34 %** (the companion's §15.1). Three numbers,
+two populations, and nothing wrong with any of them except that two of them used to
+appear without saying which population they were over.
+
+Whitespace erasure was checked for collisions across the corpus as it stood on
+2026-08-09: **200 collision classes out of 1,353,348 expressions (0.015 %)**, and
+inspection of all 200 found **none** whose two source texts differ by anything other
+than whitespace. Not re-run on the 1,362,096 of today; the conclusion is a property of
+the rule rather than of the population. So
 discarding whitespace introduces no semantic false positive on this corpus.
 
 **NFC, measured 2026-08-14 — it was not measured here before.** §5.1, D41 and
@@ -679,10 +830,19 @@ Step 1 because the store is 100 % NFC; step 2 because the U+007F repair is done
 (§12.2 step 1 — the 238 records counted below are the 2026-08-09 figure, before
 it ran); step 3 because every record it changes is excluded by D24.
 
-Character hygiene: **0** private-use-area characters in `expr`, `name` or
-`interpretation` — still true after the widening, because D44 leaves a
-private-use symbol as its escape rather than substituting it. **238 records**
-contain U+007F (§10); **835** occurrences of CR.
+Character hygiene, re-measured 2026-08-19: **one** record's `expr` carries
+private-use-area characters, and `name` and `interpretation` carry none.
+The one is `IDE_CP_Core.φlemmata`, which holds U+E015, U+E028, U+E057 and U+E068 —
+four phi-System word glyphs stored as raw characters rather than as escapes,
+presumably dragged out of a jEdit buffer. §3.2 used to state this as a flat **0**,
+and D44's argument does not depend on which it is: D44 stops the *conversion* from
+introducing a private-use character, and a raw one already sitting in the store is
+exactly the case D44 names when it says the reverse direction, `ascii_of_unicode`,
+"still names a raw private-use character, because text dragged out of jEdit carries
+one and naming it is a repair". D24 excludes this record from the export in any case,
+phi-System being neither AFP nor the distribution. Also re-measured: **0** records
+contain U+007F, the 238 of 2026-08-09 having been repaired (§10); **835** occurrences
+of CR, unchanged.
 
 **Literal `\<…>` escapes, re-measured 2026-08-17, and re-characterised.** The
 earlier figure — 1,140 records "for a symbol with no code point", 32 kinds —
@@ -691,11 +851,14 @@ named the wrong class. The operative distinction is not "in the table without a
 for the tokenizer while having very different sizes. Of the 3,562 records whose
 raw text carries an escape: 77 carry one that the distribution's table defines
 without a code point; 1,056 carry one defined only in `contrib/phi-system/symbols`,
-and those are exactly the 1,056 that now convert. Of the rest, **1,981** carry a
+and those are exactly the 1,056 that now convert. Of the rest, **1,980** carry a
 word-glyph escape that `contrib/phi-system/symbols-words` **does** define — with a
 private-use code point, so D44 leaves it alone deliberately — and **1,078**, in 20
 distinct kinds, carry one declared in no `symbols` file in this repository at all
-(`\<Empt>`, `\<PR>`, `\<aA>`), which no asset can ever convert. The three reasons
+(`\<Empt>`, `\<PR>`, `\<aA>`), which no asset can ever convert. (The word-glyph
+figure read 1,981 until 2026-08-19; the four classes were re-measured that day and
+every other one reproduced to the record. The four do not sum to 3,562 and are not
+meant to: a record carrying two escapes of different classes is counted in both.) The three reasons
 an escape survives are therefore different in kind, and only the last is a gap.
 
 After step 3 with the widened table, **3,135 records** still carry a literal
@@ -857,13 +1020,33 @@ divergence produces silently wrong search results with no error anywhere.
 ### 5.1 Pipeline
 
 Applied identically to stored entity expressions, stored names, stored theory
-long names, and every user-supplied filter string:
+long names, and every user-supplied filter string. Steps 1 to 4 are the tokenizer
+proper and have no exceptions; step 0 is the one input-dependent step and its
+condition is part of the specification.
+
+0. **Strip one trailing `(_)`, and only from an `Entity Name` filter condition.**
+   Never from stored text, never from the other panels, never more than once. The
+   reason is D5 and `from_collection` (§6.1): where the enumeration invented a name
+   for a member of a dynamic fact collection, the card displays
+   `<from_collection>(_)` rather than the stored name, so a visitor who copies what
+   they see and pastes it into `Entity Name` types `coll(_)` — which tokenizes to
+   `['coll','(',')']` and matches nothing, because `name_subtokens` is built from the
+   **raw** name (§8.1 step 5). Stripping the suffix makes the pasted form behave
+   exactly like the raw one. `DYNAMIC_MEMBER_NAMING_PLAN.md` §2.3 decides this and
+   requires it here, as a named step both implementations share with a row in §5.5's
+   test-vector file; §16.2 carries the case. The alternative it rejects is filtering
+   member rows through `from_collection`, which has no compilation: §6.3 compiles a
+   name condition to exactly one form over `name_subtokens`, and the Worker emits one
+   filter for the whole namespace, so it cannot branch per row.
 
 1. `unicodedata.normalize('NFC', s)` — the store is already 100 % NFC; queries
    pasted from macOS may be NFD, whose combining marks are not `\w` and would
    split identifiers. **NFKC must not be used**: it maps `₁`→`1` and `𝐚`→`a`,
    destroying Isabelle subscript semantics.
-2. Replace U+007F with a space (a stop-gap until §10 lands; harmless after).
+2. Replace U+007F with a space. §10 has landed — zero records carry the character
+   as of 2026-08-19 — so this is a no-op on stored text, and it stays for two
+   reasons: a visitor can paste one, and D11's root cause is **not** fixed, so the
+   collection path can still write one into a new record.
 3. **Symbol conversion, which is two passes in this order, not one.**
    a. Replace each `\<name>` by the code point the symbol table gives it, so a
       user may type `\<Longrightarrow>` or `⟹`. A symbol the table does not
@@ -891,7 +1074,7 @@ long names, and every user-supplied filter string:
       class is defined over the characters this pass produces, so **without this
       pass §5.4 has no meaning** — an earlier draft named only pass (a) and left
       the fold undocumented while the rest of §5 depended on it.
-   Both tables come from the assets of §5.5, and neither implementation may carry
+   Both tables come from **the asset** of §5.5, and neither implementation may carry
    its own (D45). `Isabelle_RPC_Host.unicode_of_ascii` is the reference.
    **This step is no longer the identity on stored text**: since the loader began
    reading the symbol table Isabelle actually presents, component files included,
@@ -915,11 +1098,34 @@ visitor typing `named_theorems` now finds.
 claimed there were none. Where an escape sits against an ASCII-symbolic
 character, the escape's closing `>` now merges into a symbolic run with it:
 `['\<param>',':']` becomes `['\<','param','>:']`, and the standalone `':'` that
-used to be indexed is gone. Nine such patterns occur, all in phi-System theories
-that D24 excludes from the export — `Calculus_of_Programming.φapply_proc`,
-`PLPR.Premise_const_True(4)` and their siblings. The decision stands on 3,118
-refinements against 17 losses of bare punctuation, but it does not stand on the
-absolute claim.
+used to be indexed is gone.
+
+**Fourteen of the seventeen are phi-System theories, which D24 excludes from the
+export — but three are not, and an earlier draft of this section said all of them
+were.** The three that D24 does export are AFP entries:
+
+```
+AbsCFCorrect.lemma6                            AFP Shivers-CFA
+    ['|','\<PR>','l','|', …]      →  ['|\<','PR','>','l','|', …]        loses a '|'
+AbsCFCorrect.contour_a_class.abs_cnt_initial   AFP Shivers-CFA
+    ['|','\<binit>','|','=', …]   →  ['|\<','binit','>|','=', …]        loses a '|'
+Matrix.matrix                                  AFP Kleene_Algebra
+    [ …,'~','\<^cite>', …]        →  [ …,'~\<^','cite','>', …]          loses a '~'
+```
+
+Both AFP theories use escapes the distribution does not define (`\<PR>`,
+`\<binit>`, `\<abinit>`, `\<aPR>` — they are the 1,078 records of §3.4 that no
+asset can ever convert), so step 3 leaves the escape literal and the adjacent `|`
+or `~` merges into it. The remaining fourteen are phi-System —
+`Calculus_of_Programming.φapply_proc`, `PLPR.Premise_const_True(4)`,
+`Phi_Types.Param_Annot_def` and their siblings — and nine distinct patterns occur
+across the seventeen.
+
+What is lost in every one of the seventeen, AFP included, is **one token of bare
+punctuation** — a `|`, a `~` or a `:` that stood alone and now sits inside a
+symbolic run. The decision stands on 3,118 refinements against that; it does not
+stand on the absolute claim, and it does not stand on the claim that the losses are
+confined to material the site never publishes.
 
 ### 5.2 Token formation
 
@@ -953,7 +1159,7 @@ in §5.3 and the `a?b` line in §16.2.)
 The letter and digit sets are **not disjoint**: 81 code points, the CJK
 ideographic numerals, satisfy both. The order of the tests is therefore
 normative — *letter* is tested first, so `一二三` is one identifier token and not
-three. D45's assets must preserve the overlap rather than partition it.
+three. D45's asset must preserve the overlap rather than partition it.
 
 A quasi-letter cannot **begin** an identifier, only continue one. So Isabelle's
 type variable `'a` is two tokens, `["'", 'a']`, and `_wrt` is `['_','wrt']` whose
@@ -961,9 +1167,14 @@ first token then disappears in §5.4. Both are load-bearing and neither is
 obvious; §16.2 carries a case for each.
 
 The `letter`/`greek` groups of `etc/symbols` are **not** consulted, though an
-earlier draft said they were. All 164 of their members already satisfy
-`isalpha()`, so the union added nothing; and every one of them has a code point,
-so step 3 substitutes it before token formation ever sees it.
+earlier draft said they were. Re-measured 2026-08-19 against the table Isabelle
+actually presents: those groups have **190** members (they had 164 when the loader
+still rebuilt the table from `ISABELLE_HOME` alone), and **every one of the 190**
+satisfies `isalpha()`, so the union adds nothing; and every one has a code point, so
+step 3 substitutes it before token formation ever sees it. The prototype in
+`site/prototype/` does consult them — its `_is_letter` unions the group members in —
+which is the second of the two ways it is stale (§16.1); it makes no difference to
+any output for exactly the reason just measured.
 
 Neither `.` nor `?` is an identifier character. `.` must not be, or
 `λx. P x` and `λx.P x` would differ.
@@ -1066,9 +1277,15 @@ where the next sentence gives a whole-corpus replacement — is against 230,944
 documents**, the §3.3 test namespace, not the 1,362,096 expressions §16.2 gives as
 the corpus scale; an earlier draft named no denominator at all, and a later one
 claimed the 230,944 denominator for the replacements too. Re-measured over the whole corpus the
-same quantity is 51,891 documents (3.81 %) and 154 distinct tokens, and the raw
-occurrence counts move too: `²` is 3,955, not 640, and `₁` is 7,023, not 1,281.
-D41 repeats the 640 as "occurrences in the corpus", where it is six times low. Restricting it to rendered
+same quantity is **51,891 documents (3.81 %) and 154 distinct tokens** — independently
+reproduced 2026-08-19, to the record, under the character-level tokenizer of D43 — and
+the raw occurrence counts move too: `²` is 3,955, not 640, and `₁` is 7,023, not
+1,281. **3.81 % is the whole-corpus figure and the only one to quote outside this
+subsection**; 3.18 % is the same quantity over §3.3's 230,944 documents, and §14.7
+used to give it as 3.71 %, which was neither.
+D41 and §16.4 both used to repeat the 640 as "occurrences in the corpus", where it
+is six times low; both now give 3,955 and say that 640 is the count over §3.3's
+230,944-document namespace. Restricting it to rendered
 characters is equally load-bearing: the obvious unrestricted version ("keep any
 token that splits to nothing") was measured and **breaks the `_wrt`
 counter-example outright** — `_` would survive, the query would become
@@ -1137,9 +1354,11 @@ port. To stop them drifting:
 - The export emits a **shared test vector file** and both implementations must
   reproduce it exactly in CI — see §16.5 for what it must contain and §16.6 for
   what the gate must assert. Sampling real expressions is necessary but not
-  sufficient: real data cannot exercise pipeline steps 1, 2 or 3 at all (§3.4),
-  and the gate must assert **coverage of named features**, not merely a sample
-  size.
+  sufficient: **on the corpus that is actually published**, pipeline steps 1, 2 and 3
+  are all the identity (§3.4 — step 3 does change 1,056 stored expressions, and D24
+  excludes every one of them), so the gate must assert **coverage of named features**
+  and not merely a sample size. Step 0 needs a row of its own too: a condition ending
+  in `(_)` and the same condition without it must produce the same subtokens.
 
 - The test vector file is versioned with the data, and so is the asset.
 
@@ -1181,15 +1400,18 @@ from_collection  string        empty unless `name` is a name the enumeration
 
   filtering — all pre_tokenized_array
 expr_subtokens   []string      the only expression field there is (D21); an
-                               `expr_tokens` field was in draft 2 and is gone
+                               `expr_tokens` field was in draft 2 and is gone.
+                               Mean 39.19 elements over the whole corpus, and
+                               NOT ONE of the 1,362,096 arrays is empty --
+                               the old rule left 71 unmatchable (§3.6)
 name_subtokens   []string      reached by the `Entity Name` panel (D22).
-                               Measured mean 21.46 -> see below; this array is
-                               short, mean 6.30 elements
+                               Mean 6.77 elements; this is the short one
 theory_subtokens []string      the subtokens of every name in `theories`,
                                concatenated with a separator token between
-                               names (below).  Subtokens, not tokens, per D23;
+                               names (§6.3).  Subtokens, not tokens, per D23;
                                named `theory_tokens` through draft 2.  Mean
-                               21.46 elements
+                               24.71 elements over the records that have
+                               constituents, separator tokens counted
 
   ranking
 interpretation   string        BM25-indexed (§6.5)
@@ -1198,7 +1420,9 @@ interpretation   string        BM25-indexed (§6.5)
 ### 6.2 Document id
 
 The universal key cannot be the id: keys run from 20 to **308 bytes**, and
-**88,798 (6.6 %)** exceed turbopuffer's 64-byte string-id limit once encoded.
+**89,137 of 1,362,343 (6.54 %)** exceed turbopuffer's 64-byte string-id limit once
+base64url-encoded (re-measured 2026-08-19; it read 88,798 / 6.6 % on 2026-08-09, and
+it grows with the corpus).
 Use a **128-bit hash of the universal key as a UUID**, and keep the full key as
 an ordinary attribute. The hash must be **deterministic**, so that a re-export
 upserts in place instead of creating duplicates.
@@ -1208,18 +1432,22 @@ upserts in place instead of creating duplicates.
 Under D21 there is one form for an expression condition, and `ContainsAllTokens`
 appears nowhere:
 
+The two polarities are named `contains` and `excludes` throughout, matching the
+toggle the interface shows (D22); an earlier draft of this table wrote the first one
+`includes`.
+
 ```
-includes(expr)   ["expr_subtokens", "ContainsTokenSequence", subtokens(tokenize(s))]
+contains(expr)   ["expr_subtokens", "ContainsTokenSequence", subtokens(tokenize(s))]
 excludes(expr)   ["Not", ["expr_subtokens", "ContainsTokenSequence", subtokens(tokenize(s))]]
-includes(name)   ["name_subtokens", "ContainsTokenSequence", subtokens(tokenize(s))]
-includes(theory) ["theory_subtokens","ContainsTokenSequence", subtokens(tokenize(s))]
-includes(all)    ["Or", [ the three includes above ]]                         ← D22
-excludes(all)    ["Not", ["Or", [ the three includes above ]]]                ← D22
+contains(name)   ["name_subtokens", "ContainsTokenSequence", subtokens(tokenize(s))]
+contains(theory) ["theory_subtokens","ContainsTokenSequence", subtokens(tokenize(s))]
+contains(all)    ["Or", [ the three contains forms above ]]                   ← D22
+excludes(all)    ["Not", ["Or", [ the three contains forms above ]]]          ← D22
 combination      ["And", [ … ]]
 ```
 
 `Or` is verified to exist, to nest inside `And`, and to sit inside `Not`; the
-`excludes(all)` form above returned exactly `total − includes(all)` on real
+`excludes(all)` form above returned exactly `total − contains(all)` on real
 data (§3.6), and the user confirmed on 2026-08-12 that "appears in none of the
 three" is the intended reading. **`excludes` on the `All` panel is `Not(Or(…))` — "appears in none
 of the three" — and never `Or(Not(…),…)`, which would be satisfied by almost
@@ -1244,15 +1472,36 @@ sequence straddle two names: `[HOL.List, Affine_Arithmetic.Foo]` becomes the
 subtokens `[HOL, List, Affine_Arithmetic, Foo]` — under D21 the `.` is a
 separator, so it does not even stand between them — and would match a query for
 `List Affine_Arithmetic`, which is not any theory's name. Put one separator
-token between names. `"\n"` is a safe choice precisely because the tokenizer
+token between names. `"\n"` is the intended choice precisely because the tokenizer
 discards whitespace and can therefore never emit it, so no user query can
 contain it — and it survives subtoken formation untouched, being injected by
 the export rather than produced by the tokenizer and absent from D21's
 separator class.
 
-Index cost, measured on the §3.6 namespace: `theory_subtokens` averages 21.46
-elements per document against the expression array's 37.72, and
-`name_subtokens` 6.30.
+**It is not yet settled, and §8.1 owns the test.** Whether turbopuffer stores and
+indexes a whitespace-only element of a `pre_tokenized_array` at all was never
+measured (§3.3 did not test it), and if it is dropped the adjacency straddle above
+comes back. One upsert against a test namespace settles it; if `"\n"` is dropped,
+choose a non-whitespace character the tokenizer cannot emit — every character the
+tokenizer can emit is either a letter, a digit, a quasi-letter, an ASCII-symbolic
+character or a single other character it passes through, so a control character
+outside the separator class is the natural fallback. This test is **step 0b of §8.1**
+so that it cannot be forgotten; §16.8 lists it as one of the questions to settle
+during the work.
+
+Index cost. Two sets of figures, and the difference between them is the population,
+not the rule — an earlier draft gave the first set with no denominator at all:
+
+```
+                    §3.6's 230,944-document namespace   the whole corpus, 2026-08-19
+expr_subtokens                        37.72                        39.19
+theory_subtokens                      21.46                        24.71
+name_subtokens                         6.30                         6.77
+```
+
+Quote the whole-corpus column when sizing the production namespace, since that is what
+gets built. `theory_subtokens` is counted over the records that carry constituent
+theories, separator tokens included.
 
 ### 6.4 Region
 
@@ -1283,6 +1532,28 @@ Public regions confirmed reachable: AWS `us-east-1 us-east-2 us-west-2
 ca-central-1 eu-west-1 eu-west-2 eu-central-1 ap-south-1 ap-southeast-2`; GCP
 `us-central1 us-east4 us-west1 europe-west1 europe-west3 europe-west4
 asia-southeast1`. `aws-ap-southeast-1` and `aws-ap-northeast-1` do not resolve.
+
+### 6.5 BM25 over the interpretation
+
+Worth carrying because hybrid keyword+vector retrieval measurably helps
+exact-name intents ("the one called `sorted_wrt_append`"), which a bi-encoder
+alone handles poorly.
+
+**Stale text removed, 2026-08-14.** This section used to give a second reason:
+that BM25 is the degradation path when the embedding budget is exhausted.
+**D35 deleted that path** — the user rejected it on 2026-08-14 ("this
+degradation is pointless and only adds code complexity"), and every limit now
+returns 429. §11.1 already says so; this section did not.
+
+**What BM25 indexes matters for the interface, and it is only
+`interpretation`** (§8.1's field table). Not the name, not the entity
+expression. So a visitor who half-remembers a name and types it into the search
+box is relying on the interpretation happening to contain it — the reliable
+route is to type the name into an `Entity Name` condition and let the query
+rank what survives. **The interface must say this**: §13b's Isabelle reader
+named the required query as the single thing that would send them back to
+`find_theorems`, and their need is fully served by the design as it stands.
+This is a copy defect, not a case for reopening D7.
 
 ### 6.6 How the two legs are fused (D36)
 
@@ -1315,28 +1586,6 @@ Unmeasured, and deliberately not a design input: whether turbopuffer bills a
 (D28), so it does not bear on any choice above. It is settled by reading
 `billing.billable_logical_bytes_queried` off one `multi_query` response.
 
-### 6.5 BM25 over the interpretation
-
-Worth carrying because hybrid keyword+vector retrieval measurably helps
-exact-name intents ("the one called `sorted_wrt_append`"), which a bi-encoder
-alone handles poorly.
-
-**Stale text removed, 2026-08-14.** This section used to give a second reason:
-that BM25 is the degradation path when the embedding budget is exhausted.
-**D35 deleted that path** — the user rejected it on 2026-08-14 ("this
-degradation is pointless and only adds code complexity"), and every limit now
-returns 429. §11.1 already says so; this section did not.
-
-**What BM25 indexes matters for the interface, and it is only
-`interpretation`** (§8.1's field table). Not the name, not the entity
-expression. So a visitor who half-remembers a name and types it into the search
-box is relying on the interpretation happening to contain it — the reliable
-route is to type the name into an `Entity Name` condition and let the query
-rank what survives. **The interface must say this**: §13b's Isabelle reader
-named the required query as the single thing that would send them back to
-`find_theorems`, and their need is fully served by the design as it stands.
-This is a copy defect, not a case for reopening D7.
-
 ## 7. Theories for filtering
 
 ### 7.1 Theorem-alike entities have no declaring theory (D13)
@@ -1357,13 +1606,16 @@ recommended exactly that; it is withdrawn.
 
 | entity kind | filtered against | source | coverage |
 |---|---|---|---|
-| theorem-alike (1,148,833) | its **constituent theories** | the `theory_constituents` field | already in the DB, 100 %, session-qualified |
-| name-addressed (204,741) | its **declaring theory** | the key's 16-byte theory hash | needs the hash-to-name table (§7.3) |
+| theorem-alike (1,156,153) | its **constituent theories** | the `theory_constituents` field | already in the DB, 100 %, session-qualified |
+| name-addressed (206,010) | its **declaring theory** | the key's 16-byte theory hash | needs the theory-hash registry (§7.3) |
 
-Measured: 7.10 constituent theories per theorem-alike record on average
-(median 6, maximum 42), drawn from 8,299 distinct theory long names. Only four
-carry no session prefix — `Pure`, `FOL`, `IFOL`, `ZF` — which are Isabelle's own
-base logics and genuinely have none.
+Measured 2026-08-19: **7.09** constituent theories per theorem-alike record on average
+(median 6, maximum 42), drawn from **8,329** distinct theory long names — the same
+figure D39 gives; this subsection said 8,299 until today and was the stale half of the
+pair. Only four of the 8,329 carry no session prefix — `Pure`, `FOL`, `IFOL`, `ZF` —
+which are Isabelle's own base logics and genuinely have none. The counts in the table
+above are the 2026-08-19 record counts; the measured rows below it are from 2026-08-13
+and are proportions, which have not moved.
 
 The two alternatives were measured against real data and rejected:
 
@@ -1388,12 +1640,17 @@ Note the last row: 99 % of theorem-alike statements mention something from
 `HOL`, so filtering on a base session has no discriminating power. That is
 inherent to the corpus, not a defect of the design.
 
-### 7.3 The hash-to-name table
+### 7.3 The theory-hash registry
+
+One name for it, used everywhere below and in §12.2: **the theory-hash registry**.
+Earlier drafts also called it "the hash-to-name table" and "the complete hash-to-name
+table"; those are gone.
 
 Name-addressed entities carry their declaring theory's hash in the key prefix,
 and a per-theory record does exist in `semantics.lmdb` under that 16-byte key —
 but it holds only interpretation cost accounting (`input_tokens`, `cost_usd`,
-`model`, `driver`, `finished`), **no name**. 11,415 such records exist.
+`model`, `driver`, `finished`), **no name**. **11,474** such records exist
+(2026-08-19; 11,415 on 2026-08-12).
 
 The table that does map hash to name is a separate store, the **theory-hash
 registry** `~/.cache/Isabelle_Theory_Hash/theory_hash.lmdb`
@@ -1419,7 +1676,18 @@ restricted to PERSISTENT hashes, the only ones that ship   8,704
 
 The 60 that `cslh19` misses are WIP hashes, which never ship; the one remaining
 apparent miss is the one-byte global version counter, which `_ships` rejects
-anyway. **The shortfall on persistent hashes is zero.**
+anyway. **The shortfall on persistent hashes is zero.** So the "two apparent
+misses" §3.2 mentions are these: one is a WIP hash and one is the version counter,
+and neither is a theory whose name is unavailable.
+
+**The population has moved since, and the conclusion has not.** Re-measured on this
+machine 2026-08-19, the name-addressed records carry **9,188** distinct key prefixes
+of which **8,697** are persistent, against the 9,214 / 8,704 above. The registry
+arithmetic was not re-run — it needs `cslh19`, which is the authority for it — and the
+numbers to quote for the registry remain the 2026-08-12 ones. What a reader should
+take from the pair is that the count of hashes to resolve is a little over nine
+thousand and a little under nine thousand of them are persistent; the exact figure
+depends on which machine and which day, and no decision turns on it.
 
 That is structural rather than lucky: `store_theory_hash` walks
 `Theory.nodes_of` at the start of every interpretation run, so the registry
@@ -1451,13 +1719,23 @@ be re-runnable and deterministic.
    `theory_constituents` for a theorem-alike entity, the declaring theory for a
    name-addressed one. Also drop WIP-prefixed and EXPERIENCE keys, which no
    session test can reach.
+0b. **Settle the `theory_subtokens` separator** (§6.3) before anything is written
+   into a production namespace: one upsert into a test namespace, checking that a
+   whitespace-only element of a `pre_tokenized_array` is stored and indexed. If it is
+   not, pick a non-whitespace separator the tokenizer cannot emit. This is first
+   because getting it wrong is only visible as a theory filter that matches a name no
+   theory has, and because §8.2 makes every export a fresh namespace, so changing the
+   separator later re-exports the whole corpus.
 1. **Completeness gate.** Assert that every entity record has a vector. The
    vector store is a lazy cache and missing vectors are legal in normal
    operation, so the export must **fail loudly** rather than publish a corpus
-   with holes. *Status 2026-08-12:* 8,908 records (0.65 %) have no vector, all
-   of them tombstoned and awaiting re-embedding, so the gate does not pass yet.
-   The user has taken this as a known item to be resolved before the first
-   export, not as a reason to weaken the gate.
+   with holes. *Status 2026-08-19:* **7,809 records (0.57 %)** have no vector, all of
+   them tombstoned and awaiting re-embedding, so the gate does not pass yet. (It read
+   8,908 / 0.65 % on 2026-08-12; the shortfall is shrinking, and "all of them
+   tombstoned" holds exactly — the vector store carries 1,354,534 real vectors plus
+   7,809 tombstones, which is one key per entity record, §3.1.) The user has taken
+   this as a known item to be resolved before the first export, not as a reason to
+   weaken the gate.
 2. **Group.** Compute the `group` hash of `(name, entity expression)` for each
    record. Nothing is merged (D5); the collapse happens in the Worker's response
    after ranking.
@@ -1471,19 +1749,57 @@ be re-runnable and deterministic.
    from the raw `name`, never the displayed form: `from_collection` is a display
    attribute and the Worker emits one filter for the whole namespace, so it
    cannot route a member row to a different field. A pasted `coll(_)` is handled
-   on the **query** side instead — §5's tokenizer strips one trailing `(_)` from
-   an `Entity Name` condition before tokenizing, so it behaves exactly like the
-   raw name. That normalisation is a shared asset (§5.5).
-6. **Emit** the shared test vector file (§5.5) and the symbol table JSON.
+   on the **query** side instead, by **§5.1's step 0**, which strips one trailing
+   `(_)` from an `Entity Name` condition before tokenizing so that it behaves exactly
+   like the raw name. That step is part of the tokenizer both implementations share
+   and it has a row in the test-vector file (§5.5) and a case in §16.2; it is **not**
+   part of the asset, which carries character classes and tables rather than rules.
+6. **Emit** the one stamped tokenizer asset (D45, D46) and the shared test-vector
+   file (§5.5). The asset is a single file, and §16.4 lists exactly what it carries:
+   the symbol table, the fold table `SUBSUP_TRANS_TABLE`, the five character-class
+   sets (letters, digits, quasi-letters, the 99 separators, the ASCII-symbolic set),
+   the abbreviation table, and its own provenance — the `ISABELLE_SYMBOLS` file list
+   and the Unicode version the classes were built under. "The symbol table JSON" was
+   this step's wording before D45 and describes about a fifth of what must be
+   emitted; an implementer following it would ship a port that cannot fold, cannot
+   classify characters and cannot offer live abbreviation replacement.
 7. **Upsert** into a fresh namespace (§8.2), then switch the Worker over.
 
 ### 8.2 Versioning
 
-Write each export into a **new namespace** named for the data it came from
-(e.g. `isabelle-2025-2-afp-2026-05-13`), and switch the Worker's target when it
+Write each export into a **new namespace**, and switch the Worker's target when it
 verifies. turbopuffer has no "delete everything absent from this batch"
 operation, so upserting into the live namespace would leave deleted entities
 behind forever. A fresh namespace also gives an instant rollback.
+
+**The name carries both the data and the asset digest (D45).** An earlier draft
+named it for the data alone — `isabelle-2025-2-afp-2026-05-13` — which predates D45
+and loses the whole point of that decision: the digest in the name is what makes
+"new index, old asset" unconstructible, because a Worker holding an older asset
+addresses the namespace that asset built and simply finds the old index. The scheme:
+
+```
+isasearch-<isabelle release>-<afp snapshot>-<asset digest, 12 hex characters>
+e.g. isasearch-2025-2-afp-2026-05-13-9f3c1ab77d02
+```
+
+The digest is the SHA-256 of the asset file's bytes; twelve hex characters is this
+author's choice implementing D45, which fixed that a digest appears and not how long
+it is — twelve is short enough to read in a dashboard and long enough that a
+collision is not a thing to think about.
+
+**And the export must fail rather than silently rename the namespace (D46).** D46
+requires that "an export that finds a different component set than the declared one
+must fail", and never said where the declaration lives. It is the **committed asset
+from the previous export**: the export recomputes the asset from the live
+installation and compares its `ISABELLE_SYMBOLS` file list and its digest against
+that file, and stops if either differs unless it is told on the command line that the
+change is intended. No second declaration file is introduced, because the invariant
+that matters — the committed asset is the deployed asset — is exactly what makes the
+comparison meaningful, and a separate list of expected components would be a second
+thing to keep in step. The first export has nothing to compare against and writes the
+baseline; from the second onwards, registering or unregistering an Isabelle component
+is a loud failure rather than a quietly differently-named namespace.
 
 ### 8.3 Display cleaning
 
@@ -1493,15 +1809,27 @@ def clean_for_display(expr):
     return expr.replace('\r\n', '\n').replace('\r', '\n')
 ```
 
-The 835 CR occurrences affect display only — `symbol_explode` already folds CR
-to LF and the tokenizer then discards it, so search is unaffected.
+The 835 CR occurrences affect display only, and search is unaffected — but for a
+different reason than an earlier draft gave. That draft said `symbol_explode` folds
+CR to LF and the tokenizer then discards the LF; D43 deleted `symbol_explode`, so
+that route is gone. The conclusion survives on the simpler ground that `'\r'`
+satisfies `isspace()`, so §5.2 discards it and it ends the run in progress exactly as
+a newline or a space does. The `replace` above is therefore about what a card shows,
+not about what matches.
 
-## 9. The front end — DEFERRED (D20)
+## 9. The front end — phase two (D32)
 
 This section records the design that was agreed, so that it does not have to be
-re-derived later. **Nothing here is to be built yet**, and none of its open
-questions blocks the data-side work. A reader working on the backend can skip
-to §10.
+re-derived later. It was written under D20, which deferred the web application
+outright; **D20 is superseded by D32**, which lifts the deferral and stages the work
+instead — the whole data side first (§12.2 steps 1-5), the interface after. So
+nothing here is to be built until phase one's export answers queries correctly, but
+this is scheduled work rather than shelved work, and its design is settled to
+D22/D26/D29/D30 with a mockup at `site/design/IsaSearch.dc.html`. The authoritative
+source for every visitor-facing string is `site/COPY.md`, never this section.
+
+A reader working on the backend can skip to §11; §10 is a four-line pointer into the
+companion file.
 
 
 ### 9.1 Layout
@@ -1519,10 +1847,19 @@ it was understood.
 ### 9.2 A required piece of user education
 
 `ContainsTokenSequence` is **literal adjacent matching, not pattern matching**.
-Measured: `?P ⟹ ?Q` returns 1 document and `⟦?P; ?Q⟧` returns 0, because real
-statements do not contain literal tokens named `P` and `Q`. Users will type
-exactly these, expecting Isabelle pattern semantics, and conclude the site is
+Users type a pattern, expect Isabelle pattern semantics, and conclude the site is
 broken.
+
+**The measurement, corrected.** An earlier draft of this subsection said `?P ⟹ ?Q`
+returns 1 document. It returns **60** (D37, and the companion's §15.1 table), because
+`P` and `Q` really are common variable names and D4 discards the `?` that would have
+distinguished them. The example that makes the point honestly is
+**`?n + ?m = ?m + ?n`, which returns 0** while commutativity of addition is certainly
+in the index — the condition fails for exactly one reason, that the variable names
+differ, and nothing else has to be explained. `?a + ?b = ?b + ?a` returns 15, one of
+them `Groups.ab_semigroup_add_class.add.commute`, which is the pair that makes the
+reason visible. `site/COPY.md` is built on that pair and is authoritative for the
+wording; do not rebuild the empty state from this paragraph.
 
 Therefore: never label this feature "pattern"; and when a syntactic filter
 returns nothing, say explicitly that the filter is literal and does not support
@@ -1534,12 +1871,14 @@ Per D14 the theory filter matches a name-addressed entity's declaring theory
 but a theorem-alike entity's constituent theories. The interface states this
 rather than hiding it. One sentence carries it, shown beside the field:
 
-> **theory** — matches an entity's **associated theories**: for constants,
+> **Theory Name** — matches an entity's **associated theories**: for constants,
 > types, classes, locales and methods, the theory that declares them; for
 > theorems, the theories of the constants their statement uses.
 
-The field's own label is just **theory**; the full phrase belongs in the
-explanation, not on the control.
+The field's own label is **`Theory Name`**, fixed by D22, which records that the bare
+`Theory` was argued for and rejected — an earlier draft of this subsection used the
+bare form in both the label and the sentence. The plural sense is carried by this
+sentence, not by the label.
 
 Nothing about this is offered as an option or a mode: the alternatives were
 measured and are worse (§7.2).
@@ -1574,17 +1913,31 @@ replacement covers the unambiguous abbreviations only.
 
 ### 9.4 Entity pages
 
-One server-rendered page per site document at a stable URL, carrying name,
-kinds, theory, expression, interpretation, source link, and a "related
-entities" block computed from the ten nearest vectors. The related block is not
-decoration: it is what keeps these pages from being classed as thin content.
+One server-rendered page per **`group`** at a stable URL, carrying name, kinds,
+theory, expression, interpretation, source link, and a "related entities" block
+computed from the ten nearest vectors. The related block is not decoration: it is
+what keeps these pages from being classed as thin content.
+
+**The page identity is `group`, not the site document**, and an earlier draft of D9
+and of this subsection said "one per site document". Under D5 as reversed there is
+one site document per *record*, and cross-kind duplicates — the same
+`(name, entity expression)` recorded once as a `Theorem` and again as an
+`Introduction rule` — are several records. They collapse into one card after ranking,
+and the thing that card links to is one page. §6.1 already says so: `group` is "the
+identity of the entity page (§9.4) and the key the response collapses on".
 
 Search results must link to these URLs from day one even if the pages ship
 later, so the URL scheme never has to change and no inbound links are lost.
 
-Sitemaps must be sharded (50 k URLs each, so ≥28 shards plus an index).
-Crawl budget will not cover 1.35 M pages on a new site; prioritise HOL and
-widely-used AFP entries.
+Sitemaps must be sharded (50 k URLs each, so ≥28 shards plus an index). Crawl budget
+will not cover ~1.36 M pages on a new site, so the sitemap is ordered rather than
+arbitrary: **the distribution's own sessions first, then AFP, and inside each the
+206,010 name-addressed entities before the theorem-alike ones**, since a
+name-addressed entity carries a name a person might actually search for. An earlier
+draft said "prioritise HOL and widely-used AFP entries", which is not actionable —
+no record field records use, and this plan defines no popularity signal. If one is
+ever wanted the only honest source is the site's own request log, which does not
+exist before launch.
 
 ### 9.5 Rendering
 
@@ -1636,8 +1989,10 @@ with a burst capacity, and a 429 when empty, never a fixed hourly quota that
 can be exhausted early and leave the site dark for the rest of the hour. It is
 **not built now** because layers 1 and 2 already require roughly 240 distinct
 IPs to saturate that rate, which is a high enough bar for casual abuse, and
-because it is the only piece here needing a new stateful component. Revisit
-from the Analytics Engine data (§11.4), not from speculation.
+because it is the only piece here needing a new stateful component. Revisit from the
+Worker's own telemetry (§11.2), not from speculation — which is why §11.2 requires
+every 429 to be logged with the layer that produced it. An earlier draft pointed at
+a "§11.4" that does not exist and never did.
 
 **On a trip, every layer returns 429 with `Retry-After`** and an interface
 message naming which limit was hit. There is **no degradation to BM25**: BM25
@@ -1657,10 +2012,22 @@ client. Enterprise, whose only relevant advantage is a 3,600-second counting
 period, is reported to start around $3,000–5,000/month and is out of the
 question.
 
-Two things unverified at the time of writing, both settled by trying them:
-whether the Free plan's single rule accepts a threshold of 5 (the documentation
-states the period and the characteristic, not the permitted thresholds), and
-what request allowance the Workers Paid plan includes.
+**Two things unverified, with the procedure for each.** Neither is settled by
+reading more documentation.
+
+1. *Does the Free plan's single rate-limiting rule accept a threshold of 5?* The
+   documentation states the period and the characteristic and not the permitted
+   thresholds. **Procedure:** create the rule in the zone's Security → WAF →
+   Rate limiting rules with `ip.src`, period 10 s, threshold 5, and read back what
+   the dashboard saved. If 5 is rejected, take the lowest accepted value and redo
+   layer 1's arithmetic — the number that has to survive is the sustained rate
+   staying under KV's 1 write per second per key.
+2. *What request allowance does Workers Paid include?* The figure quoted above —
+   1 M KV writes and 10 M reads a month, enough for ~33,000 searches a day —
+   comes from Cloudflare's published plan comparison and is **not** verified against
+   a live account. **Procedure:** subscribe, then read the Workers → Usage panel,
+   which reports the included allowance and the overage rate for the account
+   actually being billed. Until then treat the 33,000/day as an estimate.
 
 A **query-embedding cache in Workers KV**, keyed on the normalised query
 string, remains worth building: search traffic is strongly Zipf-distributed, so
@@ -1668,7 +2035,7 @@ it removes more Fireworks calls than any rate limit and cuts latency on a hit.
 **Cloudflare Turnstile** stays in reserve if the two built layers prove
 insufficient.
 
-### 11.1b What it costs, measured against the published price lists (2026-08-13)
+### 11.1b What it costs, measured against the published price lists (2026-08-13, recomputed 2026-08-19)
 
 **This section is capacity information, not a constraint (D28).** It is here so
 that a runaway is recognisable and so that a future decision about corpus size
@@ -1694,29 +2061,55 @@ writes $2/GB with a batch discount reaching 50 % at ~3.1 MB per batch; plan
 floor $16/month. Enterprise adds a 35 % usage premium. Logical bytes are
 billed, so index amplification is not passed through.
 
-At 1,241,679 site documents × 4096 dimensions × 4 bytes the vectors are
-20.34 GB and the namespace ~21 GB:
+**Corrected 2026-08-19: the base and the returned-data term were both wrong.** This
+subsection was computed on 1,241,679 site documents, which is the *merged* count from
+the original D5 — and D5 was reversed on 2026-08-13, making it one document per
+record, **1,362,343**. And the returned-data term was taken as ~20 KB where D29
+measures a 200-result response at **~200 KB**, an order of magnitude, which made the
+per-search total $0.000022 against D29's internally consistent $0.000031. Everything
+below is recomputed on the reversed D5 and D29's payload.
+
+At 1,362,343 site documents × 4096 dimensions × 4 bytes the vectors are 22.32 GB and
+the namespace ~23 GB. At D31's f16 — which is what actually ships — they are 11.16 GB
+and the namespace ~11.5 GB:
 
 ```
-per search   21 GB queried  $0.000021   +  ~20 KB returned  $0.000001  =  $0.000022
-             i.e. $22 per million searches; the queried term is 95 % of it
-per day      10 k searches $0.22   100 k $2.20   1 M $22.00
-per month    storage $6.93; initial load 21 GB x $2 = $42, or $21 batched
+f32, for comparison only
+per search   23 GB queried  $0.000023   +  ~200 KB returned  $0.000010  =  $0.000033
+per day      10 k searches $0.33   100 k $3.30   1 M $33.00
+per month    storage $7.59; initial load at 4 B/dim for writes, 22.3 GB x $2 = $45, or $22 batched
+
+f16, as shipped (D31)
+per search   11.5 GB queried $0.0000115 +  ~200 KB returned  $0.000010  =  $0.0000215
+per day      10 k searches $0.22   100 k $2.15   1 M $21.50
+per month    storage $3.80; the one-off load is unchanged at ~$45 / ~$22 batched,
+             because turbopuffer counts 4 bytes per dimension for writes whatever the dtype
 ```
 
-The $16 floor absorbs everything below roughly **13,600 searches a day**, so
-marginal searches are free until then.
+Two things change qualitatively. The queried term is no longer 95 % of a search: at
+f16 it is 53 %, and **the response payload is now the other half**, which is a reason
+to keep D29's 200-result bound and no reason to shrink the vector further. And the
+$16 monthly floor absorbs everything below roughly **24,000 searches a day at f16**
+(about 16,000 at f32), so marginal searches are free until then — the earlier
+"13,600 a day" inherited both errors.
 
 **Reducing the vector changes this by up to 16×**, because namespace size *is*
 the per-query price. turbopuffer counts f16 at 2 bytes per dimension and i8 at
-1 (for storage and queries; writes still count 4):
+1 (for storage and queries; writes still count 4). Recomputed on 1,362,343
+documents, and showing the **queried** term alone so the four rows are comparable —
+the ~$0.000010 returned-data term is the same in every row and does not shrink with
+the vector:
 
 ```
-4096-d f32   21.00 GB   $22.00 / M searches   storage $6.93 / month
-4096-d f16   10.83 GB   $10.83                        $3.57
-1024-d f32    5.74 GB    $5.74                        $1.89
-1024-d i8     1.93 GB    $1.93                        $0.64
+                        namespace   queried, per M searches   storage / month
+4096-d f32               23.00 GB    $23.00                    $7.59
+4096-d f16 (D31, ships)  11.50 GB    $11.50                    $3.80
+1024-d f32                5.75 GB     $5.75                    $1.90
+1024-d i8                 1.44 GB     $1.44                    $0.48
 ```
+
+The namespace column is the vectors plus 3 %, which is the ratio the two 4096-d rows
+were measured at; the vectors themselves are 22.32, 11.16, 5.58 and 1.40 GB.
 
 The 1.28 GB per-query floor puts a hard bottom of $1.28 per million searches on
 this workload however small the vectors get. **Whether recall survives any of
@@ -1726,17 +2119,25 @@ loss of precision, while dimension reduction is not. This is Q14.
 
 **Compared with the query embedding, turbopuffer is the larger cost at every
 volume**, not just at scale: Fireworks costs $3–13 per million searches against
-turbopuffer's $22. The two cross over only if the namespace shrinks below about
-13 GB. **This weakens the BM25 degradation path of §6.5 and §11.1**: falling
-back to BM25 when the Fireworks budget is exhausted saves the smaller half of
-the bill, not most of it, because the turbopuffer query is still charged in
-full. It remains worth doing — the site keeps working — but not as a cost
-control.
+turbopuffer's $21.50 at f16. The two cross over only if the namespace shrinks below
+about 13 GB, which at f16 it nearly has — so at the shipped dtype the two backends
+cost within a factor of two of each other rather than one dominating.
 
-turbopuffer publishes **no spend cap and no budget alert**. A hard limit has to
-be enforced by this application, metering itself on the `billing` object every
-query response carries (`billable_logical_bytes_queried`,
-`billable_logical_bytes_returned`).
+**The BM25 degradation path this paragraph used to argue about no longer exists.**
+D35 deleted it on 2026-08-14: every limit returns 429, and there is no fallback mode.
+§6.5 and §11.1 both record the deletion and this subsection did not. What the
+arithmetic *would* have shown, had the path survived, is that falling back to BM25
+saves the smaller half of the bill and not most of it, because the turbopuffer query
+is charged in full either way — which is one more reason the deletion was right.
+BM25 remains a normal leg of the hybrid query (D29); what is gone is the fallback.
+
+turbopuffer publishes **no spend cap and no budget alert**, so if a hard limit were
+ever wanted this application would have to enforce it, metering itself on the
+`billing` object every query response carries (`billable_logical_bytes_queried`,
+`billable_logical_bytes_returned`). **None is wanted: D28 cancelled the spend cap and
+no component enforces one.** What the `billing` object is for here is visibility —
+§11.2 requires logging it so that a runaway is noticed, which is a different thing
+from a limit.
 
 Sources: turbopuffer's pricing page and pricing changelog, and the query,
 warm-cache, pinning, regions and limits docs. The per-unit rates are not prose
@@ -1749,14 +2150,21 @@ they are turbopuffer's numbers but not quotable at a finance department.
 doc: free "if turbopuffer is ready to serve requests with low latency, or it is
 already getting the namespace ready" — otherwise "this request is billed as a
 query that returns zero rows", and a zero-row query still pays the full
-namespace charge, $0.000021 here (§11.1b). The mechanism therefore costs a full
+namespace charge, $0.0000115 here at f16 (§11.1b). The mechanism therefore costs a full
 search exactly when it would have helped, and nothing when it would not. D27
 drops it.
 
 What is worth keeping from this section: **log `cache_temperature` and
 `cache_hit_ratio` from every query response**, so a real regression is visible
-rather than inferred, and log the `billing` object too — turbopuffer publishes
-no spend cap, so self-metering is the only hard limit available (§11.1b).
+rather than inferred, and log the `billing` object too. turbopuffer publishes no spend cap, and neither
+does this application (D28) — the log is how a runaway becomes visible, not how it is
+stopped (§11.1b).
+
+**And log every 429 with the layer that produced it** (edge rule, KV daily counter,
+or the unbuilt global bucket). §11.1 defers layer 3 explicitly "from the Worker's own
+telemetry, not from speculation", and that decision cannot be taken without knowing
+how often layers 1 and 2 actually trip and against how many distinct clients. This is
+the only telemetry any decision in this plan is waiting on.
 
 ### 11.3 Disclosure
 
@@ -1772,6 +2180,8 @@ implementations that must not drift (§5.5); one repository and one CI run is
 what enforces that, and version-number coordination across repositories would
 not.
 
+Planned, and not yet built:
+
 ```
 Isabelle_Semantic_Embedding/
   isabelle_tokenizer.py   the tokenizer (§5), Python side
@@ -1782,6 +2192,30 @@ site/
   pages/                  static assets: subsetted IsabelleDejaVu, styles, scripts
   tokenizer/              the JavaScript port + the shared test-vector runner
 ```
+
+Already in the repository, all of it cited as load-bearing elsewhere in this plan and
+none of it listed here before 2026-08-19:
+
+```
+site/COPY.md              the authoritative source of every visitor-facing string
+                          (§13b) — the mockup follows it, never the reverse
+site/DESIGN_PROMPT.md     the designer brief
+site/design/              the delivered mockup, IsaSearch.dc.html, plus the
+                          generated Claude Design runtime, which is not edited
+site/prototype/           the measured tokenizer prototype and corpus_probe.py
+                          (§16.1) — PRE-D43, see there for what that costs
+site/review/              the evidence of the §5 review §16.7 required: the brief,
+                          the frozen bar, four lens reports and the rebuttal
+```
+
+**Two plans this document cites live at the MLML checkout root, not beside it**, and
+the citation convention here gives no path, so they read as though they were
+neighbours: `BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md` (D33) and
+`THEORY_HASH_REKEY_PLAN.md` (D33's G1). Everything else this plan cites —
+`ENTITY_POSITION_PLAN.md`, `THEORY_HASH_REGISTRY_PLAN.md`,
+`DYNAMIC_MEMBER_NAMING_PLAN.md`, `VECTOR_INVALIDATION_PLAN.md`,
+`SEMANTIC_DB_LAYERED_PLAN.md` and the companion
+`SEMANTIC_SEARCH_SITE_PLAN_DONE.md` — is in this directory.
 
 The export belongs to the Python package, not to `site/`: it reads LMDB, reuses
 the Python tokenizer, and should ship in the conda package so that others can
@@ -1811,25 +2245,42 @@ records against the defect's original 234,398. See D33 for what was not re-verif
 **Prerequisite B — the theory-hash registry**, per `THEORY_HASH_REGISTRY_PLAN.md`.
 A name-addressed entity's declaring theory lives as a 16-byte hash in its key and
 is unreadable without the table. Two things fail without it: the `Theory Name`
-filter for the 204,741 name-addressed records (15.1 %), and **D24's scope test**,
+filter for the 206,010 name-addressed records (15.1 %), and **D24's scope test**,
 which is exactly the declaring theory for those records — so the export cannot
 even decide what to publish.
 
-**Prerequisite C — entity positions in the published snapshot.** The backfill is
-done on `cslh19` (80.2 %) but the Hugging Face snapshot was packaged before it
-finished, so this machine holds 8,306. Its dependency on A — positions are stored
-against keys, so the republish has to follow the rebuild — is now satisfied, and the
-republish is what remains.
+**Prerequisite C — the published snapshot carries the entity positions.** One
+artefact, and the diagram below used to label it differently from this paragraph. The
+backfill is done on `cslh19` (80.2 %) but the Hugging Face snapshot was packaged
+before it finished, so this machine holds 8,306. The store half is therefore already
+in hand, including its dependency on A — positions are stored against keys, so they
+had to survive the rebuild, and they did. **What remains is the republish**, after
+which every machine that syncs gets the positions.
 
 ```
-A  key repair                        DONE 2026-08-18
-      |
-      +-- B  theory-hash registry published      outstanding
-      +-- C  positions carried into the rebuilt store    outstanding
-                  |
-                  +--> snapshot republished from cslh19
-                              |
-                              +--> step 4 onwards
+step 3  FREEZE THE TOKENIZER          <-- the live work; needs none of A, B, C
+   |
+   |    (it needs the symbol table and the distribution, nothing from the store)
+   |
+   |    A  key repair                              DONE 2026-08-18
+   |          |
+   |          +-- B  theory-hash registry published        outstanding
+   |          |        the Theory Name filter for the 206,010 name-addressed
+   |          |        records, AND D24's scope test for them — so without B the
+   |          |        export cannot even decide what to publish
+   |          |
+   |          +-- C  positions in the published snapshot   outstanding
+   |                   |
+   |                   +--> snapshot republished from cslh19
+   |                                |
+   +--------------------------------+--> step 4  site export, one full namespace
+                                             |     (runs the Python tokenizer and
+                                             |      emits the asset that names the
+                                             |      namespace, §8.2 — hence the
+                                             |      dependency on step 3)
+                                             +--> step 5  Worker: search API,
+                                                    |      embedding cache, limits
+                                                    +--> step 6  front end, phase two
 ```
 
 1. ~~Repair U+007F (§10).~~ **Done** — zero of 1,362,343 records still carry
@@ -1842,13 +2293,18 @@ A  key repair                        DONE 2026-08-18
    the distribution, and although its test vectors are sampled from real entity
    expressions, the repair changed keys and not text. It remains the part of phase one
    that can proceed now, and it is where the work is.
-4. Build the site export (§8) and load one full namespace. **Blocked on B and C.**
+4. Build the site export (§8) and load one full namespace. **Blocked on B, C and
+   step 3** — the export runs the Python tokenizer and emits the asset whose digest
+   names the namespace (§8.2).
 5. Worker: search API, embedding cache, rate limits (§11.1). Blocked on 4.
 6. Front end: search page, then entity pages. Phase two (D32).
 
-Independently of all of the above, the interface copy and the mockup can be
-brought in line with §13b and with D21-D41 at any time; that work touches no
-data.
+The interface copy and the mockup are **done**, and this paragraph used to offer them
+as available work: `site/COPY.md` reached draft 3 on 2026-08-14 after three rounds of
+reader testing, `site/design/IsaSearch.dc.html` was brought in line with it, and both
+are committed. Anything that reopens them is a change to `COPY.md` first (§13b). Note
+also that the decision range is now **D21-D46**, not the D21-D41 this paragraph used
+to name.
 
 **Draft 3 correction.** Step 2 used to read "Build the complete hash-to-name
 table (§7.3) - light, independent", meaning an Isabelle enumeration run. §7.3
@@ -1859,16 +2315,23 @@ be *published*, which is a different job in a different plan.
 
 Q1, Q2 and Q4 of draft 1 are settled — see D19, D18 and D13 respectively.
 
-- ~~Q3~~ — **settled**: **12 requests per IP per minute** at the Cloudflare
-  edge. The global daily cap is cancelled (D28). Arithmetic retained below only
-  as capacity information — a per-IP limit does nothing against
-  distributed abuse. Fireworks prices Qwen3-Embedding-8B at **$0.10 per million
-  tokens** (its own tier; ≤150 M-parameter models are $0.008 and 150–350 M are
-  $0.016), and a query costs 6 tokens short, ~130 at the 512-character cap.
-  Fireworks alone would put $5/day at ~385,000 queries, but that is the wrong
-  arithmetic: the query-embedding cache protects Fireworks only, every search
-  hits turbopuffer whether or not the embedding was cached, and turbopuffer is
-  the larger half of a search (§11.1b). Counting both gives D28's ~150,000.
+- ~~Q3~~ — **settled, and the settlement has moved twice.** The rate limit is
+  **D35's**: 5 requests per IP per 10 seconds at the Cloudflare edge, plus 1,000 per
+  IP per UTC day in Workers KV, plus an unbuilt global bucket at 10,000/hour (§11.1).
+  This entry said "12 requests per IP per minute", which was the answer before D35
+  and is superseded. The daily *spend* cap is cancelled (D28), and D28 therefore
+  contains no query-count figure — an earlier version of this entry attributed
+  "~150,000" to it. Arithmetic retained purely as capacity information, since a
+  per-IP limit does nothing against distributed abuse: Fireworks prices
+  Qwen3-Embedding-8B at **$0.10 per million tokens** (its own tier; ≤150 M-parameter
+  models are $0.008 and 150–350 M are $0.016), and a query costs 6 tokens when short.
+  At D29's **8,000-character query cap** that is roughly 2,000 tokens, i.e. ~$0.0002 a
+  search — the 512-character cap is D29's cap on a single *filter condition*, which
+  is not what gets embedded, and an earlier version of this entry costed the query at
+  it (~130 tokens). Whatever the figure, the arithmetic to do is not Fireworks alone:
+  the query-embedding cache protects Fireworks only, every search hits turbopuffer
+  whether or not the embedding was cached, and at f16 the two are within a factor of
+  two of each other (§11.1b).
 - ~~Q5~~ — **withdrawn, and it was never a real question.** It asked whether a
   second search field for whole-word matching was wanted, on the stated ground
   that "the syntactic filter is substring matching: searching `set` also hits
@@ -1979,8 +2442,9 @@ D21 removes the question rather than answering it.
 proposal and the literal meaning of "replace". Rejected on two measured
 grounds. First, the old subtoken rule discards every fragment with no
 alphanumeric character, so every operator and bracket vanishes from the index:
-`⟹` (42 % of documents), `=` (50 %), `⟦`/`⟧` (25 %) and `::` (9.1 %) would all
-become unfilterable, and an `excludes` on any of them would reduce to the empty
+`⟹` (42 % of documents), `=` (50 %), `⟦`/`⟧` (25 %) and `::` (9.89 %) would all
+become unfilterable — those four are over §3.3's 230,944-document namespace, which is
+where the D21 experiments were run, and an `excludes` on any of them would reduce to the empty
 list. Two of the three example conditions written into the design brief
 (`-->`, `⟦?P; ?Q⟧`) could not be expressed at all. Second, `ContainsAllTokens`
 is unordered and non-adjacent, which is not a looser syntactic filter but a
@@ -2002,7 +2466,8 @@ identifier but not begin one, so Isabelle's type variable `'a` is two tokens and
 the bare `'` survives into the subtoken array — measured, **179,860 expressions
 (13.20 %)** carry one, **169,005** of them in the array interior, where under
 `ContainsTokenSequence` it breaks any run passing through it. That is three and a
-half times commoner than the fallback-kept-token case (3.71 %) the 2026-08-14
+half times commoner than the fallback-kept-token case (**3.81 %** over the whole
+corpus, §5.4 — this said 3.71 %, which matches no denominator) that the 2026-08-14
 review raised and its rebuttal round deleted, and no reviewer raised this one at
 all.
 
@@ -2023,7 +2488,14 @@ the visitor leaves out a character that is really there, which is a typo.
 
 The cost of accepting the proposal was also concrete: `'` in the separator class
 collapses every primed name, so `sorted'` and `sorted` become indistinguishable
-across **150,679 expressions and 41,554 names (3.05 %)**. A third option — letting
+across **158,120 expressions (11.61 %) and 47,768 names (3.51 %)**. (This read
+150,679 and 41,554 / 3.05 % until 2026-08-19; re-measured that day, both were low,
+while the 179,860 / 13.20 % and 169,005 in the same subsection reproduced to the
+record. Counted precisely: a record is included when its subtoken array holds a
+subtoken that contains a `'` **and is longer than one character** — that is, a primed
+identifier rather than the stray bare quote the previous paragraph is about. The
+earlier pair was reported without its counting rule, which is why it could not be
+reproduced; state the rule with any figure that replaces it.) A third option — letting
 a leading quote attach to the following identifier, as Isabelle's own lexer does —
 was measured and buys nothing: the document holds `'a` either way, so a visitor
 who omits the quote still fails to match.
@@ -2032,7 +2504,10 @@ who omits the quote still fails to match.
 
 Moved to `SEMANTIC_SEARCH_SITE_PLAN_DONE.md` §15. It is superseded by §16, which was
 written at the next context boundary and says what changed; citations elsewhere to
-§15.1, §15.3 and §15.4 resolve into that file. Its §15.1, the copy rewrite, is complete.
+§15.1, §15.3 and §15.4 resolve into that file. Its §15.1, the copy rewrite, is
+complete, and its §15.4's two reviews have both been overtaken — the first has run and
+its evidence is in `site/review/` (§16.7), and what is left unreviewed is D43-D46,
+which postdate §15 entirely.
 
 ## 16. Tokenizer freeze — detailed handover, 2026-08-14
 
@@ -2078,7 +2553,14 @@ re-raise those.
 
 **The prototype and the probe harness are in the repository**, no longer in a
 scratchpad: `site/prototype/`, with a `README.md` saying what they are and when
-`isabelle_tokenizer.py` replaces them.
+`isabelle_tokenizer.py` replaces them. **They are pre-D43 and D43 postdates this
+whole subsection** — §16.1 states exactly what that costs and what it does not.
+
+**And the review §16.7 required has since run.** Its brief, its frozen bar, its four
+lens reports and its rebuttal are committed under `site/review/`, with a `README.md`
+saying which numbers in it were superseded on 2026-08-17. §16.7 below is kept in the
+present tense because it records what the review was asked and why; read it as the
+brief that was given, not as work outstanding.
 
 ### 16.1 The artefacts, and what each is for
 
@@ -2090,11 +2572,32 @@ site/prototype/README.md              what these are; delete none of them until 
 ```
 
 `corpus_probe.py` reproduces every match count quoted in this plan and in
-`COPY.md`. Verified from its committed location on 2026-08-14: `?n + ?m = ?m + ?n`
-→ 0, `?a + ?b = ?b + ?a` → 15, in 25 s over 1 362 096 records. It resolves
-`ISABELLE_HOME` and the package paths relative to itself, so it runs from
+`COPY.md`. Verified from its committed location on 2026-08-14 and again on 2026-08-19:
+`?n + ?m = ?m + ?n` → 0, `?a + ?b = ?b + ?a` → 15, in 25 s over 1,362,096 records. It
+resolves `ISABELLE_HOME` and the package paths relative to itself, so it runs from
 anywhere. **Use it rather than writing a new probe**; a differently-written probe
 is a second implementation of the matching rule and will disagree eventually.
+
+**These files implement the pre-D43 rule, and here is exactly what that costs.**
+`tokenize_prototype.py` calls `symbol_explode`, which D43 deleted, and its
+`_is_letter` unions in the `letter`/`greek` groups of `etc/symbols`, which §5.2 says
+are not consulted. Both were measured on 2026-08-19:
+
+- The `symbol_explode` difference is **exactly the 3,135 records D43 names**. The two
+  definitions agree on the other 1,358,961 expressions, element for element. So no
+  corpus figure in this plan is at risk from the prototype's age **unless it is one of
+  those 3,135 records** — and none of the quoted figures is.
+- The letter-group difference is **nothing at all**: all 190 group members satisfy
+  `isalpha()`, and every one has a code point that step 3 substitutes before token
+  formation sees it (§5.2).
+- §16.2's 32 cases and §5.3's 11 relations were re-run under **both** definitions,
+  with **zero mismatches under either**. Neither table is prototype-stale and neither
+  needs re-deriving.
+
+So the prototype remains usable as the measuring instrument for match counts, which is
+what `corpus_probe.py` is for, and it is **not** a specification of the tokenizer.
+Where it and §5 disagree, §5 wins; §16.3 step 1 says how the production
+implementation is accepted, and it is not by agreeing with these files.
 
 ### 16.2 The facts a correct implementation must reproduce
 
@@ -2102,11 +2605,14 @@ Every line below was measured on 2026-08-14 with the prototype. They are the
 seed of the test-vector file (§16.5) and the acceptance criteria for the port.
 `→` gives the **subtokens**, which is the only level that is indexed (D21).
 
-The separator class is **99 characters**: `_`, `.`, seven control symbols
-`⇩⇧⇘⇙⇗⇖❙`, and the 90 rendered sub/superscript characters that `SUBSUP_TRANS_TABLE`
-produces from `⇩` and `⇧`. Nine of them (`_`, `.`, the seven control characters) come from `etc/symbols`; the other
-90 come from `SUBSUP_TRANS_TABLE`, a hand-maintained dict in `Isabelle_RPC_Host/unicode.py`.
-No symbol file carries folding information of any kind (§5.4).
+The separator class is **99 characters**, and each third of it comes from somewhere
+different (§5.4): `_` and `.` are **ASCII literals in the rule itself**; the seven
+control symbols `⇩⇧⇘⇙⇗⇖❙` are **read from a symbols file** by name; and the 90
+rendered sub/superscript characters are what `SUBSUP_TRANS_TABLE` produces from `⇩`
+and `⇧` — a **hand-maintained** 142-entry dict in `Isabelle_RPC_Host/unicode.py`. No
+symbol file carries folding information of any kind, so the fold table has to ship in
+the asset (D45). An earlier draft of this paragraph said nine of the 99 come from
+`etc/symbols`, which over-counts by two: `_` and `.` are not in any symbols file.
 
 ```
 'sorted_wrt R ?xs'            → ['sorted','wrt','R','xs']
@@ -2153,8 +2659,8 @@ the tests depend on it): a condition matches when its subtokens appear as an
 `Path_Connected.path_image_join`; `join_path` does not. `COPY.md` §0 states this
 for visitors and must not drift from it.
 
-Corpus scale, for sizing anything: 1 362 343 records carry a name, 1 362 096
-carry an expression, 1 362 163 are exportable (the difference is 180
+Corpus scale, for sizing anything: 1,362,343 records carry a name, 1,362,096
+carry an expression, 1,362,163 are exportable (the difference is 180
 `EXPERIENCE` records, which are not published).
 
 ### 16.3 Build order, with an acceptance test for each step
@@ -2162,19 +2668,37 @@ carry an expression, 1 362 163 are exportable (the difference is 180
 Do these in order. Each step is finished when its test passes, not before.
 
 1. **`Isabelle_Semantic_Embedding/isabelle_tokenizer.py`** — the production
-   Python implementation, lifted from `site/prototype/` and changed in exactly
-   one respect: it reads its character classes from the emitted assets (§16.4)
-   instead of from Python built-ins and a live `Isabelle_RPC_Host` import.
-   *Accepted when* it reproduces every line of §16.2 and, run over the whole
-   corpus, produces subtoken arrays identical to the prototype's for all
-   1 362 096 expressions. Identical means equal element by element; compare with
-   a digest of the concatenated arrays, not by eyeballing samples.
+   Python implementation, lifted from `site/prototype/` and changed in **two**
+   respects, not the one an earlier draft of this step claimed:
+   **(i)** it reads its character classes and its two tables from the emitted asset
+   (§16.4) instead of from Python built-ins and a live `Isabelle_RPC_Host` import; and
+   **(ii)** it drops `symbol_explode` and iterates characters, per D43, and stops
+   consulting the `letter`/`greek` groups of `etc/symbols`, per §5.2.
 
-2. **Asset emission in the export** (§16.4). *Accepted when* the assets load
+   *Accepted when* both of these hold:
+
+   - It reproduces **every line of §16.2**, all 32 of them, and every relation in
+     §5.3. Both tables have been re-run under the character-level definition with zero
+     mismatches (§16.1), so this is a target that is known to be reachable.
+   - Run over the whole corpus, its subtoken arrays **differ from the prototype's on
+     exactly the 3,135 expressions D43 names and are identical on the other
+     1,358,961**. Compare with a digest of the concatenated arrays per record, not by
+     eyeballing samples, and check the differing set by name — the two AFP records
+     `AbsCFCorrect.lemma6` and `AbsCFCorrect.contour_a_class.abs_cnt_initial` plus
+     `Matrix.matrix` must be among the 17 that lose a subtoken (§5.1), and the count of
+     losses must be 17 and not 18.
+
+   **An earlier draft of this step required the arrays to be *identical* to the
+   prototype's for all 1,362,096 expressions.** That test cannot pass and must not be
+   restored: by D43 the two definitions **must** differ, and gating the production
+   tokenizer on agreeing with the rule §5 replaced would have accepted only an
+   implementation that ignored D43.
+
+2. **Asset emission in the export** (§16.4). *Accepted when* the asset loads
    standalone, with `Isabelle_RPC_Host` and `ISABELLE_HOME` unavailable, and step
    1's corpus comparison still passes.
 
-3. **`site/tokenizer/`** — the JavaScript port, reading the same assets.
+3. **`site/tokenizer/`** — the JavaScript port, reading the same asset.
    *Accepted when* it passes the shared test-vector file (§16.5) with zero
    mismatches. It must not consult any JavaScript built-in for character
    classification — see D41 for the measured divergences that motivates this.
@@ -2187,9 +2711,18 @@ Do these in order. Each step is finished when its test passes, not before.
 6. **`_truncate_to_token_limit`** — decide whether it is still needed. D29 caps
    the query in *characters*, so it probably is not. If not, do not move it out
    of `premise_selection.py`; leave it where it is and record that it is unused
-   by the site.
+   by the site. Note that `premise_selection.py` imports the symbol conversion as
+   `_pretty_unicode` and wraps it rather than shadowing it, so nothing there is
+   affected by the tokenizer landing.
 
-### 16.4 What the assets are, and why they exist (D41)
+**Two callers unpack the tokenizer's output by arity** and will break if the return
+shape changes: `site/prototype/tokenize_prototype.py`'s own `__main__` block, and
+`contrib/Isabelle_RPC/test_unicode.py`, which does
+`symbols, reverse, _, _ = get_SYMBOLS_AND_REVERSED()`. An earlier note here said there
+was exactly one. Neither is production code; both are in-repository and must be
+updated in the same commit.
+
+### 16.4 What the asset is, and why it exists (D41, D45, D46)
 
 §5.2 defines the character classes by naming Python's `isalpha`, `isdigit`,
 `isnumeric` and `isspace`. JavaScript has no equivalent, and the obvious
@@ -2219,18 +2752,26 @@ asking, so the interface uses the unambiguous ones only.
 
 ### 16.5 The test-vector file
 
-At least **10 000 triples** — input, tokens, subtokens — sampled from real entity
+At least **10,000 triples** — input, tokens, subtokens — sampled from real entity
 expressions, **plus** synthetic cases, because real expressions cannot exercise
-pipeline steps 1 and 3 at all: §3.4 established the store is 100 % NFC and that
-`unicode_of_ascii` is the identity on it. A port that omits NFC normalisation and
-escape conversion therefore passes a purely-real-data gate byte for byte, and
-then returns nothing for `\<Longrightarrow>` — one of the two input routes §9.3
-promises.
+pipeline steps 1 and 3 at all. §3.4 establishes both halves of that, and the second
+half needs care: the store is 100 % NFC, so step 1 is the identity on it; and step 3
+is the identity **on the corpus that is published**, though not on the store as a
+whole — since the loader began reading the table Isabelle actually presents it changes
+1,056 stored expressions, and D24 excludes every one of them, all being phi-System.
+So a port that omits NFC normalisation and escape conversion passes a
+purely-real-data gate byte for byte, and then returns nothing for
+`\<Longrightarrow>` — one of the two input routes §9.3 promises.
 
 The synthetic cases must include, at minimum: every line of §16.2; ASCII-escaped
 input; NFD input; sub/superscripts that have no fold entry; separator-only
-conditions; the `²` and U+FEFF boundary characters; U+001C–U+001F and U+0085; and
-a token made entirely of rendered superscripts, for the fallback clause.
+conditions; the `²` and U+FEFF boundary characters; U+001C–U+001F and U+0085; a token
+made entirely of rendered superscripts, for the fallback clause; an escape carrying a
+**private-use** code point, which D44 requires to survive as its literal `\<name>`; an
+escape sitting against an ASCII-symbolic character, which is D43's 17-record loss
+pattern; an **astral** symbol value such as `\<S>` → `𝒮`, which is what catches a
+JavaScript port iterating UTF-16 code units (§5.2); and an `Entity Name` condition
+ending in `(_)` together with the same condition without it, for §5.1's step 0.
 
 Pin the file's **encoding, ordering, count and digest**, so that "both
 implementations passed" is itself a checkable claim rather than a report.
@@ -2242,21 +2783,48 @@ mismatch. It must also fail if the file's digest changes without the count
 changing, which catches a vector file quietly edited to match a broken
 implementation.
 
-### 16.7 Run this review first
+### 16.7 The review that ran first — and the one still owed
 
-Per §15.4, **a narrow adversarial review of §5 and D41, before writing
-`isabelle_tokenizer.py`.** Small scope, deep agents. The specific question to
-ask, because it is the failure mode that a test-vector gate cannot catch:
+**This review has run: 2026-08-14, and its evidence is committed under
+`site/review/`.** The brief, the bar (written and frozen before any finding existed),
+the four lens reports and the rebuttal are all there, with a `README.md` saying which
+of its figures were superseded on 2026-08-17 when the symbol-table loader was fixed.
+29 findings went in, 19 survived merging, 9 were deleted, 10 stood, and the rebuttal
+round found one more itself. Every change it caused is already in §5 and D41. Read
+`site/review/` before reopening anything in §5; the rest of this subsection is the
+brief that was given, kept because it records *why* the round was run that way.
+
+**What is still owed is a review of D43-D46**, which postdate that round entirely and
+are structural: D43 changed what the tokenizer is defined over, D45 made the asset a
+single stamped file whose digest names the namespace, and D46 made the component set a
+hard failure condition. §12.2's step 3 should not be called finished until they have
+been through the same treatment.
+
+Per §15.4, the round that ran was **a narrow adversarial review of §5 and D41, before
+writing `isabelle_tokenizer.py`.** Small scope, deep agents. The specific question
+asked, because it is the failure mode that a test-vector gate cannot catch:
 
 > Find constructions where two implementations both pass the test vectors and
 > still behave differently on real input.
 
-Give the review §5 in full, D41, D21, `site/prototype/`, and §16.2. Ask
-specifically about: the fallback clause; the boundary between "letter" as
-`isalpha()` and as an `etc/symbols` group membership — **settled since, see §5.2: the
-groups are not consulted**; whether `symbol_explode`
-can produce a symbol that the separator class splits in half; and NFC stability
-of every symbol value (§3.4 checked this once — have the review check the check).
+It was given §5 in full, D41, D21, `site/prototype/`, and §16.2, and asked
+specifically about: the fallback clause; the boundary between "letter" as `isalpha()`
+and as an `etc/symbols` group membership; whether `symbol_explode` could produce a
+symbol the separator class splits in half; and NFC stability of every symbol value.
+**Three of those four are settled and must not be asked again**: the `etc/symbols`
+groups are not consulted (§5.2, and all 190 members satisfy `isalpha()` anyway);
+`symbol_explode` no longer exists (D43), so the question about it is about a deleted
+step; and §3.4 now records the NFC measurement the question wanted checked — 0 of
+1,362,096 expressions and 0 of 1,362,343 names are non-NFC. The fallback clause
+survives as a live concern and §5.4 marks it as load-bearing.
+
+**The questions to give the D43-D46 review instead**: whether the character-level rule
+can cut a *converted* symbol's code point in half (it cannot — a code point is
+atomic — but the JavaScript port iterating UTF-16 code units can, which is §5.2's
+astral warning and is worth an adversary); whether the asset's digest can change
+without any published document changing, and whether the export's failure on a
+different component set can be bypassed by accident (D46, §8.2); and whether the 17
+subtoken losses of D43 include anything that is not bare punctuation.
 
 **Method fix, and it is not optional.** In the 2026-08-13 review the rebuttal
 round deleted **none** of 35 findings, because the defender was told that killing
@@ -2270,7 +2838,8 @@ state the judge's bar **before** the round rather than after.
   `pre_tokenized_array`?** §6.3 puts `"\n"` between theory names in
   `theory_subtokens` precisely because the tokenizer can never emit it. Untested.
   One upsert against a test namespace settles it; if it is dropped, choose a
-  non-whitespace separator the tokenizer cannot emit.
+  non-whitespace separator the tokenizer cannot emit. **This is step 0b of §8.1** —
+  it was listed here as a question and nowhere as a step, so nothing owned it.
 - **What number does the RRF fusion return per row?** One `multi_query` against a
   live namespace settles it. D40 already fixes what is *displayed* — the vector
   leg's cosine similarity — so this affects plumbing only.
@@ -2281,7 +2850,9 @@ state the judge's bar **before** the round rather than after.
 ### 16.9 What is still blocked, and by whom
 
 Per §12.2: the key repair (D33) is **done** as of 2026-08-18. The site export still waits
-on the theory-hash registry and on entity positions reaching the published snapshot, both
-owned by the user. **The tokenizer freeze touches no keys and waits on none of
-them.** After it, the next unblocked thing is the export's asset emission, which
-is step 2 above.
+on the theory-hash registry (prerequisite B) and on entity positions reaching the
+published snapshot (prerequisite C), both owned by the user. **The tokenizer freeze
+touches no keys and waits on none of them** — D33 used to describe itself as a
+prerequisite of the whole of phase one, which contradicted this; it is a prerequisite
+of steps 4 and 5. After the freeze, the next unblocked thing is the export's asset
+emission, which is step 2 above.
