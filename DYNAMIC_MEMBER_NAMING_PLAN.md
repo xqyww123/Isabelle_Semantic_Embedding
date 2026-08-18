@@ -137,110 +137,95 @@ this exclusion is about the embedded document, not about every caller of `pretty
 
 ### 2.2 Give each record one value that says how it was named
 
-**The shape.** "What is this record called" is one fact, so it must be one value, not a name
-plus a separate index plus a separate flag kept in step by hand. **That value already exists**:
+**The shape.** "What is this entity called" is one fact about one entity, so it is one value —
+not a name, plus a separate index, plus a separate flag, kept in step by hand. Declare it in
+`Semantic_Store`, beside the tuple it belongs to:
 
 ```sml
-(* contrib/Isabelle_RPC/Tools/context.ML:47-55 and :174-176, as it stands today *)
-datatype entry_name =
-    Fixed             of Thm_Name.T
-  | Member_of_Dynamic of string
+datatype entity_name =
+    Declared of string        (* a name the name space declared; used verbatim *)
+  | Member   of string * int  (* invented: the collection's full name, 1-based sweep index *)
 ```
-
-Widen its member case to carry the index the sweep counted, and give it two projections beside
-the two it already has:
-
-```sml
-  | Member_of_Dynamic of string * int   (* the collection's full name, 1-based member index *)
-
-fun stored_name (Fixed nm)                    = Thm_Name.print nm
-  | stored_name (Member_of_Dynamic (coll, i)) = Thm_Name.print (coll, i)
-
-fun from_collection (Fixed _)                    = NONE
-  | from_collection (Member_of_Dynamic (coll, _)) = SOME coll
-```
-
-Do **not** declare a second datatype in `semantic_store.ML`. One of that exact name, answering
-this exact question, is already exported by `Context_Callbacks` and already used here — at
-`:1108` to stamp a member and at `:1408` to read one back. A parallel copy would have to be
-kept in step by a comment asking future readers not to merge them, which is a standing
-obligation, not a design.
-
-The comment at `context.ML:47-52` gives the reason the member case carries no index today: a
-stored index would go stale when the collection mutates. That reason does not reach the sweep's
-snapshot — **dynamic members never enter the persistent theorem cache**
-(`Tools/semantic_store.ML:1194-1196`), so a stored index lives exactly as long as the entry
-holding it. The live query path is unaffected: `resolve_name` (`context.ML:198-214`) goes on
-recomputing the index from the collection's current content, and now ignores the stored one.
-Update that comment to say both things.
 
 `build_entries`' input tuple then loses its `int option` member-index component and its `string`
-name component becomes `Context_Callbacks.entry_name`, so it goes from five components to four
-(`Tools/semantic_store.ML:174-176`, `:605-607`). Every non-member producer goes through the one
-`tag` function at `:1530`, which becomes `map (fn (e, n, p, u) => (e, Fixed (n, 0), p, u))`, and
-`raw_thm_entries_named` (`:1324-1326`) stops calling `Thm_Name.print` and emits `Fixed (name, idx)`
-directly.
+name component becomes `entity_name`, so it goes from five components to four
+(`Tools/semantic_store.ML:174-176`, `:605-607`). `tag` at `:1530` wraps every non-member producer
+as `Declared n` — true of every one of them, whatever their kind — and `member_entries` stops
+re-joining a name and an index that arrived separately.
 
-Those two sentences together force a restructuring the concatenation at `:1531-1536` does not have
-today. `tag` is applied to `const_entries @ deduped_thm_entries`, and once `deduped_thm_entries`
-carries a `Fixed` while `const_entries` still carries a plain string that `@` no longer
-type-checks, while wrapping both would give `Fixed (Fixed …)`. Split the application:
+**`Declared of string` makes no claim about the string's internal structure, and that is the
+point.** Four of the producers hand over a name that already carries a selection index —
+`Theory_Structure` renders the rule lists' names with `Thm_Name.print (name, i)`
+(`theory_structure.ML:283`, `:379`), so they arrive as `"Foo.bar(2)"`. That is the correct name
+for those entities, and `Declared "Foo.bar(2)"` says exactly one thing about it: the name space
+declared it. Nothing more is claimed, so nothing is false.
+
+Contrast the shape this replaced. Reusing `Context_Callbacks.entry_name` — whose `Fixed` case
+carries a `Thm_Name.T`, a pair meaning *fact name* and *which theorem of that fact* — would have
+forced `tag` to build `Fixed ("Foo.bar(2)", 0)`: a value **claiming** there is a fact called
+`Foo.bar(2)` and taking its theorem 0, while **meaning** fact `Foo.bar`, theorem 2. Every lookup
+through it silently misses, and every future reader who trusts the type is misled. The same
+reuse would also have wrapped constants, types, classes, locales and methods — none of which are
+theorems — in a theorem-name type. A value must not misrepresent itself in its own type's terms;
+that is the standard this datatype exists to meet.
+
+**Its relationship to `Context_Callbacks.entry_name`** (`contrib/Isabelle_RPC/Tools/context.ML:47-55`,
+`Fixed of Thm_Name.T | Member_of_Dynamic of string`) must be written on both, or someone will
+delete one as a duplicate. They answer different questions over different populations. That one
+asks "how is this **cached theorem** entry called **in the context being queried**" — theorems
+only, and its member case carries no index because the live path recomputes it from the
+collection's current content (`resolve_name`, `:198-214`). This one asks "how is **this entity, of
+any kind,** named **in the record we are about to write**" — hence the sweep's snapshot index.
+`member_entries` is the boundary: it maps `Fixed nm` to `Declared (Thm_Name.print nm)` and
+`Member_of_Dynamic coll` to `Member (coll, i)`, taking `i` from the index
+`process_dynamic_facts_into_cache` already returns beside the entry (`:1027`).
+
+**Three total projections, and every consumer named.** Getting one wrong is silent, so the plan
+names them rather than leaving the choice to whoever compiles first:
 
 ```sml
-tag const_entries @ deduped_thm_entries @ member_entries
-  @ tag (type_entries @ class_entries @ locale_entries @ named_theorems_entries
-         @ method_entries @ intro_entries @ elim_entries @ induct_entries @ case_split_entries)
+fun stored (Declared n)    = n
+  | stored (Member (c, i)) = c ^ "(" ^ string_of_int i ^ ")"
+
+fun from_collection (Declared _)    = NONE
+  | from_collection (Member (c, _)) = SOME c
+
+fun space_name (Declared n)    = n     (* the name to look up in a name space *)
+  | space_name (Member (c, _)) = c
 ```
 
-— and once the four rule lists return `Thm_Name.T` (below), they leave that `tag` group too. `member_entries` stops re-joining a name and an index that arrived separately: it passes
-through the value `process_dynamic_facts_into_cache` already stamped.
-
-**Name every projection the change site takes.** `build_entries` reads the name at four places and
-they do not all want the same one. Getting this wrong is silent:
-
-| site | what it does | projection |
+| consumer | projection | why |
 |---|---|---|
-| `:690` | the name list handed to `Locale_Instance.detect` | `bare_name` |
-| `:698-699` | the `Facts.is_dynamic` bypass | `bare_name` |
-| `:865` | `mk_constituents`, where the name is a registry key for name-addressed kinds (`:834-839`) | `bare_name` |
-| `:851-856` | the name written to the record | `stored_name` |
+| the name written to the record (`:851-856`) | `stored` | it wants that string |
+| the new field (§2.2 below) | `from_collection` | the same value's other projection, so the two cannot disagree |
+| the name list handed to `Locale_Instance.detect` (`:690`) | `space_name` | |
+| the `Facts.is_dynamic` bypass (`:698-699`) | `space_name` | see below |
+| `mk_constituents`' registry key (`:865`, branches at `:834-839`) | `space_name` | name-addressed kinds are never members, so the value is identical to today's |
+| `serial_of` (`:1506-1527`) | `space_name` | a member takes its collection's serial — today's behaviour, now stated rather than falling out of string shape |
+| `entry_ord`'s name tie-break (`:581`) | `space_name` | identical to today's value, so sort order is unchanged |
 
-`bare_name` (`context.ML:187-188`) is unchanged by the widening — it already ignores the index and
-yields the bare collection name for a member, which is exactly what the bypass at `:686-697`
-depends on. Taking `stored_name` at `:690` or `:698-699` instead would make
-`Facts.is_dynamic "tendsto_intros(37)"` false and so stop the bypass firing for members that were
-**never renamed**, quietly giving locale provenance to the members §6 measures as unnameable.
+**The locale bypass gets better, not worse.** Today it reads
+`if Facts.is_dynamic pfacts name then [] else d` (`:698-699`), and it works only because a member's
+carried name *happens* to be the bare collection name — the comment at `:686-689` says members are
+given that name precisely so the bypass keeps firing. That is a condition holding by coincidence,
+and the next person to change what a member carries breaks it silently. With `space_name` it holds
+by construction: `space_name` **is** "the name to look up in a name space", which is exactly what
+`Facts.is_dynamic` asks. A member yields the bare collection name and is bypassed; the collection
+entity itself carries the bin name and is bypassed (the comment notes a member-index-only test
+would miss it — this one does not); everything else is not a dynamic fact and is detected normally.
+One condition, resting on a definition rather than on a coincidence.
 
-Three things this shape buys, each of which is otherwise a rule someone has to remember:
+**What this shape does NOT require.** No change to `Context_Callbacks.entry_name`, and so no change
+to `contrib/Isabelle_RPC`. No change to `Theory_Structure`: it goes on rendering the rule lists'
+names, `serial_of` goes on parsing them in its `Declared` branch, and that parse keeps the comment
+saying why (`the_entry` is keyed on the bare fact name; the index is not a name-space key —
+`theory_structure.ML:258-259`). That round trip is a pre-existing shape this plan neither creates
+nor repairs, and touching it here would be scope this change does not need.
 
-- The invariant below is **impossible to violate**, because both halves are projections of
-  one value.
-- The double-suffix bug cannot occur. 36 of the names §2.4 accepts already end in `(k)`,
-  because `Thm_Name.print` appends its own index (`Pure/thm_name.ML:106-110`); with a separate
-  member-index component they would render as `…(1)(1)`. Here `Thm_Name.print` is applied once,
-  by `stored_name`, to a value that carries at most one index.
-- The name stops round-tripping through a string — **but only if the printing is removed at its
-  source, and there are two sources, not one.** `raw_thm_entries_named` prints a `Thm_Name.T` into
-  a string (`:1324-1326`), and so do all four rule lists: `Theory_Structure` builds their names as
-  `Thm_Name.print (name, if n = 1 then 0 else i + 1)` (`theory_structure.ML:283`, `:379`), and each
-  of the four call sites then parses it straight back (`semantic_store.ML:1451`, `:1458`, `:1466`,
-  `:1473`, with the comment "bare name: name(i) would trip is_hidden"). `serial_of` parses a third
-  time (`:1515`), and `theory_structure.ML:258-259` says why: `the_entry` is keyed on the bare fact
-  name, and the index is not a name-space key.
-
-  So **change the four `get_*_rules_with_positions` to return the unprinted `Thm_Name.T`** with the
-  position and the theorem. Their only callers are those four sites, which each get shorter by
-  dropping their local parse, plus `Test/Induct_Rules_Test.thy:24-25`. Only then is `serial_of`
-  correct as `Fixed (n, _) => space_serial fact_space n` and
-  `Member_of_Dynamic (coll, _) => space_serial fact_space coll`.
-
-  **Getting this wrong is silent.** `space_serial` is
-  `try (fn () => #serial (Name_Space.the_entry space n)) ()` (`:1513-1514`), so a printed
-  `"name(i)"` reaching the no-parse branch just misses and the serial becomes NONE. `entry_ord`
-  sorts NONE last (`:574-583`) and the keep-first dedup at `:1540-1545` depends on that sort, so
-  every indexed rule entry would lose to whatever shares its key — including the positionless
-  member this plan is about, which would still have a resolvable serial. Nothing fails to compile
-  and nothing raises.
+**One invariant the type does not enforce**, so assert it where the value is built: a member index
+is 1-based (`j + 1` at `:1109`). `Member (c, 0)` would render as the bare collection name, which
+§2.3 rules out showing because a bare `coll` resolves to the wrong theorem. Nothing in `int` says
+so; a guard at the construction site does.
 
 **The field.** `from_collection`; ML `string option`; msgpack a string or nil; absent on
 records written before the field existed. It holds the **full name** of the dynamic
@@ -299,10 +284,10 @@ name hint resolves can acquire a real position while its **stored** name is stil
 conjunct would then skip exactly the record that most needs the field.
 
 So the ordering is a real constraint, not one the conjunct removes: **no position sweep may run
-between §2.4's release and this pass.** The alternative, which removes it structurally, is to
-widen `:1927` to `(uk, epos, name)` and have `backfill_positions` write the adopted name in the
-same put — then a positioned record always carries the name that goes with it. Take that if the
-position sweep is expected to run again at all.
+between §2.4's release and this pass.** Do **not** "fix" this by widening `:1927` to carry the
+name: the position sweep is one-off code that has already served its purpose, and rebuilding it to
+be structurally safe against a situation that will not arise is work spent on the wrong thing. The
+constraint is one sentence in a runbook; keep it there.
 
 **The gate reuses this predicate; it does not restate it.** §3 requires a pre-write count that
 must be zero, and it must call the same function, not a second copy of the conditions. A second
@@ -381,8 +366,10 @@ because its purpose is that future sweeps stop producing them.
 
 **The change site is `process_dynamic_facts_into_cache`, at the point the member is stamped**
 (`Tools/semantic_store.ML:1107-1110`): emit `Context_Callbacks.Fixed nm` where the name is
-adopted, `Context_Callbacks.Member_of_Dynamic (coll, j + 1)` where it is not — the widened
-constructor of §2.2, carrying the index the sweep counted. It must be there and not
+adopted, `Context_Callbacks.Member_of_Dynamic coll` where it is not. That type is unchanged by
+this plan; the sweep's index stays where it already is, in the `int` component
+`process_dynamic_facts_into_cache` returns beside each entry (`:1027`), and `member_entries`
+combines the two into §2.2's `Member (coll, i)`. It must be there and not
 in `member_entries`, because that one function feeds both the stored sweep (via
 `member_entries`, `:1400`) and the AoA live-query path (via `make_entity_callbacks`,
 `:1200-1207`, called as `make_entity_callbacks (Context.Proof ctxt) au` from
@@ -472,22 +459,24 @@ below says which existing code each part is, because every one of them exists al
   `:1118`: `is_infra_thm` for the Theorem face, `is_infra_induct_thm` for the induct and case-split
   faces.
 
-- **Carry the position in the slot the widening frees.** `process_dynamic_facts_into_cache`
-  returns `(cached_thm_entry * int * entity)` (`:1027`), and once the member index moves inside
-  `Member_of_Dynamic` that `int` slot is free: put the `Position.T` there — the very entry
-  `entry_of_fact` just returned has it — and have `member_entries` pass it at `:1410` instead of
-  `Position.none`. No component is added and nothing is converted. (The `pos = ("", 0, 0)` hardcode
-  is at `:1109`; `:1108` is the name stamp.) Whether `cached_thm_entry.pos` itself should stop being
-  `("", 0, 0)` — which would give the renamed member a position on the **live** query path too — is a
-  separate decision this plan does not take. This matters because three
-  position representations are in play and two of them are **not** interchangeable:
+- **Carry the position in a new component, and say so.** `process_dynamic_facts_into_cache`
+  returns `(cached_thm_entry * int * entity)` (`:1027`); the `int` is the sweep index and stays,
+  so the position needs a component of its own — make it
+  `(cached_thm_entry * int * Position.T * entity)`. Both consumers, `member_entries` (`:1400`) and
+  `make_entity_callbacks` (`:1200-1207`), are compiler-caught. The value to put there is already in
+  hand: `entry_of_fact` returned the name-space entry, whose `#pos` is a `Position.T`. Do **not**
+  route it through `cached_thm_entry.pos` and do **not** convert anything — three position
+  representations are in play and two of them are not interchangeable:
   `Context_Callbacks.def_pos` is (standardised absolute path, line, **symbol offset**)
   (`context.ML:41-46`), `Entity_Position.entity_position` is (portable symbolic path, line,
   **byte column**) (`entity_position.ML:9-11`), and `build_entries` wants neither — it takes a
   `Position.T` and hands it to `Entity_Position.of_positions` (`:842`), which calls
-  `PIDE_State.absolutize_id_based_pos` and then reads the position's own accessors. A `Position.T`
-  rebuilt from a flattened triple can no longer answer that call. Carry the real one.
-  A member with no adopted name keeps `Position.none`, correctly.
+  `PIDE_State.absolutize_id_based_pos` and then reads the position's own accessors, which a
+  position rebuilt from a flattened triple can no longer answer. `member_entries` passes the new
+  component at `:1410` in place of `Position.none`; a member with no adopted name passes
+  `Position.none`, correctly. (The `pos = ("", 0, 0)` hardcode is at `:1109`; `:1108` is the name
+  stamp. `cached_thm_entry.pos` stays `("", 0, 0)`: the live query path does not use a position,
+  and giving it one would put the same fact in two places.)
 
 - **Make `member_entries` disjoint from the static entries by construction, not by list order.**
   Once a member carries a static fact's name, `serial_of` gives it that fact's serial and
@@ -709,18 +698,19 @@ either; bumping it would make every installed client refuse the snapshot.
 components, which is past what a tuple should carry. If the implementer wants to turn it into a
 record, this is the moment — but it is a separate change and must not be smuggled in. (The other
 candidate, a theorem name round-tripping through a string, is *removed* by §2.2 rather than
-inherited: with `Fixed of Thm_Name.T` reaching `build_entries` intact, nothing prints it before
-`stored_name` and nothing parses it back.)
+inherited: §2.2's `Declared of string` makes no claim about the string, so a name that already
+carries a selection index sits in it honestly, and `serial_of` goes on parsing it exactly as it
+does today.)
+
+`fact_base_name` (`:1169-1170`) is **not** on this list and must not be added: it matches
+`Context_Callbacks.entry_name`, which this plan does not change, and its `Fixed` clause must keep
+handing `is_declared_infra_thm` the bare `nm` rather than anything index-bearing.
 
 **Sites coupled to `build_entries`' tuple arity**, which changes at both ends (four in, nine
 out): `entry_ord`, which breaks ties with `string_ord` on the name component (`:574-583`) and is
-applied to the pre-`build_entries` tuples at `:1537-1538` — give it `bare_name`, which preserves
-today's key exactly (the same string for a static entry, and all-equal for members, so enumeration
-order survives); `:1332` and `:1361`, which thread the name from `raw_thm_entries_named` through
-`thm_entries_with_uks` and `best_thms`; the dedup filter at `:1542`; `fact_base_name` at
-`:1169-1170`, forced by the constructor widening — its `Fixed` clause must keep the bare `nm` and
-must **not** switch to `bare_name`, which appends the index and would start feeding
-`is_declared_infra_thm` strings like `Foo.bar(3)`; the label-uniqueness assert's destructuring
+applied to the pre-`build_entries` tuples at `:1537-1538` — give it `space_name`, which preserves
+today's key exactly; `:1332` and `:1361`, which thread the name from `raw_thm_entries_named` through
+`thm_entries_with_uks` and `best_thms`; the dedup filter at `:1542`; the label-uniqueness assert's destructuring
 (`:1585`), the non-WIP widening map
 (`:1609-1611`), `attach` in the WIP branch (`:1627-1633`), the widened ten-tuple at the
 position backfill (`:1927`), and the explicit `entries:` type in `make_interpret_file_cmd`
