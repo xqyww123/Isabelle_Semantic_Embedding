@@ -1860,7 +1860,13 @@ two bins from different sessions; this also gives an alternative explanation for
 `derivative_intros(210)` in §19.2, whose evidential weight there now rests on
 `tendsto_intros(104)` alone.
 
-### 19.5 The design
+### 19.5 The design — MOVED
+
+The forward plan lives in **`DYNAMIC_MEMBER_NAMING_PLAN.md`**, which is self-contained and
+is the document to act on. What remains below §19.4 in this section is the record of how the
+situation was found and what was already repaired; it is history, not instructions.
+
+#### The design (superseded by DYNAMIC_MEMBER_NAMING_PLAN.md)
 
 #### What problem this solves, and for whom
 
