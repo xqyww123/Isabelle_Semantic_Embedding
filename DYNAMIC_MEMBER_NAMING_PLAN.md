@@ -172,3 +172,33 @@ marker).
 **D3 — the order of work.** §2.1 is independent of everything else and can be done now.
 §2.2 and §2.3 depend on D1, and §2.3 additionally has no consumer until the search site's
 display layer exists.
+
+## 5. What was already done to the store
+
+Recorded because it changed production data and nothing else records it.
+
+On 2026-08-18, after a reflink backup (`semantics.lmdb.pre-rename-20260817-235750` and the
+vector store's twin, entry counts verified equal), **4,524 records were given a real name and
+a real position** taken from data the store already held, and their vectors were dropped and
+re-embedded (744,481 tokens). Every edit was read back; 0 problems. Report:
+`~/rename_report.json` on `cslh19`; the pass was `rename_dynamic_members.py`.
+
+Where the names came from: a theorem-alike key is `XOR(constituent hashes) ++ tag ++
+thm128[:15]`, so records of one proposition differ only in the kind byte. Where a member's
+proposition already had a positioned record under another kind — the theorem face, enumerated
+statically in some other theory's sweep — that record's name and position were copied onto
+the member face (4,519 records: 4,439 introduction rules, 80 elimination rules). Five more
+took a positioned record that sat on the very same key.
+
+Two consequences that matter for the work above. **The repair is not a fixpoint**: its scan
+completed before its own writes, so one further record (`Topological_Spaces.tendsto_intros(123)`)
+became repairable during the run and is still unrepaired; a second run would find it.
+**Store coverage afterwards**: 1,343,793 entity records, 98.78 % with a position; of the
+16,368 without, 6,768 are EXPERIENCE records, 9,598 are the population this plan is about, and
+2 are the methods `Named_Simpsets.simp` and `Named_Simpsets.simp_all`.
+
+One measurement bears on D2 and is not worth repeating: `Thm.get_name_hint` recovers **0** of
+those 9,598. Over eleven collections holding 7,099 of them, a probe covered 5,768 and named
+none, although the same probe produced 305 members elsewhere whose names did resolve. The
+reason is structural — a hint resolves exactly when the theorem is also a named static fact,
+which is the same condition under which the repair above already renamed the record.
