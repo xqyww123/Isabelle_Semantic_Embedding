@@ -149,7 +149,7 @@ either; bumping it would make every installed client refuse the snapshot.
 builder and `test_entity_position_backfill.py`'s field-count assertions. A new test should
 cover a collection with one member that has an invented name and one that does not.
 
-## 4. Decisions still to make
+## 4. Settled, and what is still to decide
 
 **Settled: the field is stored, and ML supplies it.** Not derived at read time. The
 consumer is the semantic-search front end, which serves live queries against a corpus that
