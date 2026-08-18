@@ -840,6 +840,23 @@ long names, and every user-supplied filter string:
       user may type `\<Longrightarrow>` or `⟹`. A symbol the table does not
       define, and a symbol whose code point is private-use, are both left as the
       literal `\<name>` (D44).
+
+      **What counts as a `\<name>` is Isabelle's rule**, not a looser one: `\<`,
+      an optional `^`, a letter, then letters, digits, `_` or `'`, then `>` —
+      exactly the pattern `Pure/General/symbol.scala` uses to name a symbol. Text
+      that does not match is not an escape and is simply carried through to §5.2,
+      where it becomes ordinary characters. This has to be stated because nothing
+      else states it any more: until D43 a `symbol_explode` step re-established
+      symbol boundaries after this pass, and deleting it left this pass as the only
+      place where an escape is recognised at all.
+
+      The reference implementation scanned with `\<[^>]+>` instead — from a `\<`
+      to the **next** `>` wherever it falls. The two agree on every well-formed
+      escape and on all 1,362,096 stored expressions, and differ only on malformed
+      input, which no sample can reach and which the query box produces on the
+      first day: under the loose pattern `\<alpha \<beta>` is one unrecognised
+      span and `\<beta>` is lost with it, where under Isabelle's rule `\<beta>`
+      converts. `Isabelle_RPC_Host.unicode` is tightened to match.
    b. Replace each `⇩x`, `⇧x`, `❙x` pair by the character the fold table gives
       it, so that `x⇩1` and `x\<^sub>1` become the same text. §5.4's separator
       class is defined over the characters this pass produces, so **without this
