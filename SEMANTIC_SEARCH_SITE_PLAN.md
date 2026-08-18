@@ -1136,6 +1136,19 @@ theories         []string      the theory long names this document is filtered
                                theorem-alike (mean 7.1, max 42)
 kind             string        this record's single kind — D5 does not merge
 position         string        symbolic path + line, from ENTITY_POSITION_PLAN
+from_collection  string        empty unless `name` is a name the enumeration
+                               INVENTED for a member of a dynamic fact
+                               collection, in which case it is that
+                               collection's full name and the row is displayed
+                               as `<from_collection>(_)` instead of `name`.
+                               DYNAMIC_MEMBER_NAMING_PLAN.md §2.3 states the
+                               rule and why the raw `name` must not be
+                               rewritten here (it feeds `group` and
+                               `name_subtokens`).  Must be present in the FIRST
+                               export: §8.2 makes every export a fresh
+                               namespace, so adding it later re-exports the
+                               whole corpus.  Implemented twice, like every
+                               field here — Python export and Worker (§6)
 
   filtering — all pre_tokenized_array
 expr_subtokens   []string      the only expression field there is (D21); an
@@ -1421,7 +1434,17 @@ be re-runnable and deterministic.
    after ranking.
 3. **Clean** the display text (§8.3).
 4. **Resolve** the declaring theory (§7) and the position.
-5. **Tokenize** into the filterable arrays of §6.1 (§5).
+4a. **Copy `from_collection`** from the record (§6.1). It is stored, never
+   re-derived from the name: the test that would re-derive it depends on the
+   corpus and fails silently on a static bundle whose base happens to name a
+   collection (DYNAMIC_MEMBER_NAMING_PLAN.md §4).
+5. **Tokenize** into the filterable arrays of §6.1 (§5). `name_subtokens` comes
+   from the raw `name`, never the displayed form: `from_collection` is a display
+   attribute and the Worker emits one filter for the whole namespace, so it
+   cannot route a member row to a different field. A pasted `coll(_)` is handled
+   on the **query** side instead — §5's tokenizer strips one trailing `(_)` from
+   an `Entity Name` condition before tokenizing, so it behaves exactly like the
+   raw name. That normalisation is a shared asset (§5.5).
 6. **Emit** the shared test vector file (§5.5) and the symbol table JSON.
 7. **Upsert** into a fresh namespace (§8.2), then switch the Worker over.
 
@@ -2019,6 +2042,39 @@ Note a defect the narrowed rule also fixes. With operators discarded, `f x + y`
 has subtokens `['f','x','y']`, so an adjacency query for `x y` would match
 across a `+` that sits between them in the real expression. Keeping the
 operator makes `['f','x','+','y']` and the false match disappears.
+
+### 14.7 Making `'` a separator, so a type variable stops splitting
+
+Raised 2026-08-18, rejected the same day. Under §5.2 a quasi-letter may continue an
+identifier but not begin one, so Isabelle's type variable `'a` is two tokens and
+the bare `'` survives into the subtoken array — measured, **179,860 expressions
+(13.20 %)** carry one, **169,005** of them in the array interior, where under
+`ContainsTokenSequence` it breaks any run passing through it. That is three and a
+half times commoner than the fallback-kept-token case (3.71 %) the 2026-08-14
+review raised and its rebuttal round deleted, and no reviewer raised this one at
+all.
+
+The proposal was to put `'` in §5.4's separator class, so that `'a` and `a` index
+alike. It was rejected on the argument that **the query it would fix is not a legal
+Isabelle expression**. `set ⇒ a set` does not mean the same thing as `set ⇒ 'a
+set`: in Isabelle's type syntax `a` names a type constructor and `'a` is a type
+variable, and a visitor of this site is an Isabelle user who writes the second.
+An earlier framing here — that the quote is punctuation the visitor does not think
+of as content — was simply wrong; the quote is what makes it a type variable.
+
+The property that makes the split harmless is that **the quote is visible on both
+sides**: the card prints `?'a set ⇒ ?'a set`, and any legal expression the visitor
+types carries the quote too, so both tokenize to the same stray `'` in the same
+place and the run matches. It is unlike a folded subscript, where `x⇩1` indexes as
+`x` and the visitor cannot see what to omit. A stray `'` costs a match only when
+the visitor leaves out a character that is really there, which is a typo.
+
+The cost of accepting the proposal was also concrete: `'` in the separator class
+collapses every primed name, so `sorted'` and `sorted` become indistinguishable
+across **150,679 expressions and 41,554 names (3.05 %)**. A third option — letting
+a leading quote attach to the following identifier, as Isabelle's own lexer does —
+was measured and buys nothing: the document holds `'a` either way, so a visitor
+who omits the quote still fails to match.
 
 ## 15. Implementation handover, 2026-08-14
 
