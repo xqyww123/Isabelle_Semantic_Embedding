@@ -1871,88 +1871,57 @@ scripts; every LLM-visible line number comes from the live sweep's `Entry`, and
 `entities_of`'s position element is discarded by all three of its consumers), the
 position half of the design has no consumer to serve either, in the store as it stands.
 
-What follows is therefore not one design but four separable pieces, listed with what each
-costs and what it buys. None is a precondition for another.
+The design below was settled with the user on 2026-08-18, after the third measurement and
+three rounds of review. It is deliberately narrow: **the write path's NAMES are left alone.**
+`coll(104)` goes on being written into the store exactly as today. That closes several
+questions at once — A6 is not touched, the interpretation label is not changed, no
+stored-name/routing-name field split is needed, and the risk that an interpreting agent
+echoes the index into its own text is ACCEPTED, on the evidence that 0 of the 9,598 stored
+interpretations do so (measured; an observation about these agents under this prompt, not a
+guarantee).
 
-**1. Stop the misleading name reaching an LLM. Cheap, immediate, no data change.** The
-agent-facing retrieval path already overrides the stored name (`_apply_live_name`,
-`semantics.py:2046-2051`, and on the reranker path `:2114`; the exact-name bundle path
-substitutes `ref_name`, `model.py:2198-2201`). Three paths do not: the pattern-only query
-branch (`model.py:2318-2323`), which keeps `rec` although the live name is in the loop
-header; `_query_entity_core` (`retrieval.py:937`), reachable with any kind through
-`IsaMini.query_by_name` (`toplevel.py:65-73`); and the interpretation agent's own `query`
-tool (`semantics.py:1441-1521` → `entity_document_text` → `pretty_print`), which shows the
-deformalizer the stored name verbatim. Two are one-line fixes. A fourth, conditional site:
-`lookup`'s `Restricted` branch does not populate `candidate_names` (`semantics.py:2022-2033`).
+**1. A tag on the record marking a dynamic-collection member, supplied by ML.** The
+enumeration already knows this exactly — `process_dynamic_facts_into_cache` builds these
+entries as `Member_of_Dynamic` (`semantic_store.ML:1108`) — so the tag needs no name
+matching and cannot be fooled by a name collision. Cost: one field on the ML→Python wire
+(`packTuple10` → `packTuple11`, `semantic_store.ML:378-383`) and its counterpart in `Entry`
+(`semantic_interpretation.py:222`, constructed at `:1247`) and in the record codec, whose
+positional tail-append makes a 14th field readable by new code on old records (absent =
+unknown). The wire change is lockstep: the comment at `semantic_store.ML:374-377` already
+records that ML and Python on opposite sides of a change to this tuple cannot talk.
 
-**2. `Thm.get_name_hint` in the enumeration, WITH a proposition-equality check.** The check
-is not a quality nicety. If a hint resolves to a different fact of the same name in the
-sweep's context, the member gets a real name whose proposition differs from its own; the
-key differs while the `(kind, name)` label collides, and the label-uniqueness assert
-(`semantic_store.ML:1557-1596`, not `:603`, which is only the comment naming it) raises
-`error` and aborts the whole `interpret'` run for that theory. Both theorems are in hand,
-so the check is one `aconv`. The tag itself cannot outlive a change of proposition —
-`renamed_prop` is guarded by `if prop aconv prop'` (`thm.ML:716-720`), `transfer`/`weaken`/
-`strip_shyps`/`solve_constraints` copy tags without touching `prop`, and every
-prop-changing primitive resets `tags = []` — so name RESOLUTION is the only exposure, and
-the check closes it. Two further corrections to the first version of this design: the entry
-must be built as `Fixed` with the pair `Thm.get_name_hint` returns, **not** `Fixed (nm, 0)`,
-which would collapse `foo(1)` and `foo(2)` onto one label and trip the same assert; and the
-static path's own guards belong here too (reject `#concealed`, reject a name hidden under
-`Long_Name.is_hidden`, reject the `"??."` marker). Benefit: future sweeps only — which is worth more than it sounds. If a hint resolves
-exactly when the sibling repair could have named the record (§19.4, measured over 17,681
-members), then WITHOUT this piece every future sweep re-manufactures precisely the records
-that then need `rename_dynamic_members.py`, and that clean-up drops and re-buys their vectors:
-measured, 4,524 records cost 744,481 tokens. This piece makes the same correction free, at
-write time. The equivalence carries a condition worth stating: the hint resolves in the
-SWEEP's context while the repair needs a positioned record in OUR STORE, and the two coincide
-because the sweep is AFP-wide. Cost: the
-member index must be suppressed when a real name is used (`member_entries` passes `SOME i`
-unconditionally, `semantic_store.ML:1379-1411`), and a real `Position.T` must reach the raw
-tuple — which is simpler than first written, since that tuple's third slot already IS a
-`Position.T` hard-coded to `Position.none`. It also removes per-query work, because
-`resolve_name` takes its trivial branch (`context.ML:198`) instead of a `Facts.lookup` plus
-a linear `find_index` — at the price of the staleness drop that branch performs
-(`context.ML:190-197`, `:1291`), which is a semantic change to be ruled on, not a free win.
+**2. Render the member form at display time, from the tag.** A reader is shown
+`tendsto_intros(_)` rather than `tendsto_intros(104)`. Display has NO uniqueness
+requirement — ten hits from one bin may all render `tendsto_intros(_)`, since what
+distinguishes them is the proposition shown beside the name — so the run-local handle that
+a routing label would have needed does not arise, and neither does its ugliness. The
+semantic-search site is still a design prototype (`site/design/*.html`, `{{ r.name }}`), so
+this is built in rather than retrofitted; the paths that exist today and show a stored name
+are the three in §19.6.
 
-**3. `coll(_)` as the stored name for the residue.** This is the only piece that changes
-existing data, it is the expensive one, and review plus one further measurement demoted it
-from an honesty repair to a retrieval-quality tweak.
+**3. Backfill the tag onto the 9,598 existing records, once.** These predate the wire field,
+so the backfill has only the name-based criterion available: the name matches
+`^(.*)\((\d+)\)$` and the base names a `THEOREM_COLLECTION` record. That criterion is exact
+on today's corpus — measured, zero exceptions in both directions: 14,122 records with a
+collection base, all positionless; 320,162 with a non-collection base, all positioned. It is
+nevertheless corpus-dependent, which is exactly why the tag exists: a future AFP snapshot
+adding a `lemmas X = a b` whose name also names a bin would make the criterion misfire
+silently. Using it ONCE, for records already written, does not inherit that exposure; using
+it at read time would. The backfill needs **no re-embed**, because the tag is not part of the
+embedded document — so it is minutes and zero tokens, unlike a rename.
 
-What it does NOT do: stop the misleading name reaching an LLM. The split keeps `coll(i)` as
-the routing label, and that label is exactly what the interpreting agent is shown —
-`format_entries` prints `[line N] {kind} {name}` (`semantic_interpretation.py:481`) and the
-prompt says each translation must describe the statement "next to that exact name" (`:789`).
-So future interpretations go on being written with the index in view.
+**Deliberately not done, and why.** The stored name is not changed, so there is no field
+split, no ~1.6 M-token re-embed, and `rename_dynamic_members.py`'s member test keeps working.
+The embedded document's head therefore still contains `coll(104)`; that is accepted, since
+the body carries the meaning and the index is a few tokens. A write-time check that an
+interpretation does not quote its own index is not added.
 
-What it does do, measured: the index appears in the embedded document's HEAD only. Of the
-9,598 member-named records, **0 have an interpretation that mentions the index**; 101 mention
-the collection name without it, and 9,497 mention neither. So the stored English is clean and
-does NOT need re-interpretation — an earlier reading that it might was checked and is false —
-and renaming plus re-embedding really would remove the index from the embedded text
-altogether. The benefit is therefore bounded and concrete: a few tokens at the head of a
-document whose body, which carries the meaning, does not change. Recommendation: do not spend
-~1.6 M tokens on that alone; carry it along the next whole-store re-embed that happens for
-another reason, at which point it is free.
-
-The cost, unchanged: The stored name and the interpretation-run
-routing label are ONE field today — `build_entries` emits a single `disp_name`
-(`semantic_store.ML:852-856`), `Entry` carries one `name`, `_label` derives the routing key
-from it (`semantic_interpretation.py:205-211`), and the record is written from it — so
-`coll(_)` requires splitting them: a field in the raw and entries tuples, in the exported
-`build_entries` signature, in the msgpack schema, and in `Entry`. Applied to the existing
-9,597 records it needs a one-off pass (nothing in the live path ever rewrites a record's
-name; only `update_expr` exists, `semantics.py:649`) plus a re-embed, because the name is
-the head of the embedded document — scaling §19.3's measured 4,524 records / 744,481 tokens
-gives roughly 1.6 M tokens. It also silently disables `rename_dynamic_members.py`, whose
-member test is `^(.*)\((\d+)\)$` and whose two safety guards then stop firing;
-`theory_structure.py:92` carries the same regex. In its favour: as a string `coll(_)` is
-right, because `Isar/parse.ML:471-473` parses a theorem selection as a number only, so a
-citation of `coll(_)` fails loudly instead of resolving to the wrong theorem — which a bare
-`coll` would not do, besides colliding with the collection's own record.
-
-**4. `resolve_name`'s memo as a `Termtab`** — see §19.6, unchanged and independent: it names
-nothing, so none of the argument below touches it.
+**Still open, and separable from all of the above: `Thm.get_name_hint` in the enumeration**
+(§19.4 measured it recovering 0 of today's residue, its value being that future sweeps stop
+manufacturing records whose clean-up has a measured price). It is listed in §19.6 rather
+than settled here. One fact bears on it: piece 1 already opens the wire and the same function
+in the same file, so its marginal implementation cost is now lower than when it was costed
+alone.
 
 #### What was rejected, and on what ground
 
@@ -2025,19 +1994,20 @@ switched off within a day. Recorded for scale: §19.3's repair moved shared pair
 Stated because the section otherwise leaves a reader with four options and no question to
 answer. This is a recommendation, not a decision.
 
-**Do piece 1** (stop the stored name reaching an LLM). It is cheap, changes no data, and two
-of its three sites are one-line fixes.
+**Do the three settled pieces** — the ML-supplied tag, the display-time rendering, and
+the one-off backfill — and separately **stop the stored name reaching an LLM** through the
+three paths of §19.6, which is cheap, changes no data, and is two one-line fixes plus one.
 
-**Do piece 2** (`get_name_hint` with the proposition check, the parsed `Thm_Name.T`, and the
-static path's guards). Not for today's store, where it recovers nothing, but because without
-it every future sweep re-manufactures the records whose clean-up has a measured price.
+**`get_name_hint` (with the proposition check, the parsed `Thm_Name.T`, and the static
+path's guards) is left for a separate ruling.** Not for today's store, where it recovers
+nothing, but because without it every future sweep re-manufactures the records whose
+clean-up has a measured price — and its marginal cost has fallen now that the tag opens the
+same wire and the same function.
 
-**Do not do piece 3** (`coll(_)`) on its own; carry it along the next whole-store re-embed.
-Its remaining benefit is the head of the embedded document, and the body is already clean.
-Two ordering constraints if it is ever done: it must follow the second run of
-`rename_dynamic_members.py` (§19.6), whose member test it disables, and it must state whether
-its one-off pass drops vectors under §19.3's L6 exception or honours the vector-layer
-self-sufficiency invariant.
+**Superseded**: an earlier version of this recommendation proposed changing the STORED
+name to `coll(_)`, at the price of a stored-name/routing-name field split and a ~1.6 M-token
+re-embed. The tag-plus-render design above obtains the same reader-facing result without
+either, so the stored-name change is not made.
 
 **Piece 4** (`resolve_name`'s memo) is independent of all of the above and is the only one
 whose benefit lands where the population is; it awaits its own ruling (§19.6).
