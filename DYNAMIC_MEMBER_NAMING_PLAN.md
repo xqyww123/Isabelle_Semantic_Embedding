@@ -151,14 +151,14 @@ cover a collection with one member that has an invented name and one that does n
 
 ## 4. Decisions still to make
 
-**D1 — is the stored field needed at all, or should the display layer compute it?** The
-criterion of §2.2 is exact today and the display layer could apply it directly, which would
-remove the wire change, the codec field, the backfill and their constraints. The field earns
-its cost only if the display layer cannot see the collection records the criterion needs, or
-if the criterion is expected to stop being exact. Settle this before writing any code, since
-everything in §2.2 and §3 depends on it.
+**Settled: the field is stored, and ML supplies it.** Not derived at read time. The
+consumer is the semantic-search front end, which serves live queries against a corpus that
+keeps growing; applying a corpus-dependent test there would mean re-earning its correctness
+on every future snapshot, and its failure mode is silent — a static bundle's stable `foo(3)`
+rendered as an invented form. The enumeration knows the answer for certain at the moment it
+invents the name, so that is where it is recorded. The costs in §3 are accepted.
 
-**D2 — `Thm.get_name_hint` in the enumeration.** A member's theorem often carries a tag
+**D1 — `Thm.get_name_hint` in the enumeration.** A member's theorem often carries a tag
 naming the fact it was declared as, and that name has a real position. Using it would give
 future members a real name and a real position instead of an invented form. It recovers
 nothing for the records already in the store — measured, zero of the residue — so its value
@@ -169,9 +169,8 @@ same name would produce two entries with one label and abort the sweep; and appl
 guards the static path applies (reject concealed names, hidden names, and the unknown
 marker).
 
-**D3 — the order of work.** §2.1 is independent of everything else and can be done now.
-§2.2 and §2.3 depend on D1, and §2.3 additionally has no consumer until the search site's
-display layer exists.
+**D2 — the order of work.** §2.1 is independent of everything else and can be done now.
+§2.2 is independent too. §2.3 lands when the search front end's display layer exists.
 
 ## 5. What was already done to the store
 
