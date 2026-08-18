@@ -1644,7 +1644,7 @@ so should `_apply_live_name`'s docstring (`semantics.py:2046-2051`), which says 
 overrides "the stored bare name".
 
 A6 exists for a reason: `(entity_kind_int, name)` is asserted unique on the live
-interpret path (`semantic_store.ML:603`) and the interpretation answer is routed by the
+interpret path (`semantic_store.ML:1557-1590`; `:603` is only the comment naming it) and the interpretation answer is routed by the
 `{kind, name}` label, which "is the ONLY handle the agent has to address an entry" and
 must be identical in the prompt, the results key and the routing map
 (`semantic_interpretation.py:205-211`). All members of one bin sharing the bare name
@@ -1652,8 +1652,8 @@ would trip the assert and make answer routing ambiguous.
 
 The cost of that choice is that the stored index is **context-relative**: the member list
 is whatever the swept theory's cone had contributed, so the same digits denote different
-theorems in different sweeps. Measured: `Topological_Spaces.tendsto_intros(104)` names
-THREE different propositions in the store; `Deriv.derivative_intros(210)` exists while
+theorems in different sweeps. Measured 2026-08-18: `Topological_Spaces.tendsto_intros(123)` names
+TWO different propositions in the store today and named EIGHT before §19.3's repair; `Deriv.derivative_intros(210)` exists while
 `Complex_Main`'s bin has 106 members. And the form looks exactly like Isabelle's own
 citable fact selection, so a reader takes it for a reference.
 
@@ -1860,163 +1860,116 @@ two bins from different sessions; this also gives an alternative explanation for
 `derivative_intros(210)` in §19.2, whose evidential weight there now rests on
 `tendsto_intros(104)` alone.
 
-### 19.5 The design, restated after the third measurement
+### 19.5 The design
 
-The third measurement changes what each part of the design is FOR. `Thm.get_name_hint`
-recovers **0** records of today's store: everything it could name, §19.3 already named. It
-is therefore **prophylactic, not remedial** — its value is that a future sweep stops
-MANUFACTURING the records this section is about, not that it repairs any. And since nothing
-in the system reads a stored record's `position` (traced: only tests and the migration
-scripts; every LLM-visible line number comes from the live sweep's `Entry`, and
-`entities_of`'s position element is discarded by all three of its consumers), the
-position half of the design has no consumer to serve either, in the store as it stands.
+#### What problem this solves, and for whom
 
-The design below was settled with the user on 2026-08-18, after the third measurement and
-three rounds of review. It is deliberately narrow: **the write path's NAMES are left alone.**
-`coll(104)` goes on being written into the store exactly as today. That closes several
-questions at once — A6 is not touched, the interpretation label is not changed, no
-stored-name/routing-name field split is needed, and the risk that an interpreting agent
-echoes the index into its own text is ACCEPTED, on the evidence that 0 of the 9,598 stored
-interpretations do so (measured; an observation about these agents under this prompt, not a
-guarantee).
+Not "some records have an ugly name". The specific harm is that **`coll(104)` is
+CITABLE-LOOKING**: it is exactly the shape of Isabelle's own fact selection, so a reader —
+human or agent — may lift it and use it, and in a different theory's context the same digits
+select a different theorem. An ordinary shared name does not invite that; this one does. The
+store contains many ambiguous names for unrelated reasons (16,714 `(kind, name)` pairs are
+shared across different propositions), and none of them is being addressed here, because
+none of them is citable-looking. That distinction is the whole justification.
 
-**1. A tag on the record marking a dynamic-collection member, supplied by ML.** The
-enumeration already knows this exactly — `process_dynamic_facts_into_cache` builds these
-entries as `Member_of_Dynamic` (`semantic_store.ML:1108`) — so the tag needs no name
-matching and cannot be fooled by a name collision. Cost: one field on the ML→Python wire
-(`packTuple10` → `packTuple11`, `semantic_store.ML:378-383`) and its counterpart in `Entry`
-(`semantic_interpretation.py:222`, constructed at `:1247`) and in the record codec, whose
-positional tail-append makes a 14th field readable by new code on old records (absent =
-unknown). The wire change is lockstep: the comment at `semantic_store.ML:374-377` already
-records that ML and Python on opposite sides of a change to this tuple cannot talk.
+Scale: 9,598 records of 1,343,793 (0.7 %), over 137 collections.
 
-**2. Render the member form at display time, from the tag.** A reader is shown
-`tendsto_intros(_)` rather than `tendsto_intros(104)`. Display has NO uniqueness
-requirement — ten hits from one bin may all render `tendsto_intros(_)`, since what
-distinguishes them is the proposition shown beside the name — so the run-local handle that
-a routing label would have needed does not arise, and neither does its ugliness. The
-semantic-search site is still a design prototype (`site/design/*.html`, `{{ r.name }}`), so
-this is built in rather than retrofitted; the paths that exist today and show a stored name
-are the three in §19.6.
+#### The design, in three pieces, each scoped
 
-**3. Backfill the tag onto the 9,598 existing records, once.** These predate the wire field,
-so the backfill has only the name-based criterion available: the name matches
-`^(.*)\((\d+)\)$` and the base names a `THEOREM_COLLECTION` record. That criterion is exact
-on today's corpus — measured, zero exceptions in both directions: 14,122 records with a
-collection base, all positionless; 320,162 with a non-collection base, all positioned. It is
-nevertheless corpus-dependent, which is exactly why the tag exists: a future AFP snapshot
-adding a `lemmas X = a b` whose name also names a bin would make the criterion misfire
-silently. Using it ONCE, for records already written, does not inherit that exposure; using
-it at read time would. The backfill needs **no re-embed**, because the tag is not part of the
-embedded document — so it is minutes and zero tokens, unlike a rename.
+**Piece A — a field on the record recording that its stored name is a rendered member
+form.**
 
-**Deliberately not done, and why.** The stored name is not changed, so there is no field
-split, no ~1.6 M-token re-embed, and `rename_dynamic_members.py`'s member test keeps working.
-The embedded document's head therefore still contains `coll(104)`; that is accepted, since
-the body carries the meaning and the index is a few tokens. A write-time check that an
-interpretation does not quote its own index is not added.
+*The predicate is about the NAME, not about the entity's origin.* It is true exactly when
+`build_entries` rendered the name from a `member_idx` (`Tools/semantic_store.ML:852-856`) —
+i.e. "the string we wrote ends in a synthetic `(i)`". It is NOT "this entity came from a
+dynamic collection": the 4,524 records §19.3 repaired are dynamic-collection members that
+now carry ordinary static names and positions, and they must NOT carry this field. Any
+future member that acquires a real name (see the separate `get_name_hint` item) likewise
+must not.
 
-**Still open, and separable from all of the above: `Thm.get_name_hint` in the enumeration**
-(§19.4 measured it recovering 0 of today's residue, its value being that future sweeps stop
-manufacturing records whose clean-up has a measured price). It is listed in §19.6 rather
-than settled here. One fact bears on it: piece 1 already opens the wire and the same function
-in the same file, so its marginal implementation cost is now lower than when it was costed
-alone.
+*Where it is set*: at the point above, carried to Python on the `interpret_file` wire
+(`packTuple10` → `packTuple11`, `semantic_store.ML:378-383`), into `Entry`
+(`Isabelle_Semantic_Embedding/semantic_interpretation.py:222`, built at `:1247`), and
+stored as a 14th field by the record codec, whose positional tail-append makes it readable
+by new code on older records (absent = "written before this field existed", not "false").
 
-#### What was rejected, and on what ground
+*Existing records*: one backfill, by the name criterion — the name matches
+`^(.*)\((\d+)\)$` and the base names a `THEOREM_COLLECTION` record. Measured exact on the
+current corpus in both directions, zero exceptions. It is corpus-dependent, which is why it
+is used ONCE over records already written and never as a read-time test. Conditions: re-run
+the zero-exception count immediately before, and abort on any exception; run after §19.6's
+second `rename_dynamic_members.py` pass, or that pass will rename a record whose field is
+already set.
 
-**Giving a member the collection's declaration position — rejected, and it is not a double
-standard.** §10 rule 2 already stores a position that is not the fact's own site (a
-generated fact gets the generating command's), but that records Isabelle's OWN semantics:
-one command, one derived fact. Pointing 1,327 distinct AFP theorems at one `named_theorems`
-line is our invention, and it would falsify §11.1's advisory contract — "a good place to
-start looking" — for 100 % of its users. Measured counterexample:
-`Topological_Spaces.tendsto_intros(104)` is really `LList_CCPO_Topology.tendsto_lextup` at
-`$AFP/Coinductive/Examples/LList_CCPO_Topology.thy:612`, while the bin is declared at
-`~~/src/HOL/Topological_Spaces.thy:787`. What this option wants can be had honestly at
-DISPLAY time: a renderer may fall back to the collection's declaration and say that is what
-it is.
+**Piece B — the member form is rendered in ONE place: the semantic-search site's data
+path.**
 
-**Filling the gap by matching propositions against static facts (a `Termtab`) — rejected,
-but the first version's reason was wrong and is replaced.** The efficient form is standard:
-`Termtab` is keyed by `Term_Ord.fast_term_ord` (`Pure/term_ord.ML:227,234`), whose `Abs`
-cases ignore the binder name (`:69,78,91`), so a key is exactly an aconv class; building it
-costs 49-259 ms per theory, lookups below the timer's resolution. The first version rejected
-it because "an inferred name can belong to another theorem", and that ground does not
-survive: with the proposition-equality check of piece 2 applied to both routes, both state
-truly that the proposition is recorded under the name they give. **The asymmetry is in the
-POSITION.** The hint gives the position of the fact this theorem was tagged as; the term
-match gives the position of whichever aconv-equal fact `Facts.dest_static` happened to
-yield first (`Termtab.default`) — a real line for a different declaration, which is exactly
-what §10's "nothing is guessed" forbids and exactly the ground on which the collection's
-position was rejected above. An earlier claim in this investigation that the term route is
-"never worse" was wrong and is retracted. Measured while rejecting it, and kept so the
-question is not reopened cheaply: the cheap variant that builds the table from a theory's
-OWN new static facts recovers almost nothing (`sepref_fr_rules` 13 → 0,
-`autoref_rules_raw` 87 → 0, `continuous_intros` 150 → 7), because a bin's members are
-declared upstream and a theory's own new facts number 0-394 against 25k-76k inherited.
+Concretely: the batch that produces the search site's data, or the layer that answers the
+site's queries — `SEMANTIC_SEARCH_SITE_PLAN.md`'s export, feeding `site/`'s `{{ r.name }}`.
+A reader there sees `tendsto_intros(_)`. That surface shows names for reading only, so it
+has no uniqueness requirement and no resolution requirement, and ten hits from one bin may
+all render alike: what distinguishes them is the proposition beside the name.
 
-**Recording membership in the `Provenance` map instead of in the name — a live option for
-pieces 2 and 3's position half, not a replacement for the name.** Adding a `collection_uk`
-would let a display-time renderer name the bin from a LINK rather than a parsed string, and
-it avoids the re-embed entirely, since provenance is not part of the embedded document
-(`pretty_print` is kind + name + expr, `semantics.py:279-283`). Two findings keep it from
-being free, and both were checked. The DB encoding is a msgpack map with `None` fields
-omitted (`semantics.py:411-419`, read by key at `:386-392`), so a new reader tolerates an
-old record — but a NEW writer with an OLD reader doing read-modify-write drops the field
-silently, and because the tuple's length does not change, **no arity check can ever detect
-the loss**, unlike the `position` field's. And the ML→Python wire is positional —
-`packOption (packTuple3 (packOption packBytes, packOption packBytes, packString))` inside a
-`packTuple10` (`semantic_store.ML:378-383`), read as `prov[0..2]` — so a fourth field is a
-lockstep ML+Python change, which is precisely what the proposal claimed to avoid. It also
-overloads a field whose name and docstring say *locale-interpretation* provenance. And it
-leaves the misleading name in place, including in the embedded document.
+*It applies nowhere else, and the following are excluded by name because each would break
+something specific.* **`Record.pretty_print` (`semantics.py:279-283`) and anything
+`document_text_of` reaches (`document_text.py:50`)** — the stored name is the head of the
+embedded document, so rewriting it there changes what a record's vector should be with no
+record write to invalidate it, leaving vectors permanently stale and undetectable.
+**Isa-Mini/AoA's retrieval and citation path** — there the displayed name is a HANDLE, not a
+label: it is passed back to ML to resolve (`Isa-Mini/IsaMini/AoA/model.py:2347`), becomes
+`FactByName(name=…)` "as the model writes it" (`:2443-2447`), and is re-resolved
+(`retrieval.py:574`); a member form there is unresolvable, which is a functional regression.
+**The exact-name lookup path** (`model.py:2198-2201`), for the same reason. **Any online
+read path in `Semantic_DB`**, including `lookup`, whose `_apply_live_name`
+(`semantics.py:2046-2051`) already replaces the stored name with a live one — two rewriting
+rules on one string is a way to get an unpredictable result.
 
-#### The two-state invariant, demoted
+*Why one place and not a rule applied broadly*: the field says "this record's stored name is
+a member form". It does NOT say "rewriting the name is safe here" — that is a property of
+the call site, not of the record. Confining the rule to a surface that only ever displays
+removes the question.
 
-The first version of this design justified rejecting 39 records with an invariant: a stored
-name is either the theorem's own recorded name or an explicit statement that we do not know
-it. That is an aspiration, not a property of the store, and it was used as though it were
-the latter. Nothing enforces it — `check_consistency` (`semantics.py:893-958`) never reads
-`name`, nor do the release gates (`snapshot_sync.py:360-394`) nor the export filter — and
-the store already contains **16,725** `(kind, name)` pairs shared by records of DIFFERENT
-propositions, for reasons unrelated to collections. Against that background it cannot carry
-a veto over 39 records. It is retained as a goal, and if it is to become real the check is
-cheap and exact: for theorem-alike kinds the proposition is `key[17:]`, so "same
-`(kind, name)`, different `key[17:]`" is computable, and it belongs in `check_consistency`
-as a **non-regression count against a recorded baseline of 16,725** — the strong form,
-which forbids any shared `(kind, name)`, would fail 38,003 times on its first run and be
-switched off within a day. Recorded for scale: §19.3's repair moved shared pairs from
-38,601 to 38,003.
+**Piece C — stop a stored name reaching an LLM where a live one is already in hand.**
+Independent of A and B, no data change, no deploy. Two sites: the pattern-only query branch
+(`model.py:2318-2322`) keeps `rec` although the live name sits in the loop header; and
+`_query_entity_core` (`Isa-Mini/IsaMini/AoA/retrieval.py:937`) prints `rec.name` although
+the caller passed a name, and is reachable with any kind through `IsaMini.query_by_name`
+(`toplevel.py:65-73`). A third site is not fixed and is accepted: the embedded document's
+head (see Piece B's exclusion of `pretty_print`).
 
-#### The recommendation
+#### What is deliberately not done
 
-Stated because the section otherwise leaves a reader with four options and no question to
-answer. This is a recommendation, not a decision.
+The stored name is not changed: `coll(104)` goes on being written. That keeps the
+interpretation label and the stored name a single field, so no split, no second wire field
+for a name, no ~1.6 M-token re-embed, and `rename_dynamic_members.py`'s member test keeps
+working. It also means the interpreting agent goes on seeing the index; that risk is
+accepted on the measurement that 0 of the 9,598 stored interpretations quote it — an
+observation about these agents under this prompt, not a guarantee. No write-time check is
+added.
 
-**Do the three settled pieces** — the ML-supplied tag, the display-time rendering, and
-the one-off backfill — and separately **stop the stored name reaching an LLM** through the
-three paths of §19.6, which is cheap, changes no data, and is two one-line fixes plus one.
+#### Costs, stated so they are not discovered later
 
-**`get_name_hint` (with the proposition check, the parsed `Thm_Name.T`, and the static
-path's guards) is left for a separate ruling.** Not for today's store, where it recovers
-nothing, but because without it every future sweep re-manufactures the records whose
-clean-up has a measured price — and its marginal cost has fallen now that the tag opens the
-same wire and the same function.
+The backfill must not go through `Semantic_DB.__setitem__` (`semantics.py:601-621`), which
+invalidates vectors unconditionally and would re-impose the ~1.6 M-token re-embed this
+design avoids; it must use a raw put as `set_positions` does (`semantics.py:794-815`) under
+an L6-style grant, which has to be asked for rather than assumed. It must refuse to run when
+a system-layer DB is installed, or `_raw_for_update` (`semantics.py:694-703`) will copy 9,598
+system records up into the user layer. The wire change is lockstep: conda ships both halves
+in one package, but PyPI ships the Python half alone, so both must be released together.
+A 14th codec field also changes what the completeness scan classifies as complete
+(`migrate_entity_positions.py:107-116` keys on the field count), and several migration
+scripts hard-code field counts.
 
-**Superseded**: an earlier version of this recommendation proposed changing the STORED
-name to `coll(_)`, at the price of a stored-name/routing-name field split and a ~1.6 M-token
-re-embed. The tag-plus-render design above obtains the same reader-facing result without
-either, so the stored-name change is not made.
+#### Correction to an earlier claim in this section
 
-**Piece 4** (`resolve_name`'s memo) is independent of all of the above and is the only one
-whose benefit lands where the population is; it awaits its own ruling (§19.6).
-
-**One conflict to settle before piece 2 is written.** §19.5 argues that the position half of
-the design has no consumer, and L8 says there is no public read API for the position "for
-now; it is an internal field" — the entire §8 backfill was done ahead of any reader, on
-purpose. Either L8's premise covers dynamic-collection members too, in which case "no
-consumer" is not a reason to drop anything, or L8 is being narrowed here and should say so.
+An earlier version argued that the position half of this work has no consumer, since nothing
+reads a stored record's `position`. **That is wrong and is withdrawn.**
+`SEMANTIC_SEARCH_SITE_PLAN.md`'s **D42** (settled 2026-08-14) makes every result card carry
+a source link that "resolves through the entity position", and lists `position` in the export
+schema as a prerequisite. L8's "no public read API for the position for now" is a deferral,
+not the absence of a reader. The same future surface is the consumer for both halves, and it
+cannot be cited as a reason the position does not matter while also being the reason to build
+this now.
 
 ### 19.6 Left open
 
@@ -2055,6 +2008,17 @@ consumer" is not a reason to drop anything, or L8 is being narrowed here and sho
    records never probed.
 
 ### 19.7 Review record
+
+**The third review round (four reviewers, 2026-08-18) was VOIDED at the user's instruction**,
+because §19.5 as it then stood did not say WHERE its rendering rule applied, so the reviewers
+were reviewing an ambiguous document and their verdicts cannot be read as judgements of the
+design. §19.5 has since been rewritten to scope every rule, and is to be reviewed again.
+Facts independently verified with tools during that round are kept, since they are
+measurements rather than opinions, and are marked where they appear: `tendsto_intros(104)`
+names one proposition today rather than three; D42 gives the position field a decided
+consumer; `pretty_print` feeds the embedded document; §19.3's counts were pre-repair; and the
+records §19.3 repaired are dynamic-collection members carrying static names, which is why
+Piece A's predicate is about the stored name rather than the entity's origin.
 
 Four adversarial reviewers over two rounds (mechanism and citations; measurements and
 inference; the design decision; implementation risk), then a third measurement run to
