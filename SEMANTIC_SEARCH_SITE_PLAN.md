@@ -24,8 +24,11 @@ on 2026-08-12, zero of the 1,362,343 entity records still contain U+007F, on
 both machines and in the published snapshot. `ENTITY_POSITION_PLAN.md` is
 **done** and 1,092,855 records (80.2 %) carry an entity position — but that
 backfill finished *after* the Hugging Face snapshot was packaged, so those
-positions exist only on `cslh19`; this machine holds 8,306. Everything else in
-§12.2 is unstarted: no tokenizer module, no site export, no Worker, no site.
+positions exist only on `cslh19`; this machine holds 8,306. **Prerequisite A of §12.2 —
+the key repair, D33 — is also done, 2026-08-18.** `site/COPY.md` and
+`site/design/IsaSearch.dc.html` exist and are authoritative for the interface copy, and
+`site/prototype/` holds the measured tokenizer prototype. Everything else in §12.2 is
+unstarted: no tokenizer module, no site export, no Worker, no served site.
 
 Orientation for a reader arriving with no other context: §2 is the settled
 decisions (do not reopen), §3 is the measured evidence every decision rests on,
@@ -355,7 +358,7 @@ ask before deviating.
   store under corrected keys, so any export run before it would publish wrong
   theory data under document ids that the rebuild then changes — taking every
   permanent entity-page URL D25 ships with it. §7.2's "already in the DB, 100 %"
-  cell is wrong until that plan has run.
+  cell was wrong until that plan ran; it is now correct.
 
   **Done, 2026-08-18.** The store on `cslh19` has been migrated: a persistent theory's
   hash is now `clear_lsb(xxh128(long_name ++ 0x00 ++ file bytes ++ parent hashes))`, with
@@ -1151,7 +1154,7 @@ group            string  128-bit hash of `(name, entity expression)`: the
                        identity of the entity page (§9.4) and the key the
                        response collapses on (D5). Filtering is unbilled, so
                        assembling a page from a group costs nothing extra
-vector           [4096]f32, cosine_distance
+vector           [4096]f16, cosine_distance   (D31)
 
   display
 name             string
@@ -2101,7 +2104,9 @@ seed of the test-vector file (§16.5) and the acceptance criteria for the port.
 
 The separator class is **99 characters**: `_`, `.`, seven control symbols
 `⇩⇧⇘⇙⇗⇖❙`, and the 90 rendered sub/superscript characters that `SUBSUP_TRANS_TABLE`
-produces from `⇩` and `⇧`. It is derived from `etc/symbols`, never hand-written.
+produces from `⇩` and `⇧`. Nine of them (`_`, `.`, the seven control characters) come from `etc/symbols`; the other
+90 come from `SUBSUP_TRANS_TABLE`, a hand-maintained dict in `Isabelle_RPC_Host/unicode.py`.
+No symbol file carries folding information of any kind (§5.4).
 
 ```
 'sorted_wrt R ?xs'            → ['sorted','wrt','R','xs']
@@ -2122,7 +2127,7 @@ produces from `⇩` and `⇧`. It is derived from `etc/symbols`, never hand-writ
 '[x]\<^sup>c\<^sup>e'        → ['[','x',']','ᶜᵉ'] ← THE FALLBACK CLAUSE, see below
 'f\<^sub>1'                  → ['f']
 'a?b'                         → ['a','b']          ← `?` divides as well as vanishing
-'?a + ?b' ≡ '?a+?b' ≡ 'a+b'  → ['a','+','b']      ← whitespace is not a boundary
+'?a + ?b' ≡ '?a+?b' ≡ 'a+b'  → ['a','+','b']      ← spacing does not change these; but whitespace IS a boundary (§5.2)
 'HOL-Analysis.Path_Connected.path_image_join'
                               → ['HOL','-','Analysis','Path','Connected','path','image','join']
 'Path_Connected.path_image_join'
@@ -2130,7 +2135,7 @@ produces from `⇩` and `⇧`. It is derived from `etc/symbols`, never hand-writ
 "f'"                          → ["f'"]             ← `'` is a quasi-letter, not a separator
 'x-y'                         → ['x','-','y']
 '%x. x'                       → ['%','x','x']      ← `%` is not converted to λ by the tokenizer
-'_'  '.'  '?'  '   '  '???'  '_.'  '\<^sub>'   → [] (all six)
+'_'  '.'  '?'  '   '  '???'  '_.'  '\<^sub>'   → [] (all seven)
 ```
 
 **The fallback clause is the one piece of the rule that prose alone loses.**
@@ -2191,14 +2196,17 @@ Do these in order. Each step is finished when its test passes, not before.
 substitutes **disagree on real corpus characters** — this is measured, not
 hypothetical:
 
-- `²` (U+00B2, 640 occurrences in the corpus) satisfies Python's `isdigit()` but
+- `²` (U+00B2, **3,955** occurrences over the whole corpus; an earlier draft said 640,
+  which is the count over §3.3's 230,944-document test namespace) satisfies `isdigit()` but
   is Unicode category `No`, so `\p{Nd}` disagrees.
 - U+001C–U+001F and U+0085 satisfy Python's `isspace()` but lie outside
   JavaScript's `\s`.
 - U+FEFF is the reverse: inside `\s`, outside `isspace()`.
 
 So the export emits, beside the symbol table, the explicit code-point sets for:
-**letters** (including the `letter` and `greek` group symbols of `etc/symbols`),
+**letters** (`isalpha()` alone — the `letter`/`greek` groups of `etc/symbols` add nothing,
+see §5.2), **the fold table** `SUBSUP_TRANS_TABLE` without which the port cannot fold at
+all and cannot tell which 90 of the 99 separators are rendered characters,
 **digits**, **quasi-letters** (`_` and `'`), **the separator class** (all 99
 characters), and **the ASCII-symbolic set** (`! # $ % & * + - / : < = > @ \ ^ | ~`).
 Neither implementation may consult a language built-in for any of these.
@@ -2245,7 +2253,8 @@ ask, because it is the failure mode that a test-vector gate cannot catch:
 
 Give the review §5 in full, D41, D21, `site/prototype/`, and §16.2. Ask
 specifically about: the fallback clause; the boundary between "letter" as
-`isalpha()` and as an `etc/symbols` group membership; whether `symbol_explode`
+`isalpha()` and as an `etc/symbols` group membership — **settled since, see §5.2: the
+groups are not consulted**; whether `symbol_explode`
 can produce a symbol that the separator class splits in half; and NFC stability
 of every symbol value (§3.4 checked this once — have the review check the check).
 
@@ -2271,8 +2280,8 @@ state the judge's bar **before** the round rather than after.
 
 ### 16.9 What is still blocked, and by whom
 
-Unchanged from §12.2: the site export waits on the key repair (D33), the
-theory-hash registry, and entity positions in the published snapshot — all three
+Per §12.2: the key repair (D33) is **done** as of 2026-08-18. The site export still waits
+on the theory-hash registry and on entity positions reaching the published snapshot, both
 owned by the user. **The tokenizer freeze touches no keys and waits on none of
 them.** After it, the next unblocked thing is the export's asset emission, which
 is step 2 above.
