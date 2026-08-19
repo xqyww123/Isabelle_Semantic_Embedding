@@ -3363,9 +3363,16 @@ Do these in order. Each step is finished when its test passes, not before.
    classification — see D41 for the measured divergences that motivates this.
 
 4. **The shared test-vector file** (§16.5). Build it before step 3 so the port
-   has a target.
+   has a target. **Done, 2026-08-19**: `site/tokenizer/test_vectors.jsonl`, 12,171
+   triples over 17 named features, with `test_vectors.meta.json` beside it and
+   `build_test_vectors.py` to regenerate both.
 
-5. **The CI gate** (§16.6).
+5. **The CI gate** (§16.6). **Half done, 2026-08-19**:
+   `site/tokenizer/check_test_vectors.py` makes every assertion §16.6 asks for and
+   runs the Python implementation against the file; `test_isabelle_tokenizer.py` runs
+   it over the committed directory and exercises each of its refusals on a tampered
+   copy. What is left is the JavaScript half, which needs step 3, and the workflow
+   that runs both.
 
 6. **`_truncate_to_token_limit`** — decide whether it is still needed. D29 caps
    the query in *characters*, so it probably is not. If not, do not move it out
@@ -3491,6 +3498,37 @@ surrogate.
 Pin the file's **encoding, ordering, count and digest**, so that "both
 implementations passed" is itself a checkable claim rather than a report.
 
+**Built 2026-08-19**, as three files in `site/tokenizer/`:
+
+- `test_vectors.jsonl` — one JSON object per line, `{"id","feature","input","tokens",
+  "subtokens"}` in that key order. **12,171 triples**: 10,037 real expressions, 2,024
+  real names, and 110 synthetic cases across 15 named features.
+- `test_vectors.meta.json` — the asset digest, the store digest, the tokenizer rule,
+  the sampling rule, the count, the count per feature, and the SHA-256 of the
+  `.jsonl`'s bytes.
+- `test_vectors.history` — one append-only line per generation. §16.6's guard needs a
+  *previous* count and digest to compare against, and a single file cannot carry its
+  own history.
+
+Three things about it that this section did not settle:
+
+- **Real names are sampled as well as real expressions.** §16.5 says expressions, but
+  `name_subtokens` is a shipped field (§6.1) and names have a shape expressions do not
+  — dotted long names, `(3)` suffixes on dynamic members, the folded sub/superscripts
+  that make up half of `DocumentPointer`'s naming. A port that tokenizes expressions
+  correctly and names wrongly would pass an expressions-only file.
+- **The sample is drawn by a rule each record decides on its own**: the leading four
+  bytes of its key digest for its expression, the trailing four for its name, each
+  against a threshold. No ordering pass, no seed, and reproducible from the store the
+  meta names.
+- **U+0085, U+2028 and U+2029 are escaped, although JSON does not require it.** JSON
+  escapes everything below U+0020 and leaves those three raw, and all three are line
+  terminators to Python's `str.splitlines` and to a good many other line readers — so
+  a line-oriented file could contain a line break inside a line. Real corpus text
+  contains them. The gate also asserts that splitting on LF and splitting on
+  everything give the same number of lines, so a future generator that forgets this
+  is caught rather than trusted.
+
 ### 16.6 The CI gate
 
 Runs both implementations against the test-vector file and fails on any
@@ -3505,6 +3543,18 @@ a rule change must alter the count in the same commit — by adding the cases th
 rule needs, which it needs anyway (§16.5) — or carry an explicit, reviewed "the rule
 changed" marker. It must never be resolved by regenerating the file quietly, which is
 the failure the guard exists to catch.
+
+**Implemented 2026-08-19** as `site/tokenizer/check_test_vectors.py`, against
+`test_vectors.history`: the newest line must describe the committed file exactly, and
+if its digest differs from the previous line's while the count does not, the line must
+carry a `rule-change:` marker saying what changed. The marker is the "explicit,
+reviewed" escape this section requires, and it is reviewed because it is a committed
+line of text in a file whose only purpose is to be read in a diff. The gate also
+asserts **coverage of the features §16.5 names**, since §5.5 requires that and a
+sample size cannot supply it. `test_isabelle_tokenizer.py` exercises each refusal on
+a tampered copy — a body that no longer matches its digest, a digest that moved while
+the count stood still, that same case with the marker present, and a missing feature —
+because a guard that has never been seen to fire is not a guard.
 
 ### 16.7 The review that ran first — and the one still owed
 

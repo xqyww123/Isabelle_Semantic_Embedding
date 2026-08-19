@@ -191,3 +191,84 @@ def test_module_loads_with_no_isabelle_at_all(asset, tmp_path):
     finally:
         sys.meta_path.remove(blocker)
         os.environ.update(saved)
+
+
+# --- §16.5's vector file and §16.6's gate -----------------------------------
+
+def _vector_dir():
+    import os
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'site', 'tokenizer')
+
+
+def _checker():
+    import importlib.util
+    import os
+    spec = importlib.util.spec_from_file_location(
+        'check_test_vectors', os.path.join(_vector_dir(), 'check_test_vectors.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_committed_vectors_pass_the_gate(tok):
+    assert _checker().main(_vector_dir(), tok) == 0
+
+
+def _tampered(tmp_path, edit):
+    """A copy of the vector directory with one thing changed."""
+    import json
+    import os
+    import shutil
+    for name in ('test_vectors.jsonl', 'test_vectors.meta.json', 'test_vectors.history'):
+        shutil.copy(os.path.join(_vector_dir(), name), tmp_path / name)
+    edit(tmp_path)
+    return str(tmp_path)
+
+
+def test_gate_fails_when_the_body_and_its_digest_disagree(tok, tmp_path, capsys):
+    def edit(d):
+        body = (d / 'test_vectors.jsonl').read_bytes()
+        (d / 'test_vectors.jsonl').write_bytes(body.replace(b'"sorted"', b'"sortd"', 1))
+    assert _checker().main(_tampered(tmp_path, edit), tok) == 1
+    assert 'hashes to' in capsys.readouterr().out
+
+
+def test_gate_fails_when_the_digest_moves_and_the_count_does_not(tok, tmp_path, capsys):
+    """The shape of a vector file quietly regenerated to match a broken implementation."""
+    def edit(d):
+        history = (d / 'test_vectors.history').read_text(encoding='utf-8')
+        line = history.strip().splitlines()[-1]
+        older = line.replace(line.split('sha256=')[1].split()[0], '0' * 64)
+        (d / 'test_vectors.history').write_text(older + '\n' + line + '\n', encoding='utf-8')
+    assert _checker().main(_tampered(tmp_path, edit), tok) == 1
+    assert 'the digest changed while the count did not' in capsys.readouterr().out
+
+
+def test_gate_accepts_a_declared_rule_change(tok, tmp_path):
+    def edit(d):
+        history = (d / 'test_vectors.history').read_text(encoding='utf-8')
+        line = history.strip().splitlines()[-1]
+        older = line.replace(line.split('sha256=')[1].split()[0], '0' * 64)
+        (d / 'test_vectors.history').write_text(
+            older + '\n' + line + '  rule-change: §5.2 gained a token class\n',
+            encoding='utf-8')
+    assert _checker().main(_tampered(tmp_path, edit), tok) == 0
+
+
+def test_gate_fails_on_a_missing_feature(tok, tmp_path, capsys):
+    def edit(d):
+        import hashlib
+        import json
+        lines = [l for l in (d / 'test_vectors.jsonl').read_text(encoding='utf-8').split('\n')
+                 if l and '"astral_symbol"' not in l]
+        body = ('\n'.join(lines) + '\n').encode('utf-8')
+        (d / 'test_vectors.jsonl').write_bytes(body)
+        meta = json.loads((d / 'test_vectors.meta.json').read_text(encoding='utf-8'))
+        meta['count'] = len(lines)
+        meta['sha256'] = hashlib.sha256(body).hexdigest()
+        (d / 'test_vectors.meta.json').write_text(json.dumps(meta), encoding='utf-8')
+        (d / 'test_vectors.history').write_text(
+            '2026-08-19  count=%d  sha256=%s  tokenizer_rule=1\n'
+            % (meta['count'], meta['sha256']), encoding='utf-8')
+    assert _checker().main(_tampered(tmp_path, edit), tok) == 1
+    assert "no vector covers the feature 'astral_symbol'" in capsys.readouterr().out

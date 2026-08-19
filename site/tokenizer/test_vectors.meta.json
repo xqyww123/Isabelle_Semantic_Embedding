@@ -1,0 +1,30 @@
+{
+ "asset_sha256": "dd82ecc130cb35b21e3ebb8255a3af38a639f475ea361e62eb639f6a78465323",
+ "count": 12171,
+ "count_by_feature": {
+  "16.2": 41,
+  "5.3": 21,
+  "adjacent_fold_markers": 4,
+  "astral_symbol": 2,
+  "boundary_character": 9,
+  "empty": 1,
+  "escape_against_ascii_symbolic": 3,
+  "escape_scanning": 3,
+  "fallback_clause": 4,
+  "nfd": 2,
+  "numeric_class": 11,
+  "private_use_escape": 2,
+  "real_expression": 10037,
+  "real_name": 2024,
+  "separator_only": 2,
+  "subsup_without_a_fold_entry": 3,
+  "u007f": 2
+ },
+ "encoding": "UTF-8, no byte order mark, LF line endings, one JSON object per line, keys in the order id, feature, input, tokens, subtokens; U+0085, U+2028 and U+2029 are escaped although JSON does not require it, so that splitting on LF is the only reading",
+ "generated": "2026-08-19",
+ "ordering": "the synthetic cases first, in the order §16.5 lists the features they cover, then the real samples in store iteration order",
+ "sampling": "a record contributes its expression when the first four bytes of blake2b(key, 8), read big-endian, are below 32124418, and its name when the last four are below 6392304; each record decides on its own, so the sample is reproducible from the store alone",
+ "sha256": "e444b276dbf22c117c8855227c02df99621c05b7e1d63006ab6b3a6e90ff9945",
+ "store_digest": "a2dbbb874fe178867dd07bc05901fc96",
+ "tokenizer_rule": 1
+}
