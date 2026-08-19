@@ -325,8 +325,9 @@ let
   val uk = Universal_Key.key_of NONE ctx entity
   (* build_entries is the ONLY producer of wire entries, shared by the live path
      and the dry run.  Field 4 is the entity position (plan §6). *)
-  val (entries, rep) = Semantic_Store.build_entries ctx [(entity, name, pos, uk, NONE)]
-  val [(_, entry_name, _, entry_pos, entry_uk, _, _, _)] = entries
+  val (entries, rep) = Semantic_Store.build_entries ctx
+        [(entity, Semantic_Store.Declared name, pos, uk)]
+  val [(_, entry_name, _, entry_pos, entry_uk, _, _, _, _)] = entries
   val ([direct], _) = Entity_Position.of_positions [pos]
   val _ = writeln ("build_entries -> " ^ @{make_string} entry_pos)
   val _ = @{assert} (entry_name = name andalso entry_uk = uk)
@@ -365,7 +366,7 @@ let
      EARLIER lemma's line.  Since the names make alphabetical order the reverse of
      source order, this discriminates: a degraded tie-break would keep
      Pos_Test_Dup_A_Later instead. *)
-  val dup_entries = entries |> map_filter (fn (_, nm, _, epos, _, _, _, _, _, _) =>
+  val dup_entries = entries |> map_filter (fn (_, nm, _, epos, _, _, _, _, _, _, _) =>
         if String.isPrefix "Entity_Position_Test.Pos_Test_Dup_" nm
         then SOME (nm, epos) else NONE)
   val _ = writeln ("T9 - surviving duplicate entries: " ^ @{make_string} dup_entries)

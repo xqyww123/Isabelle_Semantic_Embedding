@@ -87,10 +87,11 @@ def test_the_symbolic_file_survives_as_str_not_bytes():
 # --- the wire (ENTITY_POSITION_PLAN.md §6) ---
 
 def _wire_entry(position):
-    """One entry as `pack_arg` lays it out: field 4 is the entity position.
+    """One entry as `pack_arg` lays it out: field 4 is the entity position,
+    field 9 is from_collection (DYNAMIC_MEMBER_NAMING_PLAN.md §2.2).
     The RPC host unpacks msgpack strings as `str`, so text fields arrive as str."""
     return (int(EntityKind.CONSTANT), "Foo.c", "nat", position,
-            b"\x11" * 32, "", None, [], None, [])
+            b"\x11" * 32, "", None, [], None, None, [])
 
 
 def test_entries_of_wire_binds_field_4_as_the_position():
@@ -108,3 +109,47 @@ def test_entries_of_wire_without_a_position():
     assert e.position is None
     # -1 is what the agent prompt's `line_number > 0` guard expects to see.
     assert e.line_number == -1
+
+
+# --- from_collection: the 14th field (DYNAMIC_MEMBER_NAMING_PLAN.md §2.2) ---
+
+def test_13_field_record_reads_with_from_collection_none():
+    rec = _full_record(position=("$AFP/Foo/Bar.thy", 3, 1))
+    packed: bytes = msgpack.packb(
+        tuple(msgpack.unpackb(_encode(rec))[:13]))  # type: ignore[assignment]
+    decoded = _decode(packed)
+    assert decoded.from_collection is None
+    assert decoded.position == ("$AFP/Foo/Bar.thy", 3, 1)
+
+
+def test_14_field_record_round_trips():
+    rec = _full_record(position=None,
+                       from_collection="Topological_Spaces.tendsto_eq_intros")
+    decoded = _decode(_encode(rec))
+    assert decoded.from_collection == "Topological_Spaces.tendsto_eq_intros"
+    assert decoded.position is None
+
+
+def test_entries_of_wire_binds_field_9_as_from_collection():
+    """One invented member and one adopted/declared entry side by side: the
+    member's field 9 lands in from_collection, the other stays None, and no
+    neighbouring field shifts by one slot."""
+    from Isabelle_Semantic_Embedding.semantic_interpretation import _entries_of_wire
+    member = (int(EntityKind.THEOREM), "C.coll(3)", "a = b", None,
+              b"\x22" * 32, "", None, [], "C.coll", None, [])
+    declared = _wire_entry(("$AFP/Foo/Bar.thy", 12, 5))
+    [m, d] = _entries_of_wire([member, declared])
+    assert m.from_collection == "C.coll"
+    assert m.name == "C.coll(3)"
+    assert m.position is None
+    assert d.from_collection is None
+    assert d.position == ("$AFP/Foo/Bar.thy", 12, 5)
+
+
+def test_wire_arity_mismatch_is_self_describing():
+    from Isabelle_Semantic_Embedding.semantic_interpretation import _entries_of_wire
+    import pytest
+    old_style = (int(EntityKind.CONSTANT), "Foo.c", "nat", None,
+                 b"\x11" * 32, "", None, [], None, [])  # 10 components
+    with pytest.raises(RuntimeError, match="different releases"):
+        _entries_of_wire([old_style])

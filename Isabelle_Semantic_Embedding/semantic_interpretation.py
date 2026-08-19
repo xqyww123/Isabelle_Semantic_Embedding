@@ -239,6 +239,10 @@ class Entry(NamedTuple):
     # name, 16-byte theory hash) list whose XOR is the key's theory prefix;
     # None for non-theorem kinds.  Stored in the semantic DB record.
     theory_constituents: "list[tuple[str, bytes]] | None" = None
+    # full name of the dynamic collection the entry's name was invented from;
+    # None when the name was adopted from the producer
+    # (DYNAMIC_MEMBER_NAMING_PLAN.md §2.2).  Stored in the semantic DB record.
+    from_collection: "str | None" = None
     # --- incremental invalidation (CHECK_OUTDATE_PLAN.md §3.2, step 9) ---
     # 16-byte semantic digest of the entity's own content; None for
     # theorem-alike entries (their key's thm128 is the digest) and for every
@@ -375,7 +379,10 @@ class InterpretationTask:
             semantic_digest=entry.semantic_digest if tracked else None,
             deps=(entry.deps or []) if tracked else None,
             version=version, interpreted_at=interpreted_at,
-            position=entry.position)
+            position=entry.position,
+            # a fresh record would otherwise DROP the field on every
+            # re-interpretation of a member (DYNAMIC_MEMBER_NAMING_PLAN.md §3)
+            from_collection=entry.from_collection)
 
     def historical_cost(self) -> tuple[int, int, int, int, float]:
         """Read cumulative cost from LMDB (without modifying it).  A layered
@@ -1243,6 +1250,13 @@ def _entries_of_wire(raw_entries: Any) -> list[Entry]:
     """Decode the wire entries of Semantic_Store.interpret_file / its dry-run
     twin (one `pack_arg` on the ML side, so one decoder here)."""
     from Isabelle_RPC_Host.universal_key import THM_RULE_KINDS
+    for e in raw_entries:
+        if len(e) != 11:
+            raise RuntimeError(
+                f"interpret_file wire entry has {len(e)} components, expected 11:"
+                " the Isabelle/ML and Python halves are from different releases."
+                " Install matching versions (the conda package ships both"
+                " together; PyPI ships the Python half alone).")
     return [
         Entry(
             kind=kind,
@@ -1262,10 +1276,18 @@ def _entries_of_wire(raw_entries: Any) -> list[Entry]:
             theory_constituents=(
                 [(n, bytes(h)) for n, h in consts]
                 if EntityKind(kind) in THM_RULE_KINDS else None),
+            # like `name` where present, guarded like `position` when nil: the
+            # field is nil on every non-member entry and pretty_unicode(None)
+            # raises.  Where present it MUST go through, or ML-written and
+            # pass-written records would hold two spellings of one collection
+            # (collections with symbols in their names do occur).
+            from_collection=(pretty_unicode(from_coll)
+                            if from_coll is not None else None),
             semantic_digest=bytes(digest) if digest is not None else None,
             deps=[bytes(u) for u in deps],
         )
-        for kind, name, prop, position, uk, hint, prov, consts, digest, deps
+        for kind, name, prop, position, uk, hint, prov, consts, from_coll,
+            digest, deps
         in raw_entries
     ]
 

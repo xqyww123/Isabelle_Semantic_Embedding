@@ -274,6 +274,19 @@ class _Semantic_DB:
         # None when the entity has no source position (§10), and on every record
         # written before this field existed.
         position: 'tuple[str, int, int] | None' = None
+        # Full name of the dynamic collection this record's NAME was invented
+        # from (DYNAMIC_MEMBER_NAMING_PLAN.md §2.2): set iff the enumeration
+        # adopted no static name for the member and therefore invented its name
+        # as coll(i).  It records the provenance of the *name*, not the origin
+        # of the *entity* -- a member that carries a real name is
+        # indistinguishable in the data from a static fact.
+        #
+        # A decoded None carries THREE readings: "not invented from a
+        # collection", "written before the field existed", and
+        # "migrate_from_collection.py has not reached this record"; the three
+        # collapse to the first only after that pass has completed and been
+        # verified (that plan's §3).
+        from_collection: 'str | None' = None
 
         @property
         def pretty_print(self) -> str:
@@ -344,16 +357,18 @@ class _Semantic_DB:
 
     @staticmethod
     def _decode(raw: bytes) -> 'Record':
-        """Decode a stored record.  Records with fewer than 13 fields read with the
+        """Decode a stored record.  Records with fewer than 14 fields read with the
         missing trailing fields (locale_provenance, theory_constituents, experience,
-        goal_patterns, semantic_digest, deps, version, interpreted_at, position) = None.
+        goal_patterns, semantic_digest, deps, version, interpreted_at, position,
+        from_collection) = None.
 
         The codec is positional tail-append (8 -> 12 with the incremental
         invalidation fields, CHECK_OUTDATE_PLAN.md §3.1; 12 -> 13 with the entity
-        position, ENTITY_POSITION_PLAN.md §4).  NB code from before the 12-field
+        position, ENTITY_POSITION_PLAN.md §4; 13 -> 14 with from_collection,
+        DYNAMIC_MEMBER_NAMING_PLAN.md §2.2).  NB code from before the 12-field
         codec truncates at [:8] and would DROP the four incremental fields on its
-        next write of the record, and code from before the 13-field codec drops
-        `position` the same way -- do not run a pre-§3.1 or pre-position build
+        next write of the record, and code from before the 13- or 14-field codecs
+        drops `position` / `from_collection` the same way -- do not run a pre-§3.1 or pre-position build
         against a store that has them.
 
         LEGACY (experiences written before goal_patterns became a real field): their
@@ -362,9 +377,10 @@ class _Semantic_DB:
         in the codec, not in every reader.  Once every store is migrated
         (migrate_experience_patterns.py) this branch is dead and can be deleted."""
         vals = list(msgpack.unpackb(raw))
-        vals += [None] * (13 - len(vals))
+        vals += [None] * (14 - len(vals))
         (kind, name, expr, sem, prov_raw, consts_raw, experience, pats_raw,
-         digest_raw, deps_raw, version, interpreted_at, position_raw) = vals[:13]
+         digest_raw, deps_raw, version, interpreted_at, position_raw,
+         from_coll_raw) = vals[:14]
         d = _Semantic_DB._dec
         pats = [d(p) for p in pats_raw] if pats_raw is not None else None
         if pats is None and kind == int(EntityKind.EXPERIENCE) and expr is not None:
@@ -404,7 +420,8 @@ class _Semantic_DB:
                                    pats,
                                    bytes(digest_raw) if digest_raw is not None else None,
                                    [bytes(u) for u in deps_raw] if deps_raw is not None else None,
-                                   version, interpreted_at, position)
+                                   version, interpreted_at, position,
+                                   d(from_coll_raw) if from_coll_raw is not None else None)
 
     @staticmethod
     def _encode(record: 'Record') -> bytes:
@@ -426,7 +443,8 @@ class _Semantic_DB:
                               record.deps,
                               record.version,
                               record.interpreted_at,
-                              record.position))  # type: ignore[return-value]
+                              record.position,
+                              record.from_collection))  # type: ignore[return-value]
 
     # --- the global version counter (CHECK_OUTDATE_PLAN.md §3.3) ---
     # One single-byte key, NOT a Record.  Length keeps it apart from everything

@@ -783,7 +783,11 @@ A position is stored only when it is real. In each case the field is `None`;
 nothing is guessed.
 
 1. **Dynamic collection members.** They are given the literal position
-   `("", 0, 0)` and have no declaration site of their own.
+   `("", 0, 0)` and have no declaration site of their own — none **unless the
+   member's name hint resolves** (DYNAMIC_MEMBER_NAMING_PLAN.md §2.4), in which
+   case the member takes the resolved fact's name and its real position. A
+   hinted name and position may belong to an ancestor theory; that is permitted
+   by rule 3 below and no current-theory restriction is applied.
 2. **Generated facts.** A `datatype`, a `fun`, or a locale interpretation gives
    its generated facts the position of the *generating command*. That is
    Isabelle's own semantics, recorded as-is. (Measured: `List.list.induct` sits
