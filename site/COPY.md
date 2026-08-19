@@ -182,8 +182,10 @@ appears exactly when it applies.
 
 > **Theory Name conditions work differently on theorems.** A Theory Name condition
 > on a theorem matches every theory that declares a constant appearing in the
-> theorem's statement — not the theory that proves the theorem. A theorem often has
-> several such theories, and sometimes more than twenty.
+> theorem's statement. That is a different question from "where was this theorem
+> proved", although the two usually overlap: a theorem matches its own theory when
+> its statement uses a constant from it, and matches many others besides. A theorem
+> often has several such theories, and sometimes more than twenty.
 >
 > To search for the theory that proves a theorem, use an **Entity Name** condition
 > instead: an entity's name begins with the name of the theory that proves it, up to
@@ -294,8 +296,10 @@ condition reaches the Theory Name field — directly, or through the All panel
 Hover:
 
 > Your condition matched this theory. It is one of the «23» theories that declare
-> the constants in this statement, and it is not the theory that proves the
-> theorem. The entity page lists all «23».
+> the constants in this statement. The theory where the theorem was proved is
+> usually in that set too, because a statement normally uses constants from its own
+> theory — but isasearch does not mark which one it is, so a match here does not
+> tell you where the theorem was proved. The entity page lists all «23».
 
 An `excludes` condition never produces this line: nothing was matched.
 
@@ -450,8 +454,12 @@ The reference block beneath, on both variants:
 >   - `_` and `.` are separators, so `_ + _` becomes the single part `+` and
 >     matches every statement that contains a plus sign;
 >   - `.*` becomes `*` and matches a literal multiplication sign;
->   - `cont*` becomes the two parts `cont` `*`, which almost nothing contains.
->   isasearch tells you when this has happened — see the note above the results.
+>   - `cont*` loses nothing, but it is read as the two parts `cont` `*`, which
+>     almost nothing contains: a star is an ordinary character here, not a wildcard.
+>   isasearch says so above the results **when a separator was dropped**. When
+>   nothing is dropped — as with `cont*` — there is nothing to report and no notice
+>   appears, so the absence of a notice does not mean your condition was taken as
+>   you meant it.
 > ✗ Question marks, `_`, `.` and the subscript and superscript marks are separators
 >   and are never matched themselves. A subscripted name such as `f⇩1` is therefore
 >   found by `f`, and **not** by `f1`.
@@ -582,8 +590,10 @@ theory. For a theorem or a derived rule, the complete list, untruncated (D26),
 under this line:
 
 > These are the theories that declare the constants appearing in this statement.
-> The theory that proves the theorem is not among them: it is named at the start of
-> the entity name above, up to the first dot.
+> About five times in six the theory where the theorem was proved is among them,
+> because a statement normally uses constants from its own theory; the rest of the
+> time it is absent. isasearch does not mark it either way. Its name is at the start
+> of the entity name above, up to the first dot.
 
 Then, when a source position is recorded:
 
