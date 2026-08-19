@@ -1246,16 +1246,30 @@ expected column was confirmed to fail the build, so the ML assertions really run
 
 ### 16.4 Not yet verified
 
-- **T9's refusal half** — §12's T9 has two halves; only the positive one landed
-  (the deduplicated occurrence's position is the source-earliest). The second —
-  "with `check_theorem_name_in_file` stubbed to fail, the backfill **refuses** the
-  theory" — is still untested: forcing that state needs a failing RPC, and a test
-  that called `backfill_theory` would drive real RPCs against the developer's live
-  store. The refusal branch is three visible lines in `backfill_theory`. What T9
-  *does* now discriminate was proved by mutation: forcing `dominated = false`
-  (exactly what a degraded tie-break produces) makes the assertion fail, which it
-  did not before the duplicate lemmas were renamed so alphabetical order runs
-  against source order.
+- ~~**T9's refusal half**~~ — **verified 2026-08-19**, in
+  `Test/Entity_Position_Refusal_Test.thy`. The failing RPC needs no stub: in a
+  process that never ran `Remote_Procedure_Calling.load
+  ["Isabelle_Semantic_Embedding"]`, the auto-launched ephemeral host serves only
+  the base procedures — `xxhash128_theory` works (so the persistence check
+  runs), every `Semantic_Store.*` procedure is unknown, and no store can be
+  touched. Two sharp findings shaped the test: (1) **the whole-cone form can
+  never exhibit the refusal** — every HOL-descended cone contains a
+  theorem-less theory (`HOL.Try0`), whose `tie_break_degraded` stays false by
+  design ("no tie-break to get wrong"), so it proceeds to the write RPC and a
+  package-less host hard-crashes the DAG at that leaf before any refusal
+  fires; the refusal target is therefore a manufactured single-theory cone (a
+  draft over Pure named `HOL.Fun`, which hashes persistent by
+  `theory_hash.ML`'s documented name+file fork). (2) The refusal is
+  discriminated from an attempted write by **exception class**: the end-of-run
+  `ERROR "backfill_positions stopped: … 1 refused …"` versus a raw
+  `Remote_Calling_Failure` escaping; the host log confirms exactly one
+  `check_theorem_name_in_file` request and no `backfill_positions` request.
+  The control half asserts the skip path (a WIP draft returns `skipped = 1,
+  refused = 0`, no exception), so skip and refusal are distinguished. What T9
+  *does* discriminate had already been proved by mutation: forcing
+  `dominated = false` (exactly what a degraded tie-break produces) makes the
+  assertion fail, which it did not before the duplicate lemmas were renamed so
+  alphabetical order runs against source order.
 - ~~**T10**~~ — **verified 2026-08-11, unplanned, on real data.** Another process
   in this shared tree restarted a REPL after the `.ML` edits and ran an ordinary
   collection, so the live path wrote **8,844 13-field records, 8,306 of them
