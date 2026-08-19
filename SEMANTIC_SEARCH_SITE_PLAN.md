@@ -764,34 +764,48 @@ was taken on 2026-08-09; §3.1's counts, §3.2's prefix arithmetic and §3.4's c
 figures were re-measured on **2026-08-19** and each says so where it differs from the
 original reading.
 
-**Which machine a figure came from is not a footnote here.** `cslh19` is the
-authority (D19, and the user's ruling of 2026-08-18: "一切以 cslh19 的数据为准"), and
-this machine's store is **a different generation of the database, not an older copy
-of the same one**: D33's re-key changed every universal key, so of the two stores'
-1,362,343 and 1,343,793 entity keys, **zero are shared** (measured 2026-08-19, by
-comparing a digest of every key on both sides). Compared by content instead — the
-`(kind, name)` pair — they share **1,283,424** distinct entities, this machine holds
-**36,710** the authority does not, and the authority holds **11,818** this machine
-does not. The 36,710 are overwhelmingly material that would never be published
-anyway: phi-System (`Phi_Types`, `Phi_BI`, `Phi_Semantics_Framework`, `PLPR` — D24
-excludes all of it), local example theories (`Example_PIL`, `Example_SOL`,
-`Amortized_Examples`), and the 880 `Approximation` records the user ordered abandoned
-during the D33 migration. The 11,818 are mostly `EXPERIENCE` records, which are never
-published, plus 4,629 introduction rules.
+**Which machine a figure came from mattered until 2026-08-19, and the rule for
+reading the older ones is below.** `cslh19` is the authority (D19, and the user's
+ruling of 2026-08-18: "一切以 cslh19 的数据为准").
 
-So a **count** taken here is void and must come from `cslh19`; a **ratio over
-expression text** — the character classes of §3.4, the tokenizer blast radii of D43
-and §5.2 — is not disturbed by a re-key, which changes keys and not `expr`, and its
-population differs by about 1.4 %. Every figure below says which machine it is from;
+**As of 2026-08-19 this machine holds the authority's store, verified whole.** The
+user synced it here, and the two were compared field by field rather than assumed
+equal: 1,343,793 entity keys on each side with **zero** in either difference; the
+`(kind, name)` pair identical for every one of them; and a digest over every record's
+`expr` and `interpretation`, ordered by key, identical on both machines —
+
+```
+whole-store digest, cslh19 and this machine, 2026-08-19
+a2dbbb874fe178867dd07bc05901fc96      1,343,793 records
+```
+
+Recompute that digest to find out whether any machine's store is this state; it is
+the cheapest available answer, and it is what `scratchpad/audit/exprdump.py` prints.
+
+**Figures on this machine dated before 2026-08-19 are from a different generation of
+the database and are void as counts.** D33's re-key changed every universal key, so
+the store that stood here until the sync shared **not one key** with the authority.
+By content it held 36,710 entities the authority does not — phi-System (`Phi_Types`,
+`Phi_BI`, `Phi_Semantics_Framework`, `PLPR`, all excluded by D24), local example
+theories, and the 880 `Approximation` records the user ordered abandoned during the
+D33 migration — and lacked 11,818 the authority has, mostly `EXPERIENCE` records,
+which are never published. A **ratio over expression text** taken then survives
+better than a count, since a re-key changes keys and not `expr` and the populations
+differ by about 1.4 %, but anything load-bearing should be re-measured now that the
+authority's corpus is available locally. Every figure below says where it came from;
 one that does not is a defect.
 
 ### 3.1 The corpus
 
 **Re-measured on `cslh19`, 2026-08-19.** The user ruled on 2026-08-18 that
-`cslh19` governs — "一切以 cslh19 的数据为准" — so these are its figures, not this
-machine's. Quote the left-hand column. The right-hand one is not a lagging copy of
-it but a different generation of the store; §3's preamble measures how the two
-differ and why the 18,550-record excess here is not publishable data.
+`cslh19` governs — "一切以 cslh19 的数据为准" — so these are its figures. Quote the
+left-hand column. **The right-hand one is history as of 2026-08-19**: the user synced
+the authority's store here that day and it was verified identical whole, so this
+machine now reports the left-hand column too. The right-hand column is kept because
+several figures elsewhere in this document were taken under it and it says what they
+are figures *about* — a different generation of the store, whose 18,550-record excess
+was not publishable data. §3's preamble has the comparison and the digest that
+identifies the state.
 
 **What the D33 migration dropped, and what still needs re-interpreting, is a list
 and this plan does not own it.** `THEORY_HASH_REKEY_REINTERPRET_LIST.md` is the
@@ -3170,17 +3184,20 @@ Do these in order. Each step is finished when its test passes, not before.
      known set and are identical everywhere else. Compare with a digest of the
      concatenated arrays per record, not by eyeballing samples.
 
-     **This comparison runs on `cslh19`, and its expected figures must be re-measured
-     there before they can gate anything.** The user settled the machine on
-     2026-08-19. The figures this step used to give — 15,935 differing expressions
+     **This comparison runs on the authority's corpus, and its expected figures must
+     be re-measured against it before they can gate anything.** The user settled the
+     machine on 2026-08-19 and then synced the authority's store to this one, where it
+     was verified identical whole (§3's preamble, digest
+     `a2dbbb874fe178867dd07bc05901fc96`), so the run happens **here** and needs no
+     remote access — check the digest first, and if it does not match, re-sync rather
+     than measure. The figures this step used to give — 15,935 differing expressions
      against 1,346,161 identical, of which D43 contributes 3,135 and §5.2's numeric
-     class 12,822 expressions and 126,282 names, overlapping on 22 — were all taken on
-     **this** machine, whose store shares not one key with the authority and differs
-     from it by 36,710 entities one way and 11,818 the other (§3's preamble). They
-     cannot be reproduced on `cslh19` and must not be used as a target there.
+     class 12,822 expressions and 126,282 names, overlapping on 22 — were taken on the
+     **pre-re-key** store that stood here until that sync, which shared not one key
+     with the authority. They cannot be reproduced now and must not be used as a
+     target.
 
-     **What has to be re-measured on `cslh19`, in one pass, before step 1 can be
-     accepted** — run the prototype's rule and the §5 rule over the same text and
+     **What has to be re-measured, in one pass, before step 1 can be accepted** — run the prototype's rule and the §5 rule over the same text and
      record: the number of expressions whose subtoken arrays differ and the number
      identical; the split of that difference between D43's escape-scanning change and
      §5.2's numeric class; how many records **lose** a subtoken, and their names; and
