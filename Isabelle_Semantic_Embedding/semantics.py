@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import threading
 from collections.abc import Iterator
 from typing import Any, NamedTuple
@@ -15,7 +16,7 @@ from Isabelle_RPC_Host import Connection, isabelle_remote_procedure
 from Isabelle_RPC_Host.rpc import IsabelleError
 from Isabelle_RPC_Host.position import IsabellePosition
 from Isabelle_RPC_Host.unicode import pretty_unicode, ascii_of_unicode
-from Isabelle_RPC_Host.universal_key import EntityKind, UndefinedEntity, universal_key, universal_key_of, destruct_key, is_WIP, RULE_ONLY_TAG_BYTES, RULE_ONLY_KINDS
+from Isabelle_RPC_Host.universal_key import EntityKind, UndefinedEntity, universal_key, universal_key_of, universal_key_and_name_of, destruct_key, is_WIP, RULE_ONLY_TAG_BYTES, RULE_ONLY_KINDS
 from claude_agent_sdk import SdkMcpTool, tool
 
 from .semantic_embedding import (Vector_Store, Embedding_Provider, make_embedding_provider,
@@ -761,13 +762,22 @@ class _Semantic_DB:
             invalidate_vectors([key])
             txn.put(key, msgpack.packb(vals))  # type: ignore
 
-    def query(self, key: universal_key, with_pretty: bool = False) -> str | None:
-        """Look up a semantic interpretation by universal key."""
+    def query(self, key: universal_key, with_pretty: bool = False,
+              live_name: 'str | None' = None) -> str | None:
+        """Look up a semantic interpretation by universal key.
+
+        `live_name`: the context-resolved name the caller already holds, or
+        None (the default -- existing callers keep today's behaviour).  It is
+        applied TO THE RECORD, through apply_live_name_if_member, never to a
+        rendering: the string built below is the same entity convention the
+        embedding document uses, and rewriting it downstream would be exactly
+        the stale-vector trap §2.1's fourth site exists to prevent."""
         rec = self[key]
         if rec is None:
             return None
         if rec.interpretation is None:
             return None
+        rec = apply_live_name_if_member(rec, live_name)
         if with_pretty:
             # Display/reranker path. entity_document_text is the single definition of
             # the entity convention (pretty_print + "\n" + interpretation); applied to
@@ -1284,6 +1294,47 @@ Semantic_DB = _Semantic_DB()
 SemanticRecord = _Semantic_DB.Record
 
 
+# --- the two live-name substitution rules (DYNAMIC_MEMBER_NAMING_PLAN.md §2.1) ---
+# Two rules, so two named functions -- the name at the call site IS the policy.
+# There is no single substitution: some callers must take the live name
+# unconditionally, others only for members; a flag parameter would put a
+# polarity decision at every call site.  Which caller takes which function is
+# §2.1's table; flipping a conditional caller to unconditional is forbidden
+# until someone measures that the stored name resolves in the querying context
+# across the non-member population.
+
+_LIVE_NAME_INDEX = re.compile(r"\(\d+\)$")
+
+
+def _carries_index(live: str) -> bool:
+    """Does the LIVE name ML handed over end in an index, `(digits)`?  Tests
+    the live string only, never the stored one."""
+    return _LIVE_NAME_INDEX.search(live) is not None
+
+
+def apply_live_name(rec: SemanticRecord, live: 'str | None') -> SemanticRecord:
+    """Unconditionally prefer the live, context-resolved name.  For callers
+    whose records come from this query's own live enumeration: the name is a
+    handle the agent will cite back, and the live one is the one guaranteed to
+    resolve in the querying context."""
+    return rec._replace(name=live) if live is not None else rec
+
+
+def apply_live_name_if_member(rec: SemanticRecord,
+                              live: 'str | None') -> SemanticRecord:
+    """Substitute only when the stored name is an invented member form
+    (§2.2's `from_collection` field decides) AND the live name carries an
+    index.  An index-free live name is the bare collection name -- the one
+    thing §2.3 rules out showing (a collection holding exactly one member
+    resolves from the agent's bare `C` with no index).  Everything else keeps
+    its stored name: without the condition, the 4,524 records that already
+    carry real names (§5) would be shown to a model as `tendsto_intros(37)` --
+    the unstable string §1 calls the defect."""
+    if rec.from_collection is not None and live is not None and _carries_index(live):
+        return apply_live_name(rec, live)
+    return rec
+
+
 def clean_wip() -> int:
     """Remove all WIP (non-persistent) entries from the semantic DB and all vector stores.
 
@@ -1492,8 +1543,11 @@ async def query_by_name_raw(
 
     Raises `UndefinedEntity`, `IsabelleError`, or `LookupError` (not yet interpreted).
     """
-    uk = await universal_key_of(connection, kind, name, ctxt=ctxt)
-    sem = Semantic_DB.query(uk, with_pretty=with_pretty)
+    # The two-value form: the qualified live name used to be computed and
+    # thrown away on this very call (§2.1's third site); it now reaches the
+    # record through Semantic_DB.query's conditional substitution.
+    uk, live_name = await universal_key_and_name_of(connection, kind, name, ctxt=ctxt)
+    sem = Semantic_DB.query(uk, with_pretty=with_pretty, live_name=live_name)
     if sem is None:
         raise LookupError(
             f'{kind.label} "{name}" has not been interpreted yet. '
@@ -2173,18 +2227,14 @@ class Semantic_Vector_Store(Vector_Store):
             return [], warnings, 0
         total = len(candidates) + len(exp_hit)
 
-        def _apply_live_name(uk: universal_key, rec: SemanticRecord) -> SemanticRecord:
-            """Prefer the live, context-resolved name (e.g. 'coll(i)' for a member
-            of a dynamic collection, computed at enumeration time) over the stored
-            bare name. For static facts the live name equals the stored name."""
-            name = candidate_names.get(uk)
-            return rec._replace(name=name) if name is not None else rec
-
         def _resolve(uk: universal_key) -> SemanticRecord | None:
-            """Look up SemanticRecord, falling back to a placeholder if name is known."""
+            """Look up SemanticRecord, falling back to a placeholder if name is
+            known.  apply_live_name (module level) is UNCONDITIONAL here: every
+            record was surfaced by this query's own live enumeration, whose
+            name is the handle the agent will cite back (§2.1's table)."""
             rec = Semantic_DB[uk]
             if rec is not None:
-                return _apply_live_name(uk, rec)
+                return apply_live_name(rec, candidate_names.get(uk))
             name = candidate_names.get(uk)
             if name is not None:
                 return SemanticRecord(EntityKind(uk[16]), name, None, None)
@@ -2241,7 +2291,9 @@ class Semantic_Vector_Store(Vector_Store):
                     # (document_text_of), per kind -- not a third, divergent text (D1).
                     doc_text = document_text_of(rec)
                     if doc_text:
-                        doc_entries.append((uk, _apply_live_name(uk, rec), doc_text))
+                        doc_entries.append(
+                            (uk, apply_live_name(rec, candidate_names.get(uk)),
+                             doc_text))
             if doc_entries:
                 try:
                     rr = await reranker.rerank(

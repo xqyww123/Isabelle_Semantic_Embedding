@@ -1744,7 +1744,16 @@ be re-runnable and deterministic.
    because getting it wrong is only visible as a theory filter that matches a name no
    theory has, and because §8.2 makes every export a fresh namespace, so changing the
    separator later re-exports the whole corpus.
-1. **Completeness gate.** Assert that every **shippable** entity record has a
+1. **Completeness gate.** Precondition, mirrored from
+   DYNAMIC_MEMBER_NAMING_PLAN.md §4: the export must come **after**
+   `migrate_from_collection.py` has completed and been verified — §8.2 makes
+   every export a fresh namespace, so exporting first would publish 1.34M
+   documents with `from_collection` empty and cost a full re-export to
+   correct. *Status: discharged — the pass completed and verified on `cslh19`
+   on 2026-08-19 (9,597 matched, post-commit verification clean; report
+   `/home/xero/from_collection-report.json`).*
+
+   Then assert that every **shippable** entity record has a
    vector. Shippable is `snapshot_sync._ships` — **import it, never restate it**:
    the predicate drops WIP keys, and a restatement of it is what produced the 8,908
    figure the user rejected on 2026-08-12 with "我们应该只考虑 persistent，不考虑
