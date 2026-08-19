@@ -1146,16 +1146,27 @@ not be told, which panel a string came from.
 
 There used to be a step 0 here, stripping one trailing `(_)` from an `Entity Name`
 condition so that a pasted `coll(_)` — the invented display form of a dynamic fact
-collection's member (§6.1, `from_collection`) — matched the raw stored name.
-**The user removed it on 2026-08-19**: "我们不需要解决查询的问题。`coll(_)` 本身就
-不是合法的查询项目." A visitor who pastes `coll(_)` gets no match, and that is the
-intended behaviour, because the string names nothing — Isabelle's own fact selection
-takes a number, which is exactly why `(_)` was chosen for the display form. So
-`DYNAMIC_MEMBER_NAMING_PLAN.md` §2.3's first consequence, which requires the strip
-here, is overruled at the source and must go from that plan too; the display half of
-§2.3 — render `<from_collection>(_)` where a person reads it — stands untouched. This
-also removes the only input-dependent step the shared tokenizer had, which is a gain
-for §5.5: the Python and the JavaScript now agree on a function of the string alone.
+collection's member (§6.1, `from_collection`) — matched the raw stored name. **It is
+gone, and it was never the user's design.** What he asked for was printing, and only
+printing: "这样数据库中的一切都不用动，只是在 HTML 渲染前端做，或者在返回给前端结果前
+做？", and later "前端可以渲染为 `coll(_)` 的呀". The query side was an author's
+inference from that, written up as a "consequence" of the rendering in
+`DYNAMIC_MEMBER_NAMING_PLAN.md` §2.3 and imported here as a pipeline step; when it
+was finally put to him, on 2026-08-19, he answered that it had never been a problem
+he wanted solved — "我们不需要解决查询的问题。`coll(_)` 本身就不是合法的查询项目" —
+and afterwards, plainly: **"我从没想过检索 `(_)` 的啊，我只是想打印而已"**.
+
+So a visitor who pastes `coll(_)` gets no match, and that is correct rather than a
+shortfall: the string names nothing, because Isabelle's own fact selection takes a
+number, which is exactly why `(_)` was chosen for the display form in the first
+place. §2.3's first consequence must go from that plan too — that plan marks both
+of its consequences as "decided here", so this deletes an author's decision and
+touches none of the user's; its display half, render `<from_collection>(_)` wherever
+a person reads it, stands untouched and now applies to entity pages as well (§9.4).
+Removing the step also takes away the only input-dependent step the shared tokenizer
+had, which is a gain for §5.5: the Python and the JavaScript now agree on a function
+of the string alone, with no need to tell either one which panel a string came
+from.
 
 1. `unicodedata.normalize('NFC', s)` — the store is already 100 % NFC; queries
    pasted from macOS may be NFD, whose combining marks are not `\w` and would
