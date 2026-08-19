@@ -22,9 +22,9 @@ the earlier figure was measured on the wrong machine; §12.2's step 2 changes
 accordingly from *build* to *publish*; and D19's stated premise, that the three
 copies of the database were in sync, was false.
 
-**Implementation status.** The U+007F repair (D12, §10) is **done**: measured
-on 2026-08-12, zero of the 1,362,343 entity records still contain U+007F, on
-both machines and in the published snapshot. `ENTITY_POSITION_PLAN.md` is
+**Implementation status.** The U+007F repair (D12, §10) is **done**: **zero of
+`cslh19`'s 1,343,793 entity records carry U+007F**, re-verified on the authority
+2026-08-19, and zero of this machine's 1,362,343 did on 2026-08-12. `ENTITY_POSITION_PLAN.md` is
 **done** and 1,092,855 records (80.2 %) carry an entity position — but that
 backfill finished *after* the Hugging Face snapshot was packaged, so those
 positions exist only on `cslh19`; this machine holds 8,306. **Prerequisite A of §12.2 —
@@ -429,8 +429,9 @@ reader of those sections needs to find the decision that used to govern them.
   `HOL-Analysis.Path_Connected.path_image_join` as the worked example, which is
   not a name that exists. An Isabelle fact's long name is qualified by the
   **theory base name**, not by the session — that is simply how Isabelle names
-  facts — and the store agrees: no entity name in the 1,362,343 records carries a
-  session prefix. (The 1,266 names with a hyphen in their first segment are
+  facts — and the store agrees: no entity name in the 1,362,343 records of this
+  machine carries a session prefix (the claim is about how Isabelle names facts, so
+  the authority cannot differ). (The 1,266 names with a hyphen in their first segment are
   theories whose own base name contains one, such as `Nominal-HOLCF.Def_eqvt` and
   `HOLCF-Utils.fun_upd_cont`.) The export therefore indexes the stored name
   unchanged and adds nothing. Nothing else in D39 changes.
@@ -931,7 +932,9 @@ discarding whitespace introduces no semantic false positive on this corpus.
 **NFC, measured 2026-08-14 — it was not measured here before.** §5.1, D41 and
 §16.5 each cite this subsection for "the store is 100 % NFC", and until that date
 no NFC figure appeared in it. The claim is true: `NFC(expr) != expr` for **0 of
-1,362,096** records and `NFC(name) != name` for **0 of 1,362,343**. It is recorded
+1,362,096** records and `NFC(name) != name` for **0 of 1,362,343** — and, re-measured
+on `cslh19` on 2026-08-19, zero non-NFC expressions and zero non-NFC names out of
+1,343,793, so the claim holds on the authority and not only here. It is recorded
 here so the three citations have something to point at.
 
 **`unicode_of_ascii(expr) == expr` held for all 1,353,394 records, and no longer
@@ -1185,7 +1188,22 @@ for §5.5: the Python and the JavaScript now agree on a function of the string a
       input, which no sample can reach and which the query box produces on the
       first day: under the loose pattern `\<alpha \<beta>` is one unrecognised
       span and `\<beta>` is lost with it, where under Isabelle's rule `\<beta>`
-      converts. `Isabelle_RPC_Host.unicode` is tightened to match.
+      converts.
+
+      **Done, 2026-08-18** (`Isabelle_RPC` commit `8b7325e`): `pretty_unicode` now
+      scans with `\\<\^?[A-Za-z][A-Za-z0-9_']*>`. That module is shared with the
+      whole repository's ASCII-Unicode pipeline, so the change was gated on a
+      measurement before it landed — **0 differences over 2,724,439 `expr` and
+      `name` fields** of the semantic store, the divergence being reachable only
+      from a query box, which is why no sample of the corpus could gate it.
+
+      **This is not the "simplest possible" rule the user settled, and it is not
+      supposed to be.** What he settled on 2026-08-18 — "就是直接按照符号、字母边界
+      _ . 这些去切分就好了啊，就是最简单的那种切分呀" — is how step 4 *splits into
+      tokens*, and §5.2 implements exactly that: `\<=` is one symbolic run, and an
+      escape that step 3a did not convert splits into `\<`, `alpha`, `>`. Step 3a is
+      the earlier and different question of what counts as an escape worth
+      converting at all. His four worked examples are §16.2 acceptance cases.
    b. Replace each `⇩x`, `⇧x`, `❙x` pair by the character the fold table gives
       it, so that `x⇩1` and `x\<^sub>1` become the same text. §5.4's separator
       class is defined over the characters this pass produces, so **without this
@@ -1310,9 +1328,9 @@ load-bearing:
   top-level alternative instead, the numeric class claims `x1` → `['x','1']`,
   `nat1` → `['nat','1']`, `list2set` → `['list','2','set']` and
   `sorted_wrt2` → `['sorted','wrt','2']`, which is a catastrophic
-  mis-tokenization of ordinary Isabelle identifiers. Of §16.2's 32 cases exactly
-  **one** catches the misreading, and only by accident, so §16.2 gains `'x1'` and
-  the test-vector file gains it by name (§16.5). Note that `Kelly_1_39` does **not**
+  mis-tokenization of ordinary Isabelle identifiers. Of the cases §16.2 held before
+  2026-08-19 exactly **one** caught the misreading, and only by accident, which is why
+  §16.2 now carries `'x1'` outright and the test-vector file gains it by name (§16.5). Note that `Kelly_1_39` does **not**
   discriminate: both readings give `['Kelly','1','39']`.
 - *Numeric* before *symbolic* and before *anything else*, which is what makes the
   run maximal.
@@ -2423,7 +2441,15 @@ billed, so index amplification is not passed through.
 **Corrected 2026-08-19: the base and the returned-data term were both wrong.** This
 subsection was computed on 1,241,679 site documents, which is the *merged* count from
 the original D5 — and D5 was reversed on 2026-08-13, making it one document per
-record, **1,362,343**. And the returned-data term was taken as ~20 KB where D29
+record, **1,362,343**.
+
+**Every figure in this subsection is computed on that 1,362,343, which is this
+machine's pre-re-key count** (§3's preamble). The authority publishes **1,337,025**
+documents, 1.9 % fewer, so every size and price below is an over-estimate by about
+that margin — 10.95 GB of f16 vectors rather than 11.16 GB. The model is deliberately
+**not** recomputed: nothing any decision here turns on moves by 1.9 %, and re-deriving
+a dozen figures to shave it would risk more than it fixes. Recompute it when the
+first export reports the number it actually wrote. And the returned-data term was taken as ~20 KB where D29
 measures a 200-result response at **~200 KB**, an order of magnitude, which made the
 per-search total $0.000022 against D29's internally consistent $0.000031. Everything
 below is recomputed on the reversed D5 and D29's payload.
@@ -3023,9 +3049,12 @@ are not consulted. Both were measured on 2026-08-19:
 - The letter-group difference is **nothing at all**: all 190 group members satisfy
   `isalpha()`, and every one has a code point that step 3 substitutes before token
   formation sees it (§5.2).
-- §16.2's 32 cases and §5.3's 11 relations were re-run under **both** definitions,
-  with **zero mismatches under either**. Neither table is prototype-stale and neither
-  needs re-deriving.
+- §16.2's cases and §5.3's 11 relations were re-run under **both** definitions, with
+  **zero mismatches under either**. Neither table is prototype-stale and neither needs
+  re-deriving. The re-run covered §16.2 as it stood that day; the four escape-scanning
+  cases added later (`\<=`, `\<alpha>`, `\< \<alpha>`, `\<\<alpha>`) came from the
+  user's own worked examples and from §5.1 step 3a rather than from the prototype, and
+  are the four to check first when the production tokenizer runs §16.3's step 1.
 
 So the prototype remains usable as the measuring instrument for match counts, which is
 what `corpus_probe.py` is for, and it is **not** a specification of the tokenizer.
@@ -3072,6 +3101,10 @@ the asset (D45). An earlier draft of this paragraph said nine of the 99 come fro
 'Path_Connected.path_image_join'
                               → ['Path','Connected','path','image','join']
 "f'"                          → ["f'"]             ← `'` is a quasi-letter, not a separator
+'\<=', unconverted           → ['\<=']            ← one ASCII-symbolic run; the user's own example
+'\<alpha>', unconverted      → ['\<','alpha','>']  ← an escape step 3a did not convert just splits
+'\< \<alpha>'                → ['\<','α']          ← step 3a converts the second; the first is a bare run
+'\<\<alpha>'                 → ['\<','α']          ← same, with no space between them
 'x1'                          → ['x1']             ← a digit CONTINUES an identifier; it does not start a numeral
 'f 100'                       → ['f','100']         ← a maximal run of digits is one token
 'f 1000'                      → ['f','1000']        ← so the condition '100' does NOT match this
