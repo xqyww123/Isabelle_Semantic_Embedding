@@ -288,7 +288,21 @@ reader of those sections needs to find the decision that used to govern them.
   Unicode 15.0 and node's `\p{L}` is 145,672). Rather than check the asset against
   the index at run time, **the turbopuffer namespace name embeds the asset's
   digest**: a Worker holding an older asset addresses the namespace that asset
-  built, so "new index, old asset" is not a state that can be constructed. The
+  built, so "new index, old asset" is not a state that can be constructed.
+
+  **Amended 2026-08-19: the asset also carries the tokenizer rule's own identity**,
+  a `tokenizer_rule` integer bumped by hand whenever §5.1, §5.2 or §5.4 changes what
+  the tokenizer does. Without it the digest covers the tokenizer's **data** and not
+  its **rules**, and the adversarial review of §5.2's numeric token class showed what
+  that costs: that change altered 12,822 expressions and 126,282 names while touching
+  the asset's bytes not at all — it reuses the digit set the asset already ships — so
+  the digest, and therefore the namespace name, would not have moved. Two of this
+  plan's own guarantees fail in that state. §8.2's "write each export into a **new**
+  namespace" silently becomes an upsert into the live one, which §8.2 forbids because
+  turbopuffer cannot delete what a batch omits. And D46's export guard passes, since
+  it compares the file list and the digest and both are unchanged. The state that
+  actually bites is not "new index, old asset" but **"new index, old rule"**, and one
+  integer in the asset is what makes it as unconstructible as the other. The
   alternative considered and rejected was moving step 3 out of the tokenizer
   altogether — the interface would rewrite `\<Longrightarrow>` while typing, as it
   already rewrites `==>` (§9.3), and the export would normalise the stored text.
@@ -1432,10 +1446,17 @@ port. To stop them drifting:
 
 - **One asset, emitted at export time, read by both** (D45). It carries the
   symbol table, the fold table, the letter / digit / quasi-letter /
-  ASCII-symbolic / separator sets, and the abbreviations the condition box needs.
+  ASCII-symbolic / separator sets, the abbreviations the condition box needs, and
+  the **`tokenizer_rule` version** that says which rules produced it.
   Neither implementation may hard-code any of it, and neither may consult a
   language built-in for a character class — §5.2 names Python predicates to
   *define* the sets, not to be called at run time.
+
+  **Both implementations must refuse an asset whose `tokenizer_rule` they do not
+  implement**, rather than reading its tables and applying their own rules to them.
+  That is the one check the digest cannot make for them: the digest guarantees the
+  Worker and the index agree on the *file*, and this guarantees the code agrees with
+  the file.
 
   Naming the source files is not optional bookkeeping. `etc/symbols` is not one
   file: Isabelle assembles `ISABELLE_SYMBOLS` by appending, so every registered
@@ -1447,7 +1468,9 @@ port. To stop them drifting:
 - **The namespace name embeds the asset's digest** (D45), so an index and the
   asset that built it cannot come apart. This replaces a run-time consistency
   check: there is nothing to check, because a Worker carrying an older asset
-  addresses the namespace that asset built.
+  addresses the namespace that asset built. Since the asset carries
+  `tokenizer_rule`, this covers a change of **rule** as well as a change of data —
+  which it did not before 2026-08-19, and that gap is the reason the field exists.
 
 - The export emits a **shared test vector file** and both implementations must
   reproduce it exactly in CI — see §16.5 for what it must contain and §16.6 for
@@ -1866,13 +1889,15 @@ be re-runnable and deterministic.
    `(_)` from an `Entity Name` condition before tokenizing so that it behaves exactly
    like the raw name. That step is part of the tokenizer both implementations share
    and it has a row in the test-vector file (§5.5) and a case in §16.2; it is **not**
-   part of the asset, which carries character classes and tables rather than rules.
+   part of the asset. The asset carries character classes, tables, and the
+   `tokenizer_rule` version that identifies the rules — but never the rules
+   themselves, which live here in §5 and are implemented twice (§5.5).
 6. **Emit** the one stamped tokenizer asset (D45, D46) and the shared test-vector
    file (§5.5). The asset is a single file, and §16.4 lists exactly what it carries:
    the symbol table, the fold table `SUBSUP_TRANS_TABLE`, the five character-class
    sets (letters, digits, quasi-letters, the 99 separators, the ASCII-symbolic set),
-   the abbreviation table, and its own provenance — the `ISABELLE_SYMBOLS` file list
-   and the Unicode version the classes were built under. "The symbol table JSON" was
+   the abbreviation table, the `tokenizer_rule` version, and its own provenance — the
+   `ISABELLE_SYMBOLS` file list and the Unicode version the classes were built under. "The symbol table JSON" was
    this step's wording before D45 and describes about a fifth of what must be
    emitted; an implementer following it would ship a port that cannot fold, cannot
    classify characters and cannot offer live abbreviation replacement.
@@ -1901,13 +1926,26 @@ author's choice implementing D45, which fixed that a digest appears and not how 
 it is — twelve is short enough to read in a dashboard and long enough that a
 collision is not a thing to think about.
 
+**The asset's `tokenizer_rule` version is inside those bytes, so the digest moves
+when a rule changes and not only when data does** (D45 as amended 2026-08-19). This
+is load-bearing for the paragraph above: a rule change that touches no table — §5.2's
+numeric token class is the worked example, since it reuses the digit set the asset
+already ships — would otherwise leave the name unchanged, and "write into a new
+namespace" would quietly become an upsert into the live one. **Bumping
+`tokenizer_rule` is a manual act and belongs in the same commit as the rule change**;
+§16.6's gate is where a forgotten bump is caught, because the test-vector file's
+expected outputs move at the same time.
+
 **And the export must fail rather than silently rename the namespace (D46).** D46
 requires that "an export that finds a different component set than the declared one
 must fail", and never said where the declaration lives. It is the **committed asset
 from the previous export**: the export recomputes the asset from the live
-installation and compares its `ISABELLE_SYMBOLS` file list and its digest against
-that file, and stops if either differs unless it is told on the command line that the
-change is intended. No second declaration file is introduced, because the invariant
+installation and compares its `ISABELLE_SYMBOLS` file list, its `tokenizer_rule`
+version and its digest against that file, and stops if any of the three differs
+unless it is told on the command line that the change is intended. The
+`tokenizer_rule` comparison is what makes this guard see a rule change at all; before
+2026-08-19 it compared only the file list and the digest, both of which a rule change
+leaves untouched. No second declaration file is introduced, because the invariant
 that matters — the committed asset is the deployed asset — is exactly what makes the
 comparison meaningful, and a separate list of expected components would be a second
 thing to keep in step. The first export has nothing to compare against and writes the
@@ -2819,8 +2857,11 @@ Do these in order. Each step is finished when its test passes, not before.
    implementation that ignored D43.
 
 2. **Asset emission in the export** (§16.4). *Accepted when* the asset loads
-   standalone, with `Isabelle_RPC_Host` and `ISABELLE_HOME` unavailable, and step
-   1's corpus comparison still passes.
+   standalone, with `Isabelle_RPC_Host` and `ISABELLE_HOME` unavailable; step 1's
+   corpus comparison still passes; the asset carries a `tokenizer_rule` version; and
+   **an asset whose `tokenizer_rule` the implementation does not know is refused
+   rather than read** (§5.5). Test the refusal by hand-editing the version in a copy —
+   it is the one behaviour no other test exercises.
 
 3. **`site/tokenizer/`** — the JavaScript port, reading the same asset.
    *Accepted when* it passes the shared test-vector file (§16.5) with zero
@@ -2867,6 +2908,17 @@ all and cannot tell which 90 of the 99 separators are rendered characters,
 **digits**, **quasi-letters** (`_` and `'`), **the separator class** (all 99
 characters), and **the ASCII-symbolic set** (`! # $ % & * + - / : < = > @ \ ^ | ~`).
 Neither implementation may consult a language built-in for any of these.
+
+**Emit the `tokenizer_rule` version too**, an integer identifying the rules of §5.1,
+§5.2 and §5.4 that produced this asset (D45 as amended 2026-08-19). It is the only
+field here that is not data: everything else describes characters, and this describes
+the code that consumes them. It exists because the digest names the namespace (§8.2),
+and without it a rule change that touches no table — §5.2's numeric token class, which
+reuses the digit set already shipped — leaves the digest and therefore the namespace
+name unchanged, so a new index is written over the live one and a Worker running the
+old rules addresses it as though nothing had happened. Bump it by hand in the same
+commit as the rule change; §5.5 requires both implementations to refuse an asset whose
+version they do not implement.
 
 Emit the abbreviation table too, from the `abbrev:` fields of `etc/symbols` —
 the interface needs it for live replacement in the condition box (§9.3), and it
@@ -2966,7 +3018,10 @@ survives as a live concern and §5.4 marks it as load-bearing.
 can cut a *converted* symbol's code point in half (it cannot — a code point is
 atomic — but the JavaScript port iterating UTF-16 code units can, which is §5.2's
 astral warning and is worth an adversary); whether the asset's digest can change
-without any published document changing, and whether the export's failure on a
+without any published document changing, and — the direction that turned out to
+matter — whether a **published document can change without the digest changing**,
+which is what D45's 2026-08-19 amendment closes and which a reviewer should try to
+reopen from a different angle; whether the export's failure on a
 different component set can be bypassed by accident (D46, §8.2); and whether the 17
 subtoken losses of D43 include anything that is not bare punctuation.
 
