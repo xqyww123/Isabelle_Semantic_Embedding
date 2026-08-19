@@ -103,8 +103,8 @@ never from this table.
 | **declaring theory** | The theory whose source declares the entity, named by its **session-qualified long name** (e.g. `HOL-Library.Sorted_Sort`). **Applies only to name-addressed entities.** Theorem-alike entities are content-addressed and have no declaring theory in this data model (§7). Never "owning theory", "home theory". |
 | **constituent theories** | The `theory_constituents` field: the theories of the **constants occurring in the entity expression**, as `(long name, 16-byte hash)` pairs. Present on every theorem-alike and experience record. **Not** a declaring theory. |
 | **the associated theories** | The set of theories a *site document* is filtered by (D14): its declaring theory when name-addressed, its constituent theories when theorem-alike. **This exact phrase, always** — never "related theories", "relevant theories", "theory domains", or any other paraphrase. The word "domain" is specifically excluded: `dom`, `Dom` and `domain` name unrelated Isabelle concepts (the domain of a map or relation, and HOLCF's `domain` command) in about 27,500 entities of this very corpus, and "domain" also reads as "subject area", a plausible but wrong meaning. |
-| **theorem-alike entity** | A record of kind `Theorem`, `Introduction rule`, `Elimination rule`, `Induction rule` or `Case split rule`. Such a record is **content-addressed**: its key is the statement's digest under an XOR pseudo-theory prefix, so it has no declaring theory (D13, §7.1). 1,156,153 of 1,362,343 records, 84.9 %. Never "theorem-like", "a fact", "a lemma record". |
-| **name-addressed entity** | A record of kind `Constant`, `Type`, `Class`, `Locale`, `Theorem collection` or `Proof method`. Its universal key carries its declaring theory's 16-byte hash as the prefix, so the declaring theory is recoverable from the key alone once §7.3's table is available. 206,010 records, 15.1 %. The two categories partition the corpus apart from the 180 `EXPERIENCE` records, which are never published. |
+| **theorem-alike entity** | A record of kind `Theorem`, `Introduction rule`, `Elimination rule`, `Induction rule` or `Case split rule`. Such a record is **content-addressed**: its key is the statement's digest under an XOR pseudo-theory prefix, so it has no declaring theory (D13, §7.1). 1,137,981 of 1,343,793 records on `cslh19`, 84.7 %. Never "theorem-like", "a fact", "a lemma record". |
+| **name-addressed entity** | A record of kind `Constant`, `Type`, `Class`, `Locale`, `Theorem collection` or `Proof method`. Its universal key carries its declaring theory's 16-byte hash as the prefix, so the declaring theory is recoverable from the key alone once §7.3's table is available. 199,044 records, 14.8 %, on `cslh19`. The two categories partition the corpus apart from the 6,768 `EXPERIENCE` records, which are never published. |
 | **universal key** | A record's key in `semantics.lmdb`, constructed by `Isabelle_RPC_Host.universal_key`: a 16-byte theory-or-XOR prefix, one kind byte, and the addressing tail that kind uses. Never "record key", "entity id". The turbopuffer document id is a 128-bit hash **of** the universal key, not the key itself (§6.2). |
 | **the tokenizer** | The single normalisation described in §5, applied identically to stored text and to user queries. Never "the analyser", "the lexer", "the splitter". Its reference implementation of symbol conversion is `Isabelle_RPC_Host.pretty_unicode`; this document names that function and never `unicode_of_ascii`, which is a one-line alias of it in the same module. |
 | **token** | One output element of the tokenizer. |
@@ -116,12 +116,14 @@ never from this table.
 | **entity page** | The server-rendered permanent page for one site document (§9.4). |
 
 **The unit of counting is the record**, and it is worth stating because four words
-have been used for it. There are **1,362,343** entity records; each exported one
-becomes exactly one **site document** (D5 as reversed); **1,362,096** of them carry
-an entity expression and **1,362,343** carry a name, so a figure about expressions
-has a different denominator from a figure about names; and **1,362,163** are
-exportable before D24's scope test, the difference being the 180 `EXPERIENCE`
-records. "Entity", "document" and "expression" are not interchangeable units in this
+have been used for it. On `cslh19`, which is the authority (D19; measured
+2026-08-19), there are **1,343,793** entity records; each exported one becomes
+exactly one **site document** (D5 as reversed); **1,336,979** of them carry an
+entity expression and **1,343,793** carry a name, so a figure about expressions has
+a different denominator from a figure about names; and **1,337,025** are exportable
+before D24's scope test, the difference being the 6,768 `EXPERIENCE` records.
+(Until 2026-08-19 this paragraph gave this machine's 1,362,343 / 1,362,096 / 180 —
+a different generation of the store, see §3's preamble.) "Entity", "document" and "expression" are not interchangeable units in this
 document, and a count that does not say which one it means is a defect.
 
 ## 2. LOCKED decisions
@@ -353,6 +355,27 @@ reader of those sections needs to find the decision that used to govern them.
   is **80.2 %**, so roughly one card in five has no link and needs a defined
   absent form — the link is not to be rendered dead or blank without a word.
   Visible only once prerequisite C lands (§12.2).
+
+  **Only two kinds of position become a link, and the rest are the absent form.**
+  `ENTITY_POSITION_PLAN.md`'s L1' stores a position under `$AFP` or `~~` — the two
+  roots whose contents are identical on every machine — as that symbolic path, and
+  **every other position as an absolute path**. So the rule is:
+
+  > A position is rendered as a link **iff** its path begins with `$AFP/` or `~~/`.
+  > Any other position — an absolute path, an empty one, or one this site cannot
+  > parse — renders the same absent form as no position at all. An absolute path is
+  > never shown to a visitor, in the link or anywhere else.
+
+  The second half is not tidiness. D24 accepts that its session-name test may leak
+  ("a statement written in a local file whose constants all come from published
+  sessions still ships"), and such a record's position is an absolute path on the
+  export machine — `/home/…`. Rendering it publishes a private filesystem layout on
+  a public page, and a rule that only says "resolve the position" produces exactly
+  that. This clause is the author's implementation of D42, not a further decision of
+  the user's; what it must never do is widen. The two URL templates — the AFP browser
+  for `$AFP/`, the Isabelle library browser for `~~/` — are settled at implementation
+  time against the live sites and belong in §16.8's list, because a template that
+  404s is worse than the absent form.
 - **D41** (2026-08-14, extended by D45) — **the tokenizer's character classes ship as data, and
   the test vectors must contain synthetic input.** §5.2 defined its classes by
   naming Python's `isalpha`, `isdigit`, `isnumeric` and `isspace`, which have no
@@ -730,17 +753,36 @@ Everything in this section was measured, not assumed. A reviewer should treat an
 claim elsewhere in this document that is *not* here as an assumption. The first pass
 was taken on 2026-08-09; §3.1's counts, §3.2's prefix arithmetic and §3.4's character
 figures were re-measured on **2026-08-19** and each says so where it differs from the
-original reading. All of it is this machine's copy of the database, which is not the
-authority (`cslh19` is, per D19) — so a figure here can be one snapshot behind
-what the export will actually see.
+original reading.
+
+**Which machine a figure came from is not a footnote here.** `cslh19` is the
+authority (D19, and the user's ruling of 2026-08-18: "一切以 cslh19 的数据为准"), and
+this machine's store is **a different generation of the database, not an older copy
+of the same one**: D33's re-key changed every universal key, so of the two stores'
+1,362,343 and 1,343,793 entity keys, **zero are shared** (measured 2026-08-19, by
+comparing a digest of every key on both sides). Compared by content instead — the
+`(kind, name)` pair — they share **1,283,424** distinct entities, this machine holds
+**36,710** the authority does not, and the authority holds **11,818** this machine
+does not. The 36,710 are overwhelmingly material that would never be published
+anyway: phi-System (`Phi_Types`, `Phi_BI`, `Phi_Semantics_Framework`, `PLPR` — D24
+excludes all of it), local example theories (`Example_PIL`, `Example_SOL`,
+`Amortized_Examples`), and the 880 `Approximation` records the user ordered abandoned
+during the D33 migration. The 11,818 are mostly `EXPERIENCE` records, which are never
+published, plus 4,629 introduction rules.
+
+So a **count** taken here is void and must come from `cslh19`; a **ratio over
+expression text** — the character classes of §3.4, the tokenizer blast radii of D43
+and §5.2 — is not disturbed by a re-key, which changes keys and not `expr`, and its
+population differs by about 1.4 %. Every figure below says which machine it is from;
+one that does not is a defect.
 
 ### 3.1 The corpus
 
 **Re-measured on `cslh19`, 2026-08-19.** The user ruled on 2026-08-18 that
 `cslh19` governs — "一切以 cslh19 的数据为准" — so these are its figures, not this
-machine's. That matters: this machine holds **18,550 more entity records**, because
-collection continued here after the snapshot and because the D33 migration abandoned
-data on `cslh19` that the user ordered abandoned. Quote the left-hand column.
+machine's. Quote the left-hand column. The right-hand one is not a lagging copy of
+it but a different generation of the store; §3's preamble measures how the two
+differ and why the 18,550-record excess here is not publishable data.
 
 ```
                               cslh19, the authority   this machine, for contrast
@@ -1133,6 +1175,25 @@ condition is part of the specification.
       class is defined over the characters this pass produces, so **without this
       pass §5.4 has no meaning** — an earlier draft named only pass (a) and left
       the fold undocumented while the rest of §5 depended on it.
+
+      **The scan is left to right, two characters at a time, and non-overlapping**:
+      take the marker and the character after it as a pair, replace the pair if the
+      fold table has it, and in either case continue after the pair. State it that
+      precisely, because it decides a case the sentence above does not: when the
+      character after a marker is **itself a marker**, the pair is not in the table,
+      neither character folds, and the second marker is consumed and cannot begin a
+      pair of its own. So `x⇩1` gives `x₁`, `x⇩⇩1` stays `x⇩⇩1`, and `x⇩⇩⇩1` gives
+      `x⇩⇩₁` — the last marker folds because the first two paired off. That is a
+      parity artefact of non-overlapping matching rather than a rule anyone designed,
+      and the user ruled on 2026-08-18 that it is too rare to be worth fixing. It is
+      still worth **specifying**: §5.5 requires the Python and the JavaScript to be
+      byte-identical, and a port written from the sentence above alone would fold
+      each marker separately and diverge. Measured on `cslh19` the same day: of
+      1,343,793 records, **zero** carry two adjacent markers among the three this
+      pass scans, so no stored array depends on it; the case can only arrive as
+      pasted query text, where the two implementations must still agree. (The 712
+      records that do carry adjacent markers carry `⇘`/`⇙`, the sub/superscript
+      *bracket* pair from nested `\<^bsub>` — this pass never scans those.)
    Both tables come from **the asset** of §5.5, and neither implementation may carry
    its own (D45). `Isabelle_RPC_Host.unicode_of_ascii` is the reference.
    **This step is no longer the identity on stored text**: since the loader began
@@ -1568,9 +1629,10 @@ interpretation   string        BM25-indexed (§6.5)
 ### 6.2 Document id
 
 The universal key cannot be the id: keys run from 20 to **308 bytes**, and
-**89,137 of 1,362,343 (6.54 %)** exceed turbopuffer's 64-byte string-id limit once
-base64url-encoded (re-measured 2026-08-19; it read 88,798 / 6.6 % on 2026-08-09, and
-it grows with the corpus).
+**85,189 of 1,343,793 (6.34 %)** exceed turbopuffer's 64-byte string-id limit once
+base64url-encoded — measured on `cslh19`, the authority, 2026-08-19. (This machine's
+different generation of the store gives 89,137 / 6.54 %, and the first reading, on
+2026-08-09 and before the re-key, was 88,798 / 6.6 %.)
 Use a **128-bit hash of the universal key as a UUID**, and keep the full key as
 an ordinary attribute. The hash must be **deterministic**, so that a re-export
 upserts in place instead of creating duplicates.
@@ -1725,6 +1787,24 @@ every syntactic condition — including D22's `excludes` on `All`, whose whole
 meaning is "appears in none of the three". A user who writes an exclusion and
 then sees the excluded thing in the results has been given a wrong answer, not
 a ranking they disagree with.
+
+**The filter runs first, and the 200 are the top of what survives it.** This is the
+guarantee the user accepted the whole retrieval design on, in his words on
+2026-08-09: "我能接受的是先过滤，得到了 mask 后再根据 mask 选取 top 100" — filter,
+obtain the mask, then take the top N *within the mask*. He rejected the alternative by
+name in the same breath, fetching a top-N first and filtering it in the Worker, on the
+ground that a syntactic filter is often extremely selective ("用户就是想精确定位"):
+post-filtering a fixed top-N returns few or no rows exactly when the filter is doing
+its job. Nothing in this document may reintroduce it, including as a fallback.
+
+**And it is the one thing here that has never been measured.** Every filter figure in
+§3.6 was taken with the constant 8-dimension vector `[0.1]*8`, i.e. pure filter
+evaluation with no approximate-nearest-neighbour search involved, so what a real ANN
+index does under a highly selective filter — whether it still returns the best members
+*of the filtered set*, or degrades to a handful — is unevaluated. That is an
+acceptance criterion, not a curiosity: before launch, run a condition that matches a
+few hundred documents against the real 4,096-dimension index and confirm the response
+returns them rather than a fraction of them, and record the number. §16.8 carries it.
 
 **Each leg fetches 200; the fused list is truncated to 200.** Under D5 those
 200 rows collapse to ~182 distinct entities in the response, which is what
@@ -1964,6 +2044,26 @@ The digest is the SHA-256 of the asset file's bytes; twelve hex characters is th
 author's choice implementing D45, which fixed that a digest appears and not how long
 it is — twelve is short enough to read in a dashboard and long enough that a
 collision is not a thing to think about.
+
+**This runs on every data update, not once at launch.** The user's framing on
+2026-08-12 was a standing pipeline — "我们应该是要构建一条 pipeline 以后每次像更新
+数据的时候就执行一遍，对吗？" — and §12.2 is a launch checklist, which is a different
+thing and does not replace it. The cycle, end to end:
+
+> new interpretation data collected → the theory-hash registry republished
+> (§7.3, prerequisite B) → the snapshot republished from `cslh19`, which is the
+> authority (D19) → §8.1's export run against that snapshot, into a **new**
+> namespace → §8.1's gates pass → the Worker's target switched → **the namespace
+> before the previous one deleted**.
+
+**Keep exactly two namespaces: the live one and the one it replaced.** The
+predecessor is the rollback §8.2 exists to give; anything older is neither a rollback
+nor a record, only a bill — D31 sizes one namespace at ~11.5 GB at f16, so a cycle
+that retires nothing doubles storage on every refresh. Deleting it is a step of the
+cycle, not an operator's habit, because §8.2's "always write into a fresh namespace"
+rule is what creates the garbage. Retiring the predecessor is this author's rule
+implementing the user's pipeline, and the only part of the cycle he has not
+separately settled.
 
 **The asset's `tokenizer_rule` version is inside those bytes, so the digest moves
 when a rule changes and not only when data does** (D45 as amended 2026-08-19). This
@@ -2358,6 +2458,20 @@ rather than inferred, and log the `billing` object too. turbopuffer publishes no
 does this application (D28) — the log is how a runaway becomes visible, not how it is
 stopped (§11.1b).
 
+**Whether the same counter also produces usage statistics is the user's to settle,
+and it is owed.** He asked twice on 2026-08-13 — "我们可以用这个计数顺便做用户统计吗？",
+then "…用户统计 & 使用量统计吗？" — and neither this plan nor the companion ever
+answered. Two things a reader needs before it can be answered. First, it is nearly
+free now and expensive later: layer 2 already writes a per-IP key on every search, so
+a visitor count and a query count come out of the same write, whereas retrofitting them
+means changing a key schema that is by then live. Second, **§11.1's own design is
+against it**: layer 2 hashes the IP "with a rotating salt, never in the clear", which
+is what makes the gate privacy-preserving and also destroys the cross-day identity a
+distinct-visitor count would need. So the question is not "add a counter" but "which
+of the two properties wins", and that is a decision about visitors' privacy, which
+belongs to the user and not to this document. Until he takes it, the site ships with
+no statistics of any kind and its owner cannot say how many people used it.
+
 **And log every 429 with the layer that produced it** (edge rule, KV daily counter,
 or the unbuilt global bucket). §11.1 defers layer 3 explicitly "from the Worker's own
 telemetry, not from speculation", and that decision cannot be taken without knowing
@@ -2390,6 +2504,23 @@ site/
   pages/                  static assets: subsetted IsabelleDejaVu, styles, scripts
   tokenizer/              the JavaScript port + the shared test-vector runner
 ```
+
+**Three credentials, and none of them lives in this repository.** The export needs a
+turbopuffer **write** key; the Worker needs a turbopuffer **read** key and the
+Fireworks key. The user registered the turbopuffer account on 2026-08-09 and keeps
+its development key in `~/Current/MLML/secret.sh`, which is outside the tree and
+must stay outside it. The rules, which exist because this repository ships as a conda
+package and `site/` is already a worry for that build (below):
+
+- **No key in the repository, in any form** — not in `site/`, not in a `wrangler.toml`,
+  not in a test fixture, not in a committed `.env`. The Worker's keys are set with
+  `wrangler secret put` and exist only in Cloudflare; the export reads its key from the
+  environment, sourced from `secret.sh` or the CI secret store.
+- **The development key is not the production key.** turbopuffer issues scoped keys;
+  the Worker gets a read-only one, so a leaked Worker key cannot rewrite the index,
+  and the export's write key never reaches an edge runtime.
+- **A key rotation invalidates nothing else** — the namespace name carries the data
+  and asset digests (§8.2) and no credential, so keys can be rotated without an export.
 
 Already in the repository, all of it cited as load-bearing elsewhere in this plan and
 none of it listed here before 2026-08-19:
@@ -3036,8 +3167,15 @@ made entirely of rendered superscripts, for the fallback clause; an escape carry
 **private-use** code point, which D44 requires to survive as its literal `\<name>`; an
 escape sitting against an ASCII-symbolic character, which is D43's 17-record loss
 pattern; an **astral** symbol value such as `\<S>` → `𝒮`, which is what catches a
-JavaScript port iterating UTF-16 code units (§5.2); and an `Entity Name` condition
-ending in `(_)` together with the same condition without it, for §5.1's step 0; and
+JavaScript port iterating UTF-16 code units (§5.2); **two, three and four adjacent
+fold markers** (`x⇩⇩1`, `x⇩⇩⇩1`, `x⇩⇩⇩⇩1`), which no sample can draw because zero of
+`cslh19`'s 1,343,793 records carry the pattern and which is the one case where a port
+folding each marker separately diverges from step 3b's non-overlapping scan; **the
+four escape-scanning cases the user worked through himself** on 2026-08-18 — `\<=`,
+`\<alpha>`, `\< \<alpha>` and `\<\<alpha>` — none of which was gated by anything
+before 2026-08-19 although §5.1 step 3a's rule was written to answer them; and an
+`Entity Name` condition ending in `(_)` together with the same condition without it,
+for §5.1's step 0; and
 five cases for §5.2's numeric class, every one of which a 10,000-triple sample of
 real expressions can miss — **a digit abutting a rendered sub/superscript** (`2²`,
 `1 / 10²`), whose corpus frequency is 373 in 1,362,096, so a sample of that size
@@ -3135,6 +3273,18 @@ state the judge's bar **before** the round rather than after.
 - **Does the f16 conversion change the ranking?** D31 says its reasoning is
   analysis rather than measurement, and that converting the real stored vectors
   and measuring the ranking change should happen before the export publishes.
+- **Does the approximate-nearest-neighbour search still return the best members of a
+  narrow filtered set?** §6.6 makes "filter first, then rank within the mask" the
+  guarantee the user accepted the design on, and every filter figure in §3.6 was
+  taken with a constant 8-dimension vector, so the interaction of a highly selective
+  filter with a real 4,096-dimension index has never been observed. Run one condition
+  matching a few hundred documents against the real index before launch and record how
+  many come back. Unlike the other entries here, a bad answer is a design problem and
+  not a plumbing detail.
+- **What are the two source-link URL templates?** D42 renders a link only for a
+  position under `$AFP/` or `~~/`. Settle both against the live AFP browser and the
+  live Isabelle library browser, and check that a sampled link resolves — a template
+  that 404s is worse than the absent form the other 20 % of cards already show.
 
 ### 16.9 What is still blocked, and by whom
 
