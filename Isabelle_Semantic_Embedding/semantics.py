@@ -145,6 +145,74 @@ migrate_on_hash_change: bool = False
 # lowest ceiling anywhere in the tree (isabelle_semantics's `remove` used 1<<33).
 SEMANTICS_MAP_SIZE: int = 1 << 32   # 4 GiB
 
+# Keys per write transaction of a whole-store field backfill (backfill_field).
+# The unit is KEYS.  Deliberately separate from snapshot_sync._EXPORT_BATCH,
+# which also counts keys: the dirty-page cost per key differs by more than an
+# order of magnitude between the two loops, so folding them into one number
+# would couple two tunables (DYNAMIC_MEMBER_NAMING_PLAN.md §3).
+_WRITE_BATCH: int = 10_000
+
+
+# --- the positional record codec's shared ritual (DYNAMIC_MEMBER_NAMING_PLAN.md §3) ---
+# One-off migration passes read and write records positionally.  These are THE
+# shared spellings of that ritual; a pass must not redeclare the pad or the
+# indices against _decode's bare literals (a second copy of those numbers is
+# how index drift happens).  NOT for arity-deciding readers:
+# `unpack_fields`' padding destroys exactly the tuple-length signal
+# migrate_entity_positions._scan and the reached/not-reached audits exist to
+# read -- those keep reading len(msgpack.unpackb(raw)) raw.
+RECORD_FIELD_COUNT = 14   # keep equal to _decode/_encode's field count below
+F_KIND, F_NAME, F_POSITION, F_FROM_COLLECTION = 0, 1, 12, 13
+
+
+def unpack_fields(raw: bytes) -> list:
+    """The stored tuple as a list, padded to RECORD_FIELD_COUNT with None."""
+    vals = list(msgpack.unpackb(raw))
+    vals += [None] * (RECORD_FIELD_COUNT - len(vals))
+    return vals
+
+
+def pack_fields(vals: list) -> bytes:
+    """The inverse: emit the fields exactly as given (no truncation, no pad)."""
+    return msgpack.packb(tuple(vals))  # type: ignore[return-value]
+
+
+def backup_store(path: str) -> str:
+    """Timestamped compacting backup of ONE lmdb store directory; returns the
+    backup path.  THE owner of the tree's ``.bak-%Y%m%d-%H%M%S`` suffix
+    convention -- future spellings point here instead of inlining strftime.
+
+    Does the free-space check ENTITY_POSITION_PLAN.md (h) sizes by hand: a
+    compacted copy needs at most the store's used bytes free beside it, and
+    aborting with both numbers beats ENOSPC halfway through a copy.
+
+    HARD PRECONDITION: call BEFORE this process opens `path` through the
+    ``Semantic_DB`` / vector-store singletons -- py-lmdb refuses to open a path
+    the process already holds (the refusal does not depend on flags;
+    migrate_entity_positions.py:72-76 documents the same constraint on the
+    private precedent this extracts).  A caller that takes a pre-count first
+    gets an ``lmdb.Error``; the fix is to reorder, never to skip the backup."""
+    import shutil
+    import time
+    env = lmdb.open(path, readonly=True)   # readonly adopts the file's size
+    try:
+        used = (env.info()["last_pgno"] + 1) * env.stat()["psize"]
+        free = shutil.disk_usage(os.path.dirname(os.path.abspath(path))).free
+        if free < used:
+            raise RuntimeError(
+                f"backup_store: only {free:,} bytes free beside {path}, but the "
+                f"store holds {used:,} bytes -- make room before backing up")
+        stem = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+        backup, n = stem, 1
+        while os.path.exists(backup):    # two backups in one second
+            n += 1
+            backup = f"{stem}-{n}"
+        os.makedirs(backup)
+        env.copy(backup, compact=True)
+    finally:
+        env.close()
+    return backup
+
 # The one enumerator over vector stores now lives in semantic_embedding, next to
 # the opener, and unions the user cache with the system DB (plan §3.1/§3.2).
 # Imported under the old name so the call sites here read unchanged.
@@ -789,48 +857,90 @@ class _Semantic_DB:
                 data[b"finished"] = True
             txn.put(key, msgpack.packb(data))  # type: ignore
 
+    # The fields document_text_of builds the embedded document from.  A field
+    # in this set may NEVER take the raw-put path below: changing it changes
+    # what the record's vector should be, with no invalidation to notice.
+    _EMBEDDED_DOC_FIELDS = frozenset(
+        {"kind", "name", "expr", "interpretation", "goal_patterns"})
+
+    def backfill_field(
+            self,
+            field: str,
+            entries: 'list[tuple[universal_key, Any]]',
+            batch: int = _WRITE_BATCH,
+    ) -> tuple[int, int]:
+        """Write each value into `field` of the record that already holds that
+        key, by RAW PUT, committing every `batch` keys.
+
+        Returns (hit, missing): records found and updated, and keys with no
+        record.  A miss is legitimate -- that entity was simply never
+        interpreted.
+
+        NO BOOKKEEPING (plan L9).  No theory-status record is written or
+        created, so nothing here can disagree with the data, and an interrupted
+        sweep is resumed by running it again: re-encoding a record whose field
+        already holds the value being written produces the same bytes.
+
+        Explicitly untouched: every OTHER record field, every theory-status
+        record, the global counter, and every vector store.
+
+        THE RAW-PUT GRANT -- why this does not go through
+        ``Semantic_DB[key] = rec``.  __setitem__ opens with an unconditional
+        invalidate_vectors([key]), which tombstones the key in every vector
+        store.  Routing a whole-store backfill through it would tombstone every
+        vector accumulated so far, and nothing refills them incrementally
+        (contains reads a tombstone as absent, and
+        embed_all_entities_in_theories skips a theory already marked embedded),
+        so recovery would mean re-running the whole embedding pass.  The
+        exception to the vector-layer self-sufficiency invariant is therefore
+        stated as a PER-FIELD condition and ENFORCED here rather than
+        documented on a caller: only a field the embedded document is NOT
+        built from may take this path (the assert below).  Grants recorded so
+        far: `position` (ENTITY_POSITION_PLAN.md L6, approved explicitly for
+        the entity-position migration).
+
+        BATCHED, not one transaction: a single write transaction rewriting the
+        whole store overruns LMDB's dirty-page list and rolls everything back
+        after however long it ran, while holding the store's only write lock
+        throughout (DYNAMIC_MEMBER_NAMING_PLAN.md §3).  `_WRITE_BATCH` counts
+        keys; see its comment for why it is not snapshot_sync._EXPORT_BATCH."""
+        if field in _Semantic_DB._EMBEDDED_DOC_FIELDS:
+            raise AssertionError(
+                f"backfill_field({field!r}): the embedded document is built "
+                "from this field; writing it without vector invalidation would "
+                "leave permanently stale vectors.  Use Semantic_DB[key] = rec.")
+        if field not in _Semantic_DB.Record._fields:
+            raise AssertionError(f"backfill_field: no such record field {field!r}")
+        hit = missing = 0
+        env = self._ensure_env()
+        it = iter(entries)
+        done = False
+        while not done:
+            with env.begin(write=True) as txn:
+                n = 0
+                while n < batch:
+                    try:
+                        uk, value = next(it)
+                    except StopIteration:
+                        done = True
+                        break
+                    raw = self._raw_for_update(txn, uk)
+                    if raw is None:
+                        missing += 1
+                        continue
+                    rec = self._decode(raw)
+                    txn.put(uk, self._encode(rec._replace(**{field: value})))
+                    hit += 1
+                    n += 1
+        return hit, missing
+
     def backfill_positions(
             self,
             entries: 'list[tuple[universal_key, tuple[str, int, int] | None]]',
     ) -> tuple[int, int]:
-        """Write each entity position onto the record that already holds that key,
-        in ONE write transaction (§8.3).
-
-        Returns (hit, missing): records found and updated, and enumerated keys with
-        no record.  A miss is legitimate -- that entity was simply never interpreted.
-
-        NO BOOKKEEPING (plan L9).  No theory-status record is written or created, so
-        nothing here can disagree with the data, and an interrupted sweep is resumed
-        by running it again: re-encoding a record whose position is already the value
-        being written produces the same bytes.  The theory's own identity is not a
-        parameter at all: with no status record to select, nothing here needs it.
-
-        Explicitly untouched: interpretation, semantic_digest, deps, version,
-        interpreted_at, every theory-status record, the global counter, and every
-        vector store.
-
-        L6 -- WHY THIS DOES NOT GO THROUGH ``Semantic_DB[key] = rec``.  __setitem__
-        opens with an unconditional invalidate_vectors([key]), which tombstones the
-        key in every vector store.  Routing the ~1.35M backfilled records through it
-        would tombstone every vector accumulated so far, and nothing refills them
-        incrementally (contains reads a tombstone as absent, and
-        embed_all_entities_in_theories skips a theory already marked embedded), so
-        recovery would mean re-running the whole embedding pass.  It would also be
-        gratuitous: `position` does not feed document_text_of, so the text handed to
-        the embedding model does not change and no vector goes stale.  This is the
-        one exception to the vector-layer self-sufficiency invariant, approved
-        explicitly for this migration (ENTITY_POSITION_PLAN.md L6)."""
-        hit = missing = 0
-        with self._ensure_env().begin(write=True) as txn:
-            for uk, position in entries:
-                raw = self._raw_for_update(txn, uk)
-                if raw is None:
-                    missing += 1
-                    continue
-                rec = self._decode(raw)
-                txn.put(uk, self._encode(rec._replace(position=position)))
-                hit += 1
-        return hit, missing
+        """The ML position wire's one-liner over `backfill_field` (§8.3); the
+        raw-put grant and all other reasoning live there."""
+        return self.backfill_field("position", entries)
 
     def clean_wip(self) -> int:
         """Remove all entries with non-persistent theory hashes."""

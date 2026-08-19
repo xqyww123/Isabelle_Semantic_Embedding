@@ -70,8 +70,9 @@ from typing import Any
 import lmdb
 import msgpack
 
-SEMANTICS_MAP_SIZE = 1 << 32
-F_NAME, F_POS = 1, 12                 # positional codec, _Semantic_DB._decode
+from Isabelle_Semantic_Embedding.semantics import (
+    SEMANTICS_MAP_SIZE, F_NAME, F_FROM_COLLECTION, unpack_fields, pack_fields)
+from Isabelle_Semantic_Embedding.semantics import F_POSITION as F_POS
 D_NAME, D_POS = 0, 2                  # dump record layout, rekey_dump.py
 COLLECTION_TAG = 6
 THM_TAGS = (2, 0x12, 0x22, 0x32, 0x42)
@@ -248,18 +249,23 @@ def main() -> None:
                 if raw is None:
                     problems.append(f"target vanished: {key.hex()}")
                     continue
-                vals = list(msgpack.unpackb(bytes(raw)))
+                vals = unpack_fields(bytes(raw))
                 if dec(vals[F_NAME]) != tgt["old_name"]:
                     problems.append(f"{key.hex()} holds {dec(vals[F_NAME])!r}, "
                                     f"expected {tgt['old_name']!r}")
                     continue
                 vals[F_NAME] = tgt["name"]
-                while len(vals) <= F_POS:
-                    vals.append(None)
                 vals[F_POS] = tgt["pos"]
-                st.put(key, bytes(msgpack.packb(vals) or b""))
-                back = msgpack.unpackb(bytes(st.get(key) or b""))
-                if dec(back[F_NAME]) != tgt["name"] or norm_pos(back[F_POS]) != tgt["pos"]:
+                # A renamed record carries a real name now, so its
+                # from_collection must be cleared in the SAME put
+                # (DYNAMIC_MEMBER_NAMING_PLAN.md §3: the one pass that renames
+                # must not leave the invented-name flag standing).
+                vals[F_FROM_COLLECTION] = None
+                st.put(key, pack_fields(vals))
+                back = unpack_fields(bytes(st.get(key) or b""))
+                if (dec(back[F_NAME]) != tgt["name"]
+                        or norm_pos(back[F_POS]) != tgt["pos"]
+                        or back[F_FROM_COLLECTION] is not None):
                     problems.append(f"read-back mismatch: {key.hex()}")
                 counts["renamed"] += 1
         sem.close()
