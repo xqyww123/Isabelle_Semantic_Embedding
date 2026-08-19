@@ -1004,6 +1004,32 @@ as a precondition on that plan's §8.1 completeness gate.
    procedure: cross-theory accessibility, the label-uniqueness assert's fourth argument, and the
    before/after diff of locale attributions.
 
+   *Verification record (2026-08-19, fresh REPL on the HOL-Library heap, new code loaded from
+   source; old code = the pre-change `semantic_store.ML` from git, shadow-loaded into the same
+   session for the comparison):*
+
+   - **Locale attributions, before/after, both directions:** enumerated `Topological_Spaces`,
+     `Groups_Big` (locale interpretations) and `Limits` with both code versions and diffed every
+     entry's stored provenance. Entry counts identical per theory (660 / 343 / 568);
+     **provenance changed on zero entries in all three, in both directions**. The only
+     differences were the intended renames themselves: 61 (`Topological_Spaces`) and 67
+     (`Limits`) rule-face members of `continuous_intros`/`tendsto_intros` — same universal keys,
+     invented `coll(i)` names before, adopted real names (with real positions) after; exactly
+     the population §5 repaired by hand, now fixed at the source.
+   - **The label-uniqueness assert's fourth argument, re-established:** equal labels need equal
+     `(kind, name)`; a renamed member carries a static fact's name only because it selected that
+     fact's own theorem (the structural proposition check), which makes the two entries'
+     universal keys equal per face — and uk-equal entries are collapsed before the assert, by
+     `member_entries`' seed over all five static lists and by the global keep-first. A static
+     fact in an *ancestor* theory is not in this sweep's batch at all, so no cross-theory pair
+     can reach the assert. Empirically, the assert ran clean over the three enumerations above,
+     whose batches contained 128 renamed members.
+   - **Cross-theory accessibility, settled:** an adopted `Fixed` name is generated in the prep
+     context and resolved in that same proof context — the same property every static ancestor
+     fact already has, so renamed members introduce no new accessibility class. The behaviour
+     delta that remains is the recorded improvement: a member that left its collection after the
+     prep snapshot is no longer dropped, because its global fact name still resolves.
+
 ## 5. What was already done to the store
 
 Recorded because it changed production data and nothing else records it.
