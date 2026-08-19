@@ -47,13 +47,17 @@ classifiers = [
 # published wheel naming it could never be installed.
 dependencies = [
     "msgpack",
-    # >=0.4.1 because semantics.py passes config_lookup's `ctxt`, which 0.4.0's
-    # Connection does not accept (TypeError), and reads dialogue()'s no-responder
-    # None.  PyPI has no isabelle-rpc 0.4.1 yet -- that repo publishes only to
-    # conda -- so pip cannot resolve this until it does.  Deliberate (user
-    # decision 2026-08-08): an unresolvable floor fails loudly, where >=0.4.0
-    # would install green and raise at runtime.
-    "isabelle-rpc>=0.4.1",
+    # >=0.5.0 because _paths.py re-exports Isabelle_RPC_Host.paths.semantic_DB_dir,
+    # which older builds do not contain -- the whole package would fail at import --
+    # and because 0.5.0 is where the theory-hash registry moved to
+    # semantic_DB_dir()/theory_hash.lmdb: an older isabelle-rpc would keep writing
+    # the abandoned ~/.cache/Isabelle_Theory_Hash/ while this package reads the new
+    # location, leaving one machine with two registries and no error anywhere.
+    # PyPI has no isabelle-rpc at all -- that repo publishes only to conda -- so
+    # pip cannot resolve this floor.  Deliberate (user decision 2026-08-08): an
+    # unresolvable floor fails loudly, where a lower one would install green and
+    # misbehave at runtime.
+    "isabelle-rpc>=0.5.0",
     "rocksdict",
     # Floor, not a pin. liblmdb 0.9.35 (bundled in py-lmdb 2.x) carries no
     # corruption regression over 0.9.29 -- the arc trends safer. The ONE release to

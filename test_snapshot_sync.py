@@ -34,8 +34,9 @@ from Isabelle_Semantic_Embedding._user_config import env_bool
 from Isabelle_RPC_Host.universal_key import xor_theory_prefix
 
 from test_layered_db import (
-    CONST, EXP, HA, HB, STORE, _basis, _key, _mk_system, _q15, _record,
-    _reset_singletons, _user_raw, _write_user, cache)   # noqa: F401  (cache is a fixture)
+    CONST, EXP, HA, HB, STORE, _basis, _key, _mk_system, _mk_system_registry,
+    _q15, _record, _reg, _reset_singletons, _user_raw, _write_user,
+    _write_user_registry, cache)   # noqa: F401  (cache is a fixture)
 
 CREATED_AT = "2026-07-22T14:30:00Z"
 VERSION = "2026.07.22.1430"
@@ -437,6 +438,7 @@ def test_export_drops_tombstones_and_builds_the_payload(cache, tmp_path):
         uk: msgpack.packb((EXP, "e", None, "when", None, [("A", HA)], "how")),
         HA: msgpack.packb({b"finished": True}),
     })
+    _write_user_registry({HA: _reg("Test.A", 100)})        # the R5 gate needs HA
     with _get_lmdb_env(str(cache / STORE)).begin(write=True) as txn:
         txn.put(k_live, _q15(_basis(0)))
         txn.put(k_dead, _q15(_basis(1)))                   # must NOT ship
@@ -489,6 +491,7 @@ def test_export_never_ships_a_vector_tombstone(cache, tmp_path):
     k = _key(HA, CONST, b"\x01")
     _write_user({k: _record(CONST, "live", "keep me"),
                  HA: msgpack.packb({b"finished": True})})
+    _write_user_registry({HA: _reg("Test.A", 100)})        # the R5 gate needs HA
     with _get_lmdb_env(str(cache / STORE)).begin(write=True) as txn:
         txn.put(k, b"")                                    # a VECTOR tombstone
 
@@ -518,6 +521,7 @@ def test_export_publishes_the_layered_view(cache, tmp_path):
     _mk_system(cache, records={k_sys: _record(CONST, "s", "sys"),
                                k_masked: _record(CONST, "m", "sys")},
                vectors={STORE: {k_sys: _q15(_basis(0))}})
+    _mk_system_registry(cache, {HA: _reg("Test.A", 100)})  # the R5 gate needs HA
     _write_user({k_masked: b""})                           # tombstone the system record
 
     outdir = tmp_path / "out"
@@ -651,3 +655,51 @@ def test_list_keeps_a_live_coconstituent_out_of_removed(cache, monkeypatch, caps
     assert "removed" not in line_b and "complete" in line_b
     [line_a] = [l for l in out.splitlines() if HA.hex() in l]
     assert "removed" in line_a
+
+
+# ---------------------------------------------------------------------------
+# The theory-hash registry ships with the payload (registry plan §6.3, R4/R5)
+# ---------------------------------------------------------------------------
+
+def test_export_ships_the_layered_registry_persistent_only(cache, tmp_path):
+    """The exported theory_hash.lmdb is the layered union (user wins), carries
+    persistent entries only, and appears in the manifest's store table."""
+    WIP = bytes([HA[0] | 1]) + HA[1:]                      # LSB set = WIP
+    _mk_system_registry(cache, {HB: _reg("Sys.B", 100)})
+    _write_user_registry({HA: _reg("Test.A", 200), WIP: _reg("Wip.W", 300)})
+    k = _key(HA, CONST, b"\x01")
+    _write_user({k: _record(CONST, "live", "keep me"),
+                 HA: msgpack.packb({b"finished": True})})
+
+    outdir = tmp_path / "out"
+    manifest = snapshot_sync.export(str(outdir))
+
+    env = lmdb.open(str(outdir / "theory_hash.lmdb"), readonly=True, lock=False)
+    with env.begin() as txn:
+        shipped = {bytes(kk): bytes(vv) for kk, vv in txn.cursor()}
+    env.close()
+    assert shipped == {HA: _reg("Test.A", 200), HB: _reg("Sys.B", 100)}
+    assert manifest["stores"]["theory_hash.lmdb"]["entries"] == 2
+
+
+def test_export_registry_gate_fails_on_unresolved_prefix(cache, tmp_path):
+    """R5: a payload whose records use a persistent theory prefix the exported
+    registry cannot resolve must not publish."""
+    k = _key(HA, CONST, b"\x01")
+    _write_user({k: _record(CONST, "live", "keep me"),
+                 HA: msgpack.packb({b"finished": True})})   # registry stays empty
+
+    with pytest.raises(snapshot_sync.SnapshotError, match="registry"):
+        snapshot_sync.export(str(tmp_path / "out"))
+
+
+def test_export_registry_gate_skips_status_keys(cache, tmp_path):
+    """The gate's deliberate exclusions: a 16-byte theory-status key is not
+    name-addressed, so a status-only theory needs no registry entry."""
+    k = _key(HA, CONST, b"\x01")
+    _write_user({k: _record(CONST, "live", "keep me"),
+                 HA: msgpack.packb({b"finished": True}),
+                 HB: msgpack.packb({b"finished": False})})  # status only, no records
+    _write_user_registry({HA: _reg("Test.A", 100)})         # HB deliberately absent
+
+    snapshot_sync.export(str(tmp_path / "out"))              # must not raise

@@ -33,6 +33,15 @@ the other:
                    incoming tombstone, no local vector -> write the tombstone
                    key only local                -> untouched
 
+  theory_hash.lmdb the merge rule of THEORY_HASH_REGISTRY_PLAN.md §14.6: a WIP
+                   entry never crosses a machine; a new hash is copied; a newer
+                   timestamp for the same name refreshes the entry; and two
+                   NAMES on one hash is the sentinel case -- reported loudly,
+                   the local value kept, never resolved here (it cannot happen
+                   under the post-2026-08-13 hash scheme short of an xxhash128
+                   collision or an old-scheme leftover; that it fired at all is
+                   the news).
+
 The "record unchanged" branch is the point of the whole script: without it, a
 tombstone that merely means "the snapshot's machine had not re-embedded yet"
 would throw away a local embedding that is perfectly valid and cost money.
@@ -60,6 +69,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import os
 import pickle
 import sys
@@ -69,11 +79,15 @@ import lmdb
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+from Isabelle_RPC_Host.theory_hash import (  # noqa: E402
+    THEORY_HASH_MAP_SIZE, is_persistent)
 from Isabelle_Semantic_Embedding.semantic_embedding import (  # noqa: E402
     VECTOR_MAP_SIZE)
 from Isabelle_Semantic_Embedding.semantics import (  # noqa: E402
     SEMANTICS_MAP_SIZE, TOMBSTONE)
 from Isabelle_Semantic_Embedding.snapshot_sync import _store_dirs  # noqa: E402
+from Isabelle_Semantic_Embedding.theory_hash_registry import (  # noqa: E402
+    decode_entry)
 
 # One write transaction per batch: a batch is atomic, and committing as we go
 # lets LMDB reuse freed pages instead of holding every dirty page of the run.
@@ -144,15 +158,63 @@ def plan_vectors(incoming: str, local: str, changed_records: set):
     return writes, tab
 
 
+def plan_registry(incoming: str, local: str):
+    """The theory-hash registry's merge rule (THEORY_HASH_REGISTRY_PLAN.md §14.6).
+
+    WIP entries never cross a machine; a new key is copied; the newer timestamp
+    refreshes an entry that carries the same name; two names on one key is the
+    sentinel -- collected into `conflicts` for the caller to REPORT, the local
+    value kept, never resolved here.  A local TOMBSTONE counts as absent, as in
+    `plan_semantics`: the incoming published entry wins over it.  The local
+    store may not exist yet (a machine that never ran the post-move RPC host);
+    that reads as empty.  Returns (writes, conflicts, stats)."""
+    writes: list[tuple[bytes, bytes]] = []
+    conflicts: list[tuple[bytes, str, str]] = []
+    n_same = n_new = n_upd = n_wip = 0
+    tl_env = _open_ro(local) if os.path.isdir(local) else None
+    with _open_ro(incoming).begin() as ti, \
+         (tl_env.begin() if tl_env is not None else contextlib.nullcontext()) as tl:
+        for k, v in ti.cursor():
+            k, v = bytes(k), bytes(v)
+            if not is_persistent(k):
+                n_wip += 1
+                continue
+            name, ts = decode_entry(v)
+            cur = tl.get(k) if tl is not None else None
+            if cur is None or bytes(cur) == TOMBSTONE:
+                n_new += 1
+                writes.append((k, v))
+                continue
+            cur_name, cur_ts = decode_entry(bytes(cur))
+            if cur_name != name:
+                conflicts.append((k, cur_name, name))
+            elif ts > cur_ts:
+                n_upd += 1
+                writes.append((k, v))
+            else:
+                n_same += 1
+    if tl_env is not None:
+        tl_env.close()
+    return writes, conflicts, dict(identical_or_older=n_same, added=n_new,
+                                   refreshed=n_upd, wip_skipped=n_wip)
+
+
 def capture_undo(path: str, writes) -> list:
-    """The pre-merge value of every key about to be written (None = absent)."""
+    """The pre-merge value of every key about to be written (None = absent).
+    A store that does not exist yet contributes all-absent entries."""
+    if not os.path.isdir(path):
+        return [(k, None) for k, _ in writes]
     with _open_ro(path).begin() as t:
         return [(k, t.get(k)) for k, _ in writes]
 
 
 def _map_size(path: str) -> int:
-    return (SEMANTICS_MAP_SIZE if os.path.basename(path.rstrip(os.sep)) ==
-            "semantics.lmdb" else VECTOR_MAP_SIZE)
+    base = os.path.basename(path.rstrip(os.sep))
+    if base == "semantics.lmdb":
+        return SEMANTICS_MAP_SIZE
+    if base == "theory_hash.lmdb":
+        return THEORY_HASH_MAP_SIZE
+    return VECTOR_MAP_SIZE
 
 
 def apply_writes(path: str, writes, label: str) -> None:
@@ -238,6 +300,23 @@ def main() -> int:
         print(f"  -> {len(writes)} writes")
         vec_plans.append((loc_vec, writes))
 
+    inc_reg = os.path.join(args.incoming, "theory_hash.lmdb")
+    loc_reg = os.path.join(args.local, "theory_hash.lmdb")
+    reg_writes: list[tuple[bytes, bytes]] = []
+    if os.path.isdir(inc_reg):
+        print("== theory_hash ==")
+        reg_writes, conflicts, rstats = plan_registry(inc_reg, loc_reg)
+        print(f"  identical-or-older {rstats['identical_or_older']}  "
+              f"added {rstats['added']}  refreshed {rstats['refreshed']}  "
+              f"wip-skipped {rstats['wip_skipped']}")
+        for k, cur_name, name in conflicts:
+            # The sentinel (THEORY_HASH_REGISTRY_PLAN.md §14.6): impossible
+            # under the post-2026-08-13 hash scheme, so firing IS the news.
+            print(f"  !!! ONE HASH, TWO NAMES (kept local): {k.hex()}\n"
+                  f"      local    {cur_name!r}\n"
+                  f"      incoming {name!r}")
+        print(f"  -> {len(reg_writes)} writes")
+
     if not args.apply:
         print("\n(plan only; pass --apply to write)")
         return 0
@@ -246,6 +325,8 @@ def main() -> int:
     undo = {loc_sem: capture_undo(loc_sem, sem_writes)}
     for loc_vec, writes in vec_plans:
         undo[loc_vec] = capture_undo(loc_vec, writes)
+    if reg_writes:
+        undo[loc_reg] = capture_undo(loc_reg, reg_writes)
     with open(args.undo_out, "wb") as f:
         pickle.dump(undo, f, protocol=4)
     print(f"  {sum(len(v) for v in undo.values())} keys recorded -> "
@@ -255,6 +336,8 @@ def main() -> int:
     apply_writes(loc_sem, sem_writes, "semantics")
     for loc_vec, writes in vec_plans:
         apply_writes(loc_vec, writes, os.path.basename(loc_vec))
+    if reg_writes:
+        apply_writes(loc_reg, reg_writes, "theory_hash")
     print("done")
     return 0
 

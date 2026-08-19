@@ -393,6 +393,46 @@ def _check_no_legacy(semantics_path: str) -> None:
             f"(migrate_xor_thm_keys.py) and sync again.")
 
 
+def _check_registry_covers(sem_path: str, registry_path: str) -> None:
+    """Refuse a payload whose records name theories its registry cannot resolve
+    (registry plan §6.3, R5): every key in the exported ``semantics.lmdb`` that
+    is longer than 16 bytes, is not XOR-prefixed, and whose 16-byte prefix is
+    persistent must have that prefix in the exported ``theory_hash.lmdb``.
+
+    Deliberately out of scope: WIP prefixes (never ship), 16-byte theory-status
+    keys (not name-addressed), and constituent hashes inside XOR-prefixed
+    records (resolved through their own prefix-addressed records).
+    """
+    from Isabelle_RPC_Host.theory_hash import is_persistent
+    from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
+    sem = lmdb.open(sem_path, readonly=True, lock=False)
+    reg = lmdb.open(registry_path, readonly=True, lock=False)
+    try:
+        seen: set[bytes] = set()
+        unresolved: set[bytes] = set()
+        with sem.begin() as stxn, reg.begin() as rtxn:
+            for key, _val in stxn.cursor():
+                key = bytes(key)
+                if len(key) <= 16 or is_xor_prefixed_key(key):
+                    continue
+                prefix = key[:16]
+                if not is_persistent(prefix) or prefix in seen:
+                    continue
+                seen.add(prefix)
+                if rtxn.get(prefix) is None:
+                    unresolved.add(prefix)
+    finally:
+        sem.close()
+        reg.close()
+    if unresolved:
+        first = ", ".join(h.hex() for h in sorted(unresolved)[:5])
+        raise SnapshotError(
+            f"the exported registry cannot resolve {len(unresolved)} of "
+            f"{len(seen)} persistent theory prefix(es) the exported records "
+            f"use (first: {first}). The payload would ship records whose "
+            f"theory names no consumer can recover.")
+
+
 def _check_vector_format(store_path: str, model: 'str | None') -> None:
     """Sample the store: every vector must be exactly D*2 bytes (Q1.15 int16).
 
@@ -838,6 +878,26 @@ def export(outdir: str) -> dict:
                if model else {})}
         out_vec.close()
 
+    # ① the theory-hash registry (registry plan §6.3): its own branch, NOT a
+    # _store_dirs entry -- everything _store_dirs yields besides semantics.lmdb
+    # is treated as a vector store (§6.1).  The layered scan supplies
+    # user-over-system; persistent entries only (②': WIP never ships).
+    _log("  exporting theory_hash.lmdb...")
+    import Isabelle_Semantic_Embedding.theory_hash_registry as theory_hash_registry
+    from Isabelle_RPC_Host.theory_hash import THEORY_HASH_MAP_SIZE
+    out_reg = lmdb.open(os.path.join(outdir, "theory_hash.lmdb"),
+                        map_size=THEORY_HASH_MAP_SIZE)
+    n_reg = 0
+    with out_reg.begin(write=True) as txn:
+        for k, v in theory_hash_registry.iter_items():
+            if not _hash_persistent(k):
+                continue
+            txn.put(k, v)
+            n_reg += 1
+    _log(f"  {n_reg} registry entr(ies) shipped")
+    stores_meta["theory_hash.lmdb"] = {"entries": out_reg.stat()["entries"]}
+    out_reg.close()
+
     stores_meta["semantics.lmdb"] = {"entries": out_sem.stat()["entries"]}
     stores_meta["experience_index.lmdb"] = {"entries": out_idx.stat()["entries"]}
     out_sem.close()
@@ -859,6 +919,8 @@ def export(outdir: str) -> dict:
     _log("  running the gates...")
     _check_manifest(manifest)
     _check_no_legacy(os.path.join(outdir, "semantics.lmdb"))
+    _check_registry_covers(os.path.join(outdir, "semantics.lmdb"),
+                           os.path.join(outdir, "theory_hash.lmdb"))
     for store in sorted(store_names):
         _check_vector_format(os.path.join(outdir, store), _model_of(store))
     _log(f"Exported {n_records} record(s) to {outdir} "

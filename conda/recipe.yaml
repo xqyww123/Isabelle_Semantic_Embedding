@@ -320,13 +320,18 @@ requirements:
     # Session dependencies pyproject.toml cannot express.  isabelle-rpc is ALSO a pyproject
     # dependency, and it comes from conda.qiyuan.me, not conda-forge.
     #
-    # >=0.4.1, not >=0.4.0: Tools/semantic_store.ML calls Theory_Hash.process_id,
-    # which the published 0.4.0 does not contain (it landed after that VERSION was
-    # cut).  The old floor was satisfied by exactly that build, so the session
-    # failed to compile from the installed packages on all five platforms --
-    # "Value or constructor (process_id) has not been declared in structure
-    # Theory_Hash" (run 31246821630).
-    - isabelle-rpc >=0.4.1
+    # >=0.5.0, not >=0.4.1: _paths.py re-exports Isabelle_RPC_Host.paths.semantic_DB_dir,
+    # which 0.4.1 does not contain -- the solver would install 0.4.1 green and the
+    # package would die at import, failing the smoke steps on all five platforms
+    # (the Theory_Hash.process_id floor below records this exact failure shape
+    # having shipped once, run 31246821630).  0.5.0 is also where the theory-hash
+    # registry moved to semantic_DB_dir()/theory_hash.lmdb; an older isabelle-rpc
+    # would keep writing the abandoned ~/.cache/Isabelle_Theory_Hash/ while this
+    # package reads the new location -- two registries, no error anywhere.
+    #
+    # (Superseded floor, kept for the record: >=0.4.1 was for
+    # Tools/semantic_store.ML calling Theory_Hash.process_id, absent from 0.4.0.)
+    - isabelle-rpc >=0.5.0
     - isabelle-performant-ml >=0.1.0,<0.2.0
     #
     # The fourteen pyproject dependencies under their CONDA names.  TWO differ from PyPI,

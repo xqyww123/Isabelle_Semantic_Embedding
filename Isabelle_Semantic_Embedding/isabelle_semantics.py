@@ -1097,7 +1097,8 @@ def _local_db_last_modified() -> 'float | None':
     for entry in os.listdir(CACHE_DIR):
         if not (entry.endswith(".lmdb")
                 and (entry == "semantics.lmdb" or entry.startswith("vector_")
-                     or entry == "experience_index.lmdb")):
+                     or entry == "experience_index.lmdb"
+                     or entry == "theory_hash.lmdb")):
             continue
         data = os.path.join(CACHE_DIR, entry, "data.mdb")
         if os.path.isfile(data):
