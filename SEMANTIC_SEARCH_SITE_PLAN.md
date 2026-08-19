@@ -853,8 +853,10 @@ runs. §16.2 gives the same figure.
   constant to the statement. Example: `Abstract_Reachability_Analysis.max_Var_floatariths_concat`,
   whose constituents are five other theories.
 - **Partial declaring theory for name-addressed records.** The key prefix *is*
-  the declaring theory's hash. Measured 2026-08-19, the 206,010 name-addressed
-  records carry **9,188 distinct prefixes**, of which **8,697 are persistent** —
+  the declaring theory's hash. Measured 2026-08-19 on this machine's 206,010
+  name-addressed records — the authority has 199,044, and this arithmetic has not
+  been re-run there — they carry **9,188 distinct prefixes**, of which **8,697 are
+  persistent** —
   and a persistent prefix is the only kind that ships. The 2026-08-09 reading of
   this bullet, kept because §7.3's arithmetic still quotes it, was that harvesting
   `(long name, hash)` pairs out of theorem-alike records' constituent theories
@@ -1885,8 +1887,8 @@ recommended exactly that; it is withdrawn.
 
 | entity kind | filtered against | source | coverage |
 |---|---|---|---|
-| theorem-alike (1,156,153) | its **constituent theories** | the `theory_constituents` field | already in the DB, 100 %, session-qualified |
-| name-addressed (206,010) | its **declaring theory** | the key's 16-byte theory hash | needs the theory-hash registry (§7.3) |
+| theorem-alike (1,137,981) | its **constituent theories** | the `theory_constituents` field | already in the DB, 100 %, session-qualified |
+| name-addressed (199,044) | its **declaring theory** | the key's 16-byte theory hash | needs the theory-hash registry (§7.3) |
 
 Measured 2026-08-19: **7.09** constituent theories per theorem-alike record on average
 (median 6, maximum 42), drawn from **8,329** distinct theory long names — the same
@@ -2300,7 +2302,7 @@ later, so the URL scheme never has to change and no inbound links are lost.
 Sitemaps must be sharded (50 k URLs each, so ≥28 shards plus an index). Crawl budget
 will not cover ~1.36 M pages on a new site, so the sitemap is ordered rather than
 arbitrary: **the distribution's own sessions first, then AFP, and inside each the
-206,010 name-addressed entities before the theorem-alike ones**, since a
+199,044 name-addressed entities before the theorem-alike ones**, since a
 name-addressed entity carries a name a person might actually search for. An earlier
 draft said "prioritise HOL and widely-used AFP entries", which is not actionable —
 no record field records use, and this plan defines no popularity signal. If one is
@@ -2676,7 +2678,7 @@ records against the defect's original 234,398. See D33 for what was not re-verif
 **Prerequisite B — the theory-hash registry**, per `THEORY_HASH_REGISTRY_PLAN.md`.
 A name-addressed entity's declaring theory lives as a 16-byte hash in its key and
 is unreadable without the table. Two things fail without it: the `Theory Name`
-filter for the 206,010 name-addressed records (15.1 %), and **D24's scope test**,
+filter for the 199,044 name-addressed records (14.8 %), and **D24's scope test**,
 which is exactly the declaring theory for those records — so the export cannot
 even decide what to publish.
 
@@ -2696,7 +2698,7 @@ step 3  FREEZE THE TOKENIZER          <-- the live work; needs none of A, B, C
    |    A  key repair                              DONE 2026-08-18
    |          |
    |          +-- B  theory-hash registry published        outstanding
-   |          |        the Theory Name filter for the 206,010 name-addressed
+   |          |        the Theory Name filter for the 199,044 name-addressed
    |          |        records, AND D24's scope test for them — so without B the
    |          |        export cannot even decide what to publish
    |          |
