@@ -3166,17 +3166,31 @@ Do these in order. Each step is finished when its test passes, not before.
    - It reproduces **every line of §16.2**, all 32 of them, and every relation in
      §5.3. Both tables have been re-run under the character-level definition with zero
      mismatches (§16.1), so this is a target that is known to be reachable.
-   - Run over the whole corpus, its subtoken arrays **differ from the prototype's on
-     exactly 15,935 expressions and are identical on the other 1,346,161**. Compare
-     with a digest of the concatenated arrays per record, not by eyeballing samples.
-     That figure is D43's 3,135 **plus** §5.2's numeric token class, which changes
-     12,822 expressions and 126,282 names on its own; the two overlap on 22 records.
-     Check the differing set by name: the two AFP records `AbsCFCorrect.lemma6` and
-     `AbsCFCorrect.contour_a_class.abs_cnt_initial` plus `Matrix.matrix` must be among
-     the 17 that lose a subtoken (§5.1), the count of losses must be 17 and not 18, and
-     **no record may lose a subtoken to the numeric rule** — that rule is measured to
-     be a pure merge on every one of the 12,822, and a loss means the rendered
-     sub/superscript exclusion was not implemented.
+   - Run over the whole corpus, its subtoken arrays differ from the prototype's on a
+     known set and are identical everywhere else. Compare with a digest of the
+     concatenated arrays per record, not by eyeballing samples.
+
+     **This comparison runs on `cslh19`, and its expected figures must be re-measured
+     there before they can gate anything.** The user settled the machine on
+     2026-08-19. The figures this step used to give — 15,935 differing expressions
+     against 1,346,161 identical, of which D43 contributes 3,135 and §5.2's numeric
+     class 12,822 expressions and 126,282 names, overlapping on 22 — were all taken on
+     **this** machine, whose store shares not one key with the authority and differs
+     from it by 36,710 entities one way and 11,818 the other (§3's preamble). They
+     cannot be reproduced on `cslh19` and must not be used as a target there.
+
+     **What has to be re-measured on `cslh19`, in one pass, before step 1 can be
+     accepted** — run the prototype's rule and the §5 rule over the same text and
+     record: the number of expressions whose subtoken arrays differ and the number
+     identical; the split of that difference between D43's escape-scanning change and
+     §5.2's numeric class; how many records **lose** a subtoken, and their names; and
+     that **no** record loses a subtoken to the numeric class, which is the one
+     property that is a rule and not a figure — that rule is a pure merge by
+     construction, and a loss means the rendered sub/superscript exclusion was not
+     implemented. The three named records this step used to require in the loss set —
+     `AbsCFCorrect.lemma6`, `AbsCFCorrect.contour_a_class.abs_cnt_initial`,
+     `Matrix.matrix` — are all AFP material and are expected to be present on the
+     authority too, but that is an expectation and not yet a measurement.
 
    **An earlier draft of this step required the arrays to be *identical* to the
    prototype's for all 1,362,096 expressions.** That test cannot pass and must not be
