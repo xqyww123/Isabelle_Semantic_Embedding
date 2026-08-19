@@ -67,8 +67,7 @@ class Tokenizer:
         self._ascii_symbolic = frozenset(asset['ascii_symbolic'])
         self._rendered = frozenset(asset['rendered_subsup'])
         self._rendered_digits = frozenset(asset['rendered_digits'])
-        self._separator_split = re.compile(
-            '[' + re.escape(asset['separators']) + ']+')
+        self._separators = frozenset(asset['separators'])
 
     # ---- §5.1, steps 1 to 3 -------------------------------------------------
 
@@ -149,7 +148,19 @@ class Tokenizer:
     def subtokens(self, tokens):
         out = []
         for t in tokens:
-            parts = [p for p in self._separator_split.split(t) if p]
+            # Split at every separator and drop what is empty. Written out rather
+            # than as a character-class regular expression so that the JavaScript
+            # port is the same algorithm and not a second reading of one.
+            parts, cur = [], []
+            for ch in t:
+                if ch in self._separators:
+                    if cur:
+                        parts.append(''.join(cur))
+                        del cur[:]
+                else:
+                    cur.append(ch)
+            if cur:
+                parts.append(''.join(cur))
             if parts:
                 out.extend(parts)
             elif t and all(c in self._rendered for c in t):

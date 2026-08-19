@@ -23,6 +23,8 @@ ordering pass and no random seed.
 
 Output, into this directory:
 
+  asset.json                the exact asset the vectors were produced with, because
+                            the JavaScript port cannot build one
   test_vectors.jsonl        one JSON object per line, UTF-8, LF, `{"id","feature",
                             "input","tokens","subtokens"}` in that key order
   test_vectors.meta.json    the asset it was built against, the counts, the sampling
@@ -212,6 +214,11 @@ def main():
 
     with open(os.path.join(_HERE, 'test_vectors.jsonl'), 'wb') as f:
         f.write(body)
+    # Beside the vectors, so the directory is self-contained: the JavaScript port
+    # cannot build an asset — it has no symbol table and no Isabelle — and a gate that
+    # ran the two implementations against different assets would prove nothing.
+    with open(os.path.join(_HERE, 'asset.json'), 'w', encoding='utf-8') as f:
+        f.write(asset_text)
 
     by_feature = {}
     for _, feature, _ in vectors:

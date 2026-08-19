@@ -3361,18 +3361,39 @@ Do these in order. Each step is finished when its test passes, not before.
    *Accepted when* it passes the shared test-vector file (§16.5) with zero
    mismatches. It must not consult any JavaScript built-in for character
    classification — see D41 for the measured divergences that motivates this.
+   **Done, 2026-08-19**: `site/tokenizer/isabelle_tokenizer.js`, which reproduced all
+   12,171 triples with zero mismatches. It is written to be read beside the Python
+   file — same order, same names, same algorithm — because two implementations of one
+   specification drift where they are two readings of prose and stay together where
+   they are one algorithm written twice. The one place they had differed was §5.4's
+   split, a character-class regular expression in Python against an explicit loop in
+   JavaScript; the Python side is now the explicit loop too, verified against the
+   frozen baseline's whole-corpus digests, which did not move. `asset.json` is
+   committed beside the vectors, because the port cannot build one and a gate that ran
+   the two implementations against different assets would prove nothing.
 
 4. **The shared test-vector file** (§16.5). Build it before step 3 so the port
    has a target. **Done, 2026-08-19**: `site/tokenizer/test_vectors.jsonl`, 12,171
    triples over 17 named features, with `test_vectors.meta.json` beside it and
    `build_test_vectors.py` to regenerate both.
 
-5. **The CI gate** (§16.6). **Half done, 2026-08-19**:
-   `site/tokenizer/check_test_vectors.py` makes every assertion §16.6 asks for and
-   runs the Python implementation against the file; `test_isabelle_tokenizer.py` runs
-   it over the committed directory and exercises each of its refusals on a tampered
-   copy. What is left is the JavaScript half, which needs step 3, and the workflow
-   that runs both.
+5. **The CI gate** (§16.6). **Done, 2026-08-19**:
+   `.github/workflows/tokenizer-gate.yml`, two jobs. The Python job runs
+   `test_isabelle_tokenizer.py` and `check_test_vectors.py`; the JavaScript job runs
+   `check_test_vectors.mjs` and `test_tokenizer.mjs`. Both checkers make the same
+   assertions on purpose, since the claim being gated is that the two implementations
+   agree about one file.
+
+   **It installs neither Isabelle nor this package, and that is load-bearing rather
+   than thrifty.** The tokenizer reads its classes and its two tables from the asset
+   and needs nothing else, which is the property §5.5 exists to establish, so a gate
+   that needed the Isabelle stack would contradict what it is gating. It also could
+   not have it: `isabelle-rpc` is published to conda and not to PyPI, deliberately, so
+   a plain runner cannot `pip install` this package at all. Verified by running the
+   whole suite in a tree holding nothing but `site/`, the one tokenizer module and the
+   test file: 62 passed, 1 skipped. The one that skips is the one that needs a live
+   symbol table — that the committed `asset.json` is still what that table produces —
+   and it runs on a developer's machine, where the answer can be had.
 
 6. **`_truncate_to_token_limit`** — decide whether it is still needed. D29 caps
    the query in *characters*, so it probably is not. If not, do not move it out

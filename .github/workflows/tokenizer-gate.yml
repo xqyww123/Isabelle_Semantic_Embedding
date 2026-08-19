@@ -1,0 +1,68 @@
+# The tokenizer gate of §16.6 of SEMANTIC_SEARCH_SITE_PLAN.md.
+#
+# The site's index is built by the Python tokenizer and its queries are compiled by
+# the JavaScript one. If the two ever disagree, the site returns silently wrong
+# results: no error, no exception, no log line -- a query simply stops matching
+# documents it should match. Nothing else in this repository can detect that, which
+# is why this gate exists and why it runs both implementations against the same
+# frozen file rather than each against its own tests.
+#
+# It deliberately installs neither Isabelle nor this package. The tokenizer reads its
+# character classes and its two symbol tables from `site/tokenizer/asset.json` and
+# needs nothing else -- that is the property §5.5 is built around -- so a gate that
+# needed the Isabelle stack to run would contradict the thing it is gating. It could
+# not install the package anyway: `isabelle-rpc` is published to conda and not to
+# PyPI, deliberately. The one test that does need a live symbol table (that the
+# committed asset still matches it) skips here and runs on a developer's machine.
+name: tokenizer-gate
+
+on:
+  push:
+    paths:
+      - Isabelle_Semantic_Embedding/isabelle_tokenizer.py
+      - Isabelle_Semantic_Embedding/tokenizer_asset.py
+      - site/tokenizer/**
+      - site/prototype/**
+      - test_isabelle_tokenizer.py
+      - .github/workflows/tokenizer-gate.yml
+  pull_request:
+    # Spelled out rather than shared through a YAML anchor: GitHub's workflow
+    # parser has never supported anchors reliably.
+    paths:
+      - Isabelle_Semantic_Embedding/isabelle_tokenizer.py
+      - Isabelle_Semantic_Embedding/tokenizer_asset.py
+      - site/tokenizer/**
+      - site/prototype/**
+      - test_isabelle_tokenizer.py
+      - .github/workflows/tokenizer-gate.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest
+      # §16.2's table, §5.3's relations, the fold-scan parity cases, the asset
+      # version refusal, and every one of §16.6's refusals exercised on a doctored
+      # copy of the vector directory.
+      - run: python -m pytest test_isabelle_tokenizer.py -q
+      - run: python site/tokenizer/check_test_vectors.py
+
+  javascript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # The same 12,171 triples and the same four refusals, so that "both
+      # implementations passed" is one claim about one file and not two reports.
+      - run: node site/tokenizer/check_test_vectors.mjs
+      - run: node site/tokenizer/test_tokenizer.mjs

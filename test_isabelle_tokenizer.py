@@ -18,16 +18,67 @@ AFP Shivers-CFA symbols §5.1 already cites as unconvertible by any asset.
 """
 
 import copy
+import os
 
 import pytest
 
-from Isabelle_Semantic_Embedding import tokenizer_asset
-from Isabelle_Semantic_Embedding.isabelle_tokenizer import Tokenizer
+# By path, not by package, for the reason `check_test_vectors.load_tokenizer_module`
+# gives: the tokenizer needs nothing but the standard library and the asset, and the
+# gate has to run where the rest of the package cannot be installed.
+def _vector_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'site', 'tokenizer')
+
+
+def _checker():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'check_test_vectors', os.path.join(_vector_dir(), 'check_test_vectors.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+Tokenizer = _checker().load_tokenizer_module().Tokenizer
 
 
 @pytest.fixture(scope="module")
 def asset():
-    return tokenizer_asset.build_asset()
+    """The asset committed beside the test vectors.
+
+    Not a freshly built one, so that the whole of this file runs where the gate runs:
+    CI has no Isabelle distribution and no symbol table, and a gate that could only
+    run on a machine with one would not be a gate. That the committed asset is still
+    what the live table produces is a separate question, and
+    `test_committed_asset_matches_the_live_symbol_table` is where it is asked.
+    """
+    import json
+    import os
+    with open(os.path.join(_vector_dir(), 'asset.json'), encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _live_asset():
+    try:
+        from Isabelle_Semantic_Embedding import tokenizer_asset
+        return tokenizer_asset.build_asset()
+    except Exception as exc:                       # no ISABELLE_HOME, no symbol table
+        pytest.skip('no live Isabelle symbol table here: %s' % exc)
+
+
+def test_committed_asset_matches_the_live_symbol_table():
+    """The one test that needs Isabelle, and the one reason to keep needing it.
+
+    `site/tokenizer/asset.json` is what both implementations read and what the frozen
+    vectors were produced against. If the symbol table it was built from has moved —
+    a new component registered, a distribution upgrade, an edit to
+    `SUBSUP_TRANS_TABLE` — then the committed asset is stale and the vectors are
+    describing a tokenizer nobody runs any more.
+    """
+    import json
+    import os
+    live = json.dumps(_live_asset(), ensure_ascii=False, sort_keys=True, indent=1) + '\n'
+    with open(os.path.join(_vector_dir(), 'asset.json'), encoding='utf-8') as f:
+        assert f.read() == live
 
 
 @pytest.fixture(scope="module")
@@ -148,7 +199,9 @@ def test_asset_class_sizes(asset):
 def test_private_use_symbols_are_not_shipped(asset):
     """D44 leaves such a symbol as its literal escape; dropping it from the table
     makes that identical to the undefined case, in both implementations."""
-    from Isabelle_RPC_Host.unicode import is_private_use
+    def is_private_use(ch):
+        c = ord(ch)
+        return 0xE000 <= c <= 0xF8FF or 0xF0000 <= c <= 0xFFFFD or 0x100000 <= c <= 0x10FFFD
     assert not any(is_private_use(c) for c in asset['symbols'].values())
     assert asset['symbols_private_use']
 
@@ -175,7 +228,8 @@ def test_module_loads_with_no_isabelle_at_all(asset, tmp_path):
                 raise ImportError('blocked for this test: ' + name)
             return None
 
-    here = os.path.dirname(os.path.abspath(tokenizer_asset.__file__))
+    here = os.path.normpath(os.path.join(_vector_dir(), '..', '..',
+                                         'Isabelle_Semantic_Embedding'))
     blocker = Block()
     sys.meta_path.insert(0, blocker)
     saved = {k: os.environ.pop(k) for k in
@@ -195,21 +249,6 @@ def test_module_loads_with_no_isabelle_at_all(asset, tmp_path):
 
 # --- §16.5's vector file and §16.6's gate -----------------------------------
 
-def _vector_dir():
-    import os
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'site', 'tokenizer')
-
-
-def _checker():
-    import importlib.util
-    import os
-    spec = importlib.util.spec_from_file_location(
-        'check_test_vectors', os.path.join(_vector_dir(), 'check_test_vectors.py'))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_committed_vectors_pass_the_gate(tok):
     assert _checker().main(_vector_dir(), tok) == 0
 
@@ -219,7 +258,8 @@ def _tampered(tmp_path, edit):
     import json
     import os
     import shutil
-    for name in ('test_vectors.jsonl', 'test_vectors.meta.json', 'test_vectors.history'):
+    for name in ('asset.json', 'test_vectors.jsonl', 'test_vectors.meta.json',
+                 'test_vectors.history'):
         shutil.copy(os.path.join(_vector_dir(), name), tmp_path / name)
     edit(tmp_path)
     return str(tmp_path)

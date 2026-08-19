@@ -5,8 +5,10 @@ same file and must reach the same verdict.
 Four assertions, and the third is the one that exists because of how this can be
 cheated:
 
-1. The `.jsonl`'s bytes hash to what the meta says, and there are as many lines as it
-   says. A vector file that has drifted from its own header is not evidence.
+1. The `.jsonl`'s bytes hash to what the meta says, there are as many lines as it
+   says, and the asset beside them is the one the meta names. A vector file that has
+   drifted from its own header is not evidence, and two implementations run against
+   two different assets prove nothing about each other.
 2. The Python implementation reproduces every triple.
 3. **The digest may not change while the count stays the same** unless the history's
    newest line says a rule changed and why. Changing a tokenizer rule alters the
@@ -20,6 +22,7 @@ cheated:
 import hashlib
 import json
 import os
+import re
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -33,6 +36,30 @@ REQUIRED_FEATURES = (
     'escape_against_ascii_symbolic', 'astral_symbol', 'adjacent_fold_markers',
     'escape_scanning', 'numeric_class', 'empty', 'real_expression', 'real_name',
 )
+
+
+def load_tokenizer_module():
+    """The production tokenizer, imported as a package if that works and read off disk
+    if it does not.
+
+    The fallback is not a convenience. `Isabelle_Semantic_Embedding`'s `__init__`
+    pulls in the whole package, whose `isabelle-rpc` dependency is published to conda
+    and not to PyPI, so a plain CI runner cannot install it — while the tokenizer
+    itself needs nothing but the standard library and the asset. A gate that could
+    only run where the Isabelle stack is installed would not be a gate, and it would
+    also contradict the property it is gating.
+    """
+    try:
+        from Isabelle_Semantic_Embedding import isabelle_tokenizer
+        return isabelle_tokenizer
+    except ImportError:
+        import importlib.util
+        path = os.path.normpath(os.path.join(
+            _HERE, '..', '..', 'Isabelle_Semantic_Embedding', 'isabelle_tokenizer.py'))
+        spec = importlib.util.spec_from_file_location('isabelle_tokenizer', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
 
 def parse_history(text):
@@ -56,21 +83,25 @@ def main(directory=_HERE, tokenizer=None):
     if digest != meta['sha256']:
         problems.append('the .jsonl hashes to %s, the meta says %s' % (digest, meta['sha256']))
 
-    # Split on LF and nothing else: str.splitlines also breaks at U+0085, U+2028 and
-    # U+2029, which real Isabelle text contains. The generator escapes those three for
-    # the same reason, so a file that still splits differently under the two readings
-    # is a malformed file and this catches it.
+    # Split on LF and nothing else. Python's str.splitlines also breaks at U+0085,
+    # U+2028 and U+2029, JavaScript's line handling regards the last two, and real
+    # Isabelle text contains all three — so the generator escapes them, and this
+    # asserts it did. A line-oriented file that can hold a line break inside a line is
+    # not a contract.
     text = body.decode('utf-8')
     vectors = [json.loads(line) for line in text.split('\n') if line]
-    if len(text.split('\n')) - 1 != len(text.splitlines()):
+    if re.search('[\u0085\u2028\u2029\r]', text):
         problems.append('a line contains a character some line readers treat as a break')
     if len(vectors) != meta['count']:
         problems.append('%d lines, the meta says %d' % (len(vectors), meta['count']))
 
+    asset_text = open(os.path.join(directory, 'asset.json'), encoding='utf-8').read()
+    asset_sha = hashlib.sha256(asset_text.encode('utf-8')).hexdigest()
+    if asset_sha != meta['asset_sha256']:
+        problems.append('the asset beside the vectors hashes to %s, the meta says %s'
+                        % (asset_sha, meta['asset_sha256']))
     if tokenizer is None:
-        from Isabelle_Semantic_Embedding.isabelle_tokenizer import Tokenizer
-        from Isabelle_Semantic_Embedding import tokenizer_asset
-        tokenizer = Tokenizer(tokenizer_asset.build_asset())
+        tokenizer = load_tokenizer_module().Tokenizer(json.loads(asset_text))
     mismatched = 0
     for v in vectors:
         if tokenizer.tokenize(v['input']) != v['tokens'] or tokenizer(v['input']) != v['subtokens']:
