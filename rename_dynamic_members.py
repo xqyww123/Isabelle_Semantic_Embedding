@@ -42,10 +42,13 @@ A theorem-alike key does not contain the name (the tail is the proposition's
 digest), so changing `name` moves nothing.  Contrast the name-addressed kinds
 (constant/type/class/locale/collection/method), where the name IS the key.
 
-The vector MUST be dropped with the rename: the embedded document is
+The vector MUST be invalidated with the rename: the embedded document is
 `pretty_print + interpretation` (document_text.py:50) and `pretty_print` renders
 the stored name, while `_auto_embed` only fills ABSENT vectors and never
-refreshes a stale one.  Re-embed afterwards (`isabelle-semantics embed`).
+refreshes a stale one.  The invalidation goes through `invalidate_vectors` --
+a tombstone in EVERY vector store, which reads as absent and masks any
+system-layer copy -- never an open-coded delete on one store.  Re-embed
+afterwards (`isabelle-semantics embed`).
 
 WHAT IS NOT TOUCHED
 -------------------
@@ -68,7 +71,6 @@ import lmdb
 import msgpack
 
 SEMANTICS_MAP_SIZE = 1 << 32
-VECTOR_MAP_SIZE = 1 << 36
 F_NAME, F_POS = 1, 12                 # positional codec, _Semantic_DB._decode
 D_NAME, D_POS = 0, 2                  # dump record layout, rekey_dump.py
 COLLECTION_TAG = 6
@@ -89,15 +91,20 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cache", default=os.path.expanduser(
         "~/.cache/Isabelle_Semantic_Embedding"))
-    ap.add_argument("--dump", required=True)
+    ap.add_argument("--dump", default=None,
+                    help="rekey dump database for the same-key pass; omit to "
+                         "run the sibling pass alone (it needs only the store)")
     ap.add_argument("--report", required=True)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
+    # The package must see the same cache directory this script scans, or
+    # invalidate_vectors would tombstone stores under a different tree.
+    os.environ["SEMANTIC_DB_DIR"] = args.cache
+    from Isabelle_Semantic_Embedding.semantic_embedding import (
+        invalidate_vectors, vector_store_names)
+
     sem_path = os.path.join(args.cache, "semantics.lmdb")
-    vec_name = next(d for d in sorted(os.listdir(args.cache))
-                    if d.startswith("vector_") and d.endswith(".lmdb"))
-    vec_path = os.path.join(args.cache, vec_name)
 
     # ---- pass 1: group theorem-alike records by proposition; find the targets
     print("pass 1: scanning the store ...", flush=True)
@@ -151,35 +158,38 @@ def main() -> None:
           flush=True)
 
     # ---- pass 2: the same-key candidates, from the dump
-    print("pass 2: scanning the dump for same-key positioned records ...", flush=True)
-    still = [k for (pre, dig), rows in grp.items() for k, tag, name, pos in rows
-             if pos is None and is_member_style(name) and k not in targets]
-    dmp = lmdb.open(args.dump, readonly=True, lock=False)
     samekey_multi = 0
-    with dmp.begin() as t:
-        for key in still:
-            raw = t.get(key)
-            if raw is None:
-                continue
-            posd = [r for r in msgpack.unpackb(bytes(raw)) if r[D_POS] is not None]
-            if not posd:
-                continue
-            if len({dec(r[D_NAME]) for r in posd}) > 1:
-                samekey_multi += 1
-            pick = min(posd, key=lambda r: dec(r[D_NAME]))
-            nm = dec(pick[D_NAME])
-            if is_member_style(nm):
-                raise SystemExit(f"a positioned DUMP record has a member-style "
-                                 f"name: {nm!r}; refusing")
-            store_rec = next(r for (pre, dig), rows in grp.items() for r in rows
-                             if r[0] == key)
-            targets[key] = {"name": nm, "pos": norm_pos(pick[D_POS]),
-                            "source": "samekey", "old_name": store_rec[2],
-                            "kind": store_rec[1], "from_key": key.hex()}
-    dmp.close()
-    n_same = sum(1 for v in targets.values() if v["source"] == "samekey")
-    print(f"  samekey targets: {n_same}"
-          f" (dump records disagreeing on the name: {samekey_multi})", flush=True)
+    if args.dump is None:
+        print("pass 2 skipped: no --dump given, sibling pass alone", flush=True)
+    else:
+        print("pass 2: scanning the dump for same-key positioned records ...", flush=True)
+        still = [k for (pre, dig), rows in grp.items() for k, tag, name, pos in rows
+                 if pos is None and is_member_style(name) and k not in targets]
+        dmp = lmdb.open(args.dump, readonly=True, lock=False)
+        with dmp.begin() as t:
+            for key in still:
+                raw = t.get(key)
+                if raw is None:
+                    continue
+                posd = [r for r in msgpack.unpackb(bytes(raw)) if r[D_POS] is not None]
+                if not posd:
+                    continue
+                if len({dec(r[D_NAME]) for r in posd}) > 1:
+                    samekey_multi += 1
+                pick = min(posd, key=lambda r: dec(r[D_NAME]))
+                nm = dec(pick[D_NAME])
+                if is_member_style(nm):
+                    raise SystemExit(f"a positioned DUMP record has a member-style "
+                                     f"name: {nm!r}; refusing")
+                store_rec = next(r for (pre, dig), rows in grp.items() for r in rows
+                                 if r[0] == key)
+                targets[key] = {"name": nm, "pos": norm_pos(pick[D_POS]),
+                                "source": "samekey", "old_name": store_rec[2],
+                                "kind": store_rec[1], "from_key": key.hex()}
+        dmp.close()
+        n_same = sum(1 for v in targets.values() if v["source"] == "samekey")
+        print(f"  samekey targets: {n_same}"
+              f" (dump records disagreeing on the name: {samekey_multi})", flush=True)
 
     # ---- the collision statistic the user asked for
     # After the rename, does another record of the SAME KIND carry the same name?
@@ -202,7 +212,7 @@ def main() -> None:
     by_kind = collections.Counter(t["kind"] for t in targets.values())
     by_src = collections.Counter(t["source"] for t in targets.values())
     report = {
-        "dry_run": args.dry_run, "vector_store": vec_name,
+        "dry_run": args.dry_run, "vector_stores": vector_store_names(),
         "targets": len(targets), "by_kind": {hex(k): v for k, v in by_kind.items()},
         "by_source": dict(by_src),
         "groups_with_disagreeing_positioned_names": multi_name_groups,
@@ -223,10 +233,16 @@ def main() -> None:
     problems: list[str] = []
     counts: collections.Counter = collections.Counter()
     if not args.dry_run:
-        print("\nwriting ...", flush=True)
+        # Invalidate BEFORE renaming (the package's write-side discipline,
+        # Vector_Store._raw_getter): dying between the two steps leaves
+        # tombstones over unchanged records, which a re-embed refills; the
+        # opposite order would leave stale vectors silently.
+        print("\ninvalidating vectors ...", flush=True)
+        invalidate_vectors(sorted(targets))
+        counts["vectors_invalidated"] = len(targets)
+        print("writing ...", flush=True)
         sem = lmdb.open(sem_path, map_size=SEMANTICS_MAP_SIZE)
-        vec = lmdb.open(vec_path, map_size=VECTOR_MAP_SIZE)
-        with sem.begin(write=True) as st, vec.begin(write=True) as vt:
+        with sem.begin(write=True) as st:
             for key, tgt in targets.items():
                 raw = st.get(key)
                 if raw is None:
@@ -246,12 +262,7 @@ def main() -> None:
                 if dec(back[F_NAME]) != tgt["name"] or norm_pos(back[F_POS]) != tgt["pos"]:
                     problems.append(f"read-back mismatch: {key.hex()}")
                 counts["renamed"] += 1
-                if vt.get(key) is not None:
-                    vt.delete(key)
-                    if vt.get(key) is not None:
-                        problems.append(f"vector survived: {key.hex()}")
-                    counts["vectors_dropped"] += 1
-        sem.close(); vec.close()
+        sem.close()
         report["write"] = dict(counts)
         report["problems"] = problems
         print(f"  {dict(counts)}", flush=True)
