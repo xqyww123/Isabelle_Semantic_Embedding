@@ -1627,6 +1627,18 @@ port. To stop them drifting:
   therefore records the exact file list and the Unicode version of the classes,
   and `Isabelle_RPC_Host.unicode.get_SYMBOL_FILES()` reports the former.
 
+  **The component files are carried, not filtered out** — the user settled this on
+  2026-08-19, and had settled it before: "要带！". So the asset is built from whatever
+  `ISABELLE_SYMBOLS` names on the export machine, phi-System's `symbols` and
+  `symbols-words` included, even though D24 publishes no phi-System record and no
+  published document can contain one of those symbols. Carrying them costs the asset
+  a little size and costs the index nothing, while filtering them would make the
+  asset depend on a judgement about which component matters — and a judgement of that
+  kind is exactly what went wrong when the loader rebuilt the list from
+  `ISABELLE_HOME`. As built on 2026-08-19 the table has 624 symbols with a code
+  point, of which 135 are private-use and are dropped for the separate reason §16.4
+  gives, leaving 489.
+
 - **The namespace name embeds the asset's digest** (D45), so an index and the
   asset that built it cannot come apart. This replaces a run-time consistency
   check: there is nothing to check, because a Worker carrying an older asset
@@ -1640,8 +1652,13 @@ port. To stop them drifting:
   sufficient: **on the corpus that is actually published**, pipeline steps 1, 2 and 3
   are all the identity (§3.4 — step 3 does change 1,056 stored expressions, and D24
   excludes every one of them), so the gate must assert **coverage of named features**
-  and not merely a sample size. Step 0 needs a row of its own too: a condition ending
-  in `(_)` and the same condition without it must produce the same subtokens.
+  and not merely a sample size. (Measured 2026-08-19, so this is no longer an
+  inference from §3.4: step 3 changes 0 of the authority's 1,336,979 expressions and
+  0 of its 1,343,793 names, every one of the 1,056 having been phi-System.) An
+  earlier version of this bullet also asked for a test-vector row pinning step 0 —
+  that a condition ending in `(_)` and the same condition without it produce the same
+  subtokens. Step 0 is gone (§5.1), so that row would pin a behaviour the tokenizer
+  must not have; the user settled its removal on 2026-08-19.
 
 - The test vector file is versioned with the data, and so is the asset.
 
@@ -3146,7 +3163,8 @@ the asset (D45). An earlier draft of this paragraph said nine of the 99 come fro
                               → ['Path','Connected','path','image','join']
 "f'"                          → ["f'"]             ← `'` is a quasi-letter, not a separator
 '\<=', unconverted           → ['\<=']            ← one ASCII-symbolic run; the user's own example
-'\<alpha>', unconverted      → ['\<','alpha','>']  ← an escape step 3a did not convert just splits
+'\<binit>', undefined        → ['\<','binit','>']  ← an escape step 3a did not convert just splits
+'\<alpha>'                   → ['α']              ← and one it did convert does not
 '\< \<alpha>'                → ['\<','α']          ← step 3a converts the second; the first is a bare run
 '\<\<alpha>'                 → ['\<','α']          ← same, with no space between them
 'x1'                          → ['x1']             ← a digit CONTINUES an identifier; it does not start a numeral
@@ -3157,6 +3175,21 @@ the asset (D45). An earlier draft of this paragraph said nine of the 99 come fro
 '%x. x'                       → ['%','x','x']      ← `%` is not converted to λ by the tokenizer
 '_'  '.'  '?'  '   '  '???'  '_.'  '\<^sub>'   → [] (all seven)
 ```
+
+**Why the unconverted-escape row names `\<binit>` and not `\<alpha>`.** Until
+2026-08-19 that row read `'\<alpha>', unconverted → ['\<','alpha','>']`, and no
+implementation could ever produce it: `\<alpha>` is defined in every symbol table
+there is, so step 3a converts it and the array is `['α']`. The prototype the row was
+attributed to returns `['α']` too, so the row had never been measured — it was §5.1
+step 3a's illustrative sentence transcribed as if it were a case. §16.1 had already
+warned that these four escape rows came from the user's worked examples and from
+§5.1 rather than from the prototype, and named them the four to check first when the
+production tokenizer ran §16.3 step 1; that check found this one on 2026-08-19 and
+the user settled the repair the same day — **change the input, not the expectation**,
+so that the property the row exists to pin is kept. `\<binit>` is one of the four AFP
+Shivers-CFA escapes §5.1 already cites as unconvertible by any asset, so it is
+undefined by construction rather than by assumption. The added `'\<alpha>' → ['α']`
+row covers the conversion the old row accidentally hid.
 
 **The fallback clause is the one piece of the rule that prose alone loses.**
 Splitting a token on the separator class normally yields its parts; but a token
@@ -3196,9 +3229,13 @@ Do these in order. Each step is finished when its test passes, not before.
 
    *Accepted when* both of these hold:
 
-   - It reproduces **every line of §16.2**, all 32 of them, and every relation in
+   - It reproduces **every line of §16.2**, all 33 of them, and every relation in
      §5.3. Both tables have been re-run under the character-level definition with zero
-     mismatches (§16.1), so this is a target that is known to be reachable.
+     mismatches (§16.1), so this is a target that is known to be reachable. **Done,
+     2026-08-19**: `test_isabelle_tokenizer.py` runs both tables and passes, with the
+     one repair §16.2 records — the row that named `\<alpha>` as an unconverted escape
+     was unreachable and now names `\<binit>`, which is the reason the table has 33
+     rows and not 32.
    - Run over the whole corpus, its subtoken arrays differ from the prototype's on a
      known set and are identical everywhere else. Compare with a digest of the
      concatenated arrays per record, not by eyeballing samples.
@@ -3328,10 +3365,37 @@ commit as the rule change; §5.5 requires both implementations to refuse an asse
 version they do not implement.
 
 Emit the abbreviation table too, from the `abbrev:` fields of `etc/symbols` —
-the interface needs it for live replacement in the condition box (§9.3), and it
-is already being read. Note that an abbreviation with more than one expansion
+the interface needs it for live replacement in the condition box (§9.3). Note that an
+abbreviation with more than one expansion
 (`.>` and `<.` each serve four or more arrows) cannot be replaced without
-asking, so the interface uses the unambiguous ones only.
+asking, so the interface uses the unambiguous ones only. **This sentence used to end
+"and it is already being read", which is not true of anything in the repository**:
+`_load_symbols` in `Isabelle_RPC_Host/unicode.py` parses the `code:` and `group:`
+fields and no other, so emitting abbreviations means teaching that shared loader a
+third field. `tokenizer_asset.py` therefore does not emit them yet; the condition box
+that needs them is §9.3's work and has not started.
+
+**What `tokenizer_asset.py` emits, and three choices it makes that this section did
+not settle** (2026-08-19, with §16.3 step 1):
+
+- **A private-use symbol is dropped from the table rather than shipped.** D44 leaves
+  such a symbol as its literal `\<name>`, which is exactly what an undefined symbol
+  does, so dropping it makes the two cases one case and spares the JavaScript port a
+  private-use range check of its own — a rule each implementation would otherwise
+  have to carry, which is what §5.5 exists to prevent. The names dropped are listed
+  in the asset under `symbols_private_use`, so nothing is lost, only moved out of the
+  lookup table.
+- **The whitespace class and the discard class ship as well.** This section's list
+  omits them while its own second bullet gives the reason they cannot be omitted —
+  U+001C–U+001F and U+0085 satisfy Python's `isspace()` and lie outside JavaScript's
+  `\s`, and U+FEFF is the reverse. Without them in the asset the port has to ask
+  `\s`, which §5.5 forbids. Read as an omission from the list, not as a decision.
+- **The 99 separators, the 90 rendered sub/superscripts and the 20 rendered digits
+  §5.2 excludes from a numeric run are each emitted outright**, rather than left for
+  a consumer to derive from the fold table. §5.4 warns that an implementation
+  deriving one of these classes from another will drift the moment the fold table
+  gains an entry; deriving all three here, once, from the fold table, is that warning
+  obeyed rather than repeated in two languages.
 
 ### 16.5 The test-vector file
 
