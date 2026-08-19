@@ -593,9 +593,12 @@ reader of those sections needs to find the decision that used to govern them.
     there is always a ranking, so a bounded list is honest rather than limiting.
   - **A dataset download link is offered.** It points at the existing Hugging
     Face dataset and conda channel — the database is already published there,
-    so this is a link and not a second copy to maintain. The user weighed this
-    against the fact that it lets someone build a competing site from the same
-    data and chose the citation.
+    so this is a link and not a second copy to maintain. The user's answer to
+    whether to offer it was one word, "放". The trade-off an earlier draft
+    attributed to him — that he weighed it against letting someone build a
+    competing site and chose the citation — is the author's reasoning, not his,
+    and is recorded that way so that reopening this needs only his word and not
+    new evidence about competitors.
   - **The five test namespaces stay** (§3.6, ~168 MB, ~$0.06/month, absorbed by
     the $16 floor). The user left the call to the author; three of them are the
     evidence D21 and D22 rest on and will be wanted for regression once the
@@ -639,10 +642,15 @@ reader of those sections needs to find the decision that used to govern them.
   pays twice. Accepted cost: the first query after an idle period pays cold
   latency, which turbopuffer's own figures put at ~300 ms, p90 1,214 ms on large
   datasets.
-- **D26** (2026-08-13) — **a theorem's result card shows no theory line**, unless
-  a theory condition is active, in which case it shows the theories that matched
-  it, marked as matches and with no "+N more". Name-addressed entities always
-  show their one declaring theory. Measured justification: only 0.2 % of
+- **D26** (2026-08-13) — **a theorem's result card shows no theory line.** That
+  much is the user's, and he reached it himself: "我认为对于 theorem-like 是不显示
+  theory consitutent 比较好。你觉得呢？" **The exception below is the author's and
+  has not been put to him** — unless a theory condition is active, in which case the
+  card shows the theories that matched it, marked as matches and with no "+N more".
+  It is the only case in which a theorem card prints constituent theories at all, so
+  it is the part to raise if any part of D26 is reopened. Name-addressed entities
+  always show their one declaring theory. The measurement below is why the author
+  agrees with the default, not how the default was decided: only 0.2 % of
   theorem-alike records have fewer than three constituent theories, so
   truncation is the norm; and the alphabetically first constituent belongs to
   session `HOL` in **40.8 %** of records and to some `HOL-*` session in ~12 %
@@ -783,6 +791,16 @@ one that does not is a defect.
 machine's. Quote the left-hand column. The right-hand one is not a lagging copy of
 it but a different generation of the store; §3's preamble measures how the two
 differ and why the 18,550-record excess here is not publishable data.
+
+**What the D33 migration dropped, and what still needs re-interpreting, is a list
+and this plan does not own it.** `THEORY_HASH_REKEY_REINTERPRET_LIST.md` is the
+working list, kept current there: of 1,380,494 entries 1,534 were dropped, of which
+785 are a genuine loss, and the theories needing a re-collection run are enumerated
+with a status column. The site publishes this corpus and D24 and D14 both key off
+`theory_constituents`, the very field the defect damaged and the migration rebuilt,
+so an export that runs while rows in that list are still `pending` publishes the
+gap. Read it before the first export; do not copy it here, because a copy goes
+stale and the list is maintained.
 
 ```
                               cslh19, the authority   this machine, for contrast
@@ -1119,24 +1137,22 @@ divergence produces silently wrong search results with no error anywhere.
 ### 5.1 Pipeline
 
 Applied identically to stored entity expressions, stored names, stored theory
-long names, and every user-supplied filter string. Steps 1 to 4 are the tokenizer
-proper and have no exceptions; step 0 is the one input-dependent step and its
-condition is part of the specification.
+long names, and every user-supplied filter string. **Every step is the tokenizer
+proper and none of them is input-dependent**: the pipeline does not know, and must
+not be told, which panel a string came from.
 
-0. **Strip one trailing `(_)`, and only from an `Entity Name` filter condition.**
-   Never from stored text, never from the other panels, never more than once. The
-   reason is D5 and `from_collection` (§6.1): where the enumeration invented a name
-   for a member of a dynamic fact collection, the card displays
-   `<from_collection>(_)` rather than the stored name, so a visitor who copies what
-   they see and pastes it into `Entity Name` types `coll(_)` — which tokenizes to
-   `['coll','(',')']` and matches nothing, because `name_subtokens` is built from the
-   **raw** name (§8.1 step 5). Stripping the suffix makes the pasted form behave
-   exactly like the raw one. `DYNAMIC_MEMBER_NAMING_PLAN.md` §2.3 decides this and
-   requires it here, as a named step both implementations share with a row in §5.5's
-   test-vector file; §16.2 carries the case. The alternative it rejects is filtering
-   member rows through `from_collection`, which has no compilation: §6.3 compiles a
-   name condition to exactly one form over `name_subtokens`, and the Worker emits one
-   filter for the whole namespace, so it cannot branch per row.
+There used to be a step 0 here, stripping one trailing `(_)` from an `Entity Name`
+condition so that a pasted `coll(_)` — the invented display form of a dynamic fact
+collection's member (§6.1, `from_collection`) — matched the raw stored name.
+**The user removed it on 2026-08-19**: "我们不需要解决查询的问题。`coll(_)` 本身就
+不是合法的查询项目." A visitor who pastes `coll(_)` gets no match, and that is the
+intended behaviour, because the string names nothing — Isabelle's own fact selection
+takes a number, which is exactly why `(_)` was chosen for the display form. So
+`DYNAMIC_MEMBER_NAMING_PLAN.md` §2.3's first consequence, which requires the strip
+here, is overruled at the source and must go from that plan too; the display half of
+§2.3 — render `<from_collection>(_)` where a person reads it — stands untouched. This
+also removes the only input-dependent step the shared tokenizer had, which is a gain
+for §5.5: the Python and the JavaScript now agree on a function of the string alone.
 
 1. `unicodedata.normalize('NFC', s)` — the store is already 100 % NFC; queries
    pasted from macOS may be NFD, whose combining marks are not `\w` and would
@@ -2003,12 +2019,10 @@ be re-runnable and deterministic.
 5. **Tokenize** into the filterable arrays of §6.1 (§5). `name_subtokens` comes
    from the raw `name`, never the displayed form: `from_collection` is a display
    attribute and the Worker emits one filter for the whole namespace, so it
-   cannot route a member row to a different field. A pasted `coll(_)` is handled
-   on the **query** side instead, by **§5.1's step 0**, which strips one trailing
-   `(_)` from an `Entity Name` condition before tokenizing so that it behaves exactly
-   like the raw name. That step is part of the tokenizer both implementations share
-   and it has a row in the test-vector file (§5.5) and a case in §16.2; it is **not**
-   part of the asset. The asset carries character classes, tables, and the
+   cannot route a member row to a different field. **A pasted `coll(_)` therefore
+   matches nothing, and that is intended** — the user ruled on 2026-08-19 that it is
+   not a legal query item, and §5.1 records the query-side strip that used to be here
+   and is now removed. The asset carries character classes, tables, and the
    `tokenizer_rule` version that identifies the rules — but never the rules
    themselves, which live here in §5 and are implemented twice (§5.5).
 6. **Emit** the one stamped tokenizer asset (D45, D46) and the shared test-vector
@@ -2139,6 +2153,26 @@ any punctuation … there is **no escaping and no inline operator syntax; do not
 design one**." A condition is one line of literal text; the only structure is
 which panel it sits in and which way its own toggle is set.
 
+### 9.1b How the mockup is changed, when it has to be
+
+Two rules, both the user's, on 2026-08-12: "你能改进设计稿吗？用同样的样式和结构，
+单纯复制粘贴".
+
+- **When `site/DESIGN_PROMPT.md` and the mockup disagree about the control model,
+  the mockup is what gets edited.** That is the opposite direction from the copy
+  rule, where the mockup follows `site/COPY.md` and never the reverse (§12.1) — the
+  two are not in conflict because they are about different things, the brief and the
+  mockup being about controls and `COPY.md` being about words.
+- **Edit it by replicating its own existing styles and structure — copy and paste,
+  design nothing new.** The delivered mockup is a Claude Design artefact with a
+  generated runtime that is not edited (§12.1); new markup authored against it drifts
+  from everything around it.
+
+This matters now because `SEMANTIC_SEARCH_SITE_PLAN_DONE.md` §15.5 lists four defects
+still in the mockup — a `load 8 more` control and a total match count that D29
+forbids, an empty Kind chip default against D29, and pagination at 8 rather than 20 —
+and whoever fixes them works under these two rules.
+
 ### 9.2 A required piece of user education
 
 `ContainsTokenSequence` is **literal adjacent matching, not pattern matching**.
@@ -2213,7 +2247,14 @@ replacement covers the unambiguous abbreviations only.
 
 One server-rendered page per **`group`** at a stable URL, carrying name, kinds,
 theory, expression, interpretation, source link, and a "related entities" block
-computed from the ten nearest vectors. The related block is not decoration: it is
+computed from the ten nearest vectors.
+
+**The `from_collection` display rule applies here too**, not only to result cards: a
+page whose record carries the field shows `<from_collection>(_)` in place of the
+stored name (§6.1). The user's instruction named the front end, not one widget —
+"前端可以渲染为 `coll(_)` 的呀" — and these pages are the crawlable, permanent surface
+D25 ships in the first release, so a page is precisely where showing the enumeration's
+invented name, `tendsto_intros(104)`, would be indexed and quoted. The related block is not decoration: it is
 what keeps these pages from being classed as thin content.
 
 **The page identity is `group`, not the site document**, and an earlier draft of D9
@@ -2259,9 +2300,21 @@ against hammering and runaway clients. Two layers are built; a third is
 specified but deliberately not built.
 
 **Layer 1 — one Cloudflare edge rate limiting rule, per IP, 5 requests per
-10 seconds.** The zone stays on the **Free** plan, which includes exactly one
-rule, counting by `ip.src`, with a 10-second period — all this layer needs.
+10 seconds.** The number is the user's, on 2026-08-14: "第一层建议每 10 秒 5 次 …
+其他都赞成，请写进计划". The zone stays on the **Free** plan, which includes exactly
+one rule, counting by `ip.src`, with a 10-second period — all this layer needs.
 Excess requests are rejected at the edge and never reach the Worker.
+
+**Do not tighten this layer, and be careful what "looser" means.** On 2026-08-12 he
+settled 12 per IP per minute — "很好的问题，每 IP 每分钟限流12次。就这么定" — and on
+2026-08-13, asked whether it could come down to 8 per minute, answered "强烈反对".
+Sustained, 5 per 10 seconds is 30 a minute and looser than either; **in burst it is
+stricter than both**, since a visitor firing six quick searches trips at the fifth
+where 12 a minute would have passed all twelve. That change of shape rode in on an
+implementation constraint — KV's one-write-per-second-per-key ceiling — which is the
+move he refused. It stands because he set 5-per-10-seconds himself afterwards, not
+because the plumbing required it, and a future proposal to lower it is re-opening a
+question he has already closed twice.
 
 **Layer 2 — a per-IP daily counter in Workers KV, 1,000 requests per UTC day.**
 Key `rl:<hash of the IP>:<YYYY-MM-DD>`, TTL ~26 h so it expires itself. The IP
@@ -2279,18 +2332,26 @@ of 5 within one second can still exceed 1 write/second and lose an increment or
 two; against a 1,000/day budget that is immaterial. The guarantee that matters
 is on the sustained rate.)
 
-**Layer 3 — a global gate, specified but not built.** A global counter cannot
-live in KV: it is a single key and the site-wide rate would sit around 3
-requests/second, straight into the same 1-write-per-second limit. It needs a
-Durable Object holding a token bucket — refill 2.78 tokens/second (10,000/hour)
-with a burst capacity, and a 429 when empty, never a fixed hourly quota that
-can be exhausted early and leave the site dark for the rest of the hour. It is
-**not built now** because layers 1 and 2 already require roughly 240 distinct
-IPs to saturate that rate, which is a high enough bar for casual abuse, and
-because it is the only piece here needing a new stateful component. Revisit from the
-Worker's own telemetry (§11.2), not from speculation — which is why §11.2 requires
-every 429 to be logged with the layer that produced it. An earlier draft pointed at
-a "§11.4" that does not exist and never did.
+**Layer 3 — a global gate, specified and not built, with the user's agreement.**
+The gate was his own instruction, on 2026-08-13 and ninety seconds after he cancelled
+the $5-a-day spend cap: "此外加一个闸门，全服务器每小时最多 10000 次请求。你觉得够了
+吗？" — a replacement safeguard for the one he had just removed. Its absence is his
+call too, taken on 2026-08-19 when the daily per-IP limit was on the table: "不需要每
+小时的闸门了，我们已经有每天的闸门了" and "接受没有全局上限". **So the site ships with
+no global bound, and that is a decision, not an omission** — earlier drafts of this
+paragraph argued it as the author's complexity trade-off ("the only piece here needing
+a new stateful component"), which put the attribution the wrong way round on a
+question about someone else's API credit.
+
+What stays specified, so that building it later needs no new design: a global counter
+cannot live in KV — it is a single key and the site-wide rate would sit around 3
+requests/second, straight into the same 1-write-per-second limit — nor in a Cloudflare
+edge rule, which counts per data centre (§14.8). It needs a Durable Object holding a
+token bucket: refill 2.78 tokens/second (10,000/hour) with a burst capacity, and a 429
+when empty, never a fixed hourly quota that can be exhausted early and leave the site
+dark for the rest of the hour. Revisit from the Worker's own telemetry (§11.2), not
+from speculation — which is why §11.2 requires every 429 to be logged with the layer
+that produced it.
 
 **On a trip, every layer returns 429 with `Retry-After`** and an interface
 message naming which limit was hit. There is **no degradation to BM25**: BM25
@@ -3173,9 +3234,7 @@ fold markers** (`x⇩⇩1`, `x⇩⇩⇩1`, `x⇩⇩⇩⇩1`), which no sample ca
 folding each marker separately diverges from step 3b's non-overlapping scan; **the
 four escape-scanning cases the user worked through himself** on 2026-08-18 — `\<=`,
 `\<alpha>`, `\< \<alpha>` and `\<\<alpha>` — none of which was gated by anything
-before 2026-08-19 although §5.1 step 3a's rule was written to answer them; and an
-`Entity Name` condition ending in `(_)` together with the same condition without it,
-for §5.1's step 0; and
+before 2026-08-19 although §5.1 step 3a's rule was written to answer them; and
 five cases for §5.2's numeric class, every one of which a 10,000-triple sample of
 real expressions can miss — **a digit abutting a rendered sub/superscript** (`2²`,
 `1 / 10²`), whose corpus frequency is 373 in 1,362,096, so a sample of that size
@@ -3257,7 +3316,19 @@ subtoken losses of D43 include anything that is not bare punctuation.
 round deleted **none** of 35 findings, because the defender was told that killing
 a true finding is worse than keeping a weak one, and so passed everything
 through. Give the defender an **explicit deletion quota with justification**, and
-state the judge's bar **before** the round rather than after.
+state the judge's bar **before** the round rather than after. The user's instruction
+had said so in advance — "Run an Agent Team for a 2-turn adversarial debate of
+reviewing the plan. **重点把低质量的 review 意见删除**" — and the round was run against
+it. Two further halves of that same instruction are recorded here because they were
+carried out nowhere: **report the concerns to the user in Chinese**, and **change no
+code before he agrees**.
+
+**And the round's output was never re-filtered.** D33–D42 descend from those 35
+unculled findings, and no pass has since applied the bar the user asked for. That is
+not a reason to reopen them wholesale — several are his own decisions taken in the
+same conversation — but it is a reason for the D43–D46 review this section still owes
+to widen by one question: *which of D33–D42 rest on a finding that would not survive
+the deletion quota?*
 
 ### 16.8 Sub-questions to settle during the work, not before
 

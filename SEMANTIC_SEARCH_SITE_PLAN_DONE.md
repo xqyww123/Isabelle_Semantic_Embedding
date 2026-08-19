@@ -233,9 +233,11 @@ four lines from where it is needed and never states the equivalence.
 
 **Remove the condescension.** A reader who typed `?P ⟹ ?Q` has demonstrated they
 know what a schematic variable is. The page currently explains schematic
-variables and `find_theorems` to them. The audience is Isabelle users (the user
-settled this on 2026-08-14: readers who do not know Isabelle are not customers),
-so what they need explained is *this index*, not the prover.
+variables and `find_theorems` to them. The audience is Isabelle users — the
+author's reading, recorded in `site/COPY.md` §10; the user's 2026-08-14 ruling that
+a reader with a particular labelling doubt is not a customer was about that doubt and
+is not the general policy this line once attributed to him. So what they need
+explained is *this index*, not the prover.
 
 **Copy that is already approved and must be preserved:**
 

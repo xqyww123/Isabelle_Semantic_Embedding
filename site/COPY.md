@@ -639,7 +639,10 @@ dates and otherwise reads as February 2025.)*
 - **What the copy control copies.** The expression as printed, in Unicode, without
   the name. The hover in §4.1 is the whole answer.
 - **What a locale, a session or a proof method is.** The audience is Isabelle
-  users (settled 2026-08-14). What this interface must explain is this index, not
+  users. That is the author's reading of the product, not a sentence the user
+  spoke: what he settled on 2026-08-14 was one labelling doubt, ruling that a
+  reader who wonders whether `Introduction rule` is a subset of `Theorem` is not
+  a customer. What this interface must explain is this index, not
   the prover.
 
 ## 11. The four labelling choices, settled 2026-08-14
@@ -708,8 +711,10 @@ central lesson of §5.1.
 `\<^named_theorems>  argument: cartouche`. The sentence stands.
 
 **Rejected across both rounds.** *Locale*, *session*, *jEdit*, `simp` and `intro`
-left unexplained — out of scope by the user's decision of 2026-08-14 that readers
-who do not know Isabelle are not customers. Term-structure search — D2, and the
+left unexplained — out of scope under §10's audience statement, which is the
+author's and not, as this line used to say, a decision of the user's. His 2026-08-14
+ruling was about one labelling doubt; generalising it into a blanket audience policy
+and then citing that policy back as his was the error. The omissions stand on §10. Term-structure search — D2, and the
 interface says so. Dropping the required query so filters can search alone — D7;
 the underlying need, a half-remembered name, is served by an Entity Name
 condition, which §2 now says. Renaming the `contains` toggle, proposed on the
