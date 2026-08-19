@@ -540,6 +540,16 @@ Read it as: **records shorter than 13 fields have never been through a
 13-field writer** (`_encode` always packs 13), i.e. the backfill has not reached
 them.
 
+> **VACUOUS SINCE 2026-08-19.** `migrate_from_collection.py`
+> (DYNAMIC_MEMBER_NAMING_PLAN.md §3) rewrote every non-EXPERIENCE entity record
+> to 14 fields, so `reachable_short` is permanently 0 on `cslh19` and this
+> check can no longer distinguish "reached by the position sweep" from
+> "reached by that pass". The scan's last meaningful output was archived
+> beforehand (`/home/xero/position_scan-archive-20260819-125530.json`:
+> lengths 8×6,768 · 13×1,337,025, with a position 1,327,426, reachable_short
+> 0). Any future question of this kind needs an explicit marker, not the
+> arity.
+
 **Scope the denominator first — two whole populations are unreachable by
 construction, and both are decidable from the key alone, without decoding:**
 
