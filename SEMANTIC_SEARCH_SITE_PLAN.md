@@ -695,41 +695,42 @@ what the export will actually see.
 
 ### 3.1 The corpus
 
-**Re-measured 2026-08-19.** Every count in this subsection moved between 2026-08-09
-and today, because collection continued and because the D33 key repair rebuilt the
-store. The percentages did not move at all. The figures below are the current ones;
-the 2026-08-09 readings they replace are given in the right-hand column, because
-several other sections still quote them and this is where a reader finds out that
-they are old.
+**Re-measured on `cslh19`, 2026-08-19.** The user ruled on 2026-08-18 that
+`cslh19` governs — "一切以 cslh19 的数据为准" — so these are its figures, not this
+machine's. That matters: this machine holds **18,550 more entity records**, because
+collection continued here after the snapshot and because the D33 migration abandoned
+data on `cslh19` that the user ordered abandoned. Quote the left-hand column.
 
 ```
-                              2026-08-19        was 2026-08-09
-semantics.lmdb, all entries    1,373,817          1,364,990
-  entity records               1,362,343          1,353,574
-    theorem-alike              1,156,153 (84.9 %) 1,148,833 (84.9 %)
-    name-addressed               206,010 (15.1 %)   204,741 (15.1 %)
-    EXPERIENCE                       180             — never published (D24)
-  per-theory cost records         11,474             11,415   (§7.3, not entity records)
+                              cslh19, the authority   this machine, for contrast
+semantics.lmdb, all entries    1,355,222               1,373,817
+  entity records               1,343,793               1,362,343
+    theorem-alike              1,137,981 (84.7 %)      1,156,153 (84.9 %)
+    name-addressed               199,044 (14.8 %)        206,010 (15.1 %)
+    EXPERIENCE                     6,768                     180   never published (D24)
+  per-theory cost records         11,429                  11,474   (§7.3, not entity records)
 vector store (Qwen3-8B)
-  real vectors                 1,354,534            110,329
-  tombstones                       7,809                  —
-  keys, i.e. both together     1,362,343            110,329
+  real vectors                 1,343,793               1,354,534
+  tombstones                           0                   7,809
 entity expression
-  records carrying one         1,362,096          1,353,394
-  characters total               170.5 M            169.7 M
-  mean / median / p95              125 / 73 / 379   126 / 75 / 375
-  longest expression              88,517             32,228
+  records carrying one         1,336,979               1,362,096
+  characters total               167.1 M                 170.5 M
+  mean / median / p95              125 / 73 / 378          125 / 73 / 379
+  longest expression              88,517                  88,517
 interpretation                  ~0.40 GB total (2026-08-09; not re-measured)
 ```
 
-**The vector store is no longer a hole.** It carries exactly one key per entity
-record — 1,354,534 real vectors of 8,192 B each (4096 dimensions × int16) plus 7,809
-tombstones, and 1,354,534 + 7,809 = 1,362,343 is the record count to the record. The
-2026-08-09 reading of 110,329 was a lazy cache mid-fill and is what this subsection
-used to report as 8 % coverage; do not size anything from it. §8.1's completeness gate is
-therefore 7,809 records short (0.57 %), all of them tombstoned, not 8,908 (0.65 %).
+**The vector store on the authority is complete: one real vector per entity record,
+and not one tombstone.** 1,343,793 vectors against 1,343,793 records. This machine's
+7,809 tombstones are a local artefact and must not be used to size anything — the
+2026-08-09 reading of 110,329 even less so, which is what this subsection used to
+report as 8 % coverage.
 
-At full coverage the vectors are 1,362,343 × 8,192 B = **11.2 GB**.
+At full coverage the vectors are 1,343,793 × 8,192 B = **11.0 GB**.
+
+**Exportable, which is the number the site actually publishes: 1,337,025** — the
+1,343,793 entity records less the 6,768 `EXPERIENCE` records, before D24's scope test
+runs. §16.2 gives the same figure.
 
 ### 3.2 What the DB does *not* contain
 
@@ -1743,16 +1744,22 @@ be re-runnable and deterministic.
    because getting it wrong is only visible as a theory filter that matches a name no
    theory has, and because §8.2 makes every export a fresh namespace, so changing the
    separator later re-exports the whole corpus.
-1. **Completeness gate.** Assert that every entity record has a vector. The
-   vector store is a lazy cache and missing vectors are legal in normal
-   operation, so the export must **fail loudly** rather than publish a corpus
-   with holes. *Status 2026-08-19:* **7,809 records (0.57 %)** have no vector, all of
-   them tombstoned and awaiting re-embedding, so the gate does not pass yet. (It read
-   8,908 / 0.65 % on 2026-08-12; the shortfall is shrinking, and "all of them
-   tombstoned" holds exactly — the vector store carries 1,354,534 real vectors plus
-   7,809 tombstones, which is one key per entity record, §3.1.) The user has taken
-   this as a known item to be resolved before the first export, not as a reason to
-   weaken the gate.
+1. **Completeness gate.** Assert that every **shippable** entity record has a
+   vector. Shippable is `snapshot_sync._ships` — **import it, never restate it**:
+   the predicate drops WIP keys, and a restatement of it is what produced the 8,908
+   figure the user rejected on 2026-08-12 with "我们应该只考虑 persistent，不考虑
+   WIP". An earlier draft of this step said "every entity record", which is the
+   rejected predicate. The vector store is a lazy cache and missing vectors are legal
+   in normal operation, so the export must **fail loudly** rather than publish a
+   corpus with holes.
+
+   *Status: the gate passes.* Measured on `cslh19` on 2026-08-19 with `_ships`
+   imported: of **1,337,025** shippable entity records, **0** have no vector, and the
+   store holds no tombstones at all. The readings this replaces were all taken on
+   this machine and all counted records the export never publishes — 8,908 (2026-08-12,
+   before the persistent-only correction), 271 (the same day, after it, and the figure
+   the user accepted as the outstanding work), and 7,809 (2026-08-19). The 271 are
+   done; nothing here blocks the export.
 2. **Group.** Compute the `group` hash of `(name, entity expression)` for each
    record. Nothing is merged (D5); the collapse happens in the Worker's response
    after ranking.
@@ -2676,9 +2683,12 @@ the tests depend on it): a condition matches when its subtokens appear as an
 `Path_Connected.path_image_join`; `join_path` does not. `COPY.md` §0 states this
 for visitors and must not drift from it.
 
-Corpus scale, for sizing anything: 1,362,343 records carry a name, 1,362,096
-carry an expression, 1,362,163 are exportable (the difference is 180
-`EXPERIENCE` records, which are not published).
+Corpus scale, for sizing anything, measured on `cslh19` because the user ruled it
+authoritative: **1,343,793** records carry a name, **1,336,979** carry an expression,
+and **1,337,025** are exportable before D24's scope test — the difference being the
+**6,768** `EXPERIENCE` records, which are never published. (This machine reports
+1,362,343 / 1,362,096 / 1,362,163 with only 180 `EXPERIENCE` records; it is not the
+authority and its figures are 18,550 records higher. §3.1 tabulates both.)
 
 ### 16.3 Build order, with an acceptance test for each step
 

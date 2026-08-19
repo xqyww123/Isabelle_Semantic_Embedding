@@ -98,10 +98,11 @@ collapsed beneath it.
 > holds «1 362 163» entities.
 
 The count is a substitution slot, filled by the export and matching the footer's
-build date. It is exact, not rounded: the census of 2026-08-14 gives 1 362 163
-exportable records (1 362 343 in the store, less the 180 `EXPERIENCE` records,
-which are not published). A search tool may not be vague about how much it
-covers, because the absence of a result is its main output.
+build date. It is exact, not rounded: measured on `cslh19` on 2026-08-19, the
+authoritative store holds 1 343 793 entity records, of which 1 337 025 are
+exportable — the difference being the 6 768 `EXPERIENCE` records, which are never
+published. A search tool may not be vague about how much it covers, because the
+absence of a result is its main output.
 
 Placeholder inside the search box:
 
