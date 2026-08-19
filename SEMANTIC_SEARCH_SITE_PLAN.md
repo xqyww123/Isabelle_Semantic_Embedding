@@ -1058,10 +1058,12 @@ condition is part of the specification.
    pasted from macOS may be NFD, whose combining marks are not `\w` and would
    split identifiers. **NFKC must not be used**: it maps `₁`→`1` and `𝐚`→`a`,
    destroying Isabelle subscript semantics.
-2. Replace U+007F with a space. §10 has landed — zero records carry the character
-   as of 2026-08-19 — so this is a no-op on stored text, and it stays for two
-   reasons: a visitor can paste one, and D11's root cause is **not** fixed, so the
-   collection path can still write one into a new record.
+2. Replace U+007F with a space. §10 has landed and so has D11 — zero records carry
+   the character as of 2026-08-19, and `Tools/pide_state.ML` no longer manufactures
+   it — so this is a no-op on stored text. It stays because **a visitor can paste
+   one**: the character is invisible, it survives a copy out of any editor, and
+   without this step it would reach §5.2 as a character with no class and become a
+   token of its own.
 3. **Symbol conversion, which is two passes in this order, not one.**
    a. Replace each `\<name>` by the code point the symbol table gives it, so a
       user may type `\<Longrightarrow>` or `⟹`. A symbol the table does not
