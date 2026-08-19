@@ -1,11 +1,14 @@
 # Interface copy — isasearch
 
-Draft 3, 2026-08-14. Every visitor-facing string, in one place, so that the
+Draft 4, 2026-08-19. Every visitor-facing string, in one place, so that the
 implementation copies rather than invents.
 
-Drafts 1 and 2 each went to the readers that §13b of the plan established. Draft
-1 was rejected by four of four; draft 2 by three of three. §12 records what each
-round changed and what was rejected, so that nothing is re-litigated.
+Drafts 1, 2 and 3 each went to the readers that §13b of the plan established.
+Draft 1 was rejected by four of four, draft 2 by three of three, and draft 3 by
+four of four. §12 records what each round changed and what was rejected, so that
+nothing is re-litigated. **Draft 4 has not yet been read**, and by the standing
+rule — the user's approval of this file is conditional on the readers accepting
+it — it is not approved until it has been.
 
 Nothing here may be paraphrased when it reaches the markup. Where a string is
 locked by a decision, the decision is named beside it. Text in `«guillemets»` is
@@ -18,10 +21,17 @@ reviewers independently made it their top finding. It is stated **here**, and
 every place in the interface that needs it uses this wording without variation.
 
 isasearch divides a name into **parts**. The dividers are `_`, `.`, the question
-mark, and the subscript and superscript marks; a divider is never matched itself.
-Everything that is not a letter or a digit — a hyphen, a bracket, an operator —
-also stands as its own part. A condition matches when its parts appear **as whole
-parts, in the order given, with nothing between them**.
+mark, and the subscript and superscript marks; a divider is thrown away and can
+never be matched itself. Every **other** character that is not a letter or a digit —
+a hyphen, a bracket, an operator — is a part on its own and can be matched. A
+condition matches when its parts appear **as whole parts, in the order given, with
+nothing between them**.
+
+Two consequences of the first two sentences that every screen must respect, because
+draft 3 broke both. A condition that consists only of dividers has no parts left and
+is rejected. A condition that mixes dividers with other characters is **not**
+rejected: it is reduced to the parts that survive, and the search then runs on the
+reduction, so `_ + _` searches for `+`. §4.6 is the notice that says so.
 
 Measured consequences, all verified against the corpus on 2026-08-14, and the
 worked examples in the interface are drawn from this list:
@@ -38,7 +48,7 @@ worked examples in the interface are drawn from this list:
 | Condition | `sorted_wrt` | why |
 |---|---|---|
 | `sorted` | matches | a whole part |
-| `sort` | **no** | part of a part is not a part |
+| `sort` | **no** | only whole parts match, never a fragment of one |
 | `orted` | no | likewise |
 
 **`sort` not matching `sorted_wrt` is the fact that draft 2 got wrong.** It said a
@@ -82,10 +92,10 @@ collapsed beneath it.
 > **isasearch**
 >
 > Search Isabelle/HOL and the Archive of Formal Proofs by describing what you
-> want in English. The index covers theorems and the rules that Isabelle derives
-> from datatype, inductive and function definitions, and also constants, types,
-> classes, locales, proof methods and named theorems: «1 362 163» entities in
-> total.
+> want in English. The index covers theorems, together with the rules that Isabelle
+> derives from `datatype`, `inductive` and `function` definitions. It also covers
+> constants, types, classes, locales, proof methods and named theorems. In total it
+> holds «1 362 163» entities.
 
 The count is a substitution slot, filled by the export and matching the footer's
 build date. It is exact, not rounded: the census of 2026-08-14 gives 1 362 163
@@ -99,14 +109,15 @@ Placeholder inside the search box:
 
 Under the search box, two lines:
 
-> A query is required, and it ranks the results. The syntactic filters are
-> optional, and they decide which results can appear at all. A query cannot
-> narrow the results, and the filters cannot rank them.
+> A query is required. It puts the results in order, and only the first «200»
+> appear. The syntactic filters are optional: they decide which entities are
+> eligible to be ordered at all. The filters do not affect the order.
 
-> **Looking for a name that you only partly remember?** Type it into the search
-> box and add it to an Entity Name condition as well. The condition keeps only
-> the entities whose names contain what you typed, as whole parts; the query
-> decides their order.
+> **Do you remember only part of a name?** Type the part you remember into the
+> search box, and type it into an Entity Name condition as well. A condition keeps
+> only those entities whose names contain what you typed, matched as **whole parts**
+> — `sorted` finds `sorted_wrt`, but `sort` finds nothing — so type a whole
+> underscore-separated or dot-separated piece, and check the capitals.
 
 *(Draft 2 said "Neither one works without the other", which tells a first-time
 visitor that a filter is mandatory. It is not: the default state has no
@@ -161,20 +172,24 @@ condition reads:
 
 ### 3.4 The note under Theory Name
 
-Shown whenever the Theory Name panel is expanded, and additionally under the All
-panel when a condition exists there and Theorem or a derived rule is selected
-(D15).
+**The trigger is the user's, settled 2026-08-19**: the note appears when the Kind
+selection includes Theorem or a derived rule **and** the Theory Name panel carries a
+condition — not merely when the panel is open. The same two conditions govern it
+under the All panel, since an All condition reaches Theory Name and so carries the
+same surprise. A note that is always on screen is a note nobody reads; this one
+appears exactly when it applies.
 
-> **A theorem is filtered differently.** A Theory Name condition on a theorem
-> matches every theory that declares a constant appearing in the theorem's
-> statement — not the theory that proves the theorem. A theorem often has several
-> such theories, and sometimes more than twenty.
+> **Theory Name conditions work differently on theorems.** A Theory Name condition
+> on a theorem matches every theory that declares a constant appearing in the
+> theorem's statement — not the theory that proves the theorem. A theorem often has
+> several such theories, and sometimes more than twenty.
 >
-> To search for the theory that proves a theorem, use its name: the theory is the
-> first part of the entity name, so an **Entity Name** condition of
-> `Path_Connected` finds it. Type the theory's own name without the session
-> prefix. Such a condition also matches entities that mention `Path_Connected`
-> elsewhere in the name.
+> To search for the theory that proves a theorem, use an **Entity Name** condition
+> instead: an entity's name begins with the name of the theory that proves it, up to
+> the first dot, so a condition of `Path_Connected` finds theorems proved in
+> `Path_Connected`. Write the theory's own name without the session prefix. Such a
+> condition also matches any entity whose name mentions `Path_Connected` anywhere
+> else.
 
 *(Draft 1 said "isasearch does not record which theory declares a theorem", which
 is false about Isabelle and contradicts the source link on the same card. Draft 2
@@ -186,20 +201,21 @@ behaviour. §12.)*
 
 ### 3.5 The lines at the foot of the panel group, always shown
 
-> **How a condition is matched.** isasearch divides a name into parts at `_`, `.`,
-> the question mark, and the subscript and superscript marks; anything that is not
-> a letter or a digit also stands as its own part. A condition matches when its
-> parts appear as whole parts, in the order you typed them, with nothing between
-> them. So `sorted` matches `sorted_wrt` and `image_join` matches
-> `Path_Connected.path_image_join`, but `sort` matches neither, because part of a
-> part is not a part. Upper and lower case are different: `Path` and `path` do not
-> match each other. Spacing does not matter — `x + y` and `x+y` are the same
-> condition.
+> **How a condition is matched.** isasearch cuts a name into parts at `_`, `.`, the
+> question mark, and the subscript and superscript marks. Those five are separators:
+> they are thrown away and cannot be matched. Every other character that is not a
+> letter or a digit — an operator or a bracket, such as `+` or `⟦` — is a part on
+> its own and can be matched. A condition matches when its parts appear as whole
+> parts, in the order you typed them, with nothing between them. So `sorted` matches
+> `sorted_wrt` and `image_join` matches `Path_Connected.path_image_join`; `sort`
+> matches neither, because isasearch matches only whole parts and never a fragment
+> of one. Upper and lower case are different: `Path` and `path` do not match each
+> other. Spacing is ignored — `x + y` and `x+y` are the same condition.
 >
 > **How conditions combine.** A result must satisfy every condition. `excludes`
-> reverses one condition: the result must not contain that text. Kind selections
-> are not conditions and behave in the opposite way — a result may be any of the
-> kinds you select.
+> reverses one condition: the result must not contain that text. Kind selections are
+> not conditions and behave in the opposite way — a result appears if its kind is
+> one of the kinds you select.
 
 ### 3.6 The Kind buttons
 
@@ -217,9 +233,11 @@ Hover on **Case split**: *"A case rule: one case for each constructor of a
 datatype, or for each introduction rule of an inductive definition. A rule whose
 name ends in `.split`, such as `option.split`, has the kind Theorem here."*
 
-When no kind is selected:
+When no kind is selected. All eleven are selected when the page loads, so this state
+is reachable only by clearing them, and the message says so rather than reading as
+though the site had started switched off:
 
-> No kind is selected, so no result can appear. Select at least one.
+> You have cleared every kind, so no result can appear. Select at least one.
 
 ## 4. The result cards
 
@@ -259,8 +277,9 @@ on 2026-08-14. The third is required by D40.
 
 No explanation:
 
-> No explanation was generated for this entity. You can still find it by its name
-> and by its expression, and those decide its position in the results.
+> No explanation was generated for this entity. Its name and its expression still
+> place it in the results, but the search box works best against an explanation, so
+> this entity is harder to reach by describing it.
 
 ### 4.3 The theory line
 
@@ -275,7 +294,7 @@ Hover:
 
 > Your condition matched this theory. It is one of the «23» theories that declare
 > the constants in this statement, and it is not the theory that proves the
-> theorem. The entity page lists all of them.
+> theorem. The entity page lists all «23».
 
 An `excludes` condition never produces this line: nothing was matched.
 
@@ -285,9 +304,11 @@ when the condition sits in All and meaningless when it excludes.)*
 
 ### 4.4 The source link
 
-Present on about four cards in five (D42, coverage 80.2 %):
+Present on about four cards in five (D42, coverage 80.2 %). The file and line are a
+substitution slot like every other run-time value; draft 3 wrote them bare, which
+reads as a claim about a real line of a real file and was challenged as such:
 
-> Path_Connected.thy:1204
+> «Path_Connected.thy»:«1204»
 
 Hover:
 
@@ -301,11 +322,11 @@ Absent form, in place of the link, never a dead link and never blank:
 
 Hover on the absent form:
 
-> Some commands do not report a position, so isasearch has none to link to.
+> Some commands do not report a position, so isasearch cannot provide a link.
 
 ### 4.5 Under the list
 
-> Showing 1–20
+> Showing results 1 to 20
 
 Twenty results or fewer, so there is no second page:
 
@@ -324,13 +345,34 @@ At the end of the results, **only when the 200-match limit was reached**:
 
 At the end of a list shorter than that:
 
-> That is every entity satisfying your conditions. To see more, remove a
+> These are all the entities that satisfy your conditions. To see more, remove a
 > condition or select more kinds.
 
 *(No total. D29 removes the count: the fused result set is truncated at 200, so a
 total would be a number the site cannot honestly produce. Draft 2 showed the
 200-limit advice unconditionally, telling a visitor looking at 7 results to
 narrow the search.)*
+
+### 4.6 A condition matched more loosely than it looks
+
+**New in draft 4, and it covers a state that had no text at all.** A condition
+containing separators is not rejected; it is reduced to the parts that survive, and
+the search then succeeds against the reduction. The reader's own report of this was
+that the site teaches "this will find nothing" while the truth is "this will find
+thousands of the wrong things, silently". Shown as a notice directly above the
+result list whenever the parts of a condition are fewer than the things the visitor
+typed:
+
+> **«Expression `_ + _`» was read as «`+`»**
+>
+> `_`, `.`, the question mark and the subscript and superscript marks separate the
+> parts of a name; they are never matched themselves. The results below are for
+> what remains.
+>
+> *[button]* Edit this condition
+
+If nothing at all remains, §5.6 applies instead — that condition is rejected rather
+than reduced.
 
 ## 5. Empty states
 
@@ -353,9 +395,9 @@ example".
 > order: «`n` `+` `m` `=` `m` `+` `n`».
 >
 > **Why this usually happens**
-> A condition names its variables, and the same statement is printed with whatever
-> variable names its author chose. `?n + ?m = ?m + ?n` finds nothing, although the
-> theorem it describes is in the index:
+> A condition fixes the variable names, but a statement is displayed with the
+> variable names that its own author chose. `?n + ?m = ?m + ?n` finds nothing, even
+> though the theorem that it describes is in the index:
 > `Groups.ab_semigroup_add_class.add.commute` is printed as `?a + ?b = ?b + ?a`.
 > The variable names are the only difference.
 >
@@ -368,20 +410,21 @@ example".
 
 For an `excludes` condition, the whole page is replaced:
 
-> **Everything left contains that text**
+> **Everything that remains contains that text**
 >
 > **Your condition**
 > excludes «⟹»
-> Every entity that satisfies your other conditions contains it, so nothing is
-> left.
+> Every entity that satisfies your other conditions contains it, so none is left.
 >
 > **Why this usually happens**
-> A very common operator appears in most statements — `⟹` is in about 45 % of
-> them — so excluding one removes almost everything.
+> Operators are common. `⟹` alone appears in «45 %» of all statements, and your
+> other conditions have already narrowed the results to a set in which every
+> remaining entity uses it.
 >
 > **What to do instead**
-> Exclude a name rather than an operator, or describe what you want to avoid in
-> the search box.
+> Exclude a name rather than an operator. Excluding an operator removes a large
+> part of the index at once, and it cannot be undone by the search box: the query
+> orders results, it cannot remove them.
 >
 > *[button]* Remove this condition and search again
 
@@ -389,26 +432,33 @@ The reference block beneath, on both variants:
 
 > **What an Expression condition matches**
 >
-> ✓ Names and operators, as the card prints them: `continuous_on`, `sorted_wrt`,
+> ✓ Names and operators, as the card displays them: `continuous_on`, `sorted_wrt`,
 >   `⟦`
-> ✓ Whole parts of a name, in order: `sorted` matches `sorted_wrt`; `sort` does
->   not, because part of a part is not a part
-> ✓ Isabelle's ASCII form, for every symbol Isabelle draws as a character:
+> ✓ Whole parts of a name, in the order you typed them: `sorted` matches
+>   `sorted_wrt`; `sort` matches nothing, because only whole parts are matched,
+>   never a fragment of one
+> ✓ Isabelle's ASCII form, for every symbol that Isabelle displays as a character:
 >   `\<Longrightarrow>` is understood as `⟹`. Abbreviations such as `==>` are
->   converted inside the condition box while you type; an abbreviation with more
->   than one meaning is left alone, so type the `\<…>` form for those. A few markup
->   escapes — `\<^named_theorems>` and its kind — have no character of their own,
->   and are matched as you typed them.
+>   converted inside the condition box while you type; an abbreviation that has more
+>   than one meaning is not converted, so type the `\<…>` form for those. A few
+>   markup escapes, such as `\<^named_theorems>`, have no character of their own and
+>   are matched exactly as you typed them.
 >
-> ✗ Variables and unification: `?f ?x`, `_ + _`
-> ✗ Regular expressions and wildcards: `.*`, `cont*`
-> ✗ Question marks, `_`, `.` and the subscript and superscript marks: these divide
->   a name into parts and are not matched themselves. A subscripted name such as
->   `f⇩1` is therefore found by `f`.
+> ✗ Patterns of any kind. **These are not rejected — they are reduced**, which is
+>   worse, because the search then succeeds and returns the wrong entities:
+>   - `_` and `.` are separators, so `_ + _` becomes the single part `+` and
+>     matches every statement that contains a plus sign;
+>   - `.*` becomes `*` and matches a literal multiplication sign;
+>   - `cont*` becomes the two parts `cont` `*`, which almost nothing contains.
+>   isasearch tells you when this has happened — see the note above the results.
+> ✗ Question marks, `_`, `.` and the subscript and superscript marks are separators
+>   and are never matched themselves. A subscripted name such as `f⇩1` is therefore
+>   found by `f`, and **not** by `f1`.
 >
-> To search by the structure of a term, describe it in the search box above — that
-> is what the query is for. Inside an Isabelle session, `find_theorems` and
-> `find_consts` search structurally.
+> To search by the structure of a term, use Isabelle: `find_theorems` and
+> `find_consts` search structurally inside a session. The search box here ranks by
+> meaning, not by shape, so describing the term will find related statements but
+> cannot match a pattern.
 
 ### 5.2 The conditions matched nothing between them
 
@@ -423,12 +473,13 @@ control, and an `excludes` condition prints as `excludes`.
 > - Entity Name excludes `List` — *[remove]*
 > - Theory Name contains `HOL-Analysis` — *[remove]*
 >
-> Try removing one. Your query is not the cause: it decides the order of the
-> results and which of them are the best 200, but it never empties this list.
+> Try removing one. Your query is not the cause: the conditions decide which
+> entities are eligible, and none is. The query only puts eligible entities in
+> order.
 
 Appended whenever fewer than 11 kinds are selected:
 
-> «4» of the 11 kinds are selected, which also restricts the results.
+> «4» of the 11 kinds are selected, and that also restricts the results.
 
 ### 5.3 One condition matched nothing
 
@@ -439,8 +490,11 @@ Shown when exactly one condition is active and it is not an Expression condition
 >
 > «Entity Name contains `Path_Connectd`»
 >
-> A condition matches whole parts of a name, in order, and upper and lower case
-> are different. Check the spelling, or try a shorter part of it.
+> A condition matches whole parts of a name, in the order you typed them, and
+> upper and lower case are different. Check the spelling and the capitals. If you
+> are unsure of the whole name, type **fewer parts** of it — `Path` rather than
+> `Path_Connectd`. Typing a shorter piece of one part does not help, because only
+> whole parts are matched.
 >
 > *[button]* Remove this condition and search again
 
@@ -449,34 +503,35 @@ Shown when exactly one condition is active and it is not an Expression condition
 Shown when no condition is active. The removal controls of §5.2 are absent,
 because there is nothing to remove.
 
-> No entity of the kinds you selected matches your query. Selecting more kinds
-> widens the search; with all 11 selected, the kind no longer restricts anything.
+> No entity of the kinds you selected is eligible. Selecting more kinds returns
+> more results; if you select all 11, the kind selection no longer restricts
+> anything.
 
-### 5.5 A query with nothing narrowing it returned nothing
+### 5.5 — deleted in draft 4
 
-No condition, all 11 kinds. This is rare and means the query itself found no
-neighbour at all.
-
-> No results. This is unusual with no filters active — try different words, or
-> fewer of them.
+There is no such state. Two legs each fetch 200 rows and the fused list is truncated
+to 200 (plan §6.6); there is no relevance floor anywhere, and D7 rejects an empty
+query. So with nothing narrowing, a non-empty index always returns 200 results, and
+the screen this section used to hold described a state the system cannot reach. A
+genuine backend failure is §6's territory, which already covers it.
 
 ### 5.6 A condition with nothing to match
 
 > Nothing in this condition can be matched. `_`, `.`, the question mark and the
 > subscript and superscript marks divide a name into parts and are not matched
-> themselves, so a condition made only of them has no text left. Add a name or an
+> themselves, so a condition made only of them has no text remaining. Add a name or an
 > operator, or remove the condition.
 
 ### 5.7 The search box is empty
 
-> Enter a query. The syntactic filters only narrow the results; they cannot search
-> on their own.
+> Enter a query. The syntactic filters do nothing but narrow the results; they
+> cannot search by themselves.
 
 ## 6. While searching, and when it fails
 
 > Searching…
 
-> The search did not complete. Try again. If it continues to fail, the problem is
+> The search did not finish. Try again. If it continues to fail, the problem is
 > with the site and not with your query.
 
 > No connection to the site.
@@ -491,11 +546,16 @@ Too many searches within a few seconds (5 per 10 seconds per address):
 
 > Too many searches from your network. Wait a few seconds and try again.
 
-The daily limit is reached (1 000 per address per UTC day):
+The daily limit is reached (1 000 per address per UTC day). One search is one press
+of the search button: turning a page of results costs nothing, because all «200» are
+fetched at once (D29), and editing a condition costs nothing until you search again.
+The message says so, because a visitor who cannot budget against the limit will
+assume the worst:
 
 > Your network has reached the limit of 1 000 searches for today. You can search
-> again after 00:00 UTC. This limit counts every search from your network address,
-> so a shared address reaches it sooner.
+> again after 00:00 UTC. Turning a page of results does not count. This limit counts
+> every search from an address, so an address shared by many people reaches it
+> faster than one used by a single person.
 
 The whole site is above its limit (10 000 per hour):
 
@@ -521,7 +581,8 @@ theory. For a theorem or a derived rule, the complete list, untruncated (D26),
 under this line:
 
 > These are the theories that declare the constants appearing in this statement.
-> The theory that proves the theorem is the first part of its name above.
+> The theory that proves the theorem is not among them: it is named at the start of
+> the entity name above, up to the first dot.
 
 Then, when a source position is recorded:
 
@@ -537,8 +598,9 @@ and when none is recorded:
 Then:
 
 > **Nearest entities**
-> The ten entities closest to this one by the cosine similarity described on the
-> result cards. Keyword matching plays no part here.
+> The ten entities closest to this one, compared with each other by the same
+> measure that compares a query with an entity on the result cards. There is no
+> query here, so keyword matching is not used.
 
 When the entity has no vector:
 
@@ -546,12 +608,12 @@ When the entity has no vector:
 
 An entity page that does not exist:
 
-> No entity was found at this address. The entity may have been removed when the
+> No entity was found at this web address. The entity may have been removed when the
 > index was rebuilt. *[link]* Search instead
 
 ## 9. The footer, on every page
 
-> isasearch · Isabelle version 2025-2 · AFP snapshot 2026-05-13 · index built
+> isasearch · built for Isabelle release 2025-2 · AFP snapshot 2026-05-13 · index built
 > «2026-08-20» · [about] · [source]
 
 *(The build date is load-bearing: the absence of a result is this product's main
@@ -611,6 +673,28 @@ told visitors to search for a theory in Entity Name without saying that entity
 names carry no session prefix, so the name they would copy matches nothing. The
 `excludes` empty state kept advice written for the opposite case, and the
 end-of-list advice told visitors with 7 results to narrow their search.
+
+**Round 3 — four readers, four rejections (draft 3).** The matching rule was still
+stated five times, and three of the five dropped the adjacency clause — the same
+defect that sank draft 2, moved rather than fixed. "A query cannot narrow the
+results" was contradicted by the 200-result cap that the site itself describes; all
+four readers found it independently. The three `✗` examples were the worst finding:
+`_ + _`, `.*` and `cont*` are not rejected but **reduced** — `_` and `.` are
+separators, so `_ + _` searches for `+` and returns thousands of unrelated entities
+— so the copy taught the opposite of the real failure mode, and no screen covered
+it. §4.6 is new and covers it. "The theory is the first part of the entity name" was
+false under this file's own definition of *part*: the first part of
+`Path_Connected.path_image_join` is `Path`. The `⟹` explanation refuted itself —
+45 % is not "most statements", and removing 45 % is not "removes almost everything".
+"Try a shorter part of it" was the one repair the matching rule forbids. §5.5
+described a state the system cannot reach and is deleted. The non-native reader
+found `left` used in four senses on one page, `and its kind` colliding with this
+file's own defined term *kind*, and a garden path in the sentence that teaches the
+central lesson of §5.1.
+
+**One reader finding was rejected as wrong.** The Isabelle reader did not believe
+`\<^named_theorems>` is a real Isabelle symbol. It is: `etc/symbols` line 466,
+`\<^named_theorems>  argument: cartouche`. The sentence stands.
 
 **Rejected across both rounds.** *Locale*, *session*, *jEdit*, `simp` and `intro`
 left unexplained — out of scope by the user's decision of 2026-08-14 that readers
