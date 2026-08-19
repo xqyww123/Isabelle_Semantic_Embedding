@@ -1260,7 +1260,10 @@ from.
    **This step is no longer the identity on stored text**: since the loader began
    reading the symbol table Isabelle actually presents, component files included,
    it changes 1,056 of 1,362,096 stored expressions. §3.4 records the old figure
-   and the sections that cite it are corrected there.
+   and the sections that cite it are corrected there. **On the authority's corpus it
+   is the identity again**: measured 2026-08-19, this step changes 0 of its 1,336,979
+   expressions and 0 of its 1,343,793 names, because every one of the 1,056 was
+   phi-System and phi-System is not in that store.
 4. Group into tokens per §5.2, **one character at a time**.
 
 **The tokenizer is defined over characters** (D43). An earlier draft inserted a
@@ -1297,7 +1300,14 @@ Matrix.matrix                                  AFP Kleene_Algebra
 Both AFP theories use escapes the distribution does not define (`\<PR>`,
 `\<binit>`, `\<abinit>`, `\<aPR>` — they are the 1,078 records of §3.4 that no
 asset can ever convert), so step 3 leaves the escape literal and the adjacent `|`
-or `~` merges into it. The remaining fourteen are phi-System —
+or `~` merges into it.
+
+**Re-measured on the authority's corpus, 2026-08-19** (§16.3 step 1): dropping the
+step changes **741** of its 1,336,979 expressions and **none** of its 1,343,793
+names, of which **738 are pure refinements** and the losses are **these three and
+nothing else**. The figures above — 3,135, 3,118, 17 — stand as the evidence the
+decision was taken on and are not superseded; they were measured over a store that
+still held phi-System, which is what accounts for the whole difference. The remaining fourteen are phi-System —
 `Calculus_of_Programming.φapply_proc`, `PLPR.Premise_const_True(4)`,
 `Phi_Types.Param_Annot_def` and their siblings — and nine distinct patterns occur
 across the seventeen.
@@ -1374,7 +1384,10 @@ used to be rescued by §5.4's fallback clause and is now swallowed into the adja
 run and then discarded by the subtoken split. `62² = 3844` would index as
 `62 = 3844`, and a condition `10²` would match a document containing `1/10`. The
 exclusion above removes both defects: measured, 12,822 expressions and 126,282 names
-change, **all of them pure merges, none losing or gaining a subtoken**, and
+change, **all of them pure merges, none losing or gaining a subtoken** — re-measured
+on the authority's corpus on 2026-08-19 (§16.3 step 1) the same quantities are
+**12,138 expressions and 121,165 names, and still every one of them a pure merge** —
+and
 `1 / 10²` indexes as `['1','/','10','²']`, which is better than either the old rule
 or the unqualified one. The bold digits `𝟬`–`𝟵` are **not** excluded, because they
 come from the `❙` fold rather than from `⇩`/`⇧` and §5.4 keeps the bold fold's
@@ -3059,7 +3072,11 @@ site/prototype/README.md              what these are; delete none of them until 
 
 `corpus_probe.py` reproduces every match count quoted in this plan and in
 `COPY.md`. Verified from its committed location on 2026-08-14 and again on 2026-08-19:
-`?n + ?m = ?m + ?n` → 0, `?a + ?b = ?b + ?a` → 15, in 25 s over 1,362,096 records. It
+`?n + ?m = ?m + ?n` → 0, `?a + ?b = ?b + ?a` → 15, in 25 s over 1,362,096 records. Run
+a third time on 2026-08-19 after the authority's store was synced here, it gives the
+**same two answers** over the authority's 1,336,979 expressions, in 20 s — so the
+match counts this plan and `COPY.md` quote survive the change of corpus, which is not
+something the earlier verifications could have shown. It
 resolves `ISABELLE_HOME` and the package paths relative to itself, so it runs from
 anywhere. **Use it rather than writing a new probe**; a differently-written probe
 is a second implementation of the matching rule and will disagree eventually.
@@ -3159,9 +3176,11 @@ for visitors and must not drift from it.
 Corpus scale, for sizing anything, measured on `cslh19` because the user ruled it
 authoritative: **1,343,793** records carry a name, **1,336,979** carry an expression,
 and **1,337,025** are exportable before D24's scope test — the difference being the
-**6,768** `EXPERIENCE` records, which are never published. (This machine reports
-1,362,343 / 1,362,096 / 1,362,163 with only 180 `EXPERIENCE` records; it is not the
-authority and its figures are 18,550 records higher. §3.1 tabulates both.)
+**6,768** `EXPERIENCE` records, which are never published. (Until the user synced the
+authority's store here on 2026-08-19, this machine reported 1,362,343 / 1,362,096 /
+1,362,163 with only 180 `EXPERIENCE` records, 18,550 records higher. It now reports
+the authority's figures; §3.1 tabulates both generations and §3's preamble carries
+the digest that tells them apart.)
 
 ### 16.3 Build order, with an acceptance test for each step
 
@@ -3184,30 +3203,59 @@ Do these in order. Each step is finished when its test passes, not before.
      known set and are identical everywhere else. Compare with a digest of the
      concatenated arrays per record, not by eyeballing samples.
 
-     **This comparison runs on the authority's corpus, and its expected figures must
-     be re-measured against it before they can gate anything.** The user settled the
-     machine on 2026-08-19 and then synced the authority's store to this one, where it
-     was verified identical whole (§3's preamble, digest
+     **This comparison runs on the authority's corpus.** The user settled the machine
+     on 2026-08-19 and then synced the authority's store to this one, where it was
+     verified identical whole (§3's preamble, digest
      `a2dbbb874fe178867dd07bc05901fc96`), so the run happens **here** and needs no
      remote access — check the digest first, and if it does not match, re-sync rather
      than measure. The figures this step used to give — 15,935 differing expressions
      against 1,346,161 identical, of which D43 contributes 3,135 and §5.2's numeric
      class 12,822 expressions and 126,282 names, overlapping on 22 — were taken on the
      **pre-re-key** store that stood here until that sync, which shared not one key
-     with the authority. They cannot be reproduced now and must not be used as a
-     target.
+     with the authority, and are superseded by the measurement below.
 
-     **What has to be re-measured, in one pass, before step 1 can be accepted** — run the prototype's rule and the §5 rule over the same text and
-     record: the number of expressions whose subtoken arrays differ and the number
-     identical; the split of that difference between D43's escape-scanning change and
-     §5.2's numeric class; how many records **lose** a subtoken, and their names; and
-     that **no** record loses a subtoken to the numeric class, which is the one
-     property that is a rule and not a figure — that rule is a pure merge by
-     construction, and a loss means the rendered sub/superscript exclusion was not
-     implemented. The three named records this step used to require in the loss set —
-     `AbsCFCorrect.lemma6`, `AbsCFCorrect.contour_a_class.abs_cnt_initial`,
-     `Matrix.matrix` — are all AFP material and are expected to be present on the
-     authority too, but that is an expectation and not yet a measurement.
+     **Measured on the authority's corpus, 2026-08-19**, digest confirmed first. The
+     prototype's rule is `subtoken_rule.subtokens(tokenize_prototype.tokenize(s))`;
+     `tokenize_prototype.subtokens_rev` is a superseded variant with no fallback
+     clause, and comparing against that one instead reports tens of thousands of
+     spurious differences in which characters the subtokens spell. The two changes
+     were separated by running a third rule in the same pass — the production
+     tokenizer with every digit excluded from a numeric run, which is exactly how
+     digits behaved before §5.2's numeric class existed — so prototype-against-that
+     isolates D43 and that-against-production isolates the numeric class.
+
+     ```
+     expressions (1,336,979 carry one)      names (1,343,793)
+       identical           1,324,122          identical           1,222,628
+       differing              12,857          differing             121,165
+         D43                     741            D43                       0
+         numeric class        12,138            numeric class       121,165
+         both                     22            both                      0
+     ```
+
+     Of D43's 741 expressions, **738 are pure refinements** — every old subtoken is
+     kept or split further — and **3 lose a subtoken**. Those 3 are the whole loss
+     set, and they are exactly the three records this step named:
+     `AbsCFCorrect.lemma6`, `AbsCFCorrect.contour_a_class.abs_cnt_initial` and
+     `Matrix.matrix`. The fourteen phi-System records that used to join them are not
+     in the authority's corpus at all, so what §5.1 states as seventeen losses is
+     three here, and the expectation has become a measurement.
+
+     **The numeric class loses nothing, and that is what to gate on**: of its 12,138
+     expressions and 121,165 names, every one is a pure merge — no record loses a
+     subtoken, and none changes the characters its subtokens spell. One failure here
+     means the rendered sub/superscript exclusion was not implemented.
+
+     Two further results from the same pass. **Pipeline step 3 is the identity on the
+     whole authority corpus**: 0 expressions and 0 names change under symbol
+     conversion and folding, which is what §5.1's note about 1,056 phi-System
+     expressions predicts once phi-System is out of the store. And comparing the
+     prototype directly against the production tokenizer reports **25** expressions
+     that are neither a pure refinement nor a pure merge — that is the 3 losses plus
+     the 22 that D43 refines *and* the numeric class merges, where the two changes
+     together leave the boundaries in neither relation. Only the 3 are losses, so the
+     loss test has to be applied to each change separately and not to their
+     composition.
 
    **An earlier draft of this step required the arrays to be *identical* to the
    prototype's for all 1,362,096 expressions.** That test cannot pass and must not be
