@@ -545,12 +545,18 @@ fun command_spans_of_text file_path text : (string * int * int) list =
              Python consumer currently keys off start only, so trailing
              whitespace from Command_Span.command_ranges is not needed here. *)
           val end_off = the_default 0 (Position.offset_of p2)
-          (* reconstruct the verbatim source: source_of yields each token's
-             original text (symbols intact), and whitespace/comments are
-             themselves tokens in the span content, so concatenation restores
-             the original slice faithfully *)
+          (* unparse, NOT source_of: source_of yields Isabelle's INTERNAL form, in
+             which each consumed delimiter symbol of a string, alt-string, cartouche
+             or comment is replaced by Symbol_Pos.DEL (U+007F) as position padding.
+             That padding reached the semantic DB as literal U+007F in 238 records
+             (SEMANTIC_SEARCH_SITE_PLAN_DONE.md D11/D12).  unparse re-emits the real
+             delimiters, one symbol per DEL, so the result stays symbol-aligned with
+             the file -- Isabelle_Semantic_Embedding/hover.py relies on that when it
+             adds start_off to an index found inside this string.  Whitespace and
+             comments are themselves tokens of the span content, so concatenation
+             restores the original slice. *)
           val source =
-            implode (map Token.source_of span_toks)
+            implode (map Token.unparse span_toks)
         in
           if start_off > 0 then SOME (source, start_off, end_off) else NONE
         end

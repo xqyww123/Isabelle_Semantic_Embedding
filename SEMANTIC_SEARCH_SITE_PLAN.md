@@ -185,15 +185,30 @@ reader of those sections needs to find the decision that used to govern them.
   fixed** to `Token.unparse` (§10.1). It is our own file, not part of the
   Isabelle distribution.
 
-  **Not done as of 2026-08-19.** `Tools/pide_state.ML` still calls
-  `Token.source_of`, and the comment above the call still asserts that `source_of`
-  returns each token's original text — the assertion the companion's §10.1 disproves
-  by measurement. §10's "done" is a statement about the **data**: D12 repaired the
-  238 affected records one at a time, and zero records carry U+007F today. The
-  **cause** is untouched, so a fresh collection run over a theory containing a
-  delimited token can reintroduce the character through the fallback path. That is
-  why §5.1's pipeline step 2 stays in the tokenizer rather than being deleted as a
-  no-op.
+  **Done, 2026-08-19.** `command_spans_of_text` in `Tools/pide_state.ML` now calls
+  `Token.unparse`, and the comment above it — which asserted that `source_of` returns
+  each token's original text, the assertion the companion's §10.1 disproves by
+  measurement — is corrected. It had stood since §10's repair, so §10's "done" was a
+  statement about the **data** only: D12 repaired the 238 affected records one at a
+  time, and zero carry U+007F today, but until now a fresh collection run over a
+  theory with a delimited token could write the character back through the fallback
+  path. §5.1's pipeline step 2 stays regardless, because a visitor can paste a
+  U+007F into the query box.
+
+  **Why the change is safe for the offsets, which is the non-obvious part.** The two
+  offsets `command_spans_of_text` returns come from `Token.range_of` and never from
+  the string's length, but `Isabelle_Semantic_Embedding/hover.py` adds `start_off` to
+  an index it finds *inside* the returned source, so the source must stay
+  symbol-aligned with the file. It does: `Symbol_Pos.DEL` is one DEL per consumed
+  **symbol** — which is what made §10.2's repair reconstruct 238 of 238 with zero
+  ambiguity by matching exactly one Isabelle symbol per DEL — and `Token.unparse`
+  writes exactly those symbols back (`"…"`, `` `…` ``, `\<open>…\<close>`, `(*…*)`),
+  leaving every other token as its stored text. Read out of `Pure/Isar/token.ML` and
+  `Pure/General/symbol_pos.ML` rather than measured: `quote_str` emits only the three
+  escape forms `scan_str` accepts, so encode∘decode is the identity. The one spelling
+  that would shrink is a string literal writing a **non-control** character as a
+  `\NNN` char code, which re-emits as the bare character; nothing in the corpus does
+  that.
 - **D12** — **the 238 records containing U+007F are repaired surgically**, by
   reading the true text back out of the theory source, and the repaired DB is
   re-uploaded to Hugging Face (§10.2).
