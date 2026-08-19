@@ -1170,19 +1170,92 @@ in §5.3 and the `a?b` line in §16.2.)
   with letters, digits or quasi-letters. *Letter* = a character for which
   `isalpha()` holds. *Digit* = `isdigit()` or `isnumeric()` (so `₁` continues an
   identifier). *Quasi* = `_` and `'`.
+- **numeric token**: a maximal run of digits that are **not rendered
+  sub/superscript characters** — that is, digits other than the ones the fold
+  table produces from a `⇩` or a `⇧` marker (`⁰¹²³⁴⁵⁶⁷⁸⁹` and `₀₁₂₃₄₅₆₇₈₉`, twenty
+  of them). A rendered sub/superscript digit falls through to *anything else* and
+  becomes a token of its own, which is what lets §5.4's fallback clause keep it.
 - **symbolic token**: a maximal run of characters from
   `! # $ % & * + - / : < = > @ \ ^ | ~` (D8).
 - **anything else**: one character, one token.
 
-The letter and digit sets are **not disjoint**: 81 code points, the CJK
-ideographic numerals, satisfy both. The order of the tests is therefore
-normative — *letter* is tested first, so `一二三` is one identifier token and not
-three. D45's asset must preserve the overlap rather than partition it.
+**The order of the tests is normative**, and each of the three orderings below is
+load-bearing:
+
+- *Letter* before *digit*, because the two sets are **not disjoint**: 81 code
+  points, the CJK ideographic numerals, satisfy both. So `一二三` is one identifier
+  token and not three. D45's asset must preserve the overlap rather than partition
+  it.
+- *Identifier* before *numeric*, and this is the one an implementer will get
+  wrong. **A digit continues an identifier in preference to starting a numeral: a
+  numeric run begins only where no identifier run is in progress.** Read as a
+  top-level alternative instead, the numeric class claims `x1` → `['x','1']`,
+  `nat1` → `['nat','1']`, `list2set` → `['list','2','set']` and
+  `sorted_wrt2` → `['sorted','wrt','2']`, which is a catastrophic
+  mis-tokenization of ordinary Isabelle identifiers. Of §16.2's 32 cases exactly
+  **one** catches the misreading, and only by accident, so §16.2 gains `'x1'` and
+  the test-vector file gains it by name (§16.5). Note that `Kelly_1_39` does **not**
+  discriminate: both readings give `['Kelly','1','39']`.
+- *Numeric* before *symbolic* and before *anything else*, which is what makes the
+  run maximal.
+
+**Why the numeric class exists, and why it excludes the rendered sub/superscripts.**
+Until 2026-08-19 there was no rule for numbers at all, so a digit that could not
+continue an identifier fell to *anything else* and each digit became its own token:
+`f 100` gave `['f','1','0','0']`, and a condition `100` therefore matched a document
+containing `1000`, because `1,0,0` is an adjacent run inside `1,0,0,0`. The plain
+rule — "a maximal run of digits" — was measured over the whole corpus and **loses
+content**: 371 records, all of them AFP or distribution material that D24 publishes,
+lose a `²`, a `₁` or a `₀`, because a rendered sub/superscript digit standing alone
+used to be rescued by §5.4's fallback clause and is now swallowed into the adjacent
+run and then discarded by the subtoken split. `62² = 3844` would index as
+`62 = 3844`, and a condition `10²` would match a document containing `1/10`. The
+exclusion above removes both defects: measured, 12,822 expressions and 126,282 names
+change, **all of them pure merges, none losing or gaining a subtoken**, and
+`1 / 10²` indexes as `['1','/','10','²']`, which is better than either the old rule
+or the unqualified one. The bold digits `𝟬`–`𝟵` are **not** excluded, because they
+come from the `❙` fold rather than from `⇩`/`⇧` and §5.4 keeps the bold fold's
+outputs out of the separator class as real content; so `𝟭𝟬` groups, which is a gain.
+
+The `isdigit()`-only and the `isdigit()`-or-`isnumeric()` readings of *digit* were
+measured against each other over the whole corpus and **agree on every record**: the
+only characters that are `isnumeric()` and not `isdigit()` are the ten CJK numerals,
+which the letter-first test claims, and `½`, which never sits next to another digit.
+
+**Three defects the numeric class repairs, all measured.** They are the positive case
+for it, and none was the reason it was proposed:
+
+- **A whole-part promise this document makes and did not keep.** §5.2 says whitespace
+  "**is** a boundary: `f x` and `fx` differ because the space ends the run". Digits
+  were the one class for which that was false — `'2 2'` and `'22'` both gave
+  `['2','2']`, indistinguishable. They now differ.
+- **`39` could not find `Kelly_1_39`**, which is §16.2's own worked example. The
+  condition compiled to `['3','9']` while the document held the single subtoken
+  `'39'`, because digits do group inside an identifier. It now finds
+  `EnrichedCategory.Kelly_1_39_def` and its siblings.
+- **`2016` returned nothing at all**, against five records — the
+  `verifythis_2016_tree_traversal_*` family — in which it is plainly an
+  underscore-separated part of the name.
+
+The same measurement pass gives the noise the old rule created: condition `100`
+matched 436 documents and now matches 145, the difference being `1000`, `x1000'`,
+`21001` and their kind; condition `1` matched 58,564 and now matches 54,784, having
+been finding the `1` inside `4711` and `14`. Every case sampled in the difference was
+a fragment of a longer numeral, i.e. a match `COPY.md` §3.5 already promises visitors
+does not happen.
 
 A quasi-letter cannot **begin** an identifier, only continue one. So Isabelle's
 type variable `'a` is two tokens, `["'", 'a']`, and `_wrt` is `['_','wrt']` whose
 first token then disappears in §5.4. Both are load-bearing and neither is
 obvious; §16.2 carries a case for each.
+
+The `digit` group of `etc/symbols` — `\<zero>` … `\<nine>` — is **not** consulted
+either, for the same reason and with the same measurement behind it: all ten have a
+code point, so step 3 substitutes them before token formation sees them, and all ten
+satisfy `isdigit()` anyway, so consulting the group adds nothing. This is worth
+saying now that the digit class is load-bearing, because an implementer who reads
+the next paragraph will otherwise wonder why letters are ruled out and digits are
+not mentioned.
 
 The `letter`/`greek` groups of `etc/symbols` are **not** consulted, though an
 earlier draft said they were. Re-measured 2026-08-19 against the table Isabelle
@@ -1242,6 +1315,13 @@ adjacent run; `Fₒ` occurs in 50 documents and `Obj⇩A` in 44, never adjacent.
 Both halves verify separately on real data, so the point the example makes
 stands — only the example is fabricated. It is kept, labelled, because it shows
 both folding behaviours in one line.
+
+**§5.2's numeric token reads the same fold table.** The twenty rendered
+sub/superscript digits are excluded from a numeric run for the same reason they are
+separators here: they are decoration produced by a `⇩` or `⇧` marker, not content.
+Neither section depends on the other — both read the fold table of D45's asset — and
+an implementation that derives one class from the other rather than from the table
+will drift the moment the table gains an entry.
 
 **The separator character class**, settled by measurement on 2026-08-12 (§3.6).
 99 characters, **derived rather than typed out by hand** — a hand-written class
@@ -1512,7 +1592,7 @@ not the rule — an earlier draft gave the first set with no denominator at all:
 
 ```
                     §3.6's 230,944-document namespace   the whole corpus, 2026-08-19
-expr_subtokens                        37.72                        39.19
+expr_subtokens                        37.72                        39.13
 theory_subtokens                      21.46                        24.71
 name_subtokens                         6.30                         6.77
 ```
@@ -2672,6 +2752,10 @@ the asset (D45). An earlier draft of this paragraph said nine of the 99 come fro
 'Path_Connected.path_image_join'
                               → ['Path','Connected','path','image','join']
 "f'"                          → ["f'"]             ← `'` is a quasi-letter, not a separator
+'x1'                          → ['x1']             ← a digit CONTINUES an identifier; it does not start a numeral
+'f 100'                       → ['f','100']         ← a maximal run of digits is one token
+'f 1000'                      → ['f','1000']        ← so the condition '100' does NOT match this
+'1 / 10\<^sup>2'             → ['1','/','10','²']  ← a rendered superscript digit is NOT part of the run
 'x-y'                         → ['x','-','y']
 '%x. x'                       → ['%','x','x']      ← `%` is not converted to λ by the tokenizer
 '_'  '.'  '?'  '   '  '???'  '_.'  '\<^sub>'   → [] (all seven)
@@ -2717,12 +2801,16 @@ Do these in order. Each step is finished when its test passes, not before.
      §5.3. Both tables have been re-run under the character-level definition with zero
      mismatches (§16.1), so this is a target that is known to be reachable.
    - Run over the whole corpus, its subtoken arrays **differ from the prototype's on
-     exactly the 3,135 expressions D43 names and are identical on the other
-     1,358,961**. Compare with a digest of the concatenated arrays per record, not by
-     eyeballing samples, and check the differing set by name — the two AFP records
-     `AbsCFCorrect.lemma6` and `AbsCFCorrect.contour_a_class.abs_cnt_initial` plus
-     `Matrix.matrix` must be among the 17 that lose a subtoken (§5.1), and the count of
-     losses must be 17 and not 18.
+     exactly 15,935 expressions and are identical on the other 1,346,161**. Compare
+     with a digest of the concatenated arrays per record, not by eyeballing samples.
+     That figure is D43's 3,135 **plus** §5.2's numeric token class, which changes
+     12,822 expressions and 126,282 names on its own; the two overlap on 22 records.
+     Check the differing set by name: the two AFP records `AbsCFCorrect.lemma6` and
+     `AbsCFCorrect.contour_a_class.abs_cnt_initial` plus `Matrix.matrix` must be among
+     the 17 that lose a subtoken (§5.1), the count of losses must be 17 and not 18, and
+     **no record may lose a subtoken to the numeric rule** — that rule is measured to
+     be a pure merge on every one of the 12,822, and a loss means the rendered
+     sub/superscript exclusion was not implemented.
 
    **An earlier draft of this step required the arrays to be *identical* to the
    prototype's for all 1,362,096 expressions.** That test cannot pass and must not be
@@ -2807,7 +2895,19 @@ made entirely of rendered superscripts, for the fallback clause; an escape carry
 escape sitting against an ASCII-symbolic character, which is D43's 17-record loss
 pattern; an **astral** symbol value such as `\<S>` → `𝒮`, which is what catches a
 JavaScript port iterating UTF-16 code units (§5.2); and an `Entity Name` condition
-ending in `(_)` together with the same condition without it, for §5.1's step 0.
+ending in `(_)` together with the same condition without it, for §5.1's step 0; and
+five cases for §5.2's numeric class, every one of which a 10,000-triple sample of
+real expressions can miss — **a digit abutting a rendered sub/superscript** (`2²`,
+`1 / 10²`), whose corpus frequency is 373 in 1,362,096, so a sample of that size
+draws about three and can easily draw none; **a standalone multi-digit numeral**
+(`f 100`); **a digit immediately following a letter** (`x1`), which is the only
+guard against the precedence misreading §5.2 warns about; **a CJK numeral followed
+by a letter** (`一x`), which is what still discriminates the letter-before-digit
+ordering now that `一二三` no longer does; and **an astral digit adjacent to an ASCII
+digit** (`1\<one>2`, where `\<one>` is `𝟭` at U+1D7ED), because 1,112 of the 1,912
+digit code points are astral and a port iterating UTF-16 code units now swallows its
+neighbours into a token nothing can match, where before it merely emitted a lone
+surrogate.
 
 Pin the file's **encoding, ordering, count and digest**, so that "both
 implementations passed" is itself a checkable claim rather than a report.
@@ -2818,6 +2918,14 @@ Runs both implementations against the test-vector file and fails on any
 mismatch. It must also fail if the file's digest changes without the count
 changing, which catches a vector file quietly edited to match a broken
 implementation.
+
+**That guard fires on a legitimate rule change, and the escape must be deliberate.**
+Changing a tokenizer rule alters the expected output of many existing vectors while
+leaving the count at 10,000, which is exactly the shape the guard is looking for. So
+a rule change must alter the count in the same commit — by adding the cases the new
+rule needs, which it needs anyway (§16.5) — or carry an explicit, reviewed "the rule
+changed" marker. It must never be resolved by regenerating the file quietly, which is
+the failure the guard exists to catch.
 
 ### 16.7 The review that ran first — and the one still owed
 
