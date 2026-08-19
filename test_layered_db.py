@@ -68,6 +68,13 @@ def _reset_singletons() -> None:
     _Experience_Index._close()
     SE._close_all_lmdb_envs()
     SS._system_db_cache = SS._SYSTEM_DB_UNSET
+    # The theory-hash registry: its user layer is the lower package's singleton
+    # (pinned to the SEMANTIC_DB_DIR seen at first open), its system layer this
+    # module's -- both must drop for the next test's fresh dirs to take.
+    from Isabelle_RPC_Host.theory_hash import _close_theory_hash_store
+    _close_theory_hash_store()
+    import Isabelle_Semantic_Embedding.theory_hash_registry as THR
+    THR._close()
 
 
 @pytest.fixture
@@ -836,3 +843,80 @@ def test_vector_store_delete_reaches_the_system_layer(cache):
     assert store[k] is None                      # and now nothing is
     assert _vector_raw(store, k) == S.TOMBSTONE
     assert store.delete(k) is False              # idempotent, and says so
+
+
+# ---------------------------------------------------------------------------
+# The theory-hash registry reads by the same layered rule
+# (THEORY_HASH_REGISTRY_PLAN §8; mirrors the §9.1 facade cases above)
+# ---------------------------------------------------------------------------
+
+import Isabelle_Semantic_Embedding.theory_hash_registry as THR
+
+
+def _reg(name: str, ts: int) -> bytes:
+    """A registry value: msgpack [theory long name, last-seen unix seconds]."""
+    return msgpack.packb([name, ts])
+
+
+def _mk_system_registry(cache, entries: dict[bytes, bytes]):
+    """Add a theory_hash.lmdb to the system DB (creating the system DB if no
+    test call has yet)."""
+    sysdir = _mk_system(cache)
+    env = lmdb.open(str(sysdir / "theory_hash.lmdb"), map_size=1 << 24)
+    with env.begin(write=True) as txn:
+        for k, v in entries.items():
+            txn.put(k, v)
+    env.close()
+
+
+def _write_user_registry(entries: dict[bytes, bytes]) -> None:
+    from Isabelle_RPC_Host.theory_hash import open_theory_hash_store
+    with open_theory_hash_store().begin(write=True) as txn:
+        for k, v in entries.items():
+            txn.put(k, v)
+
+
+def test_registry_user_shadows_system_on_point_reads(cache):
+    _mk_system_registry(cache, {HA: _reg("Sys.A", 100), HB: _reg("Sys.B", 100)})
+    _write_user_registry({HA: _reg("Sys.A", 200)})
+
+    assert THR.decode_entry(THR._get_raw(HA)) == ("Sys.A", 200)   # user wins
+    assert THR.decode_entry(THR._get_raw(HB)) == ("Sys.B", 100)   # falls through
+
+
+def test_registry_merged_scan_sorted_user_wins(cache):
+    HC = bytes.fromhex("66" * 16)
+    _mk_system_registry(cache, {HA: _reg("Sys.A", 100), HB: _reg("Sys.B", 100)})
+    _write_user_registry({HB: _reg("Sys.B", 200), HC: _reg("Usr.C", 50)})
+
+    items = list(THR.iter_items())
+    assert [k for k, _ in items] == sorted([HA, HB, HC])
+    by_key = {k: THR.decode_entry(v) for k, v in items}
+    assert by_key[HB] == ("Sys.B", 200)                           # user wins
+
+
+def test_registry_tombstone_masks_system_entry(cache):
+    _mk_system_registry(cache, {HA: _reg("Sys.A", 100), HB: _reg("Sys.B", 100)})
+    _write_user_registry({HA: S.TOMBSTONE})
+
+    assert THR._get_raw(HA) is None                    # absent, no fall-through
+    assert [k for k, _ in THR.iter_items()] == [HB]    # and gone from the scan
+
+
+def test_registry_no_system_degenerate(cache):
+    _write_user_registry({HA: _reg("Usr.A", 100)})
+    assert SS.validated_system_db() is None
+    assert THR.decode_entry(THR._get_raw(HA)) == ("Usr.A", 100)
+    assert list(THR.iter_items()) == [(HA, _reg("Usr.A", 100))]
+
+
+def test_registry_system_db_without_registry_degenerate(cache):
+    """A system DB published before the registry travelled with it simply has
+    no theory_hash.lmdb; the layered read must treat that as an empty system
+    layer, not an error."""
+    _mk_system(cache)
+    _write_user_registry({HA: _reg("Usr.A", 100)})
+    assert SS.validated_system_db() is not None
+    assert THR._ensure_system_env() is None
+    assert THR.decode_entry(THR._get_raw(HA)) == ("Usr.A", 100)
+    assert [k for k, _ in THR.iter_items()] == [HA]

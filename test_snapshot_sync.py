@@ -540,7 +540,9 @@ def test_export_publishes_the_layered_view(cache, tmp_path):
 def _cli_paths(cache, monkeypatch):
     monkeypatch.setattr(CLI, "CACHE_DIR", str(cache))
     monkeypatch.setattr(CLI, "SEMANTICS_DB_PATH", str(cache / "semantics.lmdb"))
-    monkeypatch.setattr(CLI, "THEORY_HASH_DB_PATH", str(cache / "no_such.lmdb"))
+    # No registry seam needed: the layered theory-hash registry resolves
+    # SEMANTIC_DB_DIR at open time, and the `cache` fixture already points it
+    # at this test's fresh (hence registry-empty) dir.
 
 
 def test_remove_tombstones_system_resident_records(cache, monkeypatch, capsys):

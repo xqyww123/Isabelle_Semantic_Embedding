@@ -1232,29 +1232,24 @@ class _Semantic_DB:
         return len(rekeys)
 
     def _try_migrate(self, new_key: universal_key) -> bool:
-        from Isabelle_RPC_Host.theory_hash import open_theory_hash_store
+        import Isabelle_Semantic_Embedding.theory_hash_registry as theory_hash_registry
 
         new_hash = bytes(new_key[:16])
-        th_env = open_theory_hash_store()
-        with th_env.begin() as txn:
-            raw = txn.get(new_hash)
-            if raw is None:
-                return False
-            new_name, _ = msgpack.unpackb(raw)
-            if isinstance(new_name, bytes):
-                new_name = new_name.decode("utf-8")
+        raw = theory_hash_registry._get_raw(new_hash)
+        if raw is None:
+            return False
+        new_name, _ = theory_hash_registry.decode_entry(raw)
 
+        # The LAYERED walk: a candidate found only in the system layer is
+        # harmless -- the migration-source check below reads the user-layer
+        # semantics.lmdb, finds nothing, and skips it.
         candidates: list[tuple[bytes, int]] = []
-        with th_env.begin() as txn:
-            for k, v in txn.cursor():
-                k = bytes(k)
-                if k == new_hash:
-                    continue
-                name, ts = msgpack.unpackb(v)
-                if isinstance(name, bytes):
-                    name = name.decode("utf-8")
-                if name == new_name:
-                    candidates.append((k, ts))
+        for k, v in theory_hash_registry.iter_items():
+            if k == new_hash:
+                continue
+            name, ts = theory_hash_registry.decode_entry(v)
+            if name == new_name:
+                candidates.append((k, ts))
 
         if not candidates:
             return False

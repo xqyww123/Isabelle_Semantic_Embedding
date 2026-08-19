@@ -27,8 +27,8 @@ from collections import defaultdict
 
 import lmdb
 import msgpack
-import platformdirs
 from Isabelle_Semantic_Embedding._paths import semantic_DB_dir
+import Isabelle_Semantic_Embedding.theory_hash_registry as theory_hash_registry
 
 from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
 
@@ -38,8 +38,6 @@ from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
 
 CACHE_DIR = semantic_DB_dir()
 SEMANTICS_DB_PATH = os.path.join(CACHE_DIR, "semantics.lmdb")
-THEORY_HASH_CACHE_DIR = platformdirs.user_cache_dir("Isabelle_Theory_Hash", "Qiyuan")
-THEORY_HASH_DB_PATH = os.path.join(THEORY_HASH_CACHE_DIR, "theory_hash.lmdb")
 
 
 # ---------------------------------------------------------------------------
@@ -57,19 +55,9 @@ def _loud(line: str) -> str:
 
 
 def _load_theory_names() -> dict[bytes, str]:
-    """Load hash→name mapping from theory_hash.lmdb."""
-    if not os.path.exists(THEORY_HASH_DB_PATH):
-        return {}
-    env = lmdb.open(THEORY_HASH_DB_PATH, readonly=True, lock=False)
-    result: dict[bytes, str] = {}
-    with env.begin() as txn:
-        for key, val in txn.cursor():
-            name, _ts = msgpack.unpackb(val)
-            if isinstance(name, bytes):
-                name = name.decode("utf-8")
-            result[bytes(key)] = name
-    env.close()
-    return result
+    """Load hash→name mapping from the LAYERED theory-hash registry."""
+    return {key: theory_hash_registry.decode_entry(val)[0]
+            for key, val in theory_hash_registry.iter_items()}
 
 
 def _vector_store_paths() -> list[str]:
@@ -547,19 +535,11 @@ def _load_theory_generations() -> 'dict[str, list[tuple[bytes, int]]]':
     last-touched time the registry keeps per hash (puts overwrite)."""
     from Isabelle_RPC_Host.theory_hash import is_persistent
     out: 'dict[str, list[tuple[bytes, int]]]' = defaultdict(list)
-    if not os.path.exists(THEORY_HASH_DB_PATH):
-        return out
-    env = lmdb.open(THEORY_HASH_DB_PATH, readonly=True, lock=False)
-    with env.begin() as txn:
-        for key, val in txn.cursor():
-            key = bytes(key)
-            if not is_persistent(key):
-                continue
-            name, ts = msgpack.unpackb(val)
-            if isinstance(name, bytes):
-                name = name.decode("utf-8")
-            out[name].append((key, int(ts)))
-    env.close()
+    for key, val in theory_hash_registry.iter_items():
+        if not is_persistent(key):
+            continue
+        name, ts = theory_hash_registry.decode_entry(val)
+        out[name].append((key, ts))
     return out
 
 
@@ -665,6 +645,9 @@ def cmd_prune(args: argparse.Namespace) -> None:
     doomed: set[bytes] = set()
     print("Generations (newest first; the newest "
           f"{args.keep} per theory survive):")
+    print("(A timestamp is when some machine last loaded that theory. Once the "
+          "registry travels with the database, that machine may be the one "
+          "that published it rather than this one.)")
     for name in targets:
         gens = live.get(name, [])
         print(f"  {name}")
