@@ -3256,6 +3256,12 @@ the digest that tells them apart.)
 
 Do these in order. Each step is finished when its test passes, not before.
 
+**Where this stands, 2026-08-19: steps 1, 3, 4, 5 and 6 are done and step 2 is
+blocked on something that is not the tokenizer's.** Everything step 2 can be
+accepted on without an export already holds and is tested; what is missing is an
+export to emit the asset *from*, and there is no export code in this repository yet
+because §12.2's prerequisites B and C are outstanding and are the user's.
+
 1. **`Isabelle_Semantic_Embedding/isabelle_tokenizer.py`** — the production
    Python implementation, lifted from `site/prototype/` and changed in **two**
    respects, not the one an earlier draft of this step claimed:
@@ -3357,6 +3363,20 @@ Do these in order. Each step is finished when its test passes, not before.
    rather than read** (§5.5). Test the refusal by hand-editing the version in a copy —
    it is the one behaviour no other test exercises.
 
+   **Blocked, and only on the export.** `Isabelle_Semantic_Embedding/tokenizer_asset.py`
+   builds the asset and every one of the four conditions above is met and tested:
+   `test_isabelle_tokenizer.py` loads the tokenizer module by path with
+   `Isabelle_RPC_Host` and `Isabelle_Semantic_Embedding` blocked from the import system
+   and `ISABELLE_HOME` removed from the environment, and it edits the version in a copy
+   of the asset and asserts the refusal — the JavaScript side does the same in
+   `site/tokenizer/test_tokenizer.mjs`. What is left is wiring the emission into an
+   export that does not exist: §12.2's prerequisite B (the theory-hash registry
+   published) and C (entity positions in the published snapshot) are outstanding and
+   are the user's. Meanwhile `site/tokenizer/asset.json` is the committed asset, and
+   `test_isabelle_tokenizer.py` checks it is still what the live symbol table
+   produces — which is the question the export will answer automatically once it
+   emits the asset itself.
+
 3. **`site/tokenizer/`** — the JavaScript port, reading the same asset.
    *Accepted when* it passes the shared test-vector file (§16.5) with zero
    mismatches. It must not consult any JavaScript built-in for character
@@ -3395,10 +3415,18 @@ Do these in order. Each step is finished when its test passes, not before.
    symbol table — that the committed `asset.json` is still what that table produces —
    and it runs on a developer's machine, where the answer can be had.
 
-6. **`_truncate_to_token_limit`** — decide whether it is still needed. D29 caps
-   the query in *characters*, so it probably is not. If not, do not move it out
-   of `premise_selection.py`; leave it where it is and record that it is unused
-   by the site. Note that `premise_selection.py` imports the symbol conversion as
+6. **`_truncate_to_token_limit`** — **decided 2026-08-19: the site does not use it,
+   and it stays exactly where it is.** It counts the embedding model's BPE tokens
+   through `transformers.AutoTokenizer`, and the site has no place to call that from.
+   On the query path the enforcement point is the Worker, which D29 capped in
+   *characters* precisely because a Worker cannot count BPE tokens without shipping a
+   151,000-entry vocabulary to the edge; 8,000 characters is what keeps a query inside
+   Fireworks' input limit. On the export path there is nothing to truncate: the export
+   publishes vectors that already exist in the store and embeds nothing. Its only
+   callers are `_shrink_tokens` and itself, all inside `premise_selection.py`, which
+   is AoA's premise selection and not this site. Moving it would have taken a
+   `transformers` import into a module the site does use, for no caller.
+   Note that `premise_selection.py` imports the symbol conversion as
    `_pretty_unicode` and wraps it rather than shadowing it, so nothing there is
    affected by the tokenizer landing.
 
