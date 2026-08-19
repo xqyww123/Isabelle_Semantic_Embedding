@@ -99,17 +99,28 @@ filter/condition/row for two levels of structure, `expression` for three
 different things, six kinds named on the landing page against eleven chips, and
 "Collection" defined nowhere.
 
-Seven things the readers exposed that are **design, not wording**, and are open:
-whether variable names are indexed at all; how conditions combine within and
-across sections, and what the Kind chips do; whether `Introduction rule` is
-disjoint from `Theorem` (under the reversed D5 it is, so selecting `Theorem`
-misses the intro-rule record of the same statement); what the similarity score
-compares, given the vector is built over `pretty_print` plus the interpretation,
-so ranking rests partly on machine-written prose the disclaimer only warns about
-for *reading*; short versus long name in `Entity Name`; what "expression"
-denotes for a non-theorem kind; and whether the site states the Isabelle
-release, AFP snapshot and index date — absence of a result being this product's
-primary output, and uninterpretable without them.
+Seven things the readers exposed that are **design, not wording**. **Four of the
+seven were settled by the user on 2026-08-14, the same afternoon this list was
+written, and one more he closed outright — treat only the remaining two as open.**
+
+Settled, with the decision that settles each:
+
+- whether variable names are indexed at all — **D37**, "什么都不改，接受噪声";
+- what the similarity score compares, given the vector is built over `pretty_print`
+  plus the interpretation — **D40**, which requires the hover to name the embedding
+  model the cosine similarity was computed with;
+- short versus long name in `Entity Name` — **D39**, "索引和文案都走长名。只索引长名";
+- whether the site states the Isabelle release, AFP snapshot and index date — settled
+  in §15.2 below, the footer carries all three.
+
+Closed, not settled: whether `Introduction rule` is disjoint from `Theorem`. The user
+was asked and refused the question — "这为什么是一个问题？你在钻牛角尖？", then "不要管
+读者的这个疑问，会有这种疑问的读者不是我们的客户". Do not reopen it and do not build a
+tooltip for it; D38's remark that it is "a labelling matter for a tooltip" is not a
+licence to add one.
+
+Still open: how conditions combine within and across sections, and what the Kind chips
+do; and what "expression" denotes for a non-theorem kind.
 
 ---
 
@@ -278,13 +289,22 @@ settled directly rather than raised. Recorded so the decisions are traceable:
   index build date.** Absence of a result is this product's primary output and is
   uninterpretable without them.
 - **The search response returns exactly** what a card renders: `name`, `expr`,
-  the full kind set (D38), `theories`, `position`, `interpretation`, `group`. Not
-  the vector — 200 of those would dominate the payload.
+  the full kind set (D38), `theories`, `position`, `interpretation`, `group` **and
+  `from_collection`**. Not the vector — 200 of those would dominate the payload.
+  `from_collection` was missing from this list until 2026-08-19 and it is not
+  optional: §6.1 of the live plan requires the field in the **first** export, and a
+  card whose record carries it renders `<from_collection>(_)` in place of the stored
+  name. A Worker built to the older list returns nothing to render that from, which
+  is the exact failure the user ruled out — "前端可以渲染为 `coll(_)` 的呀。其中这个
+  `coll` 就是 `from_collection` 字段所记录的".
 - **The `"\n"` separator in `theory_subtokens` is verified at implementation
   time**, not before: §3.3 never tested whether turbopuffer stores and indexes a
   whitespace-only element in a `pre_tokenized_array`. One upsert against a test
-  namespace settles it; if it is dropped, choose a non-whitespace separator that
-  the tokenizer cannot emit.
+  namespace settles it. It does **not** belong in this list, though, and this entry
+  is kept only so that a reader who followed a citation here is not left with the
+  old claim: the user chose `"\n"` himself on 2026-08-09 ("用 `"\n"` 最稳" → "赞同"),
+  so the upsert validates his choice, and a substitute goes back to him. §6.3 of the
+  live plan carries the current text.
 - **What number the RRF fusion returns per row** is likewise settled by one
   `multi_query` against a live namespace. D40 already fixes what is *displayed*
   (the vector leg's cosine similarity), so this only affects plumbing.

@@ -89,6 +89,13 @@ be re-runnable and deterministic.
 
 ## 1. Glossary — canonical names, never paraphrased
 
+These are the names **this document** uses, and they name record kinds as the
+database spells them. Four of them are **not** what a visitor sees: the Kind chip
+labels the user approved on 2026-08-14 are `Named theorems` for `Theorem collection`
+and `Case split` for `Case split rule`, and `site/COPY.md` §11 is authoritative for
+those and for every other visitor-facing string. Build the chip group from `COPY.md`,
+never from this table.
+
 | Term | Meaning |
 |---|---|
 | **entity** | One record in `semantics.lmdb`: a constant, type, class, locale, method, theorem collection, theorem, or derived rule. Never "item", "object", "fact". |
@@ -228,9 +235,12 @@ reader of those sections needs to find the decision that used to govern them.
 - **D16** — **the site lives in this repository**: the site export as a module of
   the Python package, the web application under `site/` (§12.1).
 - **D17** — **the domain is `isabelle-semantics.qiyuan.me`.**
-- **D18** — **the turbopuffer namespace goes in North America**, co-located with
-  the Fireworks origin so that Cloudflare Smart Placement can put the Worker
-  near both (§6.4).
+- **D18** — **every region-bearing component goes in North America**, the
+  turbopuffer namespace included, co-located with the Fireworks origin so that
+  Cloudflare Smart Placement can put the Worker near both (§6.4). The user's words
+  were "那我建议把所有的 regions 全放在北美" — *all* the regions, so this binds any
+  later component that acquires a region or a jurisdiction (a Durable Object's home,
+  a KV or D1 jurisdiction), not only the namespace this decision used to name alone.
 - **D19** — **the U+007F repair runs on this machine and Hugging Face is
   uploaded from here.** Premise given by the user: this machine, `cslh19` and
   Hugging Face are currently in sync.
@@ -638,6 +648,23 @@ reader of those sections needs to find the decision that used to govern them.
   For a theorem-alike entity "the theories it names" is `theory_constituents`;
   for a name-addressed one it is its declaring theory. No `AFP-ALL-4` chain
   resolution and no entity position is needed.
+
+  **The scope the user set is `AFP-ALL-4` and nothing else** — his words, on
+  2026-08-19: "我的意思就是只针对 AFP-ALL-4，目前别考虑别的，之后可能会加上别的数据，
+  但目前不会。" So the session test above is an *implementation* of that scope, not a
+  widening of it, and adding a source later is a decision the user takes, not a rule
+  an implementer relaxes. The test replaced chain resolution because the chain is
+  inexpressible for the 84.9 % of records that have no declaring theory, and the two
+  were **measured to agree**: on `cslh19`, 2026-08-19, over the 1,144,749 records
+  carrying `theory_constituents`, exactly **one** names a session that the ROOT files
+  declare and the `AFP-ALL-4` image does not hold, and over the 199,044 name-addressed
+  records — every one of whose declaring theories the theory-hash registry resolved —
+  **none** does. That single record is `HOL.Trueprop_code`, whose constituents are
+  `HOL.HOL`, `Pure` and `Tools.Code_Generator`; the image plainly holds all three, and
+  the divergence is a gap in the theory list the comparison used
+  (`tools/Build_AFP_Image/afp_all4_roots.heap.txt` carries no `Pure`-level session at
+  all), not a record outside the scope. Over the present corpus the two rules select
+  the same 1,343,793 records.
 
   Measured 2026-08-13 over 1,156,333 records — which is the 1,156,153 theorem-alike
   records of §3.1 **plus the 180 `EXPERIENCE` records**, since the scan took every
@@ -1599,10 +1626,16 @@ contain it — and it survives subtoken formation untouched, being injected by
 the export rather than produced by the tokenizer and absent from D21's
 separator class.
 
-**It is not yet settled, and §8.1 owns the test.** Whether turbopuffer stores and
+**The user chose it, on 2026-08-09.** The proposal put to him was "两个 theory
+名之间插一个分隔 token。用 `"\n"` 最稳" and his answer was "赞同", so this is a
+decision and not an open implementation detail — earlier drafts filed it under
+"small things being decided without further consultation", which was wrong.
+
+What §8.1 owns is a **validation, not a re-opening**. Whether turbopuffer stores and
 indexes a whitespace-only element of a `pre_tokenized_array` at all was never
 measured (§3.3 did not test it), and if it is dropped the adjacency straddle above
-comes back. One upsert against a test namespace settles it; if `"\n"` is dropped,
+comes back. One upsert against a test namespace settles it. **If it is dropped, the
+substitute goes back to the user**, because replacing `"\n"` replaces his choice:
 choose a non-whitespace character the tokenizer cannot emit — every character the
 tokenizer can emit is either a letter, a digit, a quasi-letter, an ASCII-symbolic
 character or a single other character it passes through, so a control character
@@ -1774,10 +1807,16 @@ but it holds only interpretation cost accounting (`input_tokens`, `cost_usd`,
 (2026-08-19; 11,415 on 2026-08-12).
 
 The table that does map hash to name is a separate store, the **theory-hash
-registry** `~/.cache/Isabelle_Theory_Hash/theory_hash.lmdb`
-(`hash -> [long name, timestamp]`). `snapshot_sync` does not ship it, so a
-published database has none of it — that is the real problem, and
+registry** (`hash -> [long name, timestamp]`), today at
+`~/.cache/Isabelle_Theory_Hash/theory_hash.lmdb`. `snapshot_sync` does not ship it,
+so a published database has none of it — that is the real problem, and
 `THEORY_HASH_REGISTRY_PLAN.md` is the plan that fixes it.
+
+**Do not hard-code that path: the user approved moving the store on 2026-08-12**
+("赞同 把它搬进语义数据库目录", the name unchanged), and R1 of that plan puts it at
+`semantic_DB_dir()/theory_hash.lmdb`. §8.1's step 4 and §12.2's prerequisite B both
+read it; take the location from that plan, not from the line above, which says only
+where it sits until R1 lands.
 
 **Draft 3 correction — the table does not need to be rebuilt.** Drafts 1 and 2
 said this store "holds 2,910 entries and resolves only 9.9 % of the 9,148
@@ -1989,11 +2028,16 @@ One prominent box for the semantic query, plus a collapsible panel for the
 syntactic filters: the five panels of D22 — `Entity Name`, `Expression`,
 `Theory Name`, `All`, `Kind` — where the first three and `All` are repeatable
 lists of single-line conditions, each condition carrying its own
-`contains`/`excludes` toggle, and `Kind` is a chip group. An inline prefix
-syntax
-(`sorted_wrt -inductive theory:HOL-Library`) is offered as a shortcut, and the
-parse result is echoed back into the structured fields so the user can see how
-it was understood.
+`contains`/`excludes` toggle, and `Kind` is a chip group.
+
+**There is no inline query syntax, and none may be designed.** A draft-1
+paragraph here offered one — `sorted_wrt -inductive theory:HOL-Library`, parsed
+and echoed back into the structured fields — and D22 replaced it with the panel
+list above without deleting it. `site/DESIGN_PROMPT.md`, the designer brief
+(§12.1), forbids it in as many words: "A condition may freely contain spaces and
+any punctuation … there is **no escaping and no inline operator syntax; do not
+design one**." A condition is one line of literal text; the only structure is
+which panel it sits in and which way its own toggle is set.
 
 ### 9.2 A required piece of user education
 
@@ -2020,7 +2064,10 @@ variable placeholders.
 
 Per D14 the theory filter matches a name-addressed entity's declaring theory
 but a theorem-alike entity's constituent theories. The interface states this
-rather than hiding it. One sentence carries it, shown beside the field:
+rather than hiding it. One sentence carries it, shown beside the field **in
+amber** — the user proposed red on 2026-08-12 and settled on amber the same
+afternoon ("琥珀色挺好的"), so it is an emphasised callout and not body text.
+The mockup already renders it that way; the exact string is `site/COPY.md` §3.4:
 
 > **Theory Name** — matches an entity's **associated theories**: for constants,
 > types, classes, locales and methods, the theory that declares them; for
@@ -2349,7 +2396,11 @@ none of it listed here before 2026-08-19:
 
 ```
 site/COPY.md              the authoritative source of every visitor-facing string
-                          (§13b) — the mockup follows it, never the reverse
+                          (§13b) — the mockup follows it, never the reverse.
+                          The user delegated it on 2026-08-18: "COPY.md 你可以
+                          自行修改，不需要我审批". The exception is the sentences
+                          other decisions lock — D30 as amended and D40 — which
+                          are quoted in this plan and change only with him.
 site/DESIGN_PROMPT.md     the designer brief
 site/design/              the delivered mockup, IsaSearch.dc.html, plus the
                           generated Claude Design runtime, which is not edited
@@ -2650,6 +2701,45 @@ reproduced; state the rule with any figure that replaces it.) A third option —
 a leading quote attach to the following identifier, as Isabelle's own lexer does —
 was measured and buys nothing: the document holds `'a` either way, so a visitor
 who omits the quote still fails to match.
+
+### 14.8 Two other ways to count requests: Analytics Engine, and an edge rule alone
+
+Both were proposed by the user on 2026-08-14 — "我们能用 Workers Analytics Engine
+来实现每天 1000 次的 gate 吗？" and, once the first was answered, "既然如此的话，我
+觉得 KV 其实不是必须的？我们可以用边缘规则设定每小时 100 个查询的上限？" — and both
+were rejected on how the platform behaves, not on preference. The facts were
+established in that day's investigation and are recorded here because §11.1 argues
+only about KV, so without them the next person costing this out re-proposes the
+edge rule and builds a counter that silently counts per data centre:
+
+- **Workers Analytics Engine cannot gate anything.** Its writes are sampled, so the
+  count it reports is an estimate; and it is read through an external HTTP SQL API,
+  which a request-path Worker would have to call synchronously. A gate needs an exact
+  count it can read cheaply, which is the one thing this product does not offer.
+- **A Cloudflare edge rate limiting rule counts per data centre, not globally.**
+  The counter is implicitly keyed by the colo serving the request, so a rule written
+  as "100 per hour" admits 100 per hour *per colo*. That is why layer 1 is per-IP and
+  short-window (where per-colo counting is close enough, since one client normally
+  lands in one colo) and why a **global** gate cannot be an edge rule at all — it is
+  the reason layer 3 was specified as a Durable Object, the only stateful component
+  in the design.
+
+### 14.9 A `spell:` field, so a private-use symbol indexes as a readable word
+
+Raised and abandoned by the user on 2026-08-18, both within the hour. The problem
+is real: 135 phi-System symbols sit in the Unicode private-use area, where the code
+point carries no meaning to any reader or tokenizer. His first proposal was a rule —
+"如果有 spell 字段，则始终用此字段；如果没有，且如果 codepoint 位于私用区那么不翻译"
+— which would have added a per-symbol `spell:` field to the symbols files so that
+`\<transforms>` indexed as a word. He then withdrew it himself: "等一下，我意识到其实
+我们不应该给 spells，应该就保留成 `\<transforms>` 好了。对，我们先定下来删除这些
+codepoints 的 spell 字段好了."
+
+D44 keeps the surviving clause — a private-use code point is not substituted, so the
+escape survives as literal text and at least spells the word. The abandoned clause is
+recorded here so that the D43-D46 review §16.7 still owes does not propose it as new:
+it is not an oversight, it is a design the user considered and dropped, and no
+`spell:` field exists in any symbols file today.
 
 ## 15. Implementation handover, 2026-08-14 — superseded
 
