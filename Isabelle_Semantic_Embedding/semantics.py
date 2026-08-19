@@ -897,7 +897,9 @@ class _Semantic_DB:
         documented on a caller: only a field the embedded document is NOT
         built from may take this path (the assert below).  Grants recorded so
         far: `position` (ENTITY_POSITION_PLAN.md L6, approved explicitly for
-        the entity-position migration).
+        the entity-position migration); `from_collection`
+        (DYNAMIC_MEMBER_NAMING_PLAN.md §4 open item 1, approved explicitly
+        for migrate_from_collection.py on 2026-08-19).
 
         BATCHED, not one transaction: a single write transaction rewriting the
         whole store overruns LMDB's dirty-page list and rolls everything back
