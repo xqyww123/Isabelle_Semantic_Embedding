@@ -36,7 +36,9 @@ indices are stable and whose records carry real positions; nothing below touches
 
 ### 2.1 Stop a stored name reaching an LLM where a live one is already in hand
 
-Three sites. The rule at each is the same and is stated once, at the end.
+Four sites get the substitution: the three described next plus a fifth after them (the
+numbering skips a fourth, which is deliberately not fixed — see below). Which of the two
+substitution functions each site calls is stated once, in the table at the end.
 
 **The pattern-only query branch** (`contrib/Isa-Mini/IsaMini/AoA/model.py:2318-2322`). When
 a query carries term patterns but no description, the loop iterates
@@ -75,32 +77,59 @@ through `query`.
 (`Isabelle_RPC/Tools/Universal_Key.ML:905`) manufactures the invented form over a `Facts.lookup`
 that evaluates dynamic collections. So an agent asking for a collection by name gets
 `tendsto_intros(37)` stamped over the real stored name on precisely the 4,524 records §5 repaired.
-Bring it under the same rule, and add the **chosen** name — not `ref_name` — to
+Give it `apply_live_name_if_member` (its row in the table below), and add the **chosen** name — not `ref_name` — to
 `bundle_member_names` at `:2203`, so the `suppress_def` match still works.
 
-**The rule at all five: take the live name only when the stored name is an invented member
-form**, which is exactly what §2.2's field decides. Otherwise keep the stored name. Without the
-condition, the 4,524 records that already carry real names (§5) are shown to a model as
-`tendsto_intros(37)` — the unstable string §1 calls the defect. Measurement backs this up: of the
-members a name can be found for at all, roughly 6 % are ones the store knows and §2.4 cannot
-recover (§6).
+**Two rules, so two named functions — the name at the call site is the policy.** There is no
+single substitution: some callers must take the live name unconditionally, others only for
+members. Wrapping both behaviours in one function with a flag would put a polarity decision at
+every call site; a bare predicate would push `X if p(rec, live) else Y` into every caller. Instead,
+two module-level record→record functions, the second defined via the first so the body exists once:
 
-**Write the rule once, and write it as a record-to-record substitution, not as a predicate.**
-`_apply_live_name` (`semantics.py:2046-2051`, applied at `:2057` and `:2114`) is already
-record→record — `rec._replace(name=name) if name is not None else rec`. Keep that shape, add the
-condition inside it, lift it out of its closure to module level, and have all five callers use it.
-A boolean predicate instead would push `X if p(rec, live) else Y` into five places: five polarity
-decisions to get right, and a second condition later would have to be added five times.
+```python
+def apply_live_name(rec, live):
+    """Unconditionally prefer the live, context-resolved name. For callers whose
+    records come from this query's own live enumeration: the name is a handle the
+    agent will cite back, and the live one is the one guaranteed to resolve in the
+    querying context."""
+    return rec._replace(name=live) if live is not None else rec
 
-**Two of those callers are not member-specific, and the condition changes them.** `:2057` (inside
-`_resolve`, for every scored candidate) and `:2114` (every reranked candidate) run on **every**
-record of every kind, and `candidate_names` is filled for every entry the live enumeration
-returned in both `Context` branches (`:1984-1985`, `:2000-2001`, `:2020`). Adding the condition
-there flips every non-member record from the live, context-resolved name to the stored one. On
-that path the name is a handle the agent will cite back, and the live one is the one guaranteed to
-resolve in the querying context. **Keep those two unconditional** and apply the condition only at
-the three by-name sites, unless someone first measures that the stored name resolves in the
-querying context across the non-member population. Say which, in code, at the call site.
+def apply_live_name_if_member(rec, live):
+    """Substitute only when the stored name is an invented member form (§2.2's
+    field decides) AND the live name carries an index. An index-free live name is
+    the bare collection name — the one thing §2.3 rules out showing (see the
+    second site above). Everything else keeps its stored name: without the
+    condition, the 4,524 records that already carry real names (§5) would be
+    shown to a model as `tendsto_intros(37)` — the unstable string §1 calls the
+    defect."""
+    if rec.from_collection is not None and live is not None and _carries_index(live):
+        return apply_live_name(rec, live)
+    return rec
+```
+
+(`_apply_live_name`, `semantics.py:2046-2051`, is today's closure form of the first function —
+lift it to module level; its closure variable `candidate_names.get(uk)` becomes the `live`
+argument. `_carries_index(live)` is one regex — the name ends in `(digits)` — defined next to the
+two functions; it tests the **live** string ML handed over, never the stored one. Measurement
+backing the member condition: of the members a name can be found for at all, roughly 6 % are ones
+the store knows and §2.4 cannot recover (§6).)
+
+**Which caller takes which function** — the "why" column reduces to two reasons, and the reason
+is a property of where the *name* came from, not of the display site: the record was surfaced by
+this query's own live enumeration (unconditional), or the live name was resolved from a
+caller-supplied string (conditional):
+
+| caller | function | why |
+|---|---|---|
+| `semantics.py:2057` (`_resolve`, every scored candidate) | `apply_live_name` | record surfaced by this query's live enumeration; `candidate_names` is filled for every entry in both `Context` branches (`:1984-1985`, `:2000-2001`, `:2020`) |
+| `semantics.py:2114` (every reranked candidate) | `apply_live_name` | same enumeration, same handle |
+| the pattern-only branch (`model.py:2318-2322`, first site above) | `apply_live_name` | same population and provenance as the two rows above — its loop is a hand-copy of `_resolve` that dropped the substitution line; its `rec is None` fallback already uses the live name |
+| the by-name entity query (`retrieval.py:918`, `:924`, second site above) | `apply_live_name_if_member` | the live name comes from resolving the caller's query string, and the index-free case must keep the stored name |
+| `Semantic_DB.query`'s `live_name` (third site above) | `apply_live_name_if_member` | same threading as the second site |
+| the bundle branch (`model.py:2198-2204`, fifth site above) | `apply_live_name_if_member` | its `ref_name` is manufactured `coll(i)`; the condition is what protects the 4,524 repaired records |
+
+Flipping a conditional row to unconditional is forbidden until someone measures that the stored
+name resolves in the querying context across the non-member population.
 
 **Apply it to the record, never to a rendering.** This is the load-bearing instruction for the
 third site. `Semantic_DB.query` returns `entity_document_text(rec)` (`semantics.py:678-692`), and
@@ -114,19 +143,30 @@ document against a displayed one. Instead: `Semantic_DB.query` gains `live_name:
 and applies the substitution to `rec` before rendering; `query_by_name_raw` (`:1354-1366`) switches
 from `universal_key_of` to `universal_key_and_name_of` to supply it — the same threading the second
 site already needs. `document_text.py` is never opened and every caller keeps using `rec.name`.
-`Semantic_DB.query` has other callers (`semantics.py:1419`, `:2547`, `Isa-Mini`'s `desugar.py:119`),
+`Semantic_DB.query` has other callers (`semantics.py:1419`, `:2547`, and
+`Isabelle_Semantic_Embedding/desugar.py:119` — same package, not Isa-Mini),
 so the new parameter defaults to `None` and they keep today's behaviour unchanged.
 
 **Let ML hand Python the finished name.** Both the second and third sites otherwise have Python
 rebuild `name(i)` from a string it was given. The rule for building that string is already owned by
 ML and already implemented there: `key_of_theorems_tagged` composes it from `ref_at` and an `n > 1`
-test in the same `local` block as `key_of_theorem` (`Isabelle_RPC/Tools/universal_key.ML`). Have
+test in the same `local` block as `key_of_theorem` (`Isabelle_RPC/Tools/Universal_Key.ML`). Have
 `key_of_theorem` return that same display name **as a new fifth component**, leaving `full_name`
 and `is_global` untouched — replacing the fourth component would change what four other entity
 kinds (18, 34, 50, 66) hand back and would break `is_global`, which must be computed from the bare
-interned name. Only the kind-2 branch (`:1026-1027`) consumes the new component. Then
-`universal_key_and_name_of` hands Python a string it never edits and the `parse_thm_xname` round
-trip disappears from both sites.
+interned name. **All five by-name branches consume the new component** — the kind-2 branch
+(`:1026-1027`) directly, and the four rule wrappers (`key_of_introduction_rule` /
+`key_of_elimination_rule` / `key_of_induction_rule` / `key_of_case_split_rule`,
+`Universal_Key.ML:940-955`) each by one line: their tuple destructure grows the fifth component
+(the compiler forces this anyway) and their `(uk, name)` result returns the display name in place
+of `full_name`. Do **not** leave them returning the index-free `full_name`: a member's rule faces
+are the store's dominant member population (§5: 4,439 introduction + 80 elimination of the 4,524
+repaired), and an index-free live name is exactly what `apply_live_name_if_member` must reject —
+the wrappers would hand back a name composed inside `key_of_theorem` and thrown away four times,
+and the stale stored `coll(i)` would keep being shown for precisely the records §1 calls the
+defect. `key_of_theorem`'s own tuple, `is_global`, and the fourth component stay untouched; only
+which half of the pair the wrappers return changes. Then `universal_key_and_name_of` hands Python
+a string it never edits and the `parse_thm_xname` round trip disappears from both sites.
 
 A fourth site is **not** fixed: the text `document_text_of` produces **for embedding**
 (`Isabelle_Semantic_Embedding/document_text.py:50` via `Record.pretty_print`). Changing what
@@ -143,7 +183,9 @@ not a name, plus a separate index, plus a separate flag, kept in step by hand. D
 
 ```sml
 datatype entity_name =
-    Declared of string        (* a name the name space declared; used verbatim *)
+    Declared of string        (* adopted verbatim from the producer -- never invented by this
+                                 enumeration; a fact name may carry a Thm_Name.print selection
+                                 index, e.g. "Foo.bar(2)" *)
   | Member   of string * int  (* invented: the collection's full name, 1-based sweep index *)
 ```
 
@@ -180,56 +222,103 @@ any kind,** named **in the record we are about to write**" — hence the sweep's
 `Member_of_Dynamic coll` to `Member (coll, i)`, taking `i` from the index
 `process_dynamic_facts_into_cache` already returns beside the entry (`:1027`).
 
-**Three total projections, and every consumer named.** Getting one wrong is silent, so the plan
-names them rather than leaving the choice to whoever compiles first:
+**One projection exported; the other two collapse into the write site.** The record's name and
+its `from_collection` field each have exactly one consumer, and it is the same expression — the
+record write inside `build_entries`' output map (`:845-856`, where `disp_name` is rendered
+today). So they are not exported functions anybody else could grab wrongly (all the candidate
+projections return indistinguishable strings, so the compiler cannot catch a mix-up); they are
+one local `case` at that site, producing both values from one match:
 
 ```sml
-fun stored (Declared n)    = n
-  | stored (Member (c, i)) = c ^ "(" ^ string_of_int i ^ ")"
+val (disp_name, from_coll) =
+  case nm of
+    Declared n    => (n, NONE)
+  | Member (c, i) => (c ^ "(" ^ string_of_int i ^ ")", SOME c)
+```
 
-fun from_collection (Declared _)    = NONE
-  | from_collection (Member (c, _)) = SOME c
+The field and the name provably come from one match, so they can never disagree — and no other
+site can call a projection it was not meant to have. Render the member name by hand-concatenation,
+**not** `Thm_Name.print (c, i)`: the printer would produce the identical string, but routing the
+invented pair through the theorem-name printer re-dresses it as the very thing it is not, at the
+one site whose purpose is to keep the distinction. A future consumer with a genuinely new need
+writes its own `case` — the compiler then forces it to answer for `Member` explicitly.
 
-fun space_name (Declared n)    = n     (* the name to look up in a name space *)
+The one projection with scattered consumers is exported, with every consumer named:
+
+```sml
+fun space_name (Declared n)    = n
   | space_name (Member (c, _)) = c
+  (* the carried name with no invented member index appended.  NOT always a
+     name-space key as-is: a Declared fact name may carry a Thm_Name.print
+     selection index, which fact-space consumers strip (Thm_Name.parse) before
+     the lookup -- see serial_of. *)
 ```
 
 | consumer | projection | why |
 |---|---|---|
-| the name written to the record (`:851-856`) | `stored` | it wants that string |
-| the new field (§2.2 below) | `from_collection` | the same value's other projection, so the two cannot disagree |
-| the name list handed to `Locale_Instance.detect` (`:690`) | `space_name` | |
-| the `Facts.is_dynamic` bypass (`:698-699`) | `space_name` | see below |
+| the name list handed to `Locale_Instance.detect` (`:690`) | `space_name` | today's exact tokens (bare coll for members), so detection input is unchanged |
 | `mk_constituents`' registry key (`:865`, branches at `:834-839`) | `space_name` | name-addressed kinds are never members, so the value is identical to today's |
 | `serial_of` (`:1506-1527`) | `space_name` | a member takes its collection's serial — today's behaviour, now stated rather than falling out of string shape |
 | `entry_ord`'s name tie-break (`:581`) | `space_name` | identical to today's value, so sort order is unchanged |
 
-**The locale bypass gets better, not worse.** Today it reads
-`if Facts.is_dynamic pfacts name then [] else d` (`:698-699`), and it works only because a member's
-carried name *happens* to be the bare collection name — the comment at `:686-689` says members are
-given that name precisely so the bypass keeps firing. That is a condition holding by coincidence,
-and the next person to change what a member carries breaks it silently. With `space_name` it holds
-by construction: `space_name` **is** "the name to look up in a name space", which is exactly what
-`Facts.is_dynamic` asks. A member yields the bare collection name and is bypassed; the collection
-entity itself carries the bin name and is bypassed (the comment notes a member-index-only test
-would miss it — this one does not); everything else is not a dynamic fact and is detected normally.
-One condition, resting on a definition rather than on a coincidence.
+**The locale bypass needs no projection at all: the constructors are the answer.** Today it reads
+`if Facts.is_dynamic pfacts name then [] else d` (`:698-699`) — a name-space query answering a
+structural question ("is this entity a member, or the collection itself?"), run over entries of
+**every** kind. For members the query is vacuous (true by construction), and for everything else
+it holds only until names collide across name spaces: a locale carrying both a constant `x` and a
+`named_theorems x` yields, under an interpretation `q`, a constant `q.x` and a dynamic fact
+`q.x` — and the constant, which is precisely a locale-interpretation product, silently loses its
+provenance to a lookup in the wrong space. Now that invented-ness is in the type, write the
+comment at `:692-697` as code:
 
-**What this shape does NOT require.** No change to `Context_Callbacks.entry_name`, and so no change
-to `contrib/Isabelle_RPC`. No change to `Theory_Structure`: it goes on rendering the rule lists'
+```sml
+map2 (fn (entity, nm, _, _) => fn d =>
+        case nm of
+          Member _ => []
+        | Declared _ =>
+            (case entity of
+               Universal_Key.Theorem_Collection _ => []
+             | _ => d))
+     raw detected
+```
+
+No fact-space query, no `pfacts` binding (`:685`; its only use is `:699` — the `pfacts` at
+`:1049` is a different function's local). Verified population by population against every
+producer feeding `build_entries` (static scans go through `Facts.dest_static`, so a dynamic name
+cannot reach them; `Theorem_Collection` is constructed only by `named_theorems_entries`, `:1439`,
+whose names are exactly the dynamic facts; a §2.4-renamed member is `Declared` + non-collection
+and is detected under both tests, as intended): behaviour is identical everywhere **except** the
+cross-space collision above, where today's silent provenance drop becomes correct detection. One
+note for the file: `build_entries` is exported, so a comment should warn a future external caller
+that a `Theorem_Collection` entity is bypassed by constructor, not by name.
+
+**What this shape does NOT require.** No change to `Context_Callbacks.entry_name` the *type* —
+but one comment in `contrib/Isabelle_RPC` must be rewritten: `bare_name`'s doc says "The
+DB-storable name of an entry" (`context.ML:69-71`), which becomes false the moment
+`member_entries` stops storing through it; reword it to `bare_name`'s remaining role, the live
+name-filter key (`:1287`) and display fallback. No change to `Theory_Structure`: it goes on rendering the rule lists'
 names, `serial_of` goes on parsing them in its `Declared` branch, and that parse keeps the comment
 saying why (`the_entry` is keyed on the bare fact name; the index is not a name-space key —
-`theory_structure.ML:258-259`). That round trip is a pre-existing shape this plan neither creates
-nor repairs, and touching it here would be scope this change does not need.
+`theory_structure.ML:258-259`). That round trip is a pre-existing shape this plan does not
+repair — though §2.4 does **extend its population** (renamed members' stored names are
+`Thm_Name.print` output that `serial_of` re-parses; see §2.4) — and restructuring it here would
+be scope this change does not need.
 
 **One invariant the type does not enforce**, so assert it where the value is built: a member index
-is 1-based (`j + 1` at `:1109`). `Member (c, 0)` would render as the bare collection name, which
-§2.3 rules out showing because a bare `coll` resolves to the wrong theorem. Nothing in `int` says
-so; a guard at the construction site does.
+is 1-based (`j + 1` at `:1110`). `Member (c, 0)` would render as `"c(0)"` — a fact selection that
+can never resolve, since Isabelle's selection is 1-based — a value false in the datatype's own
+terms (the `int` is defined as a 1-based sweep index). The assert guards that meaning; do **not**
+"fix" the rendering to drop a 0 index instead (that is `Thm_Name.print`'s convention, and it would
+produce the bare collection name §2.3 rules out showing). Nothing in `int` says any of this; a
+guard at the construction site does.
 
 **The field.** `from_collection`; ML `string option`; msgpack a string or nil; absent on
 records written before the field existed. It holds the **full name** of the dynamic
-collection the stored name was invented from.
+collection the stored name was invented from. Its docstring on `Record` must state — as the
+`position` field's already does for its own ambiguity (`semantics.py:274-275`) — that a decoded
+`None` carries three readings: "not invented from a collection", "written before the field
+existed", and "`migrate_from_collection.py` has not reached this record"; the three collapse to
+the first only after that pass has completed and been verified (§3).
 
 **The invariant.**
 
@@ -252,13 +341,20 @@ wire (`packTuple10` → `packTuple11`, `Tools/semantic_store.ML:378-383`, and th
 ten-component `entries:` type at `:402-412`); into `Entry`
 (`Isabelle_Semantic_Embedding/semantic_interpretation.py:222`, built at `:1247`); into the
 `Record` where the entry becomes one (`:373`); into the codec as field 14 (`semantics.py`
-`_decode`/`_encode`); and on into the search site's export — see §2.3.
+`_decode`/`_encode`); and on into the search site's export — see §2.3. **The wire slot is the
+ninth of eleven, not the tail**: `build_entries` emits
+`(kind, name, prop, position, uk, hint, prov, consts, from_collection)` and the widening maps at
+`:1609-1611` / `attach` at `:1627-1633` append `digest` and `deps` **after** it — Python's
+positional destructure in `_entries_of_wire` must match that order, not assume tail-append.
 
-**It is normalised on the way in, exactly like `name`.** `_entries_of_wire` runs every text field
-through `pretty_unicode` — `name=pretty_unicode(name)`, `prop_str=pretty_unicode(prop)`
-(`semantic_interpretation.py:1249-1250`), `prompt_extra=pretty_unicode(hint)` (`:1256`), with the
-one exemption spelled out at `:1251-1253`. `from_collection` is an Isabelle fact name and must go
-through it too, or ML-written and pass-written records will hold two spellings of one collection:
+**It is normalised on the way in — like `name` where present, guarded like `position` when nil.**
+`_entries_of_wire` runs every text field through `pretty_unicode` — `name=pretty_unicode(name)`,
+`prop_str=pretty_unicode(prop)` (`semantic_interpretation.py:1249-1250`),
+`prompt_extra=pretty_unicode(hint)` (`:1256`), with the one exemption spelled out at
+`:1251-1253` — but unlike `name`, this field is nil on every non-member entry (the overwhelming
+majority), and `pretty_unicode(None)` raises. Follow the `position` field's pattern at `:1254`:
+`from_collection=(pretty_unicode(fc) if fc is not None else None)`. Where present it must go
+through, or ML-written and pass-written records will hold two spellings of one collection:
 the pass derives its value by slicing the **stored** name, which is already the unicode form.
 Collections with symbols in their names do occur — `disjoint_\<G>_\<S>`, `\<V>\<^sub>B_simps`,
 `\<T>_def`.
@@ -284,16 +380,33 @@ name hint resolves can acquire a real position while its **stored** name is stil
 conjunct would then skip exactly the record that most needs the field.
 
 So the ordering is a real constraint, not one the conjunct removes: **no position sweep may run
-between §2.4's release and this pass.** Do **not** "fix" this by widening `:1927` to carry the
-name: the position sweep is one-off code that has already served its purpose, and rebuilding it to
-be structurally safe against a situation that will not arise is work spent on the wrong thing. The
-constraint is one sentence in a runbook; keep it there.
+from §2.4's release until `migrate_from_collection.py` has completed and its post-commit
+verification has passed.** The window does not close when the pass *starts*: re-running is the
+pass's resume mechanism (§3), so after an interrupted run the constraint is still live — a
+position sweep in the gap would give a first-run-flagged record a real position, the resume's
+position conjunct would then fail on it, and the resume — which writes nil on every non-match —
+would **clear a correctly-set `SOME`**, silently, in the exact direction this plan exists to fix
+(neither gate count catches it: the poisoned record fails the position conjunct in both). The
+pass should also refuse to overwrite an existing `SOME` in field 14 with nil — abort loudly with
+the offending keys — turning a violation of this window into a visible failure. Do **not** "fix"
+any of this by widening `:1927` to carry the name: the position sweep is one-off code that has
+already served its purpose, and rebuilding it to be structurally safe against a situation that
+will not arise is work spent on the wrong thing. The constraint stays a runbook sentence — now a
+checked one (see the gate's window-violation count in §3).
 
 **The gate reuses this predicate; it does not restate it.** §3 requires a pre-write count that
-must be zero, and it must call the same function, not a second copy of the conditions. A second
-copy has already drifted once in this document's own history, and the drift was live: an
+must be zero, and it must share the conditions with the classifier, not carry a second copy. A
+second copy has already drifted once in this document's own history, and the drift was live: an
 experience record named `attempt(3)` satisfies a copy that forgot the kind exclusions, and would
-abort a pass that should have run.
+abort a pass that should have run. "Share with one conjunct inverted" is not literally callable
+on a four-conjunct boolean, so the factoring is fixed here: **the shared function evaluates the
+two conjuncts every caller agrees on — the kind exclusions and the name regex — and returns the
+parsed base name, or `None`**; the position test and collection-set membership are the
+*callers'* tests, because those are exactly the two conjuncts whose polarity differs between
+callers, and a polarity is each caller's meaning, stated at its call site: the classifier takes
+position-absent and base-in-set; the gate's orphan count takes position-absent and
+base-**not**-in-set; the gate's window-violation count takes position-**present** and
+base-in-set (§3).
 
 The criterion depends on the corpus, which is why it is used once over records that already
 exist and never as a test at read time.
@@ -318,21 +431,22 @@ twice, in the Python export and in the JavaScript Worker, so it is a cross-repo 
 answers rather than questions:
 
 - **A pasted `coll(_)` must be normalised in the query, not routed to another field.** The Entity
-  Name panel matches an adjacent subtoken sequence over `name_subtokens` (:1143, :1172), and a
+  Name panel matches an adjacent subtoken sequence over `name_subtokens` (:74-77, :1424), and a
   pasted `coll(_)` tokenizes without the digits, so it matches nothing where today's `coll(123)`
   matches. **Strip one trailing `(_)` from an Entity Name condition before tokenizing**, as a named
   step in §5's tokenizer pipeline so both implementations share it and it gets a row in §5.5's
   shared test-vector file. The alternative — filtering member rows through `from_collection` — has
-  no compilation: §6.3 compiles a name condition to exactly one form over `name_subtokens` (:1185),
+  no compilation: §6.3 compiles a name condition to exactly one form over `name_subtokens`
+  (:1054, :1459),
   and the Worker emits one filter for the whole namespace, so it cannot branch per row. Making
   `from_collection` filterable instead would mean a fourth `pre_tokenized_array` in the first
   export and a rewrite of D22's `All` panel.
 - **Rows that render identically are accepted and documented, not collapsed.** The response
-  collapses on a hash of `(name, expr)` computed from the stored name at export (:1124-1127,
-  :1419-1421). A scan found 168 groups holding 201 extra records sharing a
+  collapses on the `(name, expr)` pair, from values the export wrote off the stored name (:108,
+  :150-152, :177-178). A scan found 168 groups holding 201 extra records sharing a
   `(kind, base, expr)` and will render as rows identical in both name and statement — but that scan
   was run on a development snapshot and grouped by the wrong key: the collapse key is `(name, expr)`
-  and excludes kind (SEMANTIC_SEARCH_SITE_PLAN.md:1121-1127, :1136). Re-measure on `cslh19`, grouped
+  and excludes kind (SEMANTIC_SEARCH_SITE_PLAN.md:108, :177-178). Re-measure on `cslh19`, grouped
   by `(base, expr)`, before quoting the number anywhere. The decision does not turn on it: a few
   hundred rows in 1.34M, the collapse happens in the Worker after ranking, and it is therefore reversible
   without re-exporting. If it is ever wanted, the second hash belongs at **export** time, over the
@@ -375,8 +489,13 @@ in `member_entries`, because that one function feeds both the stored sweep (via
 `:1200-1207`, called as `make_entity_callbacks (Context.Proof ctxt) au` from
 `Isa-Mini/Agent/agent_server.ML:1707`). Stamping there is what makes the stored name and the
 live name the same value rather than two values that have to agree: `member_entries` maps
-`Fixed nm` to `entry_name`'s `Named`, and `Context_Callbacks.resolve_name` returns
-`Thm_Name.print nm` for the same constructor (`contrib/Isabelle_RPC/Tools/context.ML:198`).
+`Fixed nm` to `entity_name`'s `Declared (Thm_Name.print nm)` (§2.2's boundary mapping), and
+`Context_Callbacks.resolve_name` returns `Thm_Name.print nm` for the same `Fixed` entry
+(`contrib/Isabelle_RPC/Tools/context.ML:198`). Note what this adds: renamed members join the
+population whose stored names `serial_of` re-parses with `Thm_Name.parse` — the print/parse
+round trip is exact (`Pure/thm_name.ML`), but §2.4 is a new *producer* of parse-needing strings,
+not a removal of one; say so here rather than let an audit of "who parses names" find an
+undocumented sixth source.
 
 **What it must do.** The whole step is one lookup, one selection and two rejections; the plan
 below says which existing code each part is, because every one of them exists already.
@@ -395,10 +514,13 @@ below says which existing code each part is, because every one of them exists al
   signature must spell the record out, because **`Name_Space.entry` is not an exported type**: the
   `NAME_SPACE` signature declares `the_entry`'s result inline
   (`Pure/General/name_space.ML:17-23`) and `type entry` exists only inside the structure body
-  (`:109`), which the ascription at `:101` hides. `entry_def_pos` already carries the workaround one
-  line away, so copy its shape —
-  `val entry_of_fact : Facts.T -> string -> {pos: Position.T, serial: serial, group: serial,
-  suppress: bool list, theory_long_name: string, concealed: bool} option`. Extract the **lookup**, not "the guards":
+  (`:109`), which the ascription at `:101` hides. `entry_def_pos` already carries the identical
+  inline record one line away — so the record is about to be hand-copied twice in one signature,
+  kept in step with Pure by hand. Declare it once instead:
+  `type name_space_entry = {pos: Position.T, serial: serial, group: serial, suppress: bool list,
+  theory_long_name: string, concealed: bool}` in `CONTEXT_CALLBACKS`, used by both
+  `entry_def_pos` and the new
+  `val entry_of_fact : Facts.T -> string -> name_space_entry option`. Extract the **lookup**, not "the guards":
   two of the three guards named in earlier drafts are already inside the `is_infra_thm` that runs
   three lines later (`infra_filter.ML:432-446`, whose first clauses are `Name_Space.is_concealed`
   and a `Long_Name.is_hidden (Name_Space.intern …)`), so a shared "guards" predicate would bake in
@@ -435,12 +557,19 @@ below says which existing code each part is, because every one of them exists al
   over 2,190 real pairs the two never disagreed (§6), so this costs nothing and closes the case
   where they would.
 
-- **Re-apply the infrastructure filter under the adopted name.** The member path tests the filter
-  with the collection's name (`:1114-1120`) while the static path tests the fact's own
-  (`:951-955`), and `is_infra_thm` is name-dependent in six clauses (`infra_filter.ML:432-446`);
-  without this a member can be stored under a name the store excludes everywhere else. This is
-  also where concealed, hidden and `??.` are enforced, which is why they need no bullet of their
-  own. **The filter is not in scope where the name is stamped, so it must be passed in.**
+- **Re-apply the infrastructure filter under the adopted name — and hand it the BASE fact name,
+  `#1 nm`, never the `Thm_Name.print` rendering.** The name-dependent clauses of `is_infra_thm`
+  expect a name-space key: `"F(2)"` is not one, so `Name_Space.intern` falls back to
+  `Long_Name.hidden` and `Facts.extern` to a `"??."` prefix — the printed form would trip the
+  `is_hidden` and `??.`-extern clauses for **every** member adopted from a multi-theorem fact,
+  silently (a hit here keeps `coll(i)`, it does not error), gutting §2.4 for exactly that
+  population. The static path already passes the bare name (`:951`) and the codebase already
+  warns about this trap (`:1453`, "bare name: name(i) would trip is_hidden"). The member path
+  tests the filter with the collection's name (`:1114-1120`) while the static path tests the
+  fact's own (`:951-955`), and `is_infra_thm` is name-dependent in six clauses
+  (`infra_filter.ML:432-446`); without this re-check a member can be stored under a name the
+  store excludes everywhere else. This is also where concealed, hidden and `??.` are enforced,
+  which is why they need no bullet of their own. **The filter is not in scope where the name is stamped, so it must be passed in.**
   `fun entry (entity, uk) = …` at `:1107-1110` is called twice — for the Theorem face under
   `is_infra_thm (coll, thm')` at `:1114-1115`, and for the rule face at `:1116-1124`, where the
   applicable filter is bound only by the pattern `SOME (con, key_of, infra, needs_shape)` at
@@ -472,11 +601,25 @@ below says which existing code each part is, because every one of them exists al
   **byte column**) (`entity_position.ML:9-11`), and `build_entries` wants neither — it takes a
   `Position.T` and hands it to `Entity_Position.of_positions` (`:842`), which calls
   `PIDE_State.absolutize_id_based_pos` and then reads the position's own accessors, which a
-  position rebuilt from a flattened triple can no longer answer. `member_entries` passes the new
-  component at `:1410` in place of `Position.none`; a member with no adopted name passes
-  `Position.none`, correctly. (The `pos = ("", 0, 0)` hardcode is at `:1109`; `:1108` is the name
-  stamp. `cached_thm_entry.pos` stays `("", 0, 0)`: the live query path does not use a position,
-  and giving it one would put the same fact in two places.)
+  position rebuilt from a flattened triple can no longer answer. In `member_entries`, derive the
+  position it passes at `:1410` **by constructor**, not by trusting the stamp site:
+  `Fixed _` → the carried `Position.T` component, `Member_of_Dynamic _` → `Position.none` — one
+  `case` at the one consumer that writes records, so a future edit of the stamp site cannot
+  silently attach a declaration site to an invented name (§1 declares that absence correct).
+
+- **Stamp the cached entry's own position too, for the adopted-name case.** The `pos = ("", 0, 0)`
+  hardcode is at `:1109` (`:1108` is the name stamp), and `("", 0, 0)` is documented as
+  "position unknown" (`context.ML:217-219`) — which stops being true the moment the adopted
+  name's name-space entry, `#pos` and all, is in hand three lines up. The live query path
+  **does** serve this value: the cached pass returns `#pos entry` with every hit
+  (`context.ML:1296-1299`) and Python answers definition fetches from it. So in the `Fixed`
+  branch set `pos = Context_Callbacks.entry_def_pos e` — exactly what `process_facts_into_cache`
+  stamps for every other `Fixed` entry (`:946-966`), making the population uniform (`Fixed` ⇒
+  real `def_pos` whenever one is known) — and keep `("", 0, 0)` for `Member_of_Dynamic`, which
+  remains honestly position-less. This is not "the same fact in two places": the cached `def_pos`
+  and the tuple's `Position.T` are two projections of the one entry, written together at one
+  site, and every static entry already carries both. The observable live change is strictly
+  "definition unavailable" → "correct definition" for renamed members.
 
 - **Make `member_entries` disjoint from the static entries by construction, not by list order.**
   Once a member carries a static fact's name, `serial_of` gives it that fact's serial and
@@ -569,8 +712,12 @@ constants against them — `F_NAME, F_POS = 1, 12` in `rename_dynamic_members.py
 its siblings. Exporting the indices alone relocates the duplicated fact instead of removing it:
 the next writer imports `F_NAME` and still hand-rolls the pad. Export what the passes actually
 share — `unpack_fields(raw) -> list` (padding to the current field count) and
-`pack_fields(vals) -> bytes`, next to `_decode`, plus the named indices — and name in this plan
-which existing readers get converted, because otherwise none will be. Do **not** reshape the wire
+`pack_fields(vals) -> bytes`, next to `_decode`, plus the named indices. **The converted users
+are: `rename_dynamic_members.py`'s write path (`:235-244`) and `migrate_from_collection.py`'s
+own write path — no others.** Explicitly exempt, and never convert: every arity-deciding reader —
+`migrate_entity_positions._scan` (`:107-110`) and this pass's own reached/not-reached audit —
+which must keep reading `len(msgpack.unpackb(raw))` raw, because `unpack_fields`' padding
+destroys exactly the tuple-length signal they exist to read. Do **not** reshape the wire
 format itself: positional tail-append is right here, and a msgpack map would rewrite 1.34M
 records.
 
@@ -598,17 +745,26 @@ name is still an invented form. The field must be threaded there. The same path 
 the record's *name* from the enumeration's current answer, which means re-interpreting one of
 the 4,524 records of §5 reverts it to `coll(i)` unless §2.4 recovers its name.
 
-**Archive the position-completeness scan before the backfill runs.**
+**Archive the position-completeness scan before `migrate_from_collection.py` runs.**
 `migrate_entity_positions._scan` decides "this record was reached by the position sweep" from
 the record's msgpack arity — `if n >= 13`, with the in-code comment saying so
 (`migrate_entity_positions.py:100-121`), pinned by `test_entity_position_backfill.py:167-183`.
-A backfill that pads every record to 14 makes `reachable_short` permanently 0, and nothing
+A pass that pads every record to 14 makes `reachable_short` permanently 0, and nothing
 else records which keys that sweep reached. Run the scan, archive its output, and note in the
 plan file that the check is thereafter vacuous and needs an explicit marker.
 
-**The backfill writes on every record it walks** — the collection name on a match, `nil`
-otherwise — so that afterwards a tuple of fewer than 14 components means only "this record was
-not reached".
+**`migrate_from_collection.py` writes on every record it walks** — the collection name on a
+match, `nil` otherwise — so that afterwards a tuple of fewer than 14 components means only "this
+record was not reached". **"Every record" means every entity record, and the walk must say so in
+code**: `semantics.lmdb` also holds theory-status records (msgpack **maps** under 16-byte keys)
+and the 1-byte counter key, and `iter_items` yields them all. Every sibling whole-store walker
+guards on key length (`migrate_entity_positions.py:105`: `if len(k) <= 16: continue`;
+`snapshot_sync.py:802`); without that guard, the unpack-pad-put ritual applied to a status map
+destroys its values silently (`list(dict)` keeps only the keys) and the post-commit field check
+cannot notice. Carry the same guard — or walk `iter_entity_records` (`semantics.py:578-599`)
+with its decode guard made *counting* instead of silent — and have the pass report five numbers:
+walked / matched / nil-written / EXPERIENCE-skipped / undecodable, treating undecodable > 0 as a
+loud warning in the report and in the post-commit verification.
 Three constraints follow from walking the whole store, and none is optional.
 
 **Batch the writes by generalising the method that already does this, not by copying it.**
@@ -621,10 +777,18 @@ store's only write lock throughout. Rather than open-coding a fourth copy of "ac
 write in bounded batches, raw put", widen it: `backfill_field(field, entries, batch=_WRITE_BATCH)`
 doing `rec._replace(**{field: value})` with a commit every `batch`, leaving `backfill_positions`
 as a one-line wrapper for the ML wire. Put `_WRITE_BATCH` beside `SEMANTICS_MAP_SIZE`
-(`semantics.py:146`) so it and `snapshot_sync`'s `_EXPORT_BATCH` (`:689`) stop being two numbers.
-The pass still collects target keys in a read pass and closes the read transaction first — an open
-`iter_items` snapshot pins old pages against reuse (`semantics.py:548-555`) — and still checks map
-headroom before starting.
+(`semantics.py:146`). Leave `snapshot_sync`'s `_EXPORT_BATCH` (`:689`) alone: both constants
+count **keys**, but the dirty-page cost per key differs by more than an order of magnitude
+between the two loops, so folding them into one number couples two tunables — if they are ever
+shared, a comment must say the unit is keys and name that asymmetry. The pass still collects
+target keys in a read pass and closes the read transaction first — an open `iter_items` snapshot
+pins old pages against reuse (`semantics.py:548-555`) — and checks map headroom before the first
+write. **That check does not exist anywhere yet and is defined here** (no pass has ever done it;
+"keep the headroom check" with no referent would make two implementers invent two): read
+`env.info()` and assert `map_size == SEMANTICS_MAP_SIZE` and
+`map_size - (last_pgno + 1) * psize >= ` the store's current live data size — the pass rewrites
+every record once, so worst-case growth is on the order of one full copy of the data plus B-tree
+churn — aborting with both numbers in the message.
 
 **Refuse to run against an installed system-layer database.** `iter_items` yields the merged
 view, and the read-modify-write pair materialises every system-resident record into the user
@@ -645,34 +809,64 @@ a grant.
 any shape. A skipped record is not walked, so it keeps whatever arity it had — 8 components in the
 current corpus — which is still fewer than 14.
 
-**Gate the pass before it writes, using §2.2's predicate itself.** Count the records that
-satisfy every conjunct of §2.2's criterion *except* the collection-record one — kind neither
-EXPERIENCE nor METHOD, no position, name matching `^(.*)\((\d+)\)$` — and whose base names no
-`THEOREM_COLLECTION` record; abort if non-zero. Call the same function §2.2 defines, with that one
-conjunct inverted; do not restate the conditions, which is how an earlier draft of this document
-lost the kind exclusions and would have aborted on an experience record named `attempt(3)`. The
-count should be zero on the current corpus, and it is the only thing that would catch the one
-structural false negative: a collection record is produced only in its declaring theory's sweep
-(`theory_structure.ML:107-128`) while members are produced wherever the collection is visible, so
-a member whose collection was never interpreted would be silently left unflagged forever. Read the
-collection-name set through the same layered view the records come from, and complete it before
-classifying anything — the two key families are unordered relative to each other, so the pass is
-two-phase.
+**Gate the pass before it writes, using §2.2's shared function — two counts, and the post-commit
+verification after.** The factoring is §2.2's: the shared function evaluates the kind exclusions
+and the name regex and returns the parsed base or `None`; the position test and collection-set
+membership are the caller's, each polarity stated at its call site. Do not restate the shared
+conditions — that is how an earlier draft of this document lost the kind exclusions and would
+have aborted on an experience record named `attempt(3)`.
 
-**Back up, stop other writers, and verify after commit — through one shared function.** Five
-one-off passes in this tree copy the same timestamped `env.copy(..., compact=True)` idiom
-(`migrate_record_provenance.py:27-31`, `migrate_entity_positions.py:36-39`, and three siblings),
-the tree calls it "the backup convention", and the pass that most needed it did not have it. Put
-it in the package rather than in any pass — `backup_store(path) -> str`, doing the timestamped
-compacting copy plus the free-space check ENTITY_POSITION_PLAN.md:1155-1158 sizes by hand — and
-call it on line one of `main`. Refuse the larger temptation while you are there: these passes are
+1. **Orphan count (pre-write, must be zero to proceed):** shared function returns a base +
+   position **absent** + base names no `THEOREM_COLLECTION` record. It is the only thing that
+   would catch the one structural false negative: a collection record is produced only in its
+   declaring theory's sweep (`theory_structure.ML:107-128`) while members are produced wherever
+   the collection is visible, so a member whose collection was never interpreted would be
+   silently left unflagged forever.
+2. **Window-violation count (pre-write, must be zero):** shared function returns a base +
+   position **present** + base **in** the collection set. Non-zero means a position sweep ran
+   inside §2.2's forbidden window (a §2.4-renamed member acquired a position while its stored
+   name is still `coll(i)`); abort with the offending keys. This is what makes the runbook
+   sentence a checked one — the failure it catches is otherwise per-record and silent forever,
+   visible to neither the classifier nor the orphan count.
+3. The post-commit verification of §3's closing paragraph, in a fresh read transaction.
+
+Read the collection-name set through the same layered view the records come from, and complete
+it before classifying anything — the two key families are unordered relative to each other, so
+the pass is two-phase.
+
+**Back up, quiesce the store, and verify after commit — through one shared function.** Four
+one-off passes in this tree copy the same timestamped `env.copy(..., compact=True)` idiom —
+`migrate_record_provenance.py:31`, `migrate_entity_positions.py:81`, `migrate_xor_thm_keys.py:35`,
+`migrate_incremental_fields.py:53`, exactly those four — the tree calls it "the backup
+convention", and the pass that most needed it did not have it. (`migrate_float32_to_q15.py` is
+**not** a fifth: it deliberately demands a pre-existing external backup and refuses to run
+without `--backup` — keep its contract, do not "convert" it.) Put the idiom in the package rather
+than in any pass — `backup_store(path) -> str`, doing the timestamped compacting copy plus the
+free-space check ENTITY_POSITION_PLAN.md:1155-1158 sizes by hand, the timestamp-suffix
+formatting owned here for the first time (today the `.bak-%Y%m%d-%H%M%S` convention is spelled
+inline five times — the four passes plus `semantic_embedding.py:1075` inside
+`_rebuild_corrupt_store` — with no named owner; `backup_store` becomes it, and future spellings
+point here) — and call it on
+line one of `main`. **Its hard precondition goes in its docstring and here: it must run before
+this process opens `semantics.lmdb` through the `Semantic_DB` singleton** — py-lmdb refuses to
+open a path the process already holds (measured; the refusal does not depend on flags —
+`migrate_entity_positions.py:72-76` documents the same constraint on the private precedent this
+extracts). A caller that takes a pre-count first gets an `lmdb.Error`, and the fix is to reorder,
+never to skip the backup. Refuse the larger temptation while you are there: these passes are
 **not** one skeleton (two are directory renames, one drives Isabelle over RPC), so extract the
-backup and nothing else. Stop anything else writing `semantics.lmdb` for the duration; re-open in
-a **fresh** read transaction afterwards and verify the edited records — the precedent read-back
-happens inside the still-uncommitted write transaction (`rename_dynamic_members.py:245-247`), so
-it verifies the encoding, not the committed bytes. Re-running is the resume mechanism and is
+backup and nothing else. **Stop anything else reading or writing `semantics.lmdb` for the
+duration — readers are not optional**: LMDB cannot recycle pages freed by the batched commits
+while any older read transaction is registered, so a resident reader pins roughly one full copy
+of the data under the 4 GiB `SEMANTICS_MAP_SIZE` ceiling, and a `lock=False` reader (the review
+convention, `readonly=True, lock=False`) does not register at all and can observe pages being
+reused under it. Before the first write batch, call `env.reader_check()` and assert
+`env.readers()` is empty. Re-open in a **fresh** read transaction afterwards and verify the
+edited records — the precedent read-back happens inside the still-uncommitted write transaction
+(`rename_dynamic_members.py:245-247`), so it verifies the encoding, not the committed bytes. Re-running is the resume mechanism and is
 idempotent, because the field is a function of the record's own name, its position and the
-collection set — all three stable under re-running.
+collection set — all three stable under re-running **while §2.2's no-position-sweep window
+holds**; a sweep inside the window is exactly what changes the position input, which is why the
+refuse-`SOME`→nil abort exists.
 
 **Renaming a record must clear the field, and the one pass that renames cannot.**
 `rename_dynamic_members.py` pads only to 13 elements and never touches index 13
@@ -697,10 +891,11 @@ either; bumping it would make every installed client refuse the snapshot.
 **One smell this change inherits rather than creates.** `build_entries`' output reaches **nine**
 components, which is past what a tuple should carry. If the implementer wants to turn it into a
 record, this is the moment — but it is a separate change and must not be smuggled in. (The other
-candidate, a theorem name round-tripping through a string, is *removed* by §2.2 rather than
-inherited: §2.2's `Declared of string` makes no claim about the string, so a name that already
-carries a selection index sits in it honestly, and `serial_of` goes on parsing it exactly as it
-does today.)
+candidate, a theorem name round-tripping through a string, is inherited **and extended**: §2.2's
+`Declared of string` makes no claim about the string, so a name that already carries a selection
+index sits in it honestly, `serial_of` goes on parsing such names as it does today, and §2.4
+adds renamed members to the population it parses — see §2.4's stamping paragraph, which owns
+that extension.)
 
 `fact_base_name` (`:1169-1170`) is **not** on this list and must not be added: it matches
 `Context_Callbacks.entry_name`, which this plan does not change, and its `Fixed` clause must keep
@@ -709,15 +904,22 @@ handing `is_declared_infra_thm` the bare `nm` rather than anything index-bearing
 **Sites coupled to `build_entries`' tuple arity**, which changes at both ends (four in, nine
 out): `entry_ord`, which breaks ties with `string_ord` on the name component (`:574-583`) and is
 applied to the pre-`build_entries` tuples at `:1537-1538` — give it `space_name`, which preserves
-today's key exactly; `:1332` and `:1361`, which thread the name from `raw_thm_entries_named` through
-`thm_entries_with_uks` and `best_thms`; the dedup filter at `:1542`; the label-uniqueness assert's destructuring
-(`:1585`), the non-WIP widening map
-(`:1609-1611`), `attach` in the WIP branch (`:1627-1633`), the widened ten-tuple at the
-position backfill (`:1927`), and the explicit `entries:` type in `make_interpret_file_cmd`
-(`:402-412`). All are compiler-caught **except** `Test/Entity_Position_Test.thy:328`, `:329` and `:368`, in a
+today's key exactly; the dedup filter at `:1542`; the label-uniqueness assert's destructuring
+(`:1585`); the non-WIP widening map
+(`:1609-1611`); `attach` in the WIP branch (`:1627-1633`); the widened ten-tuple at the
+position backfill (`:1927`); and the wire type's **three** explicit spellings — the `entries:`
+type in `make_interpret_file_cmd` (`:402-412`), the same inline type in the `SEMANTIC_STORE`
+signature (`:61-65`), and `interpret_file_dry_run_cmd`'s annotation (`:425-433`) — plus
+`build_entries`' own signature spec (`:174-179`). (`:1332` and `:1361`, which thread the name
+from `raw_thm_entries_named` through `thm_entries_with_uks` and `best_thms`, sit **upstream** of
+the `tag` wrap at `:1530` and do **not** change — they stay plain strings; they are named here
+so nobody wraps them early and breaks their string operations.) All are compiler-caught
+**except** `Test/Entity_Position_Test.thy:328`, `:329` and `:368`, in a
 separate theory that nothing in this repo runs without an explicit `isabelle build`. `:328` is the
 worst of the three because it **constructs** the input tuple —
-`build_entries ctx [(entity, name, pos, uk, NONE)]` — so it needs `Fixed (name, 0)` as well as the
+`build_entries ctx [(entity, name, pos, uk, NONE)]` — so it needs `Declared name` (the §2.2
+constructor; the entity there is a `Constant`, and wrapping it in any theorem-shaped value is
+exactly what §2.2 forbids) as well as the
 dropped fifth component. `:332`'s `entry_name = name` does **not** break: `build_entries`' output
 name component stays a string.
 
@@ -726,7 +928,9 @@ name component stays a string.
 synthetic msgpack tuples and `_scan`'s `n >= 13` is not part of the codec — so do not "fix" it.
 Plus the `.thy` lines above.
 A new test should cover a collection with one member that has an invented name and one that
-does not.
+does not. §2.1 changes the **displayed** name at four sites; there is no golden-output suite
+covering them, so its landing must include a before/after diff of the displayed names over a
+fixed query set, with every changed line justified against §2.1's table.
 
 ## 4. Settled, and what is still to decide
 
@@ -737,7 +941,7 @@ future snapshot, and its failure mode is silent — a static bundle's stable `fo
 as an invented form. The enumeration knows the answer for certain at the moment it invents the
 name, so that is where it is recorded. The costs in §3 are accepted.
 
-**Settled: the backfill walks and writes every record.** The alternative — writing only on a
+**Settled: `migrate_from_collection.py` walks and writes every record.** The alternative — writing only on a
 match — was considered and rejected: the invariant that a short tuple means "not
 reached" is worth the whole-store pass, and the compatibility question is handled by the
 tuple's length.
@@ -748,12 +952,14 @@ of its bullets — the global-fact-space guard, carrying the position, and placi
 `member_entries` after the rule lists — close defects that are measured, not hypothetical.
 
 **Settled: §2.1 lands after §2.2.** It reads the field, so it ships once ML writes it, the two
-release channels have gone out together, and the backfill has run. Shipping it earlier without
-the condition was rejected: it would widen a known defect from the one site that has it today
-(`_apply_live_name`'s unconditional override) to four. A stopgap keyed on "the stored record has
+release channels have gone out together, and `migrate_from_collection.py` has run. Shipping it earlier without
+the condition was rejected: it would put an unconditional live-name override — correct on the
+enumeration-fed rows of §2.1's table, where the live name always resolves — onto the three
+conditional rows too, re-displaying the 4,524 repaired records as `coll(i)` at every by-name
+site. A stopgap keyed on "the stored record has
 no position" — which separates the two populations exactly on the current corpus — was also
 considered and rejected, because it is a temporary mechanism that has to be remembered and
-removed. If §2.2's release and backfill turn out to be far off, that stopgap is the one thing
+removed. If §2.2's release and `migrate_from_collection.py` turn out to be far off, that stopgap is the one thing
 that would also repair the site that is broken today, and it can be reconsidered then.
 
 **Settled: a member renamed by §2.4 carries locale provenance, like the static fact it now is.**
@@ -772,9 +978,16 @@ field → thread it through `write_answer` → run and archive `migrate_entity_p
 `migrate_from_collection.py` and verify → export to the search site → §2.1's rule → §2.3's
 rendering. The rename pass comes **first and is a hard prerequisite of the ML release**, because
 §3 requires it either to run before any record can carry the field or to be extended to the new
-arity; the extension it needs in either case is the pad to 14, `--dump` made optional, and the
-vector drop routed through `invalidate_vectors`. No position sweep may run between the ML release
-and `migrate_from_collection.py` (§2.2). The export must come **after** the
+arity. In this chosen order — before the release — the extensions it needs are `--dump` made
+optional and the vector drop routed through `invalidate_vectors`; the pad to 14 plus the extended
+read-back are required **only** in §3's other branch, if it ever runs after the release
+(pre-release, padding to 14 would write explicit `nil`s on ~4,525 records and pre-promote them
+past the "fewer than 14 = not reached" audit for no benefit). §2.1's Isa-Mini half lands with a
+floor bump in the same commit: `contrib/Isa-Mini/pyproject.toml:49` must require the
+`Isabelle_Semantic_Embedding` version that first ships `Record.from_collection`, or Isa-Mini
+reads a field its installed dependency does not define. No position sweep may run from the ML
+release until `migrate_from_collection.py` has completed and been verified (§2.2 — the window
+covers interrupted-run resumes too). The export must come **after** the
 pass: it copies `from_collection` straight off the record (SEMANTIC_SEARCH_SITE_PLAN.md §8.1
 step 4a) and §8.2 makes every export a fresh namespace, so exporting first would publish
 1.34M documents with the field empty and cost a full re-export to correct. Mirror the requirement
