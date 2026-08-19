@@ -34,20 +34,43 @@ the `letter`/`greek` groups of `etc/symbols` are not consulted, which its
 - The letter-group difference is **nothing at all**: all 190 group members satisfy
   `isalpha()`, and every one has a code point that step 3 substitutes before token
   formation sees it.
-- The plan's §16.2 (32 cases) and §5.3 (11 relations) were re-run under **both**
-  definitions with **zero mismatches under either**.
+- The plan's §16.2 and §5.3 (11 relations) were re-run under **both** definitions
+  with **zero mismatches under either**. That re-run covered the 32 cases §16.2 held
+  on 2026-08-19; the table has 33 now, the added row being the repair of the one case
+  that named `\<alpha>` as an unconverted escape and could therefore never pass.
 
 So these files remain sound as the measuring instrument for match counts, and they
 are **not** a specification of the tokenizer. Where they and §5 disagree, §5 wins.
+
+## The frozen baseline
+
+`baseline/` holds the prototype's tokenization of the whole corpus, taken once and
+stamped. It exists because these files read a **live** symbol table through a **live**
+`Isabelle_RPC_Host` import, so an acceptance test that re-runs them is a claim about
+the day it ran rather than something anyone can re-check later. The user approved
+freezing it on 2026-08-19.
+
+- `baseline/asset.json` — the exact asset the run used, so the comparison needs
+  nothing from the environment.
+- `baseline/baseline.json` — provenance (which store, which symbol files, which
+  `Isabelle_RPC` revision, which Unicode version), the whole-corpus digests, every
+  count, and in full every record that is neither a pure refinement nor a pure merge.
+- `baseline/baseline.classes.zst` — one byte per record per change per field, in the
+  key order the digests use, so a later run can say *which* record moved rather than
+  only that one did.
+- `baseline/build_baseline.py` — what produced all three. Re-running it on a store
+  whose digest matches `store_digest` must reproduce them byte for byte.
 
 ## What replaces them
 
 `Isabelle_Semantic_Embedding/isabelle_tokenizer.py` — step 1 of the plan's **§16.3**
 build order (§15.3, which an earlier version of this file cited, has moved into
-`SEMANTIC_SEARCH_SITE_PLAN_DONE.md` and is superseded). It must read its character
+`SEMANTIC_SEARCH_SITE_PLAN_DONE.md` and is superseded). **Written 2026-08-19**, with
+`tokenizer_asset.py` beside it to build what it reads and
+`test_isabelle_tokenizer.py` to run §16.2 and §5.3 against it. It reads its character
 classes and its two tables from the one stamped asset (D45) rather than from Python
 built-ins and a live `Isabelle_RPC_Host` import, which is what makes the JavaScript
-port possible; and it must drop `symbol_explode` per D43. **Delete nothing here until
+port possible, and it drops `symbol_explode` per D43. **Delete nothing here until
 the CI gate of §16.6 is green.** Until then this directory is the only executable
 statement of anything.
 

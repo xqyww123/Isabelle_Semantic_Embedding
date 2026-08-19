@@ -795,6 +795,27 @@ differ by about 1.4 %, but anything load-bearing should be re-measured now that 
 authority's corpus is available locally. Every figure below says where it came from;
 one that does not is a defect.
 
+**What was re-measured on the authority on 2026-08-19, and what was deliberately
+left.** The user left the scope of the sweep to the author, so here is the line it
+drew. Re-measured, because a rule of §5 rests on each of them and each came free in
+§16.3 step 1's pass: the corpus counts of §3.1; the tokenizer comparison of §16.3
+step 1 in full; pipeline step 3's effect on stored text (§5.1); §5.4's fallback-clause
+quantity; §5.2's astral-character share, its rejected unqualified numeric rule, and
+its `isdigit()`-against-`isnumeric()` agreement; §16.5's digit-abutting frequency; §6.1's two claims about the shipped arrays, that
+none is empty and what their mean length is; and
+`corpus_probe.py`'s two worked match counts (§16.1). Every one of them is now stated
+against the authority's corpus beside the figure it replaces.
+
+Left alone, on purpose: **§11.1b's storage and cost arithmetic**, because it is
+computed from the record count and nothing else, and the count fell by 1.36 % — so
+every figure there is high by about that much, which is the safe direction for a
+budget and does not change a single decision. And **the figures §5.4 and §3.6 take
+over §3.3's 230,944-document namespace**, because that namespace is itself a
+historical construction rather than a subset of the authority's store; §5.4 already
+labels every one of them with that denominator, so they are dated rather than wrong.
+Anything else in this document that gives a count without saying which corpus it came
+from is, by the paragraph above, a defect.
+
 ### 3.1 The corpus
 
 **Re-measured on `cslh19`, 2026-08-19.** The user ruled on 2026-08-18 that
@@ -1322,7 +1343,8 @@ confined to material the site never publishes.
 
 A **character** here is a Unicode **code point**, never a UTF-16 code unit. The
 JavaScript port must iterate code points: 4.17 % of expressions (56,797 of
-1,362,096) carry a character above U+FFFF — `𝒮` from `\<S>`, `𝔄` from `\<AA>`,
+1,362,096) carry a character above U+FFFF — 4.15 % on the authority's corpus,
+55,470 of 1,336,979, re-measured 2026-08-19 — — `𝒮` from `\<S>`, `𝔄` from `\<AA>`,
 and 151 of the 624 code-point-bearing symbols in the loaded table are astral (124
 of 439 counting the distribution's file alone, which is not the table D45 ships) —
 and a port that iterates
@@ -1381,7 +1403,11 @@ rule — "a maximal run of digits" — was measured over the whole corpus and **
 content**: 371 records, all of them AFP or distribution material that D24 publishes,
 lose a `²`, a `₁` or a `₀`, because a rendered sub/superscript digit standing alone
 used to be rescued by §5.4's fallback clause and is now swallowed into the adjacent
-run and then discarded by the subtoken split. `62² = 3844` would index as
+run and then discarded by the subtoken split. Re-measured on the authority's corpus
+on 2026-08-19: **370 expressions lose a character that way**, and two more change
+without losing one, so 372 of 1,336,979 differ in all; no name is affected at all.
+The rejection stands on the authority's corpus exactly as it stood on the corpus it
+was decided over. `62² = 3844` would index as
 `62 = 3844`, and a condition `10²` would match a document containing `1/10`. The
 exclusion above removes both defects: measured, 12,822 expressions and 126,282 names
 change, **all of them pure merges, none losing or gaining a subtoken** — re-measured
@@ -1394,7 +1420,9 @@ come from the `❙` fold rather than from `⇩`/`⇧` and §5.4 keeps the bold f
 outputs out of the separator class as real content; so `𝟭𝟬` groups, which is a gain.
 
 The `isdigit()`-only and the `isdigit()`-or-`isnumeric()` readings of *digit* were
-measured against each other over the whole corpus and **agree on every record**: the
+measured against each other over the whole corpus and **agree on every record** —
+re-measured on the authority's corpus on 2026-08-19, still every one of its 1,336,979
+expressions and 1,343,793 names: the
 only characters that are `isnumeric()` and not `isdigit()` are the ten CJK numerals,
 which the letter-first test claims, and `½`, which never sits next to another digit.
 
@@ -1554,7 +1582,10 @@ claimed the 230,944 denominator for the replacements too. Re-measured over the w
 same quantity is **51,891 documents (3.81 %) and 154 distinct tokens** — independently
 reproduced 2026-08-19, to the record, under the character-level tokenizer of D43 — and
 the raw occurrence counts move too: `²` is 3,955, not 640, and `₁` is 7,023, not
-1,281. **3.81 % is the whole-corpus figure and the only one to quote outside this
+1,281. Measured a third time the same day, on the authority's corpus and with the
+production tokenizer: **51,077 expressions (3.82 %) and 152 distinct tokens**, `²`
+3,950 and `₁` 6,968. The quantity barely moves with the corpus, which is the point —
+the clause is not carrying a handful of outliers. **3.81 % is the whole-corpus figure and the only one to quote outside this
 subsection**; 3.18 % is the same quantity over §3.3's 230,944 documents, and §14.7
 used to give it as 3.71 %, which was neither.
 D41 and §16.4 both used to repeat the 640 as "occurrences in the corpus", where it
@@ -1703,9 +1734,14 @@ expr_subtokens   []string      the only expression field there is (D21); an
                                `expr_tokens` field was in draft 2 and is gone.
                                Mean 39.19 elements over the whole corpus, and
                                NOT ONE of the 1,362,096 arrays is empty --
-                               the old rule left 71 unmatchable (§3.6)
+                               the old rule left 71 unmatchable (§3.6).
+                               Re-measured on the authority's corpus with the
+                               production tokenizer, 2026-08-19: mean 39.06 and
+                               NOT ONE of its 1,336,979 arrays empty
 name_subtokens   []string      reached by the `Entity Name` panel (D22).
-                               Mean 6.77 elements; this is the short one
+                               Mean 6.77 elements; this is the short one.
+                               On the authority, 2026-08-19: mean 6.62, and
+                               none of its 1,343,793 arrays empty either
 theory_subtokens []string      the subtokens of every name in `theories`,
                                concatenated with a separator token between
                                names (§6.3).  Subtokens, not tokens, per D23;
@@ -3085,6 +3121,7 @@ site/prototype/subtoken_rule.py       the settled separator class + subtokens(),
 site/prototype/tokenize_prototype.py  tokenize(), plus the superseded subtoken variants the measurements compared
 site/prototype/corpus_probe.py        counts how many entities a condition matches, on the real corpus
 site/prototype/README.md              what these are; delete none of them until the CI gate is green
+site/prototype/baseline/              the prototype's whole-corpus output, frozen and stamped (§16.3 step 1)
 ```
 
 `corpus_probe.py` reproduces every match count quoted in this plan and in
@@ -3294,6 +3331,19 @@ Do these in order. Each step is finished when its test passes, not before.
      loss test has to be applied to each change separately and not to their
      composition.
 
+     **The prototype's side of this comparison is frozen** (approved 2026-08-19).
+     `site/prototype/baseline/` holds the run: `baseline.json` with its provenance —
+     which store, which four symbol files, which `Isabelle_RPC` revision, the SHA-256
+     of the four source files the run depended on, the Unicode version — every count
+     above, and in full each of the 25 records that is neither a pure refinement nor a
+     pure merge; `asset.json`, the exact asset used; and `baseline.classes.zst`, one
+     byte per record per change per field in key-digest order, so a later run can name
+     *which* record moved rather than only that one did. The prototype reads a live
+     symbol table through a live `Isabelle_RPC_Host` import, so without this the target
+     of the comparison moves whenever anything underneath it moves. Re-running
+     `build_baseline.py` on a store whose digest matches reproduces all three byte for
+     byte — verified by running it twice.
+
    **An earlier draft of this step required the arrays to be *identical* to the
    prototype's for all 1,362,096 expressions.** That test cannot pass and must not be
    restored: by D43 the two definitions **must** differ, and gating the production
@@ -3426,7 +3476,8 @@ four escape-scanning cases the user worked through himself** on 2026-08-18 — `
 before 2026-08-19 although §5.1 step 3a's rule was written to answer them; and
 five cases for §5.2's numeric class, every one of which a 10,000-triple sample of
 real expressions can miss — **a digit abutting a rendered sub/superscript** (`2²`,
-`1 / 10²`), whose corpus frequency is 373 in 1,362,096, so a sample of that size
+`1 / 10²`), whose corpus frequency is 373 in 1,362,096 — 372 in the authority's
+1,336,979, re-measured 2026-08-19 — so a sample of that size
 draws about three and can easily draw none; **a standalone multi-digit numeral**
 (`f 100`); **a digit immediately following a letter** (`x1`), which is the only
 guard against the precedence misreading §5.2 warns about; **a CJK numeral followed
