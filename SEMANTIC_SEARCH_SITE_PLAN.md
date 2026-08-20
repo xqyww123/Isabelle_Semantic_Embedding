@@ -267,6 +267,67 @@ reader of those sections needs to find the decision that used to govern them.
   (§11.1's rate limiting included). §9 stays in this document as the agreed
   design but is **not** to be built yet, and the questions it raises need no
   answer to unblock anything.
+- **D47** (2026-08-20) — **the source pages are rendered by us and hosted by us;
+  result cards never link to the public AFP or Isabelle websites.** The user
+  rejected external linking outright: the public sites present whatever the
+  *current* release holds, our corpus is pinned to Isabelle2025-2 +
+  afp-2026-05-13, and after the next AFP release a card's link could show text
+  that no longer matches the indexed entity — or 404 on a renamed theory. Hosting
+  volume (an estimated 20–40 GB of static HTML) was accepted explicitly.
+
+  **How the pages are produced — no re-proving.** Isabelle's own HTML
+  presentation is generated *from the session build databases*, not by running
+  proofs; the system manual's own example covers exactly our case: "HTML/PDF
+  presentation for sessions that happen to be properly built already, without
+  rebuilding anything except the missing browser info: `isabelle build -a -n -o
+  browser_info`". The build databases exist on cslh19: the corpus was collected
+  from 27 umbrella sessions (`AFP-DEP1-0..21` chained on HOL, then `AFP-ALL-0..4`;
+  generators in `tools/Build_AFP_Image/`), built 2026-07-09..13 into the
+  distribution's own heap directory, each loading ~384 AFP theories *by
+  session-qualified name* — so every theory carries its real long name (e.g.
+  `CakeML_Codegen.Sterm`) even though the AFP's own sessions were never built
+  individually. `pide_reports` (the option that stores the markup the renderer
+  needs) defaults to true and is not overridden on either machine — verified
+  2026-08-20 in `etc/options` and both machines' preferences.
+
+  **The URL template — one, not two.** Since we lay out the hosting directory
+  ourselves, the AFP/distribution split disappears; session names are globally
+  unique, so a single template serves every linkable position:
+
+  > `https://<site>/source/<session>/<Theory>.html#<entity name>%7C<suffix>`
+
+  The session is resolved Worker-side by matching the position's file basename
+  against the row's `theories` array (session-qualified long names); if no
+  constituent matches, the card shows D42's absent form. D42's rule — a link iff
+  the position starts with `$AFP/` or `~~/`, absolute paths never shown — is
+  unchanged; only the link's target moved. The fragment is the entity anchor the
+  renderer emits on every entity (`id="<Theory>.<name>|fact"` and kin, `%7C` being
+  the escaped `|`); a fragment that misses leaves the reader at the top of the
+  page, which is the page-level link D42 originally asked for — silent, harmless
+  degradation. Measured 2026-08-20 on the public sites (same renderer, so the
+  anchor scheme transfers): anchors exist for all four sampled records, including
+  a dynamically generated indexed member (`divideC_field_splits_simps_1(8)|thm`);
+  **no line-number anchors exist anywhere**, so the `:line` half of a position
+  cannot appear in the URL — the entity anchor replaces it and is more precise.
+
+  **The gate.** Before the rendered tree is uploaded, a link check walks every
+  exported document and confirms its target file (and, separately counted, its
+  fragment anchor) exists in the tree; a template that 404s is worse than the
+  absent form (§16.8's warning). This also retires the multi-session-entry
+  hazard measured 2026-08-20: AFP presentation output is keyed by *session*, not
+  by entry directory (20 of 974 entries declare secondary sessions —
+  `AFP/LEM/Lem_pervasives.html` resolves while `AFP/CakeML/Lem_pervasives.html`
+  404s), which is why the session must come from the `theories` array and never
+  from the position's first path component.
+
+  **Still open under this decision**: the kind→anchor-suffix table (`|fact` vs
+  `|const` etc. by document `kind`); whether the presentation run considers the
+  umbrella sessions up to date (their ROOT generators were edited 2026-08-12,
+  *after* the 07-13 build — a one-session probe settles it, and the probe is an
+  `isabelle build` invocation, which waits for the user's explicit command); the
+  exact file layout the renderer emits for qualified theories (restructured at
+  upload time into `/source/<session>/` regardless); and where the tree is
+  hosted (decided with §12.2's step 5).
 - **D46** (2026-08-18) — **the tokenizer asset carries the export machine's whole
   symbol table, component files included.** On this machine that means
   `contrib/phi-system/symbols` and `contrib/phi-system/symbols-words` on top of the
@@ -3974,12 +4035,18 @@ the deletion quota?*
   matching a few hundred documents against the real index before launch and record how
   many come back. Unlike the other entries here, a bad answer is a design problem and
   not a plumbing detail.
-- **What are the two source-link URL templates?** D42 renders a link only for a
-  position under `$AFP/` or `~~/`. Settle both against the live AFP browser and the
-  live Isabelle library browser, and check that a sampled link resolves — a template
-  that 404s is worse than the absent form the other cards already show — 1.2 % of
-  them now rather than the 20 % this sentence was written against (§12.2, prerequisite
-  C), which makes a wrong template harder to notice, not easier.
+- ~~**What are the two source-link URL templates?**~~ **Settled 2026-08-20 by
+  D47: there is one template, not two, and it points at pages we render and host
+  ourselves.** The investigation this bullet asked for was run first and is what
+  killed the external-link answer it assumed: the public pages are static output
+  of Isabelle's own HTML presentation with per-entity anchors but no line
+  anchors, the AFP side is keyed by session (not entry directory, which 404s for
+  20 multi-session entries), and — decisively — both public sites track the
+  *current* release while the corpus is pinned, so the user rejected linking out
+  and chose self-rendering from the cslh19 umbrella build databases. Findings,
+  template, and the pre-upload link-check gate are all recorded in D47. The
+  warning this bullet carried survives as D47's gate: a template that 404s is
+  worse than the absent form the other cards already show.
 
 ### 16.9 What is still blocked, and by whom
 
