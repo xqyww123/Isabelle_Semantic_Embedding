@@ -3804,14 +3804,19 @@ the deletion quota?*
 - **What are the two source-link URL templates?** D42 renders a link only for a
   position under `$AFP/` or `~~/`. Settle both against the live AFP browser and the
   live Isabelle library browser, and check that a sampled link resolves — a template
-  that 404s is worse than the absent form the other 20 % of cards already show.
+  that 404s is worse than the absent form the other cards already show — 1.2 % of
+  them now rather than the 20 % this sentence was written against (§12.2, prerequisite
+  C), which makes a wrong template harder to notice, not easier.
 
 ### 16.9 What is still blocked, and by whom
 
-Per §12.2: the key repair (D33) is **done** as of 2026-08-18. The site export still waits
-on the theory-hash registry (prerequisite B) and on entity positions reaching the
-published snapshot (prerequisite C), both owned by the user. **The tokenizer freeze
-touches no keys and waits on none of them** — D33 used to describe itself as a
-prerequisite of the whole of phase one, which contradicted this; it is a prerequisite
-of steps 4 and 5. After the freeze, the next unblocked thing is the export's asset
-emission, which is step 2 above.
+**Nothing outside this plan is blocking anything, as of 2026-08-20.** Per §12.2 all
+three prerequisites are done: the key repair (D33) on 2026-08-18, the theory-hash
+registry (B) and the entity positions reaching the published snapshot (C) on
+2026-08-20. The tokenizer freeze never waited on any of them — D33 used to describe
+itself as a prerequisite of the whole of phase one, which contradicted this; it is a
+prerequisite of steps 4 and 5.
+
+So what remains is this plan's own work, and the next thing is the **site export**:
+it carries step 2's asset emission with it, and §12.1 and §12.2's step 4 say what it
+must do. After that, §9's interface.
