@@ -680,8 +680,18 @@ reader of those sections needs to find the decision that used to govern them.
 
   > An entity is exported iff every theory it names has a session prefix in the
   > set of sessions declared by the `ROOT` files of `contrib/afp-2026-05-13` and
-  > `contrib/Isabelle2025-2` (1,150 sessions), treating the four prefix-less base
+  > `contrib/Isabelle2025-2` (1,146 sessions), treating the four prefix-less base
   > logics `Pure`, `FOL`, `IFOL` and `ZF` as members (§7.2).
+
+  **The count was 1,150 here until 2026-08-20, and the reader that produced it was
+  wrong twice over.** It matched `session` lines with a pattern that stopped at the
+  first `+`, so `session "CoreC++"` — a real AFP entry — declared nothing and its
+  2,915 records read as out of scope; and it did not strip `(* … *)`, so six
+  commented-out sessions read as declared. Both are fixed in
+  `Isabelle_Semantic_Embedding/site_export.py`, and the corrected reader admits every
+  session any record in the store names. The two readers were run against each other
+  over the whole corpus and the six comment cases change **no** record's verdict; the
+  `CoreC++` one changes 2,915.
 
   For a theorem-alike entity "the theories it names" is `theory_constituents`;
   for a name-addressed one it is its declaring theory. No `AFP-ALL-4` chain
@@ -1723,6 +1733,9 @@ group            string  128-bit hash of `(name, entity expression)`: the
 vector           [4096]f16, cosine_distance   (D31)
 
   display
+key              string        the full universal key, base64url. §6.2 puts it here
+                               because the id is a hash of it and a hash cannot be
+                               read back; nothing filters on it
 name             string
 expr             string        cleaned per §8.3, original whitespace kept
 theories         []string      the theory long names this document is filtered
@@ -1835,6 +1848,10 @@ separator class.
 名之间插一个分隔 token。用 `"\n"` 最稳" and his answer was "赞同", so this is a
 decision and not an open implementation detail — earlier drafts filed it under
 "small things being decided without further consultation", which was wrong.
+
+**Measured, 2026-08-20: turbopuffer keeps it, and `"\n"` stands.** §8.1's step 0b
+records the probe and what it establishes. The paragraph below stays because it says
+what to do if the answer ever changes — the export re-asks on every run.
 
 What §8.1 owns is a **validation, not a re-opening**. Whether turbopuffer stores and
 indexes a whitespace-only element of a `pre_tokenized_array` at all was never
@@ -2103,6 +2120,22 @@ be re-runnable and deterministic.
    `theory_constituents` for a theorem-alike entity, the declaring theory for a
    name-addressed one. Also drop WIP-prefixed and EXPERIENCE keys, which no
    session test can reach.
+
+   *Status: implemented and measured, 2026-08-20.* Of 1,343,793 records, 6,768 are
+   EXPERIENCE and **not one of the remaining 1,337,025 falls outside the scope test**
+   — the phi-System and why3/NTP4VC families D24 measured as outside on 2026-08-13
+   are not in the authority's store at all. Zero WIP keys, and zero name-addressed
+   records whose declaring theory the registry cannot resolve, so no record had to be
+   dropped for want of a theory to test it against.
+
+   **The declared-session set is read from the ROOT files, not from `isabelle
+   sessions`**, which answers a different question: it enumerates what is
+   *registered* on the machine, and on this one that adds 861 of this repository's
+   own sessions, every one outside D24's scope. The reader strips `(* … *)`
+   comments, because six sessions in the two trees are commented out and a session
+   nobody builds is not declared; and it accepts a quoted name, because
+   `session "CoreC++"` is a real AFP entry whose name a reader that stops at the `+`
+   silently loses — costing 2,915 published records with no error anywhere.
 0b. **Settle the `theory_subtokens` separator** (§6.3) before anything is written
    into a production namespace: one upsert into a test namespace, checking that a
    whitespace-only element of a `pre_tokenized_array` is stored and indexed. If it is
@@ -2110,6 +2143,16 @@ be re-runnable and deterministic.
    because getting it wrong is only visible as a theory filter that matches a name no
    theory has, and because §8.2 makes every export a fresh namespace, so changing the
    separator later re-exports the whole corpus.
+
+   *Status: measured against the live account, 2026-08-20, and `"\n"` stands.*
+   turbopuffer stores and indexes the whitespace-only element: a document whose
+   `theory_subtokens` are `[HOL, List, "\n", Affine_Arithmetic, Foo]` does **not**
+   answer the sequence `List Affine_Arithmetic`, and does answer `HOL List` — the
+   second query being there so that a query mechanism that is simply broken cannot
+   pass as a separator that works. The export runs this probe on **every** run,
+   against a throwaway namespace it deletes afterwards, rather than trusting one
+   measurement: this was made a step so it could not be forgotten, and a check the
+   code performs cannot be.
 1. **Completeness gate.** Precondition, mirrored from
    DYNAMIC_MEMBER_NAMING_PLAN.md §4: the export must come **after**
    `migrate_from_collection.py` has completed and been verified — §8.2 makes
@@ -2135,6 +2178,16 @@ be re-runnable and deterministic.
    before the persistent-only correction), 271 (the same day, after it, and the figure
    the user accepted as the outstanding work), and 7,809 (2026-08-19). The 271 are
    done; nothing here blocks the export.
+
+   *Re-run by the export itself on this machine, 2026-08-20: **1,343,793 shippable
+   records, every one with a vector**.* That is the 1,337,025 the export publishes
+   plus the 6,768 EXPERIENCE records, which are shippable and not publishable — the
+   gate covers everything `_ships` admits, and step 0 is what narrows it afterwards.
+   The predicate is imported as `snapshot_sync._ships_predicate()`, a factory around
+   the one definition `snapshot_sync.export` also uses. It became a factory on
+   2026-08-20 so that it could be imported at all: until then it was a closure inside
+   `export`, which no second caller could reach without restating it — the one thing
+   this step forbids.
 2. **Group.** Compute the `group` hash of `(name, entity expression)` for each
    record. Nothing is merged (D5); the collapse happens in the Worker's response
    after ranking.
@@ -2162,6 +2215,16 @@ be re-runnable and deterministic.
    this step's wording before D45 and describes about a fifth of what must be
    emitted; an implementer following it would ship a port that cannot fold, cannot
    classify characters and cannot offer live abbreviation replacement.
+
+   *Status: done, 2026-08-20.* The export builds the asset with
+   `tokenizer_asset.build_asset()` and serialises it with `tokenizer_asset.serialize`,
+   which is the one spelling of the asset's bytes — the digest names the namespace, so
+   a second spelling would move it for no reason. What this machine builds is
+   byte-identical to the committed `site/tokenizer/asset.json`, digest
+   `9f86eadd64f0…`, which is what §16.3 step 2 was waiting for. The abbreviation table
+   is not in it and is not meant to be yet: §16.4 defers it to §9.3, which has not
+   started. **The committed asset is rewritten only after the namespace it names
+   exists**, so a run that fails partway leaves the declaration where reality is.
 7. **Upsert** into a fresh namespace (§8.2), then switch the Worker over.
 
 ### 8.2 Versioning
@@ -2186,6 +2249,20 @@ The digest is the SHA-256 of the asset file's bytes; twelve hex characters is th
 author's choice implementing D45, which fixed that a digest appears and not how long
 it is — twelve is short enough to read in a dashboard and long enough that a
 collision is not a thing to think about.
+
+**OPEN, raised 2026-08-20 while writing the export, and the user has not ruled.**
+The name has three parts and none of them moves when the *data* does. A refresh
+cycle — new interpretation data collected, the snapshot republished, the export
+re-run — leaves the Isabelle release, the AFP snapshot and the tokenizer asset all
+exactly as they were, so it asks for **the namespace that is already live**, and
+"write into a new namespace" becomes the upsert this subsection exists to forbid.
+The earlier draft this one corrected named the namespace for the data alone and had
+the same hole; D45 fixed which asset an index belongs to and did not touch this.
+Until it is settled the export **refuses a namespace that already exists** unless it
+is continuing from its own checkpoint, so the collision is a loud stop rather than a
+silent overwrite. What would close it is a fourth component that moves with the
+corpus — the whole-store digest of §3's preamble, or the export's date — and choosing
+between them is the user's, because it changes what a namespace name means.
 
 **This runs on every data update, not once at launch.** The user's framing on
 2026-08-12 was a standing pipeline — "我们应该是要构建一条 pipeline 以后每次像更新
@@ -2690,18 +2767,23 @@ implementations that must not drift (§5.5); one repository and one CI run is
 what enforces that, and version-number coordination across repositories would
 not.
 
-Planned, and not yet built:
+Built (the first three, 2026-08-19 and 2026-08-20) and still planned (the last two):
 
 ```
 Isabelle_Semantic_Embedding/
-  isabelle_tokenizer.py   the tokenizer (§5), Python side
-  site_export.py          the site export (§8), a subcommand of isabelle-semantics
+  isabelle_tokenizer.py   the tokenizer (§5), Python side          BUILT
+  tokenizer_asset.py      builds the one asset both read (D45)     BUILT
+  site_export.py          the site export (§8), reached as
+                          `isabelle-semantics site-export`         BUILT
 site/
+  tokenizer/              the JavaScript port + the shared inputs   BUILT
   worker/                 Cloudflare Worker: search API, embedding cache, rate
                           limits, entity page rendering
   pages/                  static assets: subsetted IsabelleDejaVu, styles, scripts
-  tokenizer/              the JavaScript port + the shared test-vector runner
 ```
+
+`test_site_export.py` sits beside `test_isabelle_tokenizer.py` at the repository
+root, and needs neither the store, nor the Isabelle installation, nor the network.
 
 **Three credentials, and none of them lives in this repository.** The export needs a
 turbopuffer **write** key; the Worker needs a turbopuffer **read** key and the
@@ -2843,9 +2925,17 @@ step 3  FREEZE THE TOKENIZER          <-- the live work; needs none of A, B, C
    the distribution, and although its test vectors are sampled from real entity
    expressions, the repair changed keys and not text. It remains the part of phase one
    that can proceed now, and it is where the work is.
-4. Build the site export (§8) and load one full namespace. **Blocked on B, C and
-   step 3** — the export runs the Python tokenizer and emits the asset whose digest
-   names the namespace (§8.2).
+4. Build the site export (§8) and load one full namespace. **The export is written
+   and every gate before the upsert passes (§8.1); loading the namespace has not been
+   done and needs the user's word.** It runs the Python tokenizer and emits the asset
+   whose digest names the namespace (§8.2), which is why it came after step 3.
+
+   Two things stand between here and a first *production* namespace, and neither is
+   code. One is §8.2's open question about a name that does not move when the data
+   does. The other is `THEORY_HASH_REKEY_REINTERPRET_LIST.md`, which §3.1 requires be
+   read before the first export: its Group 1 still owes **3 entity records** over
+   three AFP theory pairs, and its Group 2's 13 theories are every one of them outside
+   D24's scope, so they cannot reach the published corpus whatever happens to them.
 5. Worker: search API, embedding cache, rate limits (§11.1). Blocked on 4.
 6. Front end: search page, then entity pages. Phase two (D32).
 
@@ -3294,13 +3384,12 @@ the digest that tells them apart.)
 
 Do these in order. Each step is finished when its test passes, not before.
 
-**Where this stands, 2026-08-20: steps 1, 3, 4, 5 and 6 are done, and step 2 waits
-only on the export existing.** Everything step 2 can be accepted on without an export
-already holds and is tested; what is missing is an export to emit the asset *from*.
-§12.2's prerequisites A, B and C are **all done** as of 2026-08-20, so writing that
-export is now unblocked work rather than a wait. The apparatus around steps 1 and 3
-to 5 was rebuilt on 2026-08-20 after an adversarial review — §16.5 and §16.6 say
-what it is now and what the previous shape failed to enforce.
+**Where this stands, 2026-08-20: all six steps are done.** Step 2 was the last, and
+it was waiting only on an export to emit the asset *from*; that export is now written
+(§8.1) and emits it. §12.2's prerequisites A, B and C are all done as of the same
+day. The apparatus around steps 1 and 3 to 5 was rebuilt on 2026-08-20 after an
+adversarial review — §16.5 and §16.6 say what it is now and what the previous shape
+failed to enforce.
 
 1. **`Isabelle_Semantic_Embedding/isabelle_tokenizer.py`** — the production
    Python implementation, lifted from `site/prototype/` and changed in **two**
@@ -3403,7 +3492,10 @@ what it is now and what the previous shape failed to enforce.
    rather than read** (§5.5). Test the refusal by hand-editing the version in a copy —
    it is the one behaviour no other test exercises.
 
-   **Waiting only on the export existing.** `Isabelle_Semantic_Embedding/tokenizer_asset.py`
+   **Done, 2026-08-20.** The export exists (§8.1) and emits the asset; what it builds
+   on this machine is byte-identical to the committed `site/tokenizer/asset.json`,
+   digest `9f86eadd64f0…`, and the corpus comparison of step 1 has not moved.
+   `Isabelle_Semantic_Embedding/tokenizer_asset.py`
    builds the asset and every one of the four conditions above is met and tested:
    `test_isabelle_tokenizer.py` loads the tokenizer module by path with
    `Isabelle_RPC_Host` and `Isabelle_Semantic_Embedding` blocked from the import system
@@ -3781,12 +3873,12 @@ the deletion quota?*
 
 ### 16.8 Sub-questions to settle during the work, not before
 
-- **Does turbopuffer store and index a whitespace-only element in a
-  `pre_tokenized_array`?** §6.3 puts `"\n"` between theory names in
-  `theory_subtokens` precisely because the tokenizer can never emit it. Untested.
-  One upsert against a test namespace settles it; if it is dropped, choose a
-  non-whitespace separator the tokenizer cannot emit. **This is step 0b of §8.1** —
-  it was listed here as a question and nowhere as a step, so nothing owned it.
+- ~~**Does turbopuffer store and index a whitespace-only element in a
+  `pre_tokenized_array`?**~~ **Settled 2026-08-20: it does, and `"\n"` stands.**
+  §6.3 puts it between theory names precisely because the tokenizer can never emit
+  it; §8.1's step 0b records the probe, which the export now re-runs on every run
+  rather than trusting the one measurement. It was listed here as a question and
+  nowhere as a step, so nothing owned it — that is what making it step 0b fixed.
 - **What number does the RRF fusion return per row?** One `multi_query` against a
   live namespace settles it. D40 already fixes what is *displayed* — the vector
   leg's cosine similarity — so this affects plumbing only.
@@ -3817,6 +3909,12 @@ registry (B) and the entity positions reaching the published snapshot (C) on
 itself as a prerequisite of the whole of phase one, which contradicted this; it is a
 prerequisite of steps 4 and 5.
 
-So what remains is this plan's own work, and the next thing is the **site export**:
-it carries step 2's asset emission with it, and §12.1 and §12.2's step 4 say what it
-must do. After that, §9's interface.
+**The site export is written, 2026-08-20**, and it carried step 2's asset emission
+with it as expected: `Isabelle_Semantic_Embedding/site_export.py`, reached as
+`isabelle-semantics site-export`. §8.1 says step by step what it does and what each
+gate measured; §12.2's step 4 says what stands between it and a production namespace.
+
+So what remains is **two decisions and then §9's interface**. The decisions are the
+user's, not an implementer's: §8.2's namespace name does not move when the corpus
+does, and the first production run costs a live namespace and real money, so nobody
+should start one without being asked. Everything up to that upsert has been run.
