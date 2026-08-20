@@ -39,6 +39,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Iterator
@@ -430,17 +431,55 @@ def commit_asset(path: str, text: str) -> None:
         f.write(text)
 
 
-def namespace_name(isabelle_home: str, afp_dir: str, asset_digest: str) -> str:
-    """§8.2: `isasearch-<isabelle release>-<afp snapshot>-<asset digest, 12 hex>`.
+def namespace_base(isabelle_home: str, afp_dir: str) -> str:
+    """§8.2's namespace name without its generation: `isasearch-<isabelle
+    release>-<afp snapshot>`, e.g. `isasearch-2025-2-afp-2026-05-13`.
 
-    The digest is in the name so that "new index, old asset" is unconstructible: a
-    Worker holding an older asset addresses the namespace that asset built and simply
-    finds the old index."""
+    The user fixed this shape on 2026-08-20 and took the tokenizer asset's digest
+    back out of it, amending D45.  What that gives up is stated in §8.2: a Worker
+    carrying an older asset than the index was built with no longer addresses the
+    older index by construction, so a rule change deployed out of order is a silent
+    wrong answer rather than a self-correcting one."""
     release = os.path.basename(os.path.normpath(isabelle_home))
     if release.startswith("Isabelle"):
         release = release[len("Isabelle"):]
     snapshot = os.path.basename(os.path.normpath(afp_dir))
-    return f"isasearch-{release}-{snapshot}-{asset_digest[:12]}"
+    return f"isasearch-{release}-{snapshot}"
+
+
+def list_namespaces(prefix: str, *, region: str, key: str) -> 'list[str]':
+    """Every namespace whose name starts with `prefix`, following the cursor."""
+    out, cursor = [], None
+    while True:
+        query = f"?prefix={urllib.parse.quote(prefix)}&page_size=1000"
+        if cursor:
+            query += f"&cursor={urllib.parse.quote(cursor)}"
+        page = request("GET", f"/v1/namespaces{query}", region=region, key=key)
+        out += [n["id"] for n in page.get("namespaces", [])]
+        cursor = page.get("next_cursor")
+        if not cursor:
+            return out
+
+
+def next_namespace(base: str, *, region: str, key: str) -> str:
+    """The next free generation of `base`: the base name itself the first time, then
+    `base-2`, `base-3`, and so on.
+
+    §8.2 writes every export into a namespace that does not yet exist, because
+    turbopuffer cannot drop what a batch omits and an upsert into a live namespace
+    would leave every deleted entity behind forever.  Nothing in the base moves when
+    the corpus does — an Isabelle release and an AFP snapshot stay put while new
+    interpretation data is collected — so the generation is what makes "a namespace
+    that does not yet exist" true rather than merely intended.
+
+    Read off the account rather than remembered anywhere: the namespaces that exist
+    are the record of which generations were used, and a note kept beside them would
+    be a second thing to keep in step."""
+    used = set(list_namespaces(base, region=region, key=key))
+    generation = 1
+    while (base if generation == 1 else f"{base}-{generation}") in used:
+        generation += 1
+    return base if generation == 1 else f"{base}-{generation}"
 
 
 # ---------------------------------------------------------------------------
@@ -503,38 +542,6 @@ def request(method: str, path: str, body: 'dict | None' = None, *,
              f"({attempt}/{attempts - 1})")
         time.sleep(delay)
     raise AssertionError("unreachable")
-
-
-def refuse_an_existing_namespace(namespace: str, *, region: str, key: str) -> None:
-    """§8.2: every export writes into a **new** namespace, and this is what makes
-    that true rather than intended.
-
-    turbopuffer has no "delete everything absent from this batch" operation, so an
-    upsert into a live namespace leaves every deleted entity behind forever, and the
-    instant rollback §8.2 exists to give is gone with it.  The name is built from the
-    Isabelle release, the AFP snapshot and the asset digest, so two exports of
-    *different corpora* under one release and one asset ask for one name — this is
-    where that collision surfaces, loudly, instead of becoming a silent upsert.
-
-    A run that is continuing from a checkpoint does not come here: for it the
-    namespace existing is the whole point."""
-    try:
-        request("GET", f"/v2/namespaces/{namespace}/metadata", region=region, key=key)
-    except ExportError as e:
-        # A bare 404 is not enough: a mistyped path answers 404 too, and reading that
-        # as "the namespace is free" is how this guard would come to wave everything
-        # through.  turbopuffer says which of the two it is.
-        if "HTTP 404" in str(e) and "was not found" in str(e):
-            return
-        raise
-    raise ExportError(
-        f"the namespace {namespace} already exists. §8.2 writes every export into a "
-        f"fresh one, because turbopuffer cannot drop what a batch omits and an "
-        f"upsert would leave deleted entities behind forever. Either this export is "
-        f"a re-run whose checkpoint was lost, or the data changed under an unchanged "
-        f"Isabelle release, AFP snapshot and tokenizer asset — in which case the "
-        f"name does not distinguish it and that is a question for the plan, not a "
-        f"thing to override.")
 
 
 def check_theory_separator(*, region: str, key: str,
@@ -649,19 +656,25 @@ def _batches(documents, rows: int, size: int):
         yield batch, last
 
 
-def _read_checkpoint(path: str, namespace: str) -> 'tuple[bytes, int] | None':
-    """The last key the previous run got confirmation for and how many documents it
-    had upserted by then, or None when there is nothing to resume."""
+def _read_checkpoint(path: str, base: str) -> 'tuple[str, bytes, int] | None':
+    """The unfinished run's namespace, the last key it got confirmation for and how
+    many documents it had upserted by then; None when there is nothing to resume.
+
+    An unfinished run keeps its own namespace rather than taking a fresh generation:
+    the half-loaded one is what the resumed batches belong in, and allocating a new
+    one would leave it behind as a stranded partial index."""
     if not os.path.exists(path):
         return None
     with open(path, encoding="utf-8") as f:
         state = json.load(f)
-    if state.get("namespace") != namespace:
+    namespace = state.get("namespace", "")
+    if not (namespace == base or namespace.startswith(base + "-")):
         raise ExportError(
-            f"{path} belongs to namespace {state.get('namespace')!r}, not "
-            f"{namespace!r}; delete it or point --checkpoint elsewhere")
-    _log(f"resuming after {state['documents']} document(s) already upserted")
-    return bytes.fromhex(state["last_key"]), int(state["documents"])
+            f"{path} is a checkpoint for {namespace!r}, which is not a generation of "
+            f"{base!r} — a different Isabelle release or AFP snapshot. Delete it or "
+            f"point --checkpoint elsewhere.")
+    _log(f"resuming {namespace} after {state['documents']} document(s)")
+    return namespace, bytes.fromhex(state["last_key"]), int(state["documents"])
 
 
 def _write_checkpoint(path: str, namespace: str, last: bytes, done: int) -> None:
@@ -675,21 +688,33 @@ def _write_checkpoint(path: str, namespace: str, last: bytes, done: int) -> None
 def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
         vector_store: 'str | None', region: str, dump: 'str | None',
         checkpoint: str, limit: 'int | None', change_intended: bool,
-        skip_gate: bool) -> str:
+        skip_gate: bool, name_override: 'str | None' = None) -> str:
     """§8.1 end to end.  Returns the namespace that was written."""
     import contextlib
     from . import isabelle_tokenizer
 
     asset, text, digest = emit_asset(committed_asset,
                                      change_intended=change_intended)
-    namespace = namespace_name(isabelle_home, afp_dir, digest)
-    _log(f"asset {digest[:12]} (tokenizer_rule {asset['tokenizer_rule']}), "
-         f"namespace {namespace}")
+    _log(f"asset {digest[:12]} (tokenizer_rule {asset['tokenizer_rule']})")
 
     key = None if dump else api_key()
     if key:
         check_theory_separator(region=region, key=key)
         _log("the theory separator survives a round trip (step 0b)")
+
+    base = namespace_base(isabelle_home, afp_dir)
+    resumed = None if dump else _read_checkpoint(checkpoint, base)
+    if resumed is not None:
+        namespace, resume_after, done = resumed
+    else:
+        resume_after, done = None, 0
+        if name_override:
+            namespace = name_override
+        elif dump:
+            namespace = base          # nothing is written, so no generation is spent
+        else:
+            namespace = next_namespace(base, region=region, key=key)
+    _log(f"namespace {namespace}")
 
     sessions = declared_sessions(isabelle_home, afp_dir)
     _log(f"{len(sessions)} declared session(s) in scope (D24)")
@@ -711,12 +736,8 @@ def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
             ("records", "undecodable", "wip", "experience", "out of scope",
              "exported"), 0)
         documents = iter_documents(sessions, registry, get_vector, tokenize, counts)
-        resumed = None if dump else _read_checkpoint(checkpoint, namespace)
-        if resumed is not None:
-            resume_after, done = resumed
+        if resume_after is not None:
             documents = ((k, d) for k, d in documents if k > resume_after)
-        else:
-            done = 0
         if limit:
             documents = itertools.islice(documents, limit)
 
@@ -726,8 +747,6 @@ def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
                     f.write(json.dumps(doc, ensure_ascii=False) + "\n")
             _log(f"wrote {counts['exported']} document(s) to {dump}")
         else:
-            if resumed is None:
-                refuse_an_existing_namespace(namespace, region=region, key=key)
             schema = namespace_schema(dimension)
             for batch, last in _batches(documents, BATCH_ROWS, BATCH_BYTES):
                 request("POST", f"/v2/namespaces/{namespace}",
@@ -776,6 +795,8 @@ def build_parser(**kw) -> argparse.ArgumentParser:
                    help="the previous export's asset, which D46 compares against")
     p.add_argument("--vector-store", help="the vector store to publish from")
     p.add_argument("--region", default=DEFAULT_REGION)
+    p.add_argument("--namespace", help="write into this namespace instead of the "
+                                       "next free generation; for a live smoke test")
     p.add_argument("--dump", metavar="PATH",
                    help="write the documents as JSON lines instead of upserting; "
                         "touches no network and needs no key")
@@ -803,7 +824,7 @@ def run_from_args(args: argparse.Namespace) -> int:
             region=args.region, dump=args.dump,
             checkpoint=args.checkpoint,
             limit=args.limit, change_intended=args.asset_change_intended,
-            skip_gate=args.skip_completeness_gate)
+            skip_gate=args.skip_completeness_gate, name_override=args.namespace)
     except ExportError as e:
         print(f"[site-export] {e}", file=sys.stderr)
         return 1

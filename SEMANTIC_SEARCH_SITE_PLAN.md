@@ -290,8 +290,9 @@ reader of those sections needs to find the decision that used to govern them.
   instead, since it has nothing to compare against. This decision mandated the
   failure and did not say where the declaration lives; that gap is closed there, not
   here.
-- **D45** (2026-08-18) — **the tokenizer's data ships as one stamped asset, and
-  the namespace name carries its digest.** Step 3 needs the symbol table and the
+- **D45** (2026-08-18, **the namespace half revoked 2026-08-20**) — **the
+  tokenizer's data ships as one stamped asset**, ~~and the namespace name carries its
+  digest~~. Step 3 needs the symbol table and the
   fold table; §5.2 needs the letter, digit, quasi-letter and ASCII-symbolic sets;
   §5.4 needs the separator class; the condition box needs the abbreviations. All
   of it is emitted once at export time and read by both implementations, which may
@@ -325,6 +326,22 @@ reader of those sections needs to find the decision that used to govern them.
   moves it to the browser, where the conversion becomes a second implementation
   with no gate over it, whereas inside the tokenizer it is covered by the
   test-vector gate that must exist regardless.
+
+  **Amended again 2026-08-20, and this one takes something away: the namespace name
+  does not carry the digest.** The user ruled the name shall be
+  `isasearch-<isabelle release>-<afp snapshot>` with a generation number after it
+  (§8.2), and said in as many words not to put the asset's SHA-256 in it. The first
+  half of this decision stands untouched — the asset is still one stamped file, still
+  carries its provenance, still carries `tokenizer_rule`, and D46's guard still
+  compares all three. What is given up is the structural half: "new index, old asset"
+  and "new index, old rule" were unconstructible **because** the Worker's asset chose
+  which namespace it addressed, and with a name the Worker is simply configured with,
+  both become possible again, as an ordering mistake between deploying a rule change
+  and running its export. The symptom is the one this plan works hardest to avoid —
+  no error, just wrong results. It is now an ordering discipline. §8.2 records the
+  cheapest way to make it structural again (one extra document carrying the digest,
+  and a Worker that refuses to serve on a mismatch), which was offered the same day
+  and left for §11's work.
 - **D44** (2026-08-17) — **a private-use code point is not substituted.** Step 3
   leaves such a symbol as its literal `\<name>`. A private-use code point means
   only what the font declaring it draws — phi-System draws 135 keywords that way
@@ -2115,6 +2132,21 @@ be re-runnable and deterministic.
 
 ### 8.1 Steps
 
+**Written, 2026-08-20: `Isabelle_Semantic_Embedding/site_export.py`, reached as
+`isabelle-semantics site-export`.** Every step below is implemented, and every gate
+below has been run against this machine's store — which is the authority's store,
+verified identical whole (§3's preamble). One local pass over the whole corpus takes
+9 minutes 19 seconds and produces **1,337,025 documents**: §3.1's exportable figure
+exactly, with nothing dropped by D24's scope test, nothing undecodable and nothing
+missing a vector. `test_site_export.py` holds the 34 cases that need neither the
+store, nor the installation, nor the network.
+
+**Step 7 has been exercised but not run at full size.** 200 documents went into a
+throwaway namespace on 2026-08-20 and every query form of §6.3 was checked against
+them; the namespace was then deleted. What is left is the full-corpus upsert — about
+29 GB into a live namespace, ~$22 to ~$45 of write charges — which nobody has asked
+for yet.
+
 0. **Scope.** Keep only entities every one of whose theories has a session
    prefix in the declared-session set of AFP plus the distribution (D24) — the
    `theory_constituents` for a theorem-alike entity, the declaring theory for a
@@ -2218,14 +2250,34 @@ be re-runnable and deterministic.
 
    *Status: done, 2026-08-20.* The export builds the asset with
    `tokenizer_asset.build_asset()` and serialises it with `tokenizer_asset.serialize`,
-   which is the one spelling of the asset's bytes — the digest names the namespace, so
-   a second spelling would move it for no reason. What this machine builds is
+   which is the one spelling of the asset's bytes — D46's guard compares digests, so a
+   second spelling would report a change that is not one. What this machine builds is
    byte-identical to the committed `site/tokenizer/asset.json`, digest
    `9f86eadd64f0…`, which is what §16.3 step 2 was waiting for. The abbreviation table
    is not in it and is not meant to be yet: §16.4 defers it to §9.3, which has not
-   started. **The committed asset is rewritten only after the namespace it names
-   exists**, so a run that fails partway leaves the declaration where reality is.
+   started. **The committed asset is rewritten only after the export finishes**, so a
+   run that fails partway leaves the declaration where reality is.
 7. **Upsert** into a fresh namespace (§8.2), then switch the Worker over.
+
+   *Status: exercised end to end against the live account, 2026-08-20, at 200
+   documents into a throwaway namespace since removed.* turbopuffer accepted the
+   schema exactly as §6.1 asks for it — `vector` as `[4096]f16` with
+   `cosine_distance`, the three subtoken arrays `case_sensitive: true`,
+   `stemming: false`, `ascii_folding: false`, `interpretation` BM25 with English
+   stemming — and the index reported itself up to date immediately after the write.
+   Every query form of §6.3 was run against it: an approximate-nearest-neighbour
+   search with a document's own vector returns that document first; a
+   `ContainsTokenSequence` over `expr_subtokens` matches, symbol tokens such as `⟦`
+   included; `name_subtokens` matches; BM25 over the interpretation ranks; the `kind`
+   filter selects. **And the separator holds on real data**: a sequence straddling two
+   of a record's theory names returns nothing while a sequence inside one of them
+   returns the record.
+
+   What has *not* been run is a full-corpus upsert. At 4,096 dimensions the wire
+   format is float32 whatever the schema stores (turbopuffer's base64 vector encoding
+   is always little-endian float32), so 1,337,025 documents are about **29 GB of
+   upload**; §11.1b prices the one-off load at ~$45, or ~$22 with the batch
+   discount.
 
 ### 8.2 Versioning
 
@@ -2234,35 +2286,53 @@ verifies. turbopuffer has no "delete everything absent from this batch"
 operation, so upserting into the live namespace would leave deleted entities
 behind forever. A fresh namespace also gives an instant rollback.
 
-**The name carries both the data and the asset digest (D45).** An earlier draft
-named it for the data alone — `isabelle-2025-2-afp-2026-05-13` — which predates D45
-and loses the whole point of that decision: the digest in the name is what makes
-"new index, old asset" unconstructible, because a Worker holding an older asset
-addresses the namespace that asset built and simply finds the old index. The scheme:
+**The scheme, settled by the user on 2026-08-20** after the naming was found not to
+distinguish two exports of the same Isabelle release and AFP snapshot:
 
 ```
-isasearch-<isabelle release>-<afp snapshot>-<asset digest, 12 hex characters>
-e.g. isasearch-2025-2-afp-2026-05-13-9f3c1ab77d02
+isasearch-<isabelle release>-<afp snapshot>              the first export
+isasearch-<isabelle release>-<afp snapshot>-<n>          every one after it, n = 2, 3, …
+e.g. isasearch-2025-2-afp-2026-05-13, then -2, then -3
 ```
 
-The digest is the SHA-256 of the asset file's bytes; twelve hex characters is this
-author's choice implementing D45, which fixed that a digest appears and not how long
-it is — twelve is short enough to read in a dashboard and long enough that a
-collision is not a thing to think about.
+**The generation number is what makes "a namespace that does not yet exist" true
+rather than merely intended.** Nothing in the base moves when the corpus does: an
+Isabelle release and an AFP snapshot stay put while new interpretation data is
+collected, so a refresh cycle under an unchanged pair would ask for the namespace
+that is already live, and "write into a new namespace" would become the upsert this
+subsection exists to forbid.
 
-**OPEN, raised 2026-08-20 while writing the export, and the user has not ruled.**
-The name has three parts and none of them moves when the *data* does. A refresh
-cycle — new interpretation data collected, the snapshot republished, the export
-re-run — leaves the Isabelle release, the AFP snapshot and the tokenizer asset all
-exactly as they were, so it asks for **the namespace that is already live**, and
-"write into a new namespace" becomes the upsert this subsection exists to forbid.
-The earlier draft this one corrected named the namespace for the data alone and had
-the same hole; D45 fixed which asset an index belongs to and did not touch this.
-Until it is settled the export **refuses a namespace that already exists** unless it
-is continuing from its own checkpoint, so the collision is a loud stop rather than a
-silent overwrite. What would close it is a fourth component that moves with the
-corpus — the whole-store digest of §3's preamble, or the export's date — and choosing
-between them is the user's, because it changes what a namespace name means.
+**The export allocates it by reading the account, not by remembering anything**: it
+lists the namespaces whose names begin with the base, takes the lowest free
+generation, and prints the name it chose. The namespaces that exist *are* the record
+of which generations were used, so there is no note to keep in step with them. A run
+resuming from its own checkpoint keeps its half-loaded namespace instead of taking a
+fresh generation, which would strand it.
+
+**The tokenizer asset's digest is NOT in the name, by the user's decision of
+2026-08-20 — this amends D45.** What that gives up is stated once, here, because it
+is the reason D45 put it there: with the digest in the name, a Worker carrying an
+older asset than the index was built with addressed the namespace *that asset* built
+and simply found the older index, so the mismatch could not be constructed. Without
+it, deploying a rule change and its export out of order gives a Worker that tokenises
+queries by one set of rules against an index tokenised by another — **no error, just
+wrong results**, which is the failure class §5.5 exists to prevent. That is now an
+ordering discipline rather than a structural guarantee. The cheapest way to get the
+guarantee back, if it is ever wanted, is for the export to write one extra document
+carrying the asset's SHA-256 and for the Worker to refuse to serve when it does not
+match its own asset; that was offered on 2026-08-20 and left for §11's work.
+
+**Switching is a Worker deployment, and that is the whole mechanism.** turbopuffer
+has no alias or pointer: the namespace name is its only address, so the name lives in
+the Worker's configuration and switching means changing that value — one `wrangler`
+command, which Cloudflare's documentation confirms is itself a deployment
+("`wrangler secret put` creates a new version of the Worker and deploys it
+immediately"). It propagates in seconds and no CDN cache is involved, because a
+Worker's code and configuration are distributed by Cloudflare's own configuration
+system and not served through the HTTP cache. A Workers KV pointer was considered on
+2026-08-20 and **rejected by the user as too much machinery**; independently, KV is
+eventually consistent with a global propagation of up to about a minute, which is the
+one place a real staleness window would have existed.
 
 **This runs on every data update, not once at launch.** The user's framing on
 2026-08-12 was a standing pipeline — "我们应该是要构建一条 pipeline 以后每次像更新
@@ -2284,18 +2354,23 @@ rule is what creates the garbage. Retiring the predecessor is this author's rule
 implementing the user's pipeline, and the only part of the cycle he has not
 separately settled.
 
-**The asset's `tokenizer_rule` version is inside those bytes, so the digest moves
-when a rule changes and not only when data does** (D45 as amended 2026-08-19). This
-is load-bearing for the paragraph above: a rule change that touches no table — §5.2's
-numeric token class is the worked example, since it reuses the digit set the asset
-already ships — would otherwise leave the name unchanged, and "write into a new
-namespace" would quietly become an upsert into the live one. **Bumping
-`tokenizer_rule` is a manual act and belongs in the same commit as the rule change**;
-§16.6's gate is where a forgotten bump is caught, because the digest of the two
-implementations' output over the committed inputs moves at the same time and neither
-implementation can then reproduce `expected.json`.
+**The asset's `tokenizer_rule` version is inside its bytes, so its digest moves when
+a rule changes and not only when data does** (D45 as amended 2026-08-19). That
+digest no longer names the namespace — the 2026-08-20 amendment above took it out —
+but it is still what D46's guard compares, so a rule change that touches no table,
+§5.2's numeric token class being the worked example since it reuses the digit set the
+asset already ships, is still seen. **Bumping `tokenizer_rule` is a manual act and
+belongs in the same commit as the rule change**; §16.6's gate is where a forgotten
+bump is caught, because the digest of the two implementations' output over the
+committed inputs moves at the same time and neither implementation can then reproduce
+`expected.json`.
 
-**And the export must fail rather than silently rename the namespace (D46).** D46
+**And the export must fail rather than quietly export under a changed asset (D46).**
+This paragraph read "rather than silently rename the namespace" until 2026-08-20,
+which was true while the digest was in the name and is not any more. What a changed
+asset now does silently is worse, not better: the namespace name does not move at
+all, so an unnoticed component change would publish an index tokenised by one table
+under a name a Worker holding another table addresses. D46
 requires that "an export that finds a different component set than the declared one
 must fail", and never said where the declaration lives. It is the **committed asset
 from the previous export**: the export recomputes the asset from the live
@@ -2309,7 +2384,7 @@ that matters — the committed asset is the deployed asset — is exactly what m
 comparison meaningful, and a separate list of expected components would be a second
 thing to keep in step. The first export has nothing to compare against and writes the
 baseline; from the second onwards, registering or unregistering an Isabelle component
-is a loud failure rather than a quietly differently-named namespace.
+is a loud failure rather than a quiet one.
 
 ### 8.3 Display cleaning
 

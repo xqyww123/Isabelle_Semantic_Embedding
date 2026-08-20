@@ -121,14 +121,35 @@ def test_the_separator_is_something_the_tokenizer_cannot_emit():
 
 # --- §8.2's namespace name --------------------------------------------------
 
-def test_the_namespace_name_carries_the_release_the_snapshot_and_the_digest():
-    assert se.namespace_name("/x/Isabelle2025-2", "/y/afp-2026-05-13", "9f3c1ab77d02" + "0" * 52) \
-        == "isasearch-2025-2-afp-2026-05-13-9f3c1ab77d02"
+def test_the_namespace_base_carries_the_release_and_the_snapshot():
+    assert se.namespace_base("/x/Isabelle2025-2", "/y/afp-2026-05-13") \
+        == "isasearch-2025-2-afp-2026-05-13"
 
 
-def test_a_trailing_slash_does_not_change_the_namespace_name():
-    assert se.namespace_name("/x/Isabelle2025-2/", "/y/afp-2026-05-13/", "a" * 64) \
-        == se.namespace_name("/x/Isabelle2025-2", "/y/afp-2026-05-13", "a" * 64)
+def test_a_trailing_slash_does_not_change_the_namespace_base():
+    assert se.namespace_base("/x/Isabelle2025-2/", "/y/afp-2026-05-13/") \
+        == se.namespace_base("/x/Isabelle2025-2", "/y/afp-2026-05-13")
+
+
+def test_the_first_generation_is_the_bare_base_and_the_next_ones_are_numbered(monkeypatch):
+    """§8.2 writes every export into a namespace that does not yet exist, and nothing
+    in the base moves when the corpus does, so the generation is what makes that
+    true rather than merely intended."""
+    existing = []
+    monkeypatch.setattr(se, "list_namespaces", lambda p, **kw: list(existing))
+    assert se.next_namespace("isasearch-x", region="r", key="k") == "isasearch-x"
+    existing.append("isasearch-x")
+    assert se.next_namespace("isasearch-x", region="r", key="k") == "isasearch-x-2"
+    existing.append("isasearch-x-2")
+    assert se.next_namespace("isasearch-x", region="r", key="k") == "isasearch-x-3"
+
+
+def test_a_namespace_that_only_shares_the_prefix_does_not_spend_a_generation(monkeypatch):
+    """The prefix filter is turbopuffer's, so it returns names the generation scheme
+    knows nothing about; only the base itself and `base-<digits>` count."""
+    monkeypatch.setattr(se, "list_namespaces",
+                        lambda p, **kw: ["isasearch-x-scratch", "isasearch-xy"])
+    assert se.next_namespace("isasearch-x", region="r", key="k") == "isasearch-x"
 
 
 # --- D46's guard ------------------------------------------------------------
@@ -276,8 +297,9 @@ def test_a_checkpoint_names_the_namespace_it_belongs_to(tmp_path):
     """Resuming into the wrong namespace would skip the first half of a fresh index
     and leave a hole nothing reports."""
     path = str(tmp_path / "cp.json")
-    se._write_checkpoint(path, "isasearch-a", b"\x01\x02", 7)
-    assert se._read_checkpoint(path, "isasearch-a") == (b"\x01\x02", 7)
+    se._write_checkpoint(path, "isasearch-a-3", b"\x01\x02", 7)
+    # An unfinished run resumes into its OWN generation, not a fresh one.
+    assert se._read_checkpoint(path, "isasearch-a") == ("isasearch-a-3", b"\x01\x02", 7)
     with pytest.raises(se.ExportError):
         se._read_checkpoint(path, "isasearch-b")
 
