@@ -413,8 +413,12 @@ def emit_asset(path: str, *, change_intended: bool) -> 'tuple[dict, str, str]':
             raise ExportError(
                 "this export's tokenizer asset is not the committed one (D46):\n  "
                 + "\n  ".join(changes)
-                + "\nRe-run with --asset-change-intended if that is meant; the "
-                  "namespace name carries the digest, so this writes a new index.")
+                + "\nIf only `symbol_files` differs, the tables are unchanged and "
+                  "the tokenizer behaves identically — refresh the committed asset "
+                  "with site/tokenizer/build_inputs.py and emit.py --update. "
+                  "Otherwise a rule or a table moved, and the Worker's copy of the "
+                  "asset has to be redeployed with the index (§8.2). Re-run with "
+                  "--asset-change-intended once you know which it is.")
         if changes:
             _log("the asset changed and the change was declared intended:")
             for change in changes:
@@ -748,6 +752,7 @@ def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
             _log(f"wrote {counts['exported']} document(s) to {dump}")
         else:
             schema = namespace_schema(dimension)
+            started, at_start = time.monotonic(), done
             for batch, last in _batches(documents, BATCH_ROWS, BATCH_BYTES):
                 request("POST", f"/v2/namespaces/{namespace}",
                         {"distance_metric": "cosine_distance", "schema": schema,
@@ -755,7 +760,12 @@ def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
                 done += len(batch)
                 _write_checkpoint(checkpoint, namespace, last, done)
                 if done % (BATCH_ROWS * 40) == 0:
-                    _log(f"  {done} document(s) upserted")
+                    # A full corpus is tens of gigabytes over hours; a bare count says
+                    # nothing about whether it is progressing or crawling.
+                    elapsed = time.monotonic() - started
+                    rate = (done - at_start) / elapsed
+                    _log(f"  {done} document(s) upserted, {elapsed / 60:.0f} min, "
+                         f"{rate:.0f}/s")
             _log(f"upserted {done} document(s) into {namespace}")
 
     if not dump and not limit:
