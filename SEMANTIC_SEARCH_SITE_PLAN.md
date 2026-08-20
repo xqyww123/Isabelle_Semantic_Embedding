@@ -320,14 +320,30 @@ reader of those sections needs to find the decision that used to govern them.
   404s), which is why the session must come from the `theories` array and never
   from the position's first path component.
 
+  **The one-session probe ran 2026-08-20** (user-commanded, on cslh19, after
+  backing up the 30 GB system-heaps directory to
+  `~/Isabelle2025-2_system_heaps.backup_20260820_201610.tar.zst`, 6.2 GB,
+  integrity-checked): `isabelle build -n -o browser_info … AFP-DEP1-0` rendered
+  the session **and its ancestors Pure, HOL, HOL-Library in 97 seconds** — the
+  2026-08-12 generator edits did *not* make `-n` consider it out of date. What
+  the output settled: layout is `browser_info/<chapter>/<session>/`, umbrellas
+  land in chapter `Unsorted`; the 412 theory files are named by **qualified long
+  name** (`AutoCorres2.ML_Fun_Cache.html`), so the real session is encoded in
+  the filename itself — except for dynamically loaded base-logic theories
+  (`FOL.html`, `IFOL.html`, `ZF.html` appear unqualified inside `AFP-DEP1-0`),
+  so the upload-time restructure into `/source/<session>/` maps through the
+  theory-hash registry's long names rather than filename parsing alone; an
+  `AFP/` subdirectory holds each theory's auxiliary files (ML sources); entity
+  anchors are present in our own output (`id="BWT.bwt_canon_def|fact"`,
+  `id="HOL.conjI|fact"`), same scheme as the public sites. The base-logic
+  observation also retires a coverage worry: whatever the collection loaded, the
+  umbrella databases hold, so the rendered set and the corpus coincide by
+  construction.
+
   **Still open under this decision**: the kind→anchor-suffix table (`|fact` vs
-  `|const` etc. by document `kind`); whether the presentation run considers the
-  umbrella sessions up to date (their ROOT generators were edited 2026-08-12,
-  *after* the 07-13 build — a one-session probe settles it, and the probe is an
-  `isabelle build` invocation, which waits for the user's explicit command); the
-  exact file layout the renderer emits for qualified theories (restructured at
-  upload time into `/source/<session>/` regardless); and where the tree is
-  hosted (decided with §12.2's step 5).
+  `|const` etc. by document `kind`); the full 27-session render (extrapolates to
+  under an hour; an `isabelle build` invocation, so it waits for the user's
+  explicit command); and where the tree is hosted (decided with §12.2's step 5).
 - **D46** (2026-08-18) — **the tokenizer asset carries the export machine's whole
   symbol table, component files included.** On this machine that means
   `contrib/phi-system/symbols` and `contrib/phi-system/symbols-words` on top of the
