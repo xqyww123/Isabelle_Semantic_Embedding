@@ -23,6 +23,8 @@ import lmdb
 import msgpack
 from Isabelle_RPC_Host.theory_hash import open_theory_hash_store
 
+from .semantics import is_tombstone
+
 _lock = threading.Lock()
 _system_env: 'lmdb.Environment | None' = None
 _system_env_checked = False
@@ -86,18 +88,7 @@ def _get_raw(key: bytes) -> 'bytes | None':
     with open_theory_hash_store().begin() as txn:
         raw = txn.get(key)
     if raw is not None:
-        return None if len(raw) == 0 else bytes(raw)
-    return _system_get(key)
-
-
-def _raw_for_update(txn, key: bytes) -> 'bytes | None':
-    """The layered point read done INSIDE a user-layer write transaction; the
-    user-layer reads must see (and share) the write transaction they belong to,
-    so ``_get_raw`` — which opens a read transaction of its own — cannot be
-    used there."""
-    raw = txn.get(key)
-    if raw is not None:
-        return None if len(raw) == 0 else bytes(raw)
+        return None if is_tombstone(raw) else bytes(raw)
     return _system_get(key)
 
 
@@ -111,7 +102,7 @@ def iter_items() -> 'Iterator[tuple[bytes, bytes]]':
     with open_theory_hash_store().begin() as utxn:
         if sys_env is None:
             for k, v in utxn.cursor():
-                if len(v):
+                if not is_tombstone(v):
                     yield bytes(k), bytes(v)
             return
         with sys_env.begin() as stxn:
@@ -123,7 +114,7 @@ def iter_items() -> 'Iterator[tuple[bytes, bytes]]':
                 if u is not None and (s is None or u[0] <= s[0]):
                     if s is not None and u[0] == s[0]:   # shadowed system entry
                         s = next(siter, None)
-                    if len(u[1]):
+                    if not is_tombstone(u[1]):
                         yield u
                     u = next(uiter, None)
                 elif s is not None:

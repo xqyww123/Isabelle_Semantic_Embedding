@@ -53,8 +53,8 @@ dependencies = [
     # semantic_DB_dir()/theory_hash.lmdb: an older isabelle-rpc would keep writing
     # the abandoned ~/.cache/Isabelle_Theory_Hash/ while this package reads the new
     # location, leaving one machine with two registries and no error anywhere.
-    # PyPI has no isabelle-rpc at all -- that repo publishes only to conda -- so
-    # pip cannot resolve this floor.  Deliberate (user decision 2026-08-08): an
+    # PyPI's isabelle-rpc stops at 0.4.0 -- the repo now publishes only to conda --
+    # so pip cannot resolve this floor.  Deliberate (user decision 2026-08-08): an
     # unresolvable floor fails loudly, where a lower one would install green and
     # misbehave at runtime.
     "isabelle-rpc>=0.5.0",

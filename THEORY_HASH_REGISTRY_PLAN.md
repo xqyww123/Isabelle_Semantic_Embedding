@@ -1004,9 +1004,15 @@ resolves `semantic_DB_dir()` instead of
 _ensure_system_env   opens the system store lazily, or None
 _system_get          point read against the system layer
 _get_raw             user layer first; a tombstone answers absent and stops
-_raw_for_update      the same read inside a write transaction
 iter_items           the layered scan
 ```
+
+(Draft 5 also listed `_raw_for_update` — the same read inside a write
+transaction. Dropped by user decision, 2026-08-20, after the implementation
+review: no upper-package writer goes through this accessor today — the merge
+tool opens stores by path, and the lower package's `Theory_Hash.store` is a
+blind `put` — so it would be dead code. Re-add it together with its first
+caller, e.g. a future registry-tombstone writer.)
 
 Three consumers switch to it, all in the upper package:
 `isabelle_semantics.py::_load_theory_names`,

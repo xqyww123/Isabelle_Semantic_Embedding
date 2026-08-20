@@ -136,9 +136,11 @@ def default_semantic_dir() -> str:
 
 
 def default_theory_hash_dir() -> str:
-    # Same expression as open_theory_hash_store.  NB a DIFFERENT platformdirs
-    # root from the semantic databases, with no environment override, so
-    # SEMANTIC_DB_DIR does NOT move theory_hash.lmdb -- hence --src-theory-hash.
+    # The registry's location AT THE TIME THIS SCRIPT RAN (2026-08-13/14; it is
+    # a completed one-off).  THEORY_HASH_REGISTRY_PLAN.md has since moved the
+    # registry into semantic_DB_dir(); this default deliberately keeps naming
+    # the layout the re-key actually operated on -- hence --src-theory-hash for
+    # anything else.
     import platformdirs
     return platformdirs.user_cache_dir("Isabelle_Theory_Hash", "Qiyuan")
 
