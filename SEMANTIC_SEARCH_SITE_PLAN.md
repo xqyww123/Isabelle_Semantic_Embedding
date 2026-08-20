@@ -394,8 +394,8 @@ reader of those sections needs to find the decision that used to govern them.
   neither implementation may consult a language built-in. (D45 later fixed that this
   is **one file**, and this document says "the asset", singular, everywhere: the
   digest that names the turbopuffer namespace is the digest of one file, so a plural
-  would leave it undefined which one is meant.) Separately, §5.5's 10,000 test
-  triples are all sampled from real entity expressions, on which pipeline steps 1
+  would leave it undefined which one is meant.) Separately, §16.5's real inputs are all sampled from
+  entity expressions and names, on which pipeline steps 1
   and 3 are provably the identity (§3.4: the store is 100 % NFC and
   `unicode_of_ascii` is identity on it) — so a port that omits NFC normalisation
   and ASCII-escape conversion passes the gate byte for byte and then returns
@@ -2201,8 +2201,9 @@ numeric token class is the worked example, since it reuses the digit set the ass
 already ships — would otherwise leave the name unchanged, and "write into a new
 namespace" would quietly become an upsert into the live one. **Bumping
 `tokenizer_rule` is a manual act and belongs in the same commit as the rule change**;
-§16.6's gate is where a forgotten bump is caught, because the test-vector file's
-expected outputs move at the same time.
+§16.6's gate is where a forgotten bump is caught, because the digest of the two
+implementations' output over the committed inputs moves at the same time and neither
+implementation can then reproduce `expected.json`.
 
 **And the export must fail rather than silently rename the namespace (D46).** D46
 requires that "an export that finds a different component set than the declared one
@@ -3126,6 +3127,7 @@ site/prototype/tokenize_prototype.py  tokenize(), plus the superseded subtoken v
 site/prototype/corpus_probe.py        counts how many entities a condition matches, on the real corpus
 site/prototype/README.md              what these are; delete none of them until the CI gate is green
 site/prototype/baseline/              the prototype's whole-corpus output, frozen and stamped (§16.3 step 1)
+site/tokenizer/                       the JavaScript port, the asset, the committed inputs and the gate (§16.5, §16.6)
 ```
 
 `corpus_probe.py` reproduces every match count quoted in this plan and in
@@ -3385,8 +3387,9 @@ because §12.2's prerequisites B and C are outstanding and are the user's.
    *Accepted when* it passes the shared test-vector file (§16.5) with zero
    mismatches. It must not consult any JavaScript built-in for character
    classification — see D41 for the measured divergences that motivates this.
-   **Done, 2026-08-19**: `site/tokenizer/isabelle_tokenizer.js`, which reproduced all
-   12,171 triples with zero mismatches. It is written to be read beside the Python
+   **Done, 2026-08-19**: `site/tokenizer/isabelle_tokenizer.js`, which reproduced every
+   committed input with zero mismatches on its first run, and does so today against
+   the digest of §16.6. It is written to be read beside the Python
    file — same order, same names, same algorithm — because two implementations of one
    specification drift where they are two readings of prose and stay together where
    they are one algorithm written twice. The one place they had differed was §5.4's
@@ -3397,16 +3400,18 @@ because §12.2's prerequisites B and C are outstanding and are the user's.
    the two implementations against different assets would prove nothing.
 
 4. **The shared test-vector file** (§16.5). Build it before step 3 so the port
-   has a target. **Done, 2026-08-19**: `site/tokenizer/test_vectors.jsonl`, 12,171
-   triples over 17 named features, with `test_vectors.meta.json` beside it and
-   `build_test_vectors.py` to regenerate both.
+   has a target. **Done, 2026-08-19; rebuilt in a different shape 2026-08-20** after
+   an adversarial review measured that the first shape did not enforce §5.5:
+   `site/tokenizer/inputs.jsonl`, 15,253 inputs and no committed expectations, with
+   `expected.json`, `toy_asset.json` and `build_inputs.py` beside it. §16.5 says what
+   is in it and §16.6 why it has that shape.
 
 5. **The CI gate** (§16.6). **Done, 2026-08-19**:
    `.github/workflows/tokenizer-gate.yml`, two jobs. The Python job runs
-   `test_isabelle_tokenizer.py` and `check_test_vectors.py`; the JavaScript job runs
-   `check_test_vectors.mjs` and `test_tokenizer.mjs`. Both checkers make the same
-   assertions on purpose, since the claim being gated is that the two implementations
-   agree about one file.
+   `test_isabelle_tokenizer.py` and `emit.py --check`; the JavaScript job runs
+   `emit.mjs --check` and `test_tokenizer.mjs`. Both `--check` runs compare the same
+   digest on purpose, since the claim being gated is that the two implementations
+   agree.
 
    **It installs neither Isabelle nor this package, and that is load-bearing rather
    than thrifty.** The tokenizer reads its classes and its two tables from the asset
@@ -3509,8 +3514,9 @@ not settle** (2026-08-19, with §16.3 step 1):
 
 ### 16.5 The test-vector file
 
-At least **10,000 triples** — input, tokens, subtokens — sampled from real entity
-expressions, **plus** synthetic cases, because real expressions cannot exercise
+At least **10,000 inputs** sampled from real entity
+expressions — the expected outputs are computed rather than committed, for the reason
+§16.6 gives — **plus** synthetic cases, because real expressions cannot exercise
 pipeline steps 1 and 3 at all. §3.4 establishes both halves of that, and the second
 half needs care: the store is 100 % NFC, so step 1 is the identity on it; and step 3
 is the identity **on the corpus that is published**, though not on the store as a
@@ -3551,19 +3557,30 @@ surrogate.
 Pin the file's **encoding, ordering, count and digest**, so that "both
 implementations passed" is itself a checkable claim rather than a report.
 
-**Built 2026-08-19**, as three files in `site/tokenizer/`:
+**Built 2026-08-19 and rebuilt 2026-08-20 in a different shape, after an adversarial
+review measured that the first one did not do what this section asks.** What is
+committed now:
 
-- `test_vectors.jsonl` — one JSON object per line, `{"id","feature","input","tokens",
-  "subtokens"}` in that key order. **12,171 triples**: 10,037 real expressions, 2,024
-  real names, and 110 synthetic cases across 15 named features.
-- `test_vectors.meta.json` — the asset digest, the store digest, the tokenizer rule,
-  the sampling rule, the count, the count per feature, and the SHA-256 of the
-  `.jsonl`'s bytes.
-- `test_vectors.history` — one append-only line per generation. §16.6's guard needs a
-  *previous* count and digest to compare against, and a single file cannot carry its
-  own history.
+- `inputs.jsonl` — one JSON object per line, `{"id","feature","input"}`. **15,253
+  inputs and no expected outputs**: 10,037 real expressions, 2,024 real names, 119
+  hand-written cases, and 3,073 generated from the asset's own keys.
+- `expected.json` — 334 bytes. The tokenizer rule, the asset digest, the inputs digest
+  and the count, and **one digest of the output** both implementations must reproduce.
+- `toy_asset.json` — §5.5's property, settled by construction; §16.6 says how.
 
-Three things about it that this section did not settle:
+**Why no expected outputs are committed, which is a change to this section's first
+paragraph.** An expectations file is a *recording of what the code currently does*, so
+a rule change and a re-recording to match a broken tokenizer are byte-identical acts;
+no digest, marker or ledger over such a file can tell them apart. Computing the
+expectations in CI and pinning one digest is not a recording: a divergence between the
+two implementations moves exactly one digest, and a rule change moves both. That second
+case is a feature, not noise — see §16.6. Measured cost of the change: the committed
+bytes fall from 7.15 MB to 2.47 MB, so the real sample did **not** have to be cut, and
+a proposal to cut it from 10,000 to 2,000 was withdrawn once it was measured — 275
+single-code-point asset mutations are detectable by the 12,061 real inputs and only
+205 survive at 2,006, with 42 of the 70 lost ones covered by nothing else.
+
+Four things about it that this section did not settle:
 
 - **Real names are sampled as well as real expressions.** §16.5 says expressions, but
   `name_subtokens` is a shipped field (§6.1) and names have a shape expressions do not
@@ -3572,8 +3589,18 @@ Three things about it that this section did not settle:
   correctly and names wrongly would pass an expressions-only file.
 - **The sample is drawn by a rule each record decides on its own**: the leading four
   bytes of its key digest for its expression, the trailing four for its name, each
-  against a threshold. No ordering pass, no seed, and reproducible from the store the
-  meta names.
+  against a threshold. No ordering pass, no seed, and reproducible from the store
+  `build_inputs.py` names.
+- **The generated half exists because the corpus cannot supply what it covers, and it
+  embeds each key in context rather than emitting it bare.** Every symbol-table key,
+  every fold-table key and the ordered marker cross-product, each bare and embedded
+  between letters, between digits and between separators. The embedding is
+  load-bearing: a lone non-letter tokenizes to itself either way, so a bare `\<G>`
+  cannot detect `𝒢` being dropped from the letter class, while `x\<G>y` can —
+  measured, 54 of 70 otherwise-undetectable single-code-point mutations hang on it.
+  This closes the 18 symbol names carrying a digit, `_` or `'` that no corpus record
+  contains, permanently rather than for the names someone thought of; before it,
+  narrowing the escape pattern to `[A-Za-z]*` passed every test.
 - **U+0085, U+2028 and U+2029 are escaped, although JSON does not require it.** JSON
   escapes everything below U+0020 and leaves those three raw, and all three are line
   terminators to Python's `str.splitlines` and to a good many other line readers — so
@@ -3584,30 +3611,68 @@ Three things about it that this section did not settle:
 
 ### 16.6 The CI gate
 
-Runs both implementations against the test-vector file and fails on any
-mismatch. It must also fail if the file's digest changes without the count
-changing, which catches a vector file quietly edited to match a broken
-implementation.
+Each implementation tokenizes the committed inputs (§16.5), hashes the result, and
+compares that hash with the one in `expected.json`. Both compare the same number, so
+"both implementations agree" is one claim checked twice rather than two reports. The
+gate also runs, per language, the hand-written cases of §16.2 and §5.3 and the toy
+asset below.
 
-**That guard fires on a legitimate rule change, and the escape must be deliberate.**
-Changing a tokenizer rule alters the expected output of many existing vectors while
-leaving the count at 10,000, which is exactly the shape the guard is looking for. So
-a rule change must alter the count in the same commit — by adding the cases the new
-rule needs, which it needs anyway (§16.5) — or carry an explicit, reviewed "the rule
-changed" marker. It must never be resolved by regenerating the file quietly, which is
-the failure the guard exists to catch.
+**A digest of computed output rather than a file of committed expectations, and why
+that is the whole design.** An expectations file records what the code currently does.
+Change a rule, regenerate, and it agrees with the new behaviour — including when the
+new behaviour is a bug — so a legitimate change and a re-recording that hides a
+regression are the same act at the byte level, and no digest, marker or ledger laid
+over that file can separate them. A digest of *computed* output records nothing: the
+only way to make a broken tokenizer agree with it is to fix the tokenizer.
 
-**Implemented 2026-08-19** as `site/tokenizer/check_test_vectors.py`, against
-`test_vectors.history`: the newest line must describe the committed file exactly, and
-if its digest differs from the previous line's while the count does not, the line must
-carry a `rule-change:` marker saying what changed. The marker is the "explicit,
-reviewed" escape this section requires, and it is reviewed because it is a committed
-line of text in a file whose only purpose is to be read in a diff. The gate also
-asserts **coverage of the features §16.5 names**, since §5.5 requires that and a
-sample size cannot supply it. `test_isabelle_tokenizer.py` exercises each refusal on
-a tampered copy — a body that no longer matches its digest, a digest that moved while
-the count stood still, that same case with the marker present, and a missing feature —
-because a guard that has never been seen to fire is not a guard.
+- A **divergence between the two implementations** moves exactly one digest.
+- A **rule change** moves both, and that is a feature. It is what catches a rule change
+  that forgot to bump `tokenizer_rule`, which matters because without the bump the
+  asset's bytes do not move, so the namespace name does not move, and §8.2's "write
+  into a new namespace" quietly becomes an upsert into the live one (§16.4). The
+  failure message names that decision rather than asking anyone to remember it.
+- Neither case can be resolved by regenerating anything. `emit.py --update` rewrites
+  the digest, and the diff is one hex string beside a `tokenizer_rule` that either
+  moved or did not.
+
+**The toy asset is how §5.5 is enforced rather than reviewed.** §5.5 forbids either
+implementation from carrying a table of its own or consulting a language built-in for a
+character class, and until 2026-08-20 nothing checked it: `/\p{L}/u.test(ch)` in place
+of the asset's letter set passed all 12,171 vectors and all 17 feature assertions with
+zero problems, as did a marker set written out by hand instead of read off the fold
+table. Both are natural ways to write the code. They are invisible to any real input
+because `isalpha()` and `\p{L}` agree on every character assigned in the asset's
+Unicode version — which is also why the damage grows with every browser update and no
+code change. `site/tokenizer/toy_asset.json` settles it by construction: fifteen lines
+of asset in which every class **contradicts** what a built-in would say — `7` is a
+letter, `z` is a digit, `.` is whitespace and the real space is not, `,` is symbolic and
+`+` is not — so an implementation that consults a built-in, in either direction,
+diverges on the first case. Its 23 expected outputs are derived from §5 by hand rather
+than copied from a run, and are measured to catch all twelve single-field substitutions
+of the forbidden kinds in both languages.
+
+**What this section used to require, and why it is gone.** It required the gate to fail
+"if the file's digest changes without the count changing", with an append-only ledger
+and a reviewed `rule-change:` marker as the escape. Measured on 2026-08-20 against a
+tokenizer with §5.4's fallback clause removed and the vectors regenerated from it: the
+guard caught the case where the ledger was appended to honestly and the count held, and
+missed every other path — a line added so the count moved (which §16.5 *instructs* a
+rule change to do), the ledger rewritten to one line, the line edited in place, the
+marker appended. It also false-alarmed whenever two branches each regenerated, and
+nothing checked that the ledger was append-only, so a rebase or a squash rewrote it
+silently. A check that misses the case it was written for and rings on cases that are
+fine is not weak, it is miscalibrated; it is replaced by the digest above, which does
+the one thing the ledger was accidentally doing — making "the behaviour moved" a red
+build.
+
+**What the gate cannot do, stated so nobody rediscovers it as a defect.** The inputs
+are tokenized by the implementations, so the file cannot validate Python against §5;
+it can only bind the two implementations to each other. What validates Python is the
+hand-written table of §16.2 and §5.3, which is never regenerated, and the toy asset.
+Any case that discriminates a *rule* must therefore be hand-written and must live in
+`test_isabelle_tokenizer.py` — a case generated from the implementation cannot
+validate the implementation, and this was measured: narrowing Python's escape pattern
+and hard-coding Python's marker set both survived the generated half entirely.
 
 ### 16.7 The review that ran first — and the one still owed
 
