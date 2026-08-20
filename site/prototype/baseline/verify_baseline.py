@@ -22,12 +22,26 @@ from Isabelle_Semantic_Embedding import tokenizer_asset
 
 FIELDS = ('expr', 'name')
 
+# Exactly the fields `Tokenizer.__init__` reads. Everything else in the asset is
+# provenance for a human.
+TOKENIZING_FIELDS = ('tokenizer_rule', 'symbols', 'fold', 'letters', 'digits', 'spaces',
+                     'quasi_letters', 'discarded', 'ascii_symbolic', 'separators',
+                     'rendered_subsup', 'rendered_digits')
+
+
+def tokenizing_digest(asset):
+    return hashlib.sha256(json.dumps({k: asset[k] for k in TOKENIZING_FIELDS},
+                                     ensure_ascii=False, sort_keys=True,
+                                     separators=(',', ':')).encode('utf-8')).hexdigest()
+
 
 def main():
     baseline = json.load(open(os.path.join(_HERE, 'baseline.json'), encoding='utf-8'))
     asset = tokenizer_asset.build_asset()
     asset_text = json.dumps(asset, ensure_ascii=False, sort_keys=True, indent=1) + '\n'
     asset_sha = hashlib.sha256(asset_text.encode('utf-8')).hexdigest()
+    with open(os.path.join(_HERE, 'asset.json'), encoding='utf-8') as f:
+        frozen_asset = json.load(f)
     tok = Tokenizer(asset)
 
     rows, t0, n = {}, time.time(), 0
@@ -43,9 +57,20 @@ def main():
     if n != baseline['records']:
         problems.append('%d records, the baseline was taken over %d — wrong store?'
                         % (n, baseline['records']))
-    if asset_sha != baseline['asset_sha256']:
-        problems.append('the asset hashes to %s, the baseline was taken against %s'
-                        % (asset_sha, baseline['asset_sha256']))
+    # Compare what the tokenizer READS, not the whole file. The asset also carries
+    # provenance -- which symbol files, which Unicode version -- and a change there
+    # cannot move a single subtoken, so making it fail here would leave this tool
+    # permanently red after the first honest edit, with no way back short of a
+    # twenty-minute rebuild.
+    if tokenizing_digest(asset) != tokenizing_digest(frozen_asset):
+        problems.append(
+            'the asset\'s tokenizing tables have changed since the baseline was taken. '
+            'Rebuild it with build_baseline.py -- the digests below cannot mean '
+            'anything until then.')
+    elif asset_sha != baseline['asset_sha256']:
+        print('note: the asset file has changed since the baseline was taken (%s -> %s), '
+              'but only in fields the tokenizer never reads, so the digests below still '
+              'compare.' % (baseline['asset_sha256'][:12], asset_sha[:12]))
     for i, f in enumerate(FIELDS):
         buf = bytearray()
         for kd in order:
@@ -58,6 +83,14 @@ def main():
     print('%d records, %.0fs, %d problems' % (n, time.time() - t0, len(problems)))
     for p in problems:
         print('FAIL  %s' % p)
+    if any('digest moved' in p for p in problems):
+        print('\nTo find out WHICH records moved, in increasing order of cost:\n'
+              '  1. `python3 site/tokenizer/emit.py --check`, then diff its output '
+              'against `node site/tokenizer/emit.mjs` -- 15,253 inputs including\n'
+              '     12,061 real records, and it names every one that moved. Seconds.\n'
+              '  2. If that passes, the change is confined to corpus records outside\n'
+              '     that sample: `build_baseline.py` reclassifies all 1,343,793 against\n'
+              '     the prototype and lists them. Twenty minutes.')
     return 1 if problems else 0
 
 

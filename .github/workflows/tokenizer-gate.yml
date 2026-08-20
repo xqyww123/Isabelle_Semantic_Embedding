@@ -7,6 +7,15 @@
 # is why this gate exists and why it runs both implementations against the same
 # frozen file rather than each against its own tests.
 #
+# Nothing here is a committed expectations file. Each side tokenizes the committed
+# inputs and hashes the result; both compare that hash with the one number in
+# `expected.json`. An expectations file is a recording of what the code currently does,
+# so it can always be re-recorded to agree with a broken tokenizer; a hash cannot be
+# talked into agreeing with anything. A divergence between the two implementations
+# moves exactly one hash, and a rule change moves both -- and moving is itself the
+# signal, because it is what catches a rule change that forgot to bump
+# `tokenizer_rule` (§16.4).
+#
 # It deliberately installs neither Isabelle nor this package. The tokenizer reads its
 # character classes and its two symbol tables from `site/tokenizer/asset.json` and
 # needs nothing else -- that is the property §5.5 is built around -- so a gate that
@@ -49,11 +58,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pytest
-      # §16.2's table, §5.3's relations, the fold-scan parity cases, the asset
-      # version refusal, and every one of §16.6's refusals exercised on a doctored
-      # copy of the vector directory.
+      # §16.2's table, §5.3's relations, the fold-scan parity cases, the toy asset
+      # that proves nothing but the asset is consulted, and the committed digest.
       - run: python -m pytest test_isabelle_tokenizer.py -q
-      - run: python site/tokenizer/check_test_vectors.py
+      - run: python site/tokenizer/emit.py --check
 
   javascript:
     runs-on: ubuntu-latest
@@ -62,7 +70,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      # The same 12,171 triples and the same four refusals, so that "both
-      # implementations passed" is one claim about one file and not two reports.
-      - run: node site/tokenizer/check_test_vectors.mjs
+      # The same inputs and the same digest, so that "both implementations agree"
+      # is one number checked twice and not two reports.
+      - run: node site/tokenizer/emit.mjs --check
       - run: node site/tokenizer/test_tokenizer.mjs

@@ -1,27 +1,24 @@
 /**
- * What the vector file cannot express, on the JavaScript side.
+ * What the committed inputs cannot express, on the JavaScript side.
  *
- * The 12,171 triples cover the rules; these cover the two things that are not rules:
- * that an asset whose `tokenizer_rule` this implementation does not implement is
- * refused rather than read (§5.5), and that §16.6's guard refuses each way a vector
- * file can be doctored. The Python suite makes exactly these four assertions about
- * exactly these four tampered files — §16.6 requires both implementations to reach
- * the same verdict, and a guard that fires on one side only is worse than none.
+ * The 15,253 inputs prove that this port agrees with the Python one, because both
+ * hash their output to the same committed number. They cannot prove that either port
+ * reads the asset rather than asking JavaScript, because Python's `isalpha()` and
+ * JavaScript's `\p{L}` agree on every character the corpus contains. `toy_asset.json`
+ * proves that, by classifying ordinary characters contrary to every built-in.
  *
  *   node test_tokenizer.mjs
  */
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Tokenizer } from './isabelle_tokenizer.js';
-import { main } from './check_test_vectors.mjs';
+import { check } from './emit.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const ASSET = JSON.parse(readFileSync(join(HERE, 'asset.json'), 'utf8'));
+const read = (name) => JSON.parse(readFileSync(join(HERE, name), 'utf8'));
 
 let failures = 0;
 const test = (name, body) => {
@@ -34,17 +31,6 @@ const test = (name, body) => {
   }
 };
 
-/** A copy of the vector directory with one thing changed. */
-const tampered = (edit) => {
-  const dir = mkdtempSync(join(tmpdir(), 'isasearch-vectors-'));
-  for (const name of ['asset.json', 'test_vectors.jsonl', 'test_vectors.meta.json',
-                      'test_vectors.history']) {
-    cpSync(join(HERE, name), join(dir, name));
-  }
-  edit(dir);
-  return dir;
-};
-
 const quiet = (fn) => {
   const log = console.log;
   console.log = () => {};
@@ -55,55 +41,42 @@ const quiet = (fn) => {
   }
 };
 
-const historyWithAnOlderLine = (dir, suffix = '') => {
-  const line = readFileSync(join(dir, 'test_vectors.history'), 'utf8').trim().split('\n').pop();
-  const older = line.replace(/sha256=\w+/, `sha256=${'0'.repeat(64)}`);
-  writeFileSync(join(dir, 'test_vectors.history'), `${older}\n${line}${suffix}\n`, 'utf8');
-};
+test('this port reproduces the committed digest', () => {
+  assert.equal(quiet(() => check(HERE)), 0);
+});
 
-test('the committed vectors pass the gate', () => {
-  assert.equal(quiet(() => main(HERE)), 0);
+test('the asset is the only source', () => {
+  const toy = read('toy_asset.json');
+  const tok = new Tokenizer(toy.asset);
+  for (const c of toy.cases) {
+    assert.deepEqual(tok.run(c.input), c.subtokens, `${JSON.stringify(c.input)}: ${c.why}`);
+  }
+});
+
+test('the toy asset contradicts the language in both directions', () => {
+  // If it ever stops disagreeing with JavaScript, it stops proving anything.
+  const toy = read('toy_asset.json').asset;
+  const chars = (ranges) => ranges.flatMap(([lo, hi]) =>
+    Array.from({ length: hi - lo + 1 }, (_, i) => String.fromCodePoint(lo + i)));
+  assert.ok(chars(toy.letters).some((c) => !/\p{L}/u.test(c)));   // a letter \p{L} denies
+  assert.ok(chars(toy.digits).some((c) => /\p{L}/u.test(c)));     // a digit it calls a letter
+  assert.ok(chars(toy.spaces).some((c) => !/\s/u.test(c)));       // whitespace \s denies
+  assert.ok(!chars(toy.spaces).includes(' '));                    // and the real space is not one
 });
 
 test('an unknown tokenizer_rule is refused rather than read', () => {
-  assert.throws(() => new Tokenizer({ ...ASSET, tokenizer_rule: ASSET.tokenizer_rule + 1000 }),
+  const asset = read('asset.json');
+  assert.throws(() => new Tokenizer({ ...asset, tokenizer_rule: asset.tokenizer_rule + 1000 }),
                 /tokenizer_rule/);
 });
 
-test('the gate fails when the body and its digest disagree', () => {
-  const dir = tampered((d) => {
-    const body = readFileSync(join(d, 'test_vectors.jsonl'));
-    writeFileSync(join(d, 'test_vectors.jsonl'),
-                  Buffer.from(body.toString('utf8').replace('"sorted"', '"sortd"'), 'utf8'));
-  });
-  assert.equal(quiet(() => main(dir)), 1);
-});
-
-test('the gate fails when the digest moves and the count does not', () => {
-  assert.equal(quiet(() => main(tampered((d) => historyWithAnOlderLine(d)))), 1);
-});
-
-test('the gate accepts a declared rule change', () => {
-  const dir = tampered((d) => historyWithAnOlderLine(
-    d, '  rule-change: §5.2 gained a token class'));
-  assert.equal(quiet(() => main(dir)), 0);
-});
-
-test('the gate fails on a missing feature', () => {
-  const dir = tampered((d) => {
-    const lines = readFileSync(join(d, 'test_vectors.jsonl'), 'utf8')
-      .split('\n').filter((l) => l && !l.includes('"astral_symbol"'));
-    const body = Buffer.from(`${lines.join('\n')}\n`, 'utf8');
-    writeFileSync(join(d, 'test_vectors.jsonl'), body);
-    const meta = JSON.parse(readFileSync(join(d, 'test_vectors.meta.json'), 'utf8'));
-    meta.count = lines.length;
-    meta.sha256 = createHash('sha256').update(body).digest('hex');
-    writeFileSync(join(d, 'test_vectors.meta.json'), JSON.stringify(meta), 'utf8');
-    writeFileSync(join(d, 'test_vectors.history'),
-                  `2026-08-19  count=${meta.count}  sha256=${meta.sha256}  tokenizer_rule=1\n`,
-                  'utf8');
-  });
-  assert.equal(quiet(() => main(dir)), 1);
+test('a token with very many separators does not blow the stack', () => {
+  // `subtokens` once spread one argument per part into `push`, which V8 caps at about
+  // 125,000. `_` is a quasi-letter, so `a_a_a…` is ONE token and `parts` is unbounded.
+  // No corpus record comes near it and D29 caps a query at 8,000 characters, so this
+  // is robustness rather than a live defect -- but it is one line to be sure of.
+  const tok = new Tokenizer(read('asset.json'));
+  assert.equal(tok.run('a_'.repeat(150000)).length, 150000);
 });
 
 console.log(failures ? `${failures} failed` : 'all passed');

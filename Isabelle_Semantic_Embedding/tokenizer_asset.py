@@ -19,7 +19,9 @@ Two emission rules are worth stating because they move work out of the consumers
   gains an entry; deriving all of them here, once, from the fold table, is that
   warning obeyed.
 """
+import hashlib
 import json
+import os
 import sys
 import unicodedata
 
@@ -57,6 +59,32 @@ def _ranges(predicate):
     return out
 
 
+def _symbol_file_provenance():
+    """What identifies each symbol file, rather than where it happened to sit.
+
+    §5.5 requires the asset to record the files it was built from, because two
+    machines can load different tables from identical code. Recording absolute paths
+    satisfied the letter and not the purpose: they are machine-specific, so the only
+    check anyone can make against them is equality with this machine's, and they put
+    a home directory into a committed artefact. A basename and a digest identify the
+    file wherever it lives, so a contributor with a differently-rooted Isabelle can
+    still be told whether their table is the one the asset was built from.
+    """
+    out = []
+    for path in get_SYMBOL_FILES():
+        name = os.path.basename(os.path.dirname(path)) + '/' + os.path.basename(path)
+        # ISABELLE_SYMBOLS names the user overlay whether or not it exists, so a null
+        # digest is a fact about the table and not an error: it says the file was on
+        # the list and contributed nothing.
+        try:
+            with open(path, 'rb') as f:
+                digest = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            digest = None
+        out.append({'name': name, 'sha256': digest})
+    return out
+
+
 def _is_digit(ch):
     """§5.2's *digit*. The two readings were measured to agree on every record."""
     return ch.isdigit() or ch.isnumeric()
@@ -83,7 +111,7 @@ def build_asset():
     return {
         'tokenizer_rule': TOKENIZER_RULE,
         'unicode_version': unicodedata.unidata_version,
-        'symbol_files': list(get_SYMBOL_FILES()),
+        'symbol_files': _symbol_file_provenance(),
         'symbols': convertible,
         'symbols_private_use': private_use,
         'fold': dict(SUBSUP_TRANS_TABLE),

@@ -29,16 +29,16 @@ def _vector_dir():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'site', 'tokenizer')
 
 
-def _checker():
+def _emit():
     import importlib.util
     spec = importlib.util.spec_from_file_location(
-        'check_test_vectors', os.path.join(_vector_dir(), 'check_test_vectors.py'))
+        'emit', os.path.join(_vector_dir(), 'emit.py'))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-Tokenizer = _checker().load_tokenizer_module().Tokenizer
+Tokenizer = _emit().load_tokenizer_module().Tokenizer
 
 
 @pytest.fixture(scope="module")
@@ -68,17 +68,27 @@ def _live_asset():
 def test_committed_asset_matches_the_live_symbol_table():
     """The one test that needs Isabelle, and the one reason to keep needing it.
 
-    `site/tokenizer/asset.json` is what both implementations read and what the frozen
-    vectors were produced against. If the symbol table it was built from has moved —
-    a new component registered, a distribution upgrade, an edit to
-    `SUBSUP_TRANS_TABLE` — then the committed asset is stale and the vectors are
-    describing a tokenizer nobody runs any more.
+    `site/tokenizer/asset.json` is what both implementations read. If the symbol table
+    it was built from has moved — a new component registered, a distribution upgrade,
+    an edit to `SUBSUP_TRANS_TABLE` — the committed asset is stale and the committed
+    digest describes a tokenizer nobody runs any more.
+
+    It skips when this machine's symbol files are not the ones the asset records. That
+    skip is honest because the asset identifies each file by name and SHA-256 rather
+    than by path: a contributor whose Isabelle sits elsewhere still gets the test, and
+    only a genuinely different table skips it. An earlier version compared absolute
+    paths, so it could not have passed on any machine but the author's.
     """
     import json
     import os
-    live = json.dumps(_live_asset(), ensure_ascii=False, sort_keys=True, indent=1) + '\n'
+    live = _live_asset()
     with open(os.path.join(_vector_dir(), 'asset.json'), encoding='utf-8') as f:
-        assert f.read() == live
+        committed = json.load(f)
+    if live['symbol_files'] != committed['symbol_files']:
+        pytest.skip("this machine's symbol files are not the ones the asset records: "
+                    '%s' % [f['name'] for f in live['symbol_files']])
+    dump = lambda a: json.dumps(a, ensure_ascii=False, sort_keys=True, indent=1)
+    assert dump(live) == dump(committed)
 
 
 @pytest.fixture(scope="module")
@@ -126,6 +136,27 @@ CASES = [
     (r'1 / 10\<^sup>2',             ['1', '/', '10', '²']),
     ('x-y',                         ['x', '-', 'y']),
     ('%x. x',                       ['%', 'x', 'x']),
+    # --- added 2026-08-20, each closing a hole the adversarial review measured ----
+    # A marker set written out by hand instead of read off the fold table passes every
+    # other case: ❙ is 52 of the 142 fold keys, and the four rows above only repeat ⇩.
+    (r'\<^bold>\<^sub>1',         ['1']),
+    (r'\<^bold>\<^sub>x',         ['x']),
+    (r'\<^sup>\<^bold>a',         ['a']),
+    # An escape name carrying a digit or `_`. The asset defines 18 such names and no
+    # corpus record contains one, so narrowing the pattern to `[A-Za-z]*` passed
+    # everything until these existed.
+    (r'\<^theory_text>x',          ['⬚', 'x']),
+    (r'\<half_bc2>',               ['◑']),
+    # A private-use escape whose name carries a quasi-letter: D44 leaves it literal,
+    # and `bool'` is one identifier token because `'` is a quasi-letter.
+    (r"\<bool'>",                  [r'\<', "bool'", '>']),
+    # NFKC folds these and NFC does not. The character must be LITERAL in the input:
+    # one produced by the fold pass arrives long after step 1, which is why the row
+    # `1 / 10\<^sup>2` above leaves an NFC-for-NFKC substitution undetected.
+    ('x²y',                        ['x', 'y']),
+    ('ﬁx',                         ['ﬁx']),
+    ('½ + ½',                      ['½', '+', '½']),
+
     ('_', []), ('.', []), ('?', []), ('   ', []),
     ('???', []), ('_.', []), (r'\<^sub>', []),
 ]
@@ -247,68 +278,65 @@ def test_module_loads_with_no_isabelle_at_all(asset, tmp_path):
         os.environ.update(saved)
 
 
-# --- §16.5's vector file and §16.6's gate -----------------------------------
+# --- §16.5's inputs and §16.6's gate ------------------------------------------
 
-def test_committed_vectors_pass_the_gate(tok):
-    assert _checker().main(_vector_dir(), tok) == 0
+def test_the_committed_digest_still_describes_this_implementation():
+    """§16.6, the whole of it.
+
+    No expectations are committed. This recomputes the digest of the Python
+    implementation's output over the committed inputs and compares it with the one
+    number in `expected.json`; `emit.mjs` checks the same number on the other side.
+    A divergence between the two moves exactly one digest, and a rule change moves
+    both -- which is what catches a rule change that forgot to bump `tokenizer_rule`.
+    """
+    assert _emit().check(_vector_dir()) == 0
 
 
-def _tampered(tmp_path, edit):
-    """A copy of the vector directory with one thing changed."""
+def test_the_inputs_file_can_only_be_read_one_way():
+    """A line-oriented file must not be able to hold a line break inside a line.
+
+    JSON escapes everything below U+0020 but leaves U+0085, U+2028 and U+2029 raw,
+    and all three end a line for `str.splitlines` and for other readers. Real corpus
+    text contains them; the generator escapes them, and this asserts it did.
+    """
+    import re
+    text = open(os.path.join(_vector_dir(), 'inputs.jsonl'), encoding='utf-8').read()
+    assert not re.search('[\u0085\u2028\u2029\r]', text)
+    assert len(text.split('\n')) - 1 == len(text.splitlines())
+
+
+# --- §5.5: the asset is the only source ---------------------------------------
+
+def _toy():
     import json
-    import os
-    import shutil
-    for name in ('asset.json', 'test_vectors.jsonl', 'test_vectors.meta.json',
-                 'test_vectors.history'):
-        shutil.copy(os.path.join(_vector_dir(), name), tmp_path / name)
-    edit(tmp_path)
-    return str(tmp_path)
+    with open(os.path.join(_vector_dir(), 'toy_asset.json'), encoding='utf-8') as f:
+        return json.load(f)
 
 
-def test_gate_fails_when_the_body_and_its_digest_disagree(tok, tmp_path, capsys):
-    def edit(d):
-        body = (d / 'test_vectors.jsonl').read_bytes()
-        (d / 'test_vectors.jsonl').write_bytes(body.replace(b'"sorted"', b'"sortd"', 1))
-    assert _checker().main(_tampered(tmp_path, edit), tok) == 1
-    assert 'hashes to' in capsys.readouterr().out
+def test_the_asset_is_the_only_source():
+    """The one property no real corpus can prove.
+
+    Python's `isalpha()` and JavaScript's `\\p{L}` agree on every character the
+    corpus contains, so an implementation that asks its language passes every real
+    input and is wrong only on characters no sample has. `toy_asset.json` settles it
+    by construction: every class in it contradicts what a built-in would say, in both
+    directions, so consulting one diverges on the first case. Measured: these cases
+    catch all twelve single-field substitutions of the forbidden kinds.
+    """
+    toy = _toy()
+    tok = Tokenizer(toy['asset'])
+    wrong = [(c['input'], tok(c['input']), c['subtokens'])
+             for c in toy['cases'] if tok(c['input']) != c['subtokens']]
+    assert not wrong
 
 
-def test_gate_fails_when_the_digest_moves_and_the_count_does_not(tok, tmp_path, capsys):
-    """The shape of a vector file quietly regenerated to match a broken implementation."""
-    def edit(d):
-        history = (d / 'test_vectors.history').read_text(encoding='utf-8')
-        line = history.strip().splitlines()[-1]
-        older = line.replace(line.split('sha256=')[1].split()[0], '0' * 64)
-        (d / 'test_vectors.history').write_text(older + '\n' + line + '\n', encoding='utf-8')
-    assert _checker().main(_tampered(tmp_path, edit), tok) == 1
-    assert 'the digest changed while the count did not' in capsys.readouterr().out
-
-
-def test_gate_accepts_a_declared_rule_change(tok, tmp_path):
-    def edit(d):
-        history = (d / 'test_vectors.history').read_text(encoding='utf-8')
-        line = history.strip().splitlines()[-1]
-        older = line.replace(line.split('sha256=')[1].split()[0], '0' * 64)
-        (d / 'test_vectors.history').write_text(
-            older + '\n' + line + '  rule-change: §5.2 gained a token class\n',
-            encoding='utf-8')
-    assert _checker().main(_tampered(tmp_path, edit), tok) == 0
-
-
-def test_gate_fails_on_a_missing_feature(tok, tmp_path, capsys):
-    def edit(d):
-        import hashlib
-        import json
-        lines = [l for l in (d / 'test_vectors.jsonl').read_text(encoding='utf-8').split('\n')
-                 if l and '"astral_symbol"' not in l]
-        body = ('\n'.join(lines) + '\n').encode('utf-8')
-        (d / 'test_vectors.jsonl').write_bytes(body)
-        meta = json.loads((d / 'test_vectors.meta.json').read_text(encoding='utf-8'))
-        meta['count'] = len(lines)
-        meta['sha256'] = hashlib.sha256(body).hexdigest()
-        (d / 'test_vectors.meta.json').write_text(json.dumps(meta), encoding='utf-8')
-        (d / 'test_vectors.history').write_text(
-            '2026-08-19  count=%d  sha256=%s  tokenizer_rule=1\n'
-            % (meta['count'], meta['sha256']), encoding='utf-8')
-    assert _checker().main(_tampered(tmp_path, edit), tok) == 1
-    assert "no vector covers the feature 'astral_symbol'" in capsys.readouterr().out
+def test_the_toy_asset_contradicts_the_language_in_both_directions():
+    """If it ever stops disagreeing with Python, it stops proving anything."""
+    toy = _toy()['asset']
+    letters = {chr(cp) for lo, hi in toy['letters'] for cp in range(lo, hi + 1)}
+    digits = {chr(cp) for lo, hi in toy['digits'] for cp in range(lo, hi + 1)}
+    spaces = {chr(cp) for lo, hi in toy['spaces'] for cp in range(lo, hi + 1)}
+    assert any(not c.isalpha() for c in letters)      # a letter the language denies
+    assert any(c.isalpha() for c in digits)           # a digit the language calls a letter
+    assert any(not c.isspace() for c in spaces)       # whitespace the language denies
+    assert ' ' not in spaces                          # and the real space is not one

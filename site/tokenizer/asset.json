@@ -3668,10 +3668,22 @@
   ]
  ],
  "symbol_files": [
-  "/home/qiyuan/Current/MLML/contrib/Isabelle2025-2/etc/symbols",
-  "/home/qiyuan/.isabelle/Isabelle2025-2/etc/symbols",
-  "/home/qiyuan/Current/MLML/contrib/phi-system/symbols",
-  "/home/qiyuan/Current/MLML/contrib/phi-system/symbols-words"
+  {
+   "name": "etc/symbols",
+   "sha256": "70d24921a6db3ed590ff58107c02f54ef90044ef2d8a35313641ab0306a0a679"
+  },
+  {
+   "name": "etc/symbols",
+   "sha256": null
+  },
+  {
+   "name": "phi-system/symbols",
+   "sha256": "51836c57f7e40628425f723f46579175429296256c87f5ec1dc53d436b32b09b"
+  },
+  {
+   "name": "phi-system/symbols-words",
+   "sha256": "0e6d3dd311821d8ee8f95849dac0af509ddd166469d2b3af31a9ee592e6a5946"
+  }
  ],
  "symbols": {
   "\\<A>": "𝒜",

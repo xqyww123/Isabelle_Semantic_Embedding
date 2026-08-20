@@ -197,7 +197,9 @@ export class Tokenizer {
       }
       if (cur.length) parts.push(cur.join(''));
       if (parts.length) {
-        out.push(...parts);
+        // One at a time, not `out.push(...parts)`: V8 caps spread arity at about
+        // 125,000 arguments, and `parts` is bounded only by the token's length.
+        for (const p of parts) out.push(p);
       } else if (t.length && Array.from(t).every((c) => this.rendered.has(c))) {
         // A token made entirely of rendered sub/superscripts is real content —
         // `ᶜᵉ`, `ₚₜᵣ`, `²` — and would otherwise vanish. Keeping any token that
