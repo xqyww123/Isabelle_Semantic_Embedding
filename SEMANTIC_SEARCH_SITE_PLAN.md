@@ -907,8 +907,11 @@ runs. §16.2 gives the same figure.
   12,208 entries and resolves **8,702 of the 8,704** persistent hashes that ship
   — 100 %, the two apparent misses being a measurement artefact (§7.3). The
   harvest-from-constituents fallback described above is therefore not needed
-  either. What remains true is that `snapshot_sync` does not ship the registry;
-  `THEORY_HASH_REGISTRY_PLAN.md` fixes that.
+  either. `snapshot_sync` did not ship the registry then;
+  `THEORY_HASH_REGISTRY_PLAN.md`'s §9 steps 1–3 (landed 2026-08-20) moved it
+  into `semantic_DB_dir()` and made `export` ship it, gated — that plan's
+  §9 step 4 (the one-off migration on `cslh19`, then the republish) is what
+  remains before a published database carries it.
 
 ### 3.3 turbopuffer, verified against a live account
 
@@ -2014,16 +2017,17 @@ but it holds only interpretation cost accounting (`input_tokens`, `cost_usd`,
 (2026-08-19; 11,415 on 2026-08-12).
 
 The table that does map hash to name is a separate store, the **theory-hash
-registry** (`hash -> [long name, timestamp]`), today at
-`~/.cache/Isabelle_Theory_Hash/theory_hash.lmdb`. `snapshot_sync` does not ship it,
-so a published database has none of it — that is the real problem, and
-`THEORY_HASH_REGISTRY_PLAN.md` is the plan that fixes it.
+registry** (`hash -> [long name, timestamp]`), at
+`semantic_DB_dir()/theory_hash.lmdb` since `THEORY_HASH_REGISTRY_PLAN.md`'s R1
+landed (2026-08-20; before that it sat outside the database directory, and
+`snapshot_sync` did not ship it — that was the real problem that plan fixes).
+`export` now ships it behind that plan's R5 gate; a published database carries
+none of it until that plan's §9 step 4 — the one-off migration on `cslh19`,
+then the republish — completes.
 
-**Do not hard-code that path: the user approved moving the store on 2026-08-12**
-("赞同 把它搬进语义数据库目录", the name unchanged), and R1 of that plan puts it at
-`semantic_DB_dir()/theory_hash.lmdb`. §8.1's step 4 and §12.2's prerequisite B both
-read it; take the location from that plan, not from the line above, which says only
-where it sits until R1 lands.
+**Take the registry's location from that plan, never hard-code a path**
+(`semantic_DB_dir()` honours `SEMANTIC_DB_DIR`). §8.1's step 4 and §12.2's
+prerequisite B both read the registry.
 
 **Draft 3 correction — the table does not need to be rebuilt.** Drafts 1 and 2
 said this store "holds 2,910 entries and resolves only 9.9 % of the 9,148
