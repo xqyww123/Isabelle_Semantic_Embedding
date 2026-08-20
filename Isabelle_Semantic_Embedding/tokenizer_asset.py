@@ -127,9 +127,16 @@ def build_asset():
     }
 
 
+def serialize(asset):
+    """THE asset's bytes. The namespace name carries their SHA-256 (§8.2), so the
+    export and this script must serialise identically or the digest moves for no
+    reason; there is one spelling of it and this is it."""
+    return json.dumps(asset, ensure_ascii=False, sort_keys=True, indent=1) + '\n'
+
+
 def main(argv):
     asset = build_asset()
-    text = json.dumps(asset, ensure_ascii=False, sort_keys=True, indent=1) + '\n'
+    text = serialize(asset)
     if len(argv) > 1:
         with open(argv[1], 'w', encoding='utf-8') as f:
             f.write(text)

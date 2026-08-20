@@ -729,6 +729,42 @@ def install_system_db(*, force: bool = False, channel: str = CHANNEL_URL) -> Non
 _EXPORT_BATCH = 10_000     # keys per write transaction of the compacting rewrite
 
 
+def _ships_predicate() -> 'Callable[[bytes, bytes], bool]':
+    """THE test for whether a key belongs in a published artifact -- the snapshot
+    payload here, the site's namespace in SEMANTIC_SEARCH_SITE_PLAN.md §8.1.
+
+    (CHECK_OUTDATE_PLAN §9, the export filter job): a published artifact carries
+    PERSISTENT data only.  Drops the 0xF0 global version counter (the publishing
+    machine's counter value is meaningless and harmful elsewhere) and every WIP key
+    -- machine-local working state whose incremental fields carry this machine's
+    counter domain.  Prefix-addressed keys go by the key's WIP bit; XOR-prefixed keys
+    (thm/rule/experience) go by their constituent list, because the XORed bit is a
+    PARITY that two WIP constituents cancel; a legacy record with no constituent list
+    falls back to the bit.  Applied to every copy loop in ``export`` -- records,
+    vectors, embed-status -- one missed loop would be a release leak.
+
+    A factory, not a plain function, because the predicate is called once per record
+    and its three helpers live in modules this one must not import at module scope:
+    ``.semantics`` pulls in the whole agent stack, and ``post-install-system-db``
+    imports this module inside a conda post-link hook.  Binding them once here keeps
+    the caller's loop free of a repeated import."""
+    from Isabelle_RPC_Host.theory_hash import is_persistent
+    from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
+    from .semantics import record_constituent_hashes
+
+    def _ships(key: bytes, val: bytes) -> bool:
+        if len(key) < 16:
+            return False                 # the 0xF0 global version counter
+        if is_xor_prefixed_key(key):
+            consts = record_constituent_hashes(val)
+            if consts is None:
+                return is_persistent(key)
+            return all(is_persistent(h) for h in consts)
+        return is_persistent(key)
+
+    return _ships
+
+
 def export(outdir: str) -> dict:
     """Rewrite the layered store at ``semantic_DB_dir()`` into a publishable
     system-DB payload at ``outdir``; returns the stamped manifest.
@@ -762,29 +798,9 @@ def export(outdir: str) -> dict:
     # compacted) stores.
     _log("  exporting records...")
 
-    # ②' (CHECK_OUTDATE_PLAN §9, the export filter job): the payload contains
-    # PERSISTENT data only.  Drops the 0xF0 global version counter (the
-    # publishing machine's counter value is meaningless and harmful elsewhere)
-    # and every WIP key -- machine-local working state whose incremental fields
-    # carry this machine's counter domain.  Prefix-addressed keys go by the
-    # key's WIP bit; XOR-prefixed keys (thm/rule/experience) go by their
-    # constituent list, because the XORed bit is a PARITY that two WIP
-    # constituents cancel; a legacy record with no constituent list falls back
-    # to the bit.  Applied to every copy loop below -- records, vectors,
-    # embed-status -- one missed loop would be a release leak.
+    # ②' the payload contains PERSISTENT data only; see _ships_predicate.
     from Isabelle_RPC_Host.theory_hash import is_persistent as _hash_persistent
-    from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
-    from .semantics import record_constituent_hashes as _consts_of
-
-    def _ships(key: bytes, val: bytes) -> bool:
-        if len(key) < 16:
-            return False                 # the 0xF0 global version counter
-        if is_xor_prefixed_key(key):
-            consts = _consts_of(val)
-            if consts is None:
-                return _hash_persistent(key)
-            return all(_hash_persistent(h) for h in consts)
-        return _hash_persistent(key)
+    _ships = _ships_predicate()
 
     out_sem = lmdb.open(os.path.join(outdir, "semantics.lmdb"),
                         map_size=SEMANTICS_MAP_SIZE)
