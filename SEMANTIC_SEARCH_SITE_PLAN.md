@@ -1270,7 +1270,12 @@ from.
       pair of its own. So `x⇩1` gives `x₁`, `x⇩⇩1` stays `x⇩⇩1`, and `x⇩⇩⇩1` gives
       `x⇩⇩₁` — the last marker folds because the first two paired off. That is a
       parity artefact of non-overlapping matching rather than a rule anyone designed,
-      and the user ruled on 2026-08-18 that it is too rare to be worth fixing. It is
+      and the user ruled on 2026-08-18 that it is too rare to be worth fixing — in his
+      words, **"我认为这不是一个问题，这个 bug 太罕见了"**, with the reason that
+      `x⇩⇩1` still round-trips losslessly through `ascii_of_unicode`. Quoted because a
+      simplification of this scan was proposed again on 2026-08-20 and had to be
+      turned away as already settled; the same proposal will look attractive to the
+      next reader too. It is
       still worth **specifying**: §5.5 requires the Python and the JavaScript to be
       byte-identical, and a port written from the sentence above alone would fold
       each marker separately and diverge. Measured on `cslh19` the same day: of
