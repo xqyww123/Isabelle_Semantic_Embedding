@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 import glob
 import hashlib
 import itertools
@@ -606,6 +607,18 @@ def check_theory_separator(*, region: str, key: str,
 BATCH_ROWS = 256
 BATCH_BYTES = 24 << 20
 
+# How many batches go up at once.  Measured against the live account on 2026-08-20
+# with the real payload size: one request at a time gave 16.6 documents a second and
+# four at a time gave 58.4, so the upload is bound by per-request latency rather than
+# by bandwidth, and a full corpus goes from most of a day to a few hours.
+#
+# A whole group is sent, and only then is the checkpoint advanced to the group's last
+# key.  That is what keeps a resumed run as correct as a serial one: batches inside a
+# group finish in any order, so no single one of them means "everything up to here
+# has landed", and a group that fails part way is simply re-sent whole — an upsert
+# being idempotent in its document ids.
+BATCH_WORKERS = 4
+
 
 def iter_documents(sessions, registry, get_vector, tokenize,
                    counts) -> 'Iterator[tuple[bytes, dict]]':
@@ -660,6 +673,18 @@ def _batches(documents, rows: int, size: int):
         yield batch, last
 
 
+def _groups(items, size: int):
+    """`items` in consecutive runs of at most `size`, order preserved."""
+    group = []
+    for item in items:
+        group.append(item)
+        if len(group) == size:
+            yield group
+            group = []
+    if group:
+        yield group
+
+
 def _read_checkpoint(path: str, base: str) -> 'tuple[str, bytes, int] | None':
     """The unfinished run's namespace, the last key it got confirmation for and how
     many documents it had upserted by then; None when there is nothing to resume.
@@ -707,7 +732,9 @@ def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
         _log("the theory separator survives a round trip (step 0b)")
 
     base = namespace_base(isabelle_home, afp_dir)
-    resumed = None if dump else _read_checkpoint(checkpoint, base)
+    # Against the override when there is one: that is the name this run will use, and
+    # checking a scratch run's checkpoint against the production base rejects it.
+    resumed = None if dump else _read_checkpoint(checkpoint, name_override or base)
     if resumed is not None:
         namespace, resume_after, done = resumed
     else:
@@ -753,13 +780,20 @@ def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
         else:
             schema = namespace_schema(dimension)
             started, at_start = time.monotonic(), done
-            for batch, last in _batches(documents, BATCH_ROWS, BATCH_BYTES):
+
+            def upsert(batch):
                 request("POST", f"/v2/namespaces/{namespace}",
                         {"distance_metric": "cosine_distance", "schema": schema,
                          "upsert_rows": batch}, region=region, key=key)
-                done += len(batch)
-                _write_checkpoint(checkpoint, namespace, last, done)
-                if done % (BATCH_ROWS * 40) == 0:
+
+            pool = stack.enter_context(
+                concurrent.futures.ThreadPoolExecutor(BATCH_WORKERS))
+            for group in _groups(_batches(documents, BATCH_ROWS, BATCH_BYTES),
+                                 BATCH_WORKERS):
+                list(pool.map(upsert, [b for b, _ in group]))
+                done += sum(len(b) for b, _ in group)
+                _write_checkpoint(checkpoint, namespace, group[-1][1], done)
+                if done % (BATCH_ROWS * BATCH_WORKERS * 10) == 0:
                     # A full corpus is tens of gigabytes over hours; a bare count says
                     # nothing about whether it is progressing or crawling.
                     elapsed = time.monotonic() - started

@@ -314,3 +314,18 @@ def test_no_key_is_read_from_anywhere_but_the_environment(monkeypatch):
     monkeypatch.delenv(se.API_KEY_ENV, raising=False)
     with pytest.raises(se.ExportError):
         se.api_key()
+
+
+def test_batches_go_up_in_consecutive_groups():
+    """A group is the unit the checkpoint advances by, so it must keep order and
+    lose nothing: a resumed run re-sends at most the group that failed."""
+    assert list(se._groups(range(7), 3)) == [[0, 1, 2], [3, 4, 5], [6]]
+    assert list(se._groups([], 3)) == []
+
+
+def test_a_group_checkpoints_on_its_last_batch_and_not_on_any_earlier_one():
+    """Batches inside a group finish in any order, so no single one of them means
+    'everything up to here has landed'."""
+    batches = list(se._batches(((bytes([i]), _doc(i)) for i in range(9)), 1, 1 << 30))
+    groups = list(se._groups(batches, 4))
+    assert [g[-1][1] for g in groups] == [bytes([3]), bytes([7]), bytes([8])]
