@@ -2930,12 +2930,18 @@ step 3  FREEZE THE TOKENIZER          <-- the live work; needs none of A, B, C
    done and needs the user's word.** It runs the Python tokenizer and emits the asset
    whose digest names the namespace (§8.2), which is why it came after step 3.
 
-   Two things stand between here and a first *production* namespace, and neither is
-   code. One is §8.2's open question about a name that does not move when the data
-   does. The other is `THEORY_HASH_REKEY_REINTERPRET_LIST.md`, which §3.1 requires be
-   read before the first export: its Group 1 still owes **3 entity records** over
-   three AFP theory pairs, and its Group 2's 13 theories are every one of them outside
-   D24's scope, so they cannot reach the published corpus whatever happens to them.
+   **What stands between here and a first *production* namespace is now one thing,
+   and it is not code: §8.2's open question about a name that does not move when the
+   data does.**
+
+   `THEORY_HASH_REKEY_REINTERPRET_LIST.md`, which §3.1 requires be read before the
+   first export, is settled as far as this plan is concerned. Its Group 1 still owes
+   **3 entity records** over three AFP theory pairs, so the first export publishes
+   that gap — **the user accepted it on 2026-08-20: "可以接受".** Its Group 2's 13
+   theories are every one of them outside D24's scope, and he ruled the same day that
+   they need not be published — "这些不用发" — which changes nothing about whether
+   they are restored to the database, a question that list owns and this plan does
+   not.
 5. Worker: search API, embedding cache, rate limits (§11.1). Blocked on 4.
 6. Front end: search page, then entity pages. Phase two (D32).
 
