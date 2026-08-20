@@ -70,6 +70,14 @@ test('an unknown tokenizer_rule is refused rather than read', () => {
                 /tokenizer_rule/);
 });
 
+test('unsorted code-point ranges are refused', () => {
+  // Membership is a parity test over the range boundaries, so unsorted or overlapping
+  // ranges do not raise on their own — they answer wrongly for every character.
+  const asset = read('asset.json');
+  assert.throws(() => new Tokenizer({ ...asset, letters: [[97, 98], [55, 55]] }),
+                /ascending/);
+});
+
 test('a token with very many separators does not blow the stack', () => {
   // `subtokens` once spread one argument per part into `push`, which V8 caps at about
   // 125,000. `_` is a quasi-letter, so `a_a_a…` is ONE token and `parts` is unbounded.

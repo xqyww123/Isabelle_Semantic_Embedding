@@ -42,6 +42,17 @@ class CodePointSet {
     for (const [lo, hi] of ranges) {
       this.bounds.push(lo, hi + 1);
     }
+    // `has` is a parity test over these boundaries, so it needs them non-decreasing —
+    // which is to say the ranges ascending and non-overlapping. An asset that breaks
+    // that does not fail here without this check: it answers wrongly for every
+    // character, silently. The asset is committed and hand-editable, and a
+    // hand-written one got it wrong the first time.
+    for (let i = 1; i < this.bounds.length; i += 1) {
+      if (this.bounds[i] < this.bounds[i - 1]) {
+        throw new Error('code-point ranges must be ascending and non-overlapping; got '
+                        + JSON.stringify(ranges.slice(0, 8)));
+      }
+    }
   }
 
   has(codePoint) {

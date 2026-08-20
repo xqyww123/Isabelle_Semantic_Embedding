@@ -219,6 +219,20 @@ def test_unknown_tokenizer_rule_is_refused(asset):
         Tokenizer(bad)
 
 
+def test_unsorted_code_point_ranges_are_refused(asset):
+    """The one way a hand-edited asset breaks both implementations in silence.
+
+    Membership is a parity test over the range boundaries, so unsorted or overlapping
+    ranges do not raise — they answer wrongly for every character. Found by writing
+    `toy_asset.json` with `[[97,98],[55,55]]`, after which `azb` came back as three
+    tokens and nothing complained.
+    """
+    bad = copy.deepcopy(asset)
+    bad['letters'] = [[97, 98], [55, 55]]
+    with pytest.raises(ValueError, match='ascending'):
+        Tokenizer(bad)
+
+
 def test_asset_class_sizes(asset):
     assert len(asset['separators']) == 99
     assert len(asset['rendered_subsup']) == 90

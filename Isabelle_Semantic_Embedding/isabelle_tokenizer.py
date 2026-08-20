@@ -35,10 +35,21 @@ class _CodePointSet:
     """Membership over the inclusive [lo, hi] pairs the asset ships."""
 
     def __init__(self, ranges):
+        ranges = list(ranges)
         self._bounds = []
         for lo, hi in ranges:
             self._bounds.append(lo)
             self._bounds.append(hi + 1)
+        # `__contains__` is a parity test over these boundaries, so it needs them
+        # non-decreasing — which is to say the ranges ascending and non-overlapping.
+        # An asset that breaks that does not fail here without this check: it answers
+        # wrongly for every character, silently. `tokenizer_asset` cannot produce such
+        # an asset, but the asset is committed and hand-editable, and a hand-written
+        # one got it wrong the first time — `aqb` came back as three tokens.
+        if any(b < a for a, b in zip(self._bounds, self._bounds[1:])):
+            raise ValueError(
+                'code-point ranges must be ascending and non-overlapping; got %r'
+                % (ranges[:8],))
 
     def __contains__(self, ch):
         return bisect.bisect_right(self._bounds, ord(ch)) % 2 == 1

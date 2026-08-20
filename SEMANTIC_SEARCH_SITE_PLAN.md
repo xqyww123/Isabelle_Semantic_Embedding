@@ -3473,6 +3473,13 @@ all and cannot tell which 90 of the 99 separators are rendered characters,
 characters), and **the ASCII-symbolic set** (`! # $ % & * + - / : < = > @ \ ^ | ~`).
 Neither implementation may consult a language built-in for any of these.
 
+**The three code-point range lists are ascending and non-overlapping, and both
+implementations refuse an asset where they are not.** Membership is a parity test over
+the range boundaries, so a list out of order does not fail — it answers wrongly for
+every character, in both languages, with no error anywhere. `tokenizer_asset` cannot
+emit such a list, but the asset is committed and hand-editable, and the first
+hand-written one got it wrong.
+
 **Emit the `tokenizer_rule` version too**, an integer identifying the rules of §5.1,
 §5.2 and §5.4 that produced this asset (D45 as amended 2026-08-19). It is the only
 field here that is not data: everything else describes characters, and this describes
