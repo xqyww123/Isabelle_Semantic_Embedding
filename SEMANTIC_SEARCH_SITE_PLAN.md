@@ -25,10 +25,13 @@ copies of the database were in sync, was false.
 **Implementation status.** The U+007F repair (D12, §10) is **done**: **zero of
 `cslh19`'s 1,343,793 entity records carry U+007F**, re-verified on the authority
 2026-08-19, and zero of this machine's 1,362,343 did on 2026-08-12. `ENTITY_POSITION_PLAN.md` is
-**done** and 1,092,855 records (80.2 %) carry an entity position — but that
-backfill finished *after* the Hugging Face snapshot was packaged, so those
-positions exist only on `cslh19`; this machine holds 8,306. **Prerequisite A of §12.2 —
-the key repair, D33 — is also done, 2026-08-18.** `site/COPY.md` and
+**done**, and so is getting its result everywhere: **1,327,426 of 1,343,793 records
+(98.8 %) carry an entity position on this machine**, measured 2026-08-20, the snapshot
+having been republished from `cslh19` on 2026-08-19 and again on 2026-08-20. The
+figure this document gave until then — 1,092,855 (80.2 %) on `cslh19` only, 8,306
+here — described the state before those republishes. **All three of §12.2's
+prerequisites are now done**: A the key repair (D33, 2026-08-18), B the theory-hash
+registry and C the positions in the published snapshot (both 2026-08-20). `site/COPY.md` and
 `site/design/IsaSearch.dc.html` exist and are authoritative for the interface copy;
 `site/prototype/` holds the measured tokenizer prototype, which is **pre-D43** and
 whose blast radius is stated in §16.1; and `site/review/` holds the evidence of the
@@ -352,9 +355,12 @@ reader of those sections needs to find the decision that used to govern them.
   nothing else — see §16.1 for what that means for anything the prototype measured.
 - **D42** (2026-08-14) — **every result card carries a source link**, not just
   the entity page (§9.4). It resolves through the entity position, whose coverage
-  is **80.2 %**, so roughly one card in five has no link and needs a defined
-  absent form — the link is not to be rendered dead or blank without a word.
-  Visible only once prerequisite C lands (§12.2).
+  is **98.8 %** as of 2026-08-20 — the 80.2 % this decision was taken under was a
+  `cslh19`-only figure from before the backfill finished and the snapshot was
+  republished. So roughly one card in eighty has no link, not one in five. **The
+  defined absent form is still required**, and the decision does not change: the link
+  is not to be rendered dead or blank without a word. Prerequisite C has landed
+  (§12.2), so it is visible now.
 
   **Only two kinds of position become a link, and the rest are the absent form.**
   `ENTITY_POSITION_PLAN.md`'s L1' stores a position under `$AFP` or `~~` — the two
@@ -877,10 +883,12 @@ runs. §16.2 gives the same figure.
   computed `Position.line_of` only to put it in the interpreting agent's prompt, and
   source text was obtained by asking a **live Isabelle** through
   `PIDE_State.command_at_position`. `ENTITY_POSITION_PLAN.md` fixed this and is done:
-  `position` is the 13th `Record` field and 1,092,855 records (80.2 %) carry one on
-  `cslh19`. The line computation has moved with it, to `Tools/entity_position.ML` and
-  `Tools/pide_state.ML`; `semantic_store.ML` no longer performs it. What is **not**
-  done is prerequisite C of §12.2 — those positions reaching the published snapshot.
+  `position` is the 13th `Record` field and 1,092,855 records (80.2 %) carried one on
+  `cslh19` when that was measured; re-measured on this machine 2026-08-20, after the
+  republishes, **1,327,426 of 1,343,793 (98.8 %)**. The line computation has moved with
+  it, to `Tools/entity_position.ML` and `Tools/pide_state.ML`; `semantic_store.ML` no
+  longer performs it. Prerequisite C of §12.2 — those positions reaching the published
+  snapshot — is **done**.
 - **No declaring theory for theorem-alike records.** Their key prefix is an XOR
   pseudo-theory. Matching the first segment of `name` against the constituent
   theories' base names resolves **85.3 %** uniquely, **0 %** ambiguously, and
@@ -2755,6 +2763,11 @@ Steps 1-5 are phase one and 6 is phase two (D32). Within phase one the order is
 not a preference — three prerequisites feed the export, and none of them is
 this plan's work.
 
+**As of 2026-08-20 all three are done, and nothing outside this plan blocks the
+export any more.** What remains is this plan's own work: writing the export (step 4)
+and the interface (§9). Each prerequisite below keeps its full statement, because the
+reason it was a prerequisite is what a reader needs when the export starts failing.
+
 **Prerequisite A — the key repair (D33). DONE, 2026-08-18.**
 `BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN` rebuilt the store under corrected keys, and
 `THEORY_HASH_REKEY_PLAN.md`'s migration ran with it, so a persistent theory's hash now
@@ -2772,13 +2785,27 @@ filter for the 199,044 name-addressed records (14.8 %), and **D24's scope test**
 which is exactly the declaring theory for those records — so the export cannot
 even decide what to publish.
 
-**Prerequisite C — the published snapshot carries the entity positions.** One
+**DONE, 2026-08-20.** `THEORY_HASH_REGISTRY_PLAN.md` §9 was executed end to end:
+`cslh19` migrated 10,594 persistent entries into `semantic_DB_dir()/theory_hash.lmdb`
+(910 WIP refused, 0 sentinel conflicts, idempotent on a re-run), republished the
+snapshot with the registry aboard, and this machine synced — its layered resolution
+went from 183 of 10,561 to **10,561 of 10,561**, closing that plan's §7.1 window.
+Verified here 2026-08-20: the registry holds 10,594 entries. The conda releases
+(`isabelle-rpc` 0.5.0, `isabelle-semantic-embedding`) are deliberately unpublished and
+are governed by that plan's release-order rule; they gate a *data* release, not this
+export, which runs from the working tree.
+
+**Prerequisite C — the published snapshot carries the entity positions. DONE.** One
 artefact, and the diagram below used to label it differently from this paragraph. The
-backfill is done on `cslh19` (80.2 %) but the Hugging Face snapshot was packaged
-before it finished, so this machine holds 8,306. The store half is therefore already
-in hand, including its dependency on A — positions are stored against keys, so they
-had to survive the rebuild, and they did. **What remains is the republish**, after
-which every machine that syncs gets the positions.
+paragraph this replaces said the backfill was done on `cslh19` (80.2 %) while the
+Hugging Face snapshot predated it, so this machine held 8,306, and that what remained
+was the republish. The republish has happened twice since — 2026-08-19 after the
+dynamic-member renaming migration, and 2026-08-20 with the theory-hash registry aboard
+(`data/manifest.json`) — and this machine, which syncs from it, now carries a position
+on **1,327,426 of its 1,343,793 records (98.8 %)**, measured 2026-08-20. So the
+backfill also went well past the 80.2 % this document records; §9.4's "roughly one card
+in five has no link" is now roughly one in eighty, and the defined behaviour for a card
+with no link is still needed, just rarer.
 
 ```
 step 3  FREEZE THE TOKENIZER          <-- the live work; needs none of A, B, C
@@ -2787,14 +2814,14 @@ step 3  FREEZE THE TOKENIZER          <-- the live work; needs none of A, B, C
    |
    |    A  key repair                              DONE 2026-08-18
    |          |
-   |          +-- B  theory-hash registry published        outstanding
+   |          +-- B  theory-hash registry published        DONE 2026-08-20
    |          |        the Theory Name filter for the 199,044 name-addressed
    |          |        records, AND D24's scope test for them — so without B the
    |          |        export cannot even decide what to publish
    |          |
-   |          +-- C  positions in the published snapshot   outstanding
+   |          +-- C  positions in the published snapshot   DONE 2026-08-20
    |                   |
-   |                   +--> snapshot republished from cslh19
+   |                   +--> snapshot republished from cslh19  DONE 2026-08-19 and -20
    |                                |
    +--------------------------------+--> step 4  site export, one full namespace
                                              |     (runs the Python tokenizer and
@@ -3267,11 +3294,13 @@ the digest that tells them apart.)
 
 Do these in order. Each step is finished when its test passes, not before.
 
-**Where this stands, 2026-08-19: steps 1, 3, 4, 5 and 6 are done and step 2 is
-blocked on something that is not the tokenizer's.** Everything step 2 can be
-accepted on without an export already holds and is tested; what is missing is an
-export to emit the asset *from*, and there is no export code in this repository yet
-because §12.2's prerequisites B and C are outstanding and are the user's.
+**Where this stands, 2026-08-20: steps 1, 3, 4, 5 and 6 are done, and step 2 waits
+only on the export existing.** Everything step 2 can be accepted on without an export
+already holds and is tested; what is missing is an export to emit the asset *from*.
+§12.2's prerequisites A, B and C are **all done** as of 2026-08-20, so writing that
+export is now unblocked work rather than a wait. The apparatus around steps 1 and 3
+to 5 was rebuilt on 2026-08-20 after an adversarial review — §16.5 and §16.6 say
+what it is now and what the previous shape failed to enforce.
 
 1. **`Isabelle_Semantic_Embedding/isabelle_tokenizer.py`** — the production
    Python implementation, lifted from `site/prototype/` and changed in **two**
@@ -3374,19 +3403,19 @@ because §12.2's prerequisites B and C are outstanding and are the user's.
    rather than read** (§5.5). Test the refusal by hand-editing the version in a copy —
    it is the one behaviour no other test exercises.
 
-   **Blocked, and only on the export.** `Isabelle_Semantic_Embedding/tokenizer_asset.py`
+   **Waiting only on the export existing.** `Isabelle_Semantic_Embedding/tokenizer_asset.py`
    builds the asset and every one of the four conditions above is met and tested:
    `test_isabelle_tokenizer.py` loads the tokenizer module by path with
    `Isabelle_RPC_Host` and `Isabelle_Semantic_Embedding` blocked from the import system
    and `ISABELLE_HOME` removed from the environment, and it edits the version in a copy
    of the asset and asserts the refusal — the JavaScript side does the same in
    `site/tokenizer/test_tokenizer.mjs`. What is left is wiring the emission into an
-   export that does not exist: §12.2's prerequisite B (the theory-hash registry
-   published) and C (entity positions in the published snapshot) are outstanding and
-   are the user's. Meanwhile `site/tokenizer/asset.json` is the committed asset, and
-   `test_isabelle_tokenizer.py` checks it is still what the live symbol table
-   produces — which is the question the export will answer automatically once it
-   emits the asset itself.
+   export that does not exist. That is no longer a wait: §12.2's prerequisites B (the
+   theory-hash registry published) and C (entity positions in the published snapshot)
+   both landed on 2026-08-20, so the export is writable now. Meanwhile
+   `site/tokenizer/asset.json` is the committed asset, and `test_isabelle_tokenizer.py`
+   checks it is still what the live symbol table produces — which is the question the
+   export will answer automatically once it emits the asset itself.
 
 3. **`site/tokenizer/`** — the JavaScript port, reading the same asset.
    *Accepted when* it passes the shared test-vector file (§16.5) with zero
