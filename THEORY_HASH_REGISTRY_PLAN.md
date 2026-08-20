@@ -359,9 +359,23 @@ last item is now this plan's one prerequisite.
 - **2026-08-18** — `ENTITY_POSITION_PLAN.md` and the key repair
   (`BUG_UNIVERSAL_KEY_SHORT_NAME_FIX_PLAN.md`) completed on `cslh19`
   (`SEMANTIC_SEARCH_SITE_PLAN.md` §12.2, prerequisite A).
-- **Still outstanding: the republish.** The Hugging Face snapshot was last
-  uploaded 2026-08-11 (`data/manifest.json`), so it **predates the re-key**:
-  its keys are the old scheme's. Until `cslh19` publishes, no machine may sync
+- **2026-08-20: §9 executed end to end (steps 1–4).** Steps 1–3 landed as five
+  commits (Isabelle_RPC `327ca4c`+`74bedfa`, VERSION 0.5.0 unpublished;
+  Semantic_Embedding `9ea512c`+`e4164f1`+`0dea5e5`, floors raised), then an
+  adversarial review round (`1be3901`: `is_tombstone` reuse, `_raw_for_update`
+  dropped — see §14.4, two comments trued). §14.7 ran on `cslh19`: 10,594
+  persistent entries merged into `semantic_DB_dir()/theory_hash.lmdb`, 910 WIP
+  refused, 0 sentinel conflicts, idempotence re-plan 0 writes, undo kept at
+  `~/theory_hash_migration_undo_20260820.pkl`. `cslh19` re-published the
+  snapshot with the registry aboard (size 9 232 491 670; HF deduplicated all
+  but ~923 kB — the registry itself), and this machine synced: its layered
+  resolution went 183/10,561 → **10,561/10,561**, closing §7.1's window. The
+  conda releases (isabelle-rpc 0.5.0, isabelle-semantic-embedding) remain
+  unpublished by user decision; §9's release-order rule governs them.
+- The entry below is what this bullet replaced; kept because §3.3/§7.1 cite the
+  state it describes. **Superseded 2026-08-20.** The Hugging Face snapshot was
+  last uploaded 2026-08-11 (`data/manifest.json`), so it **predated the re-key**:
+  its keys were the old scheme's. Until `cslh19` published, no machine could sync
   from it — the extraction would regress the receiver to keys the current code
   never computes.
 
