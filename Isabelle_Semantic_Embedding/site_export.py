@@ -196,6 +196,7 @@ def namespace_schema(dimension: int) -> dict:
         "theories": {"type": "[]string", "filterable": False},
         "kind": {"type": "string", "filterable": True},
         "position": {"type": "string", "filterable": False},
+        "source_link": {"type": "string", "filterable": False},
         "from_collection": {"type": "string", "filterable": False},
         # filtering — one declaration for all three, which is D23: the `All` panel
         # Ors one typed string across them, so a field that tokenised differently
@@ -212,18 +213,24 @@ def namespace_schema(dimension: int) -> dict:
 
 
 def build_document(key: bytes, rec, theories: 'list[str]', vector: np.ndarray,
-                   tokenize) -> dict:
+                   tokenize, source_links: 'dict[str, str]') -> dict:
     """§8.1 steps 2 to 5 for one record.
 
     `name_subtokens` comes from the raw `name` and never from the displayed form: a
     member of a dynamic fact collection is displayed as `<from_collection>(_)`, but
     the Worker emits one filter for the whole namespace and cannot route a member row
     to a different field, so a pasted `coll(_)` matches nothing — intended, and ruled
-    on 2026-08-19 (§8.1 step 5)."""
+    on 2026-08-19 (§8.1 step 5).
+
+    `source_links` is the resolved-links half of §17's artefact, keyed by document
+    id: the finished href the card will emit, empty (or absent, same thing) meaning
+    D42's absent form.  Resolution happened once, at map time (D49 ruling 2) — this
+    function only looks the row up."""
     name = rec.name or ""
     expr = rec.expr or ""
+    doc_id = document_id(key)
     return {
-        "id": document_id(key),
+        "id": doc_id,
         "group": group_of(name, expr),
         "vector": base64.b64encode(
             vector.astype("<f4", copy=False).tobytes()).decode("ascii"),
@@ -233,6 +240,7 @@ def build_document(key: bytes, rec, theories: 'list[str]', vector: np.ndarray,
         "theories": theories,
         "kind": rec.kind.label,
         "position": (f"{rec.position[0]}:{rec.position[1]}" if rec.position else ""),
+        "source_link": source_links.get(doc_id, ""),
         "from_collection": rec.from_collection or "",
         "expr_subtokens": tokenize(expr),
         "name_subtokens": tokenize(name),
@@ -620,9 +628,13 @@ BATCH_BYTES = 24 << 20
 BATCH_WORKERS = 4
 
 
-def iter_documents(sessions, registry, get_vector, tokenize,
-                   counts) -> 'Iterator[tuple[bytes, dict]]':
-    """§8.1 steps 0 and 2 to 5, one record at a time, in key order.
+def iter_shippable(sessions, registry, counts) -> 'Iterator[tuple[bytes, object, list[str]]]':
+    """§8.1 step 0's membership, one record at a time, in key order: exactly the
+    records the export publishes, before vectors enter the picture.
+
+    Split out of `iter_documents` because §17.1's corpus scan needs the same set —
+    the filters run in one place so the scan and the export can never disagree
+    about which records are published.
 
     Key order matters twice: it is what makes a re-run resumable from a checkpoint,
     and it is what makes two runs over the same store produce the same sequence."""
@@ -651,12 +663,19 @@ def iter_documents(sessions, registry, get_vector, tokenize,
         if not all(session_of(t) in sessions for t in theories):
             counts["out of scope"] += 1
             continue
+        yield key, rec, theories
+
+
+def iter_documents(sessions, registry, get_vector, tokenize, counts,
+                   source_links: 'dict[str, str]') -> 'Iterator[tuple[bytes, dict]]':
+    """§8.1 steps 0 and 2 to 5, one record at a time, in key order."""
+    for key, rec, theories in iter_shippable(sessions, registry, counts):
         vector = get_vector(key)
         if vector is None:
             raise ExportError(f"{rec.name!r} lost its vector between the "
                               f"completeness gate and the export")
         counts["exported"] += 1
-        yield key, build_document(key, rec, theories, vector, tokenize)
+        yield key, build_document(key, rec, theories, vector, tokenize, source_links)
 
 
 def _batches(documents, rows: int, size: int):
@@ -717,7 +736,8 @@ def _write_checkpoint(path: str, namespace: str, last: bytes, done: int) -> None
 def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
         vector_store: 'str | None', region: str, dump: 'str | None',
         checkpoint: str, limit: 'int | None', change_intended: bool,
-        skip_gate: bool, name_override: 'str | None' = None) -> str:
+        skip_gate: bool, name_override: 'str | None' = None,
+        source_links_path: 'str | None' = None) -> str:
     """§8.1 end to end.  Returns the namespace that was written."""
     import contextlib
     from . import isabelle_tokenizer
@@ -753,6 +773,15 @@ def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
     registry = theory_registry()
     _log(f"{len(registry)} theory-hash registry entr(ies)")
 
+    if source_links_path:
+        from .site_source_pages import load_artefact
+        source_links = load_artefact(source_links_path)["links"]
+        _log(f"{len(source_links)} source link(s) from {source_links_path}")
+    else:
+        source_links = {}
+        _log("no --source-links: every source_link will be empty — D42's absent "
+             "form on every card (§17.6 wants the artefact here)")
+
     path = vector_store_path(vector_store)
     with contextlib.ExitStack() as stack:
         get_vector, dimension = vector_reader(stack, path)
@@ -766,7 +795,8 @@ def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
         counts: 'dict[str, int]' = dict.fromkeys(
             ("records", "undecodable", "wip", "experience", "out of scope",
              "exported"), 0)
-        documents = iter_documents(sessions, registry, get_vector, tokenize, counts)
+        documents = iter_documents(sessions, registry, get_vector, tokenize, counts,
+                                   source_links)
         if resume_after is not None:
             documents = ((k, d) for k, d in documents if k > resume_after)
         if limit:
@@ -838,6 +868,9 @@ def build_parser(**kw) -> argparse.ArgumentParser:
     p.add_argument("--committed-asset", default=committed_asset_path(),
                    help="the previous export's asset, which D46 compares against")
     p.add_argument("--vector-store", help="the vector store to publish from")
+    p.add_argument("--source-links", metavar="ARTEFACT",
+                   help="§17's artefact, whose resolved links fill each row's "
+                        "source_link; without it every source_link is empty")
     p.add_argument("--region", default=DEFAULT_REGION)
     p.add_argument("--namespace", help="write into this namespace instead of the "
                                        "next free generation; for a live smoke test")
@@ -868,7 +901,8 @@ def run_from_args(args: argparse.Namespace) -> int:
             region=args.region, dump=args.dump,
             checkpoint=args.checkpoint,
             limit=args.limit, change_intended=args.asset_change_intended,
-            skip_gate=args.skip_completeness_gate, name_override=args.namespace)
+            skip_gate=args.skip_completeness_gate, name_override=args.namespace,
+            source_links_path=args.source_links)
     except ExportError as e:
         print(f"[site-export] {e}", file=sys.stderr)
         return 1
