@@ -4037,20 +4037,48 @@ the deletion quota?*
   it; §8.1's step 0b records the probe, which the export now re-runs on every run
   rather than trusting the one measurement. It was listed here as a question and
   nowhere as a step, so nothing owned it — that is what making it step 0b fixed.
-- **What number does the RRF fusion return per row?** One `multi_query` against a
-  live namespace settles it. D40 already fixes what is *displayed* — the vector
-  leg's cosine similarity — so this affects plumbing only.
-- **Does the f16 conversion change the ranking?** D31 says its reasoning is
-  analysis rather than measurement, and that converting the real stored vectors
-  and measuring the ranking change should happen before the export publishes.
-- **Does the approximate-nearest-neighbour search still return the best members of a
-  narrow filtered set?** §6.6 makes "filter first, then rank within the mask" the
-  guarantee the user accepted the design on, and every filter figure in §3.6 was
-  taken with a constant 8-dimension vector, so the interaction of a highly selective
-  filter with a real 4,096-dimension index has never been observed. Run one condition
-  matching a few hundred documents against the real index before launch and record how
-  many come back. Unlike the other entries here, a bad answer is a design problem and
-  not a plumbing detail.
+- ~~**What number does the RRF fusion return per row?**~~ **Measured 2026-08-21
+  against the live namespace.** With `rerank_by: ["RRF"]` each fused row carries
+  exactly one number, in `$dist`, and it is the RRF score itself
+  (`Σ weight/(rank_constant + rank)`, `rank_constant` defaulting to 60 — verified
+  arithmetically with three parameter combinations). **The per-leg scores are
+  dropped**: the vector leg's cosine distance is not recoverable from the
+  server-fused response, and no field says which leg matched a row. The same
+  multi-query *without* `rerank_by` returns the legs separately, each row with
+  its own leg's `$dist` (the vector leg's being the cosine distance D40
+  displays). So server-side fusion and D40's display cannot share one round
+  trip; fusing client-side over the unfused legs gets both in one. **Which side
+  fuses — and whether D40's displayed number survives — is before the user**
+  (options tabled 2026-08-21); this bullet only records what the API does.
+  Engineering notes that must not be relearned: the fused row cap is root-level
+  `limit` (root-level `top_k` is *silently ignored*); a BM25 leg's `$dist` is a
+  relevance (higher is better, returned descending); at most 16 legs per
+  request, executed with snapshot isolation.
+- ~~**Does the f16 conversion change the ranking?**~~ **Measured 2026-08-21,
+  end to end on the real published vectors: no.** 20 query vectors (15 spread
+  across the id space, 5 topic-picked via BM25), each compared live-top-100
+  against exact f32 cosine over the same candidates: top-10 identical and
+  top-1 identical on all 20 queries; 2 adjacent swaps in 99,000 ranked pairs,
+  both at exact-distance gaps below 2e-6 (ties for any practical purpose);
+  displayed `$dist` differs from exact f32 cosine by at most 9.78e-6 — f16
+  mantissa quantisation, two orders below display precision. D31's analysis
+  holds. (Scope: drift *within* the served candidates; recall is the previous
+  bullet's measurement.)
+- ~~**Does the approximate-nearest-neighbour search still return the best members of a
+  narrow filtered set?**~~ **Measured 2026-08-21 against the real index: yes,
+  perfectly.** The two narrowest `kind` values — `proof method` (832 rows) and
+  `named theorem bundles` (951 rows), selectivity ~0.06% of 1,337,025 — were
+  each queried with three semantically unrelated real query vectors at top_k 20
+  and 100 (12 measurements): every one returned the full requested top_k with
+  recall 1.000 and an ordering byte-identical to exact cosine over the whole
+  filtered set, which is the behaviour of exhaustive scoring inside a mask this
+  small. §6.6's guarantee holds; the design problem this bullet feared does not
+  exist. Side yield, exact via the aggregate endpoint
+  (`{"aggregate_by": {"n": ["Count","id"]}}` works): the corpus has exactly 11
+  `kind` values — lemma 1,031,439; constant 176,008; introduction rule 58,947;
+  elimination rule 28,311; case-split rule 10,193; locale 9,928; type 9,420;
+  induction rule 9,091; typeclass 1,905; named theorem bundles 951; proof
+  method 832 — summing to the namespace's row count with nothing left over.
 - ~~**What are the two source-link URL templates?**~~ **Settled 2026-08-20 by
   D47: there is one template, not two, and it points at pages we render and host
   ourselves.** The investigation this bullet asked for was run first and is what
