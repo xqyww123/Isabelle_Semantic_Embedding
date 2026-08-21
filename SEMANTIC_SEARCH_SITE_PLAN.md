@@ -267,6 +267,49 @@ reader of those sections needs to find the decision that used to govern them.
   (§11.1's rate limiting included). §9 stays in this document as the agreed
   design but is **not** to be built yet, and the questions it raises need no
   answer to unblock anything.
+- **D49** (2026-08-21) — **the six rulings of §17's adversarial review round.**
+  §17's first draft went through a 2-turn adversarial debate (two independent
+  reviewers, correctness and elegance lenses, every claim measured against the
+  real rendered tree and the real corpus; low-quality and refuted findings
+  discarded in the second turn). The surviving findings and the review's
+  reconciled numbers live in §17 itself; the user ruled on the six proposals
+  the round produced, all six adopted:
+
+  1. **The URL is flat**: `/source/<theory long name>.html#L<line>` — no
+     session directory level. Basis: all 10,597 theory-page stems are distinct
+     tree-wide, and 17 registry long names have no session component at all, so
+     the session slot had no value for them.
+  2. **Resolution happens once, at export time, and each row carries its
+     finished source link** (a `source_link` string attribute: the complete
+     href, `#L<line>` included, empty string meaning D42's absent form). This
+     retires D47's Worker-side basename matching, whose real link coverage the
+     review measured at **86.58 % (169,847 records unresolvable)** against the
+     98.8 % D42 advertises — D42's figure is the coverage of *positions*,
+     which the retired rule could not turn into links for 12.70 % of records.
+     Under this ruling coverage becomes 99.28 %, and the link-check gate
+     compares the literal strings the site will emit.
+  3. **The live namespace gets the column by patch, not re-export.**
+     turbopuffer's `patch_rows` writes only the named keys, leaves vectors
+     untouched, may introduce a new attribute (null on untouched rows — but
+     every row is patched), and bills by patched size: ~100 MB of attribute
+     data instead of a 29 GB re-export.
+  4. **The inventory rule is declared-classes plus proof-by-reference**: a
+     short declared list of what is published; anything *referenced* by a
+     published page but absent is a hard error the gate proves against
+     reality; anything present but unreferenced is dropped and counted. This
+     replaces §17's original "anything else → hard error", which the review
+     showed refuses 398 real files on its first run.
+  5. **The renderer's 34 index pages are dropped and we generate our own**:
+     one `/source/index.html` listing every published theory page, grouped by
+     session, built from the same file→page map the pass already holds.
+     Side effect the review liked: the generated index references every
+     theory page, so ruling 4's gate clause becomes a full existence check
+     for free.
+  6. **Auxiliary pages deduplicate by id-union merge**: one page per symbolic
+     path; the 12 content-conflicting copies (differing only in entity-anchor
+     ids, byte-identical otherwise) merge their id sets, so none of the
+     266,134 fragment references into auxiliary pages breaks; the gate stops
+     trusting any fragment and checks them all.
 - **D48** (2026-08-21) — **fusion is server-side, and no relevance number is
   displayed anywhere.** §16.8's measurement showed turbopuffer's `rerank_by:
   ["RRF"]` drops the per-leg scores, so the vector leg's cosine similarity that
@@ -315,11 +358,15 @@ reader of those sections needs to find the decision that used to govern them.
   ourselves, the AFP/distribution split disappears; session names are globally
   unique, so a single template serves every linkable position:
 
-  > `https://<site>/source/<session>/<Theory>.html#L<line>`
+  > ~~`https://<site>/source/<session>/<Theory>.html#L<line>`~~ — **superseded
+  > by D49 (2026-08-21)**: the URL is flat (`/source/<theory long
+  > name>.html#L<line>`) and no Worker-side resolution exists any more; each
+  > row carries its finished source link. §17 is the authority on the pass.
 
-  The session is resolved Worker-side by matching the position's file basename
-  against the row's `theories` array (session-qualified long names); if no
-  constituent matches, the card shows D42's absent form. D42's rule — a link iff
+  ~~The session is resolved Worker-side by matching the position's file basename
+  against the row's `theories` array (session-qualified long names)~~ (retired
+  by D49 — the review measured this rule's real link coverage at 86.58 %); if
+  the row's source link is empty, the card shows D42's absent form. D42's rule — a link iff
   the position starts with `$AFP/` or `~~/`, absolute paths never shown — is
   unchanged; only the link's target moved. `<line>` is the position's own line
   number, and its jump target is an `id="L<line>"` mark that the upload-time
@@ -2266,11 +2313,14 @@ exactly, with nothing dropped by D24's scope test, nothing undecodable and nothi
 missing a vector. `test_site_export.py` holds the 34 cases that need neither the
 store, nor the installation, nor the network.
 
-**Step 7 has been exercised but not run at full size.** 200 documents went into a
-throwaway namespace on 2026-08-20 and every query form of §6.3 was checked against
-them; the namespace was then deleted. What is left is the full-corpus upsert — about
-29 GB into a live namespace, ~$22 to ~$45 of write charges — which nobody has asked
-for yet.
+**Step 7 ran at full size on 2026-08-20** (user-commanded): 1,337,025 documents
+into `isasearch-2025-2-afp-2026-05-13` in 3 h 36 m at ~103 documents/s, two
+transient TLS resets absorbed by the retry logic, one 37-minute suspension
+survived mid-run, and the namespace's own metadata confirms the row count
+digit-for-digit. (An earlier 200-document rehearsal namespace had validated
+every query form of §6.3 and was deleted.) D49's source-link column is added to
+these rows by patch — §17.6 — and rides inside every later export from the
+start.
 
 0. **Scope.** Keep only entities every one of whose theories has a session
    prefix in the declared-session set of AFP plus the distribution (D24) — the
@@ -4154,150 +4204,176 @@ with it as expected: `Isabelle_Semantic_Embedding/site_export.py`, reached as
 `isabelle-semantics site-export`. §8.1 says step by step what it does and what each
 gate measured; §12.2's step 4 says what stands between it and a production namespace.
 
-So what remains is **two decisions and then §9's interface**. The decisions are the
-user's, not an implementer's: §8.2's namespace name does not move when the corpus
-does, and the first production run costs a live namespace and real money, so nobody
-should start one without being asked. Everything up to that upsert has been run.
+Both of those decisions have since been taken and executed: the namespace name
+was settled as a base plus a generation (§8.2, 2026-08-20), and **the first
+production export ran on 2026-08-20** — 1,337,025 documents live in
+`isasearch-2025-2-afp-2026-05-13`, verified against the namespace's metadata.
+What remains as of 2026-08-21 is §17's implementation (the source-page upload
+pass and the source-link patch) and then §9's interface with §12.2's step-5
+Worker.
 
-## 17. The source-page upload pass — design (2026-08-21, awaiting review)
+## 17. The source-page upload pass — design, as ruled by D49 (2026-08-21)
 
-This section is the design D47 promised: the one transformation that takes the
-rendered tree to the published tree, and the link-check gate that refuses to
-let a bad transformation ship. Terms used throughout: **the rendered tree** is
-`~/.isabelle/Isabelle2025-2/browser_info/` on cslh19 exactly as `isabelle build
--n -o browser_info` left it (read-only input, never modified); **the published
-tree** is the fresh output directory whose contents go to the host verbatim;
-**the needed-lines table** is the JSON file naming, for every theory, the
-source lines that some exported record's position points at.
+This section is the authority on the one transformation that takes the rendered
+tree to the published tree, on the source-link column that D49's ruling 2 adds
+to every row, and on the link-check gate that refuses to let either ship
+broken. Its first draft went through the adversarial review D49 records; every
+figure below was measured against the real rendered tree and the real corpus
+during that round.
 
-### 17.1 Inputs, and where each lives
+Terms: **the rendered tree** is `~/.isabelle/Isabelle2025-2/browser_info/` on
+cslh19 exactly as `isabelle build -n -o browser_info` left it — read-only
+input, never modified. **The published tree** is the fresh output directory
+whose contents go to the host verbatim; the pass creates it, writes it
+completely, and atomically renames it into place — it never deletes or writes
+into a directory it was handed, so a partially transformed tree is
+unrepresentable, which is the entire idempotence story. **The file→page map**
+is the pass's central artefact: for every source file some position names, the
+published page that renders it. **The needed-lines table** is keyed by the
+position file — not by theory: 85 % of positioned records have no declaring
+theory at all (D13), 25 theories span up to 6 files, and 2 files carry records
+of several theories, so the file is the only key that fits both directions.
 
-1. **The rendered tree** (cslh19, 5.1 GB, 11,762 theory pages). Layout
-   `<chapter>/<session>/…`: real ancestor sessions under their chapters
-   (`HOL/HOL/`, `HOL/HOL-Library/`, `Pure/Pure/`), the 27 umbrella sessions
-   under `Unsorted/`. Top level also holds `isabelle.css`, `isabelle.gif`,
-   `fonts/`, and `index.html`.
-2. **The theory-hash registry** (this workstation, inside the corpus): the
-   authoritative set of theory long names (10,594). The pass never parses a
-   session out of a filename when the registry can answer instead.
-3. **The needed-lines table** (built on this workstation, a few MB, shipped to
-   cslh19): `{"<theory long name>": {"file": "<position file>", "lines":
-   [sorted ints]}}`, produced by one scan of the corpus — the same scan
-   collects the per-record accounting the link-check gate needs (how many
-   records have a linkable position at all; D42's 98.8%). One new subcommand
-   produces it; the injector and the gate share this single input, which is
-   the sharing D47 already promised.
+### 17.1 Inputs, and the one machine that builds the mapping
 
-The pass itself is repo code (`Isabelle_Semantic_Embedding/`, beside
-`site_export.py`), executed on cslh19 through the checkout there: the small
-table travels to the big tree, not the reverse.
+1. **The rendered tree** (cslh19, 5.1 GB): 10,597 theory pages + 1,165
+   auxiliary pages + 34 renderer index pages + 398 non-HTML files (335
+   per-directory `isabelle.css` copies in 9 variants, 30 `session_graph.pdf`,
+   34 `.browser_info/` bookkeeping files, 13 font files, `isabelle.gif`).
+2. **The registry — cslh19's copy only** (§7.3's authority, 10,594 names).
+   The workstation's copy holds 38 extra names, all private project theories
+   (`Phi_System.*`, `Minilang.*`, `Isabelle_RPC.*`, …); it must never feed a
+   public mapping, both for reproducibility and for D42's
+   keep-private-things-private spirit.
+3. **The corpus scan** (this workstation, where the store lives): produces the
+   needed-lines table — `{"<position file as stored>": [sorted lines]}`,
+   9,810 files, 486,346 (file, line) pairs — and the per-record position list
+   the resolver and the gate consume.
 
-### 17.2 The path mapping (rendered tree → published tree)
+The map is built on cslh19; the scan's output travels there; map, table and
+resolved links ship onward as **one versioned artefact whose content hash the
+gate re-checks**, so no component ever reads "whichever registry or table this
+machine happens to have".
 
-Every published page lives at `/source/<session>/<Theory>.html`, which is what
-D47's URL template addresses. The mapping:
+### 17.2 The published layout
 
-- **A page under a real session's chapter dir** (`HOL/HOL-Library/Multiset.html`):
-  the path already names the session — long name `HOL-Library.Multiset`,
-  published at `/source/HOL-Library/Multiset.html`.
-- **A page in an umbrella dir with a qualified filename**
-  (`Unsorted/AFP-DEP1-16/Complex_Bounded_Operators.Complex_Vector_Spaces0.html`):
-  the stem must exact-match a registry long name; split there into session and
-  theory. No dot-parsing heuristics: the registry lookup IS the split.
-- **A page in an umbrella dir with an unqualified filename** (`FOL.html`,
-  `IFOL.html`, `ZF.html` — the dynamically loaded base logics): candidates are
-  the registry entries whose theory base name equals the stem. Exactly one
-  candidate → resolved. Zero or several → **hard error naming the file and the
-  candidates**; no guessing.
-- **Auxiliary files** (each theory's ML sources and other loaded files,
-  rendered as pages of their own): they appear under their origin session dir
-  as deep relative paths (`HOL/HOL/ISABELLE_HOME/src/HOL/Tools/…ML.html`,
-  `Unsorted/AFP-DEP1-0/AFP/ML_Unification/…`). Published at
-  `/source/_aux/<their full rendered-tree path>` — one copy per origin, no
-  dedup, so no collision is possible by construction. (Dedup across origins is
-  a possible later optimisation, not part of this pass.) Auxiliary pages
-  matter: `proof method` records' positions can point into `.ML` files, and
-  `~~/`-rooted ML paths satisfy D42's link rule, so these pages are link
-  targets, get href rewriting, and get line marks like any theory page.
-- **Shared assets**: `isabelle.css`, `isabelle.gif`, `fonts/` → directly under
-  `/source/`. Pages reference them relatively; the rewrite handles the rest.
-- **Index pages**: session and chapter `index.html` files navigate a layout
-  that no longer exists. The pass drops them. If measurement during
-  implementation shows theory pages link to their session index, the
-  per-session `index.html` is kept and rewritten instead — the gate decides:
-  a dropped page that something still references is a gate failure, not a
-  judgement call.
-- **Anything else** in the rendered tree → hard error. The mapping is total or
-  the pass refuses.
+- **Theory pages, flat** (D49 ruling 1): `/source/<theory long name>.html`.
+  All 10,597 stems are distinct tree-wide; 17 long names have no session
+  component and are ordinary pages here.
+- **Auxiliary pages**: `/source/_aux/AFP/<rest>.html` for `$AFP/<rest>`
+  positions, `/source/_aux/ISABELLE_HOME/<rest>.html` for `~~/<rest>` — a pure
+  function of the symbolic position, computable with zero lookup, verified
+  exact on all 26 `.ML` files that carry needed lines. **One page per symbolic
+  path** (D49 ruling 6): the 1,466 rendered copies collapse to 1,399 paths;
+  the 12 paths whose copies conflict — only in entity-anchor ids,
+  byte-identical otherwise — publish the id-union merge, so all 266,134
+  fragment references into auxiliary pages keep landing.
+- **Assets, generated not copied**: exactly one `/source/isabelle.css` whose
+  `@font-face` URLs are absolute (`/source/fonts/…`), plus `fonts/`. The 335
+  rendered CSS copies and `isabelle.gif` (referenced by nothing) are dropped.
+- **Our index** (D49 ruling 5): one generated `/source/index.html`, every
+  published theory long name as a link, grouped by session, alphabetical,
+  styled by the same CSS. The renderer's 34 index pages and the 30
+  `session_graph.pdf` only they reference are dropped; the published tree's
+  only other entry points are result cards and cross-references.
+- **Everything else** (D49 ruling 4): the declared published classes are the
+  five above; anything a published page references that is absent is a hard
+  error the gate proves; anything present but unreferenced is dropped and
+  counted in the report. No hand-written inventory to go stale.
 
-Two pages mapping to one published path is a hard error (collision), as is a
-page whose stem matches nothing.
+### 17.3 The file→page map and the resolver
 
-### 17.3 The three transforms, one walk
+For auxiliary files the map is the path function above. For `.thy` files, in
+order:
 
-The pass reads each rendered page once and writes its published form; the
-rendered tree is never touched. Rerunning the pass means deleting the
-published tree and regenerating it — there is no in-place mode, which is the
-whole idempotence story. A page that already carries `id="L` marks is a hard
-error: the input must be pristine.
+1. **Exact, no heuristic**: if any name-addressed record positioned in the
+   file names its declaring theory (the key's theory hash, looked up in the
+   registry), the file maps to that theory's page. Covers 8,672 of 9,784
+   distinct `.thy` position files; measured never to contradict the filename
+   outside the two known multi-theory files.
+2. **Stem lookup**: registry names matching the file stem, an exact
+   whole-name hit beating base-name candidates (this resolves the three
+   bare/qualified twins — `HOLCF` vs `HOLCF.HOLCF` and kin); when two pages
+   render the same file, the session-qualified page wins.
+3. **Residue**: the handful of files neither step resolves (measured ~5
+   files, ~185 records, 33 needed lines) get no link — the rows' source links
+   are empty, the gate reports the count, D42's absent form covers the cards.
 
-1. **Relocate** — the §17.2 mapping names the output path.
-2. **Rewrite links** — every `href` and `src` in the page: split off the
-   fragment; resolve the relative reference against the page's rendered-tree
-   location into a rendered-tree absolute path; map that through §17.2; emit
-   the published absolute path (rooted at `/source/`); re-attach the fragment
-   unchanged. Fragments are preserved because the renderer's own entity
-   anchors (`…|fact` and kin) keep serving the pages' internal
-   cross-references — the pass keeps every existing `id` intact; D47's L-marks
-   are additions, not replacements. External (`http…`) references pass
-   through untouched. A reference whose target the mapping cannot name is a
-   **hard error naming the page and the reference** — never silently kept,
-   never silently dropped.
-3. **Inject the line marks** — if the page's theory appears in the
-   needed-lines table: scan the serialized page with a state machine that
-   tracks whether the cursor is inside a tag, counting newline characters in
-   text only (the measured line fidelity — HOL.thy 2203 = 2203 — is a
-   text-newline count, so the injector counts the same way); immediately after
-   the newline that ends line n−1 (or at the `<pre class="source">` content
-   start for line 1), insert `<a id="Ln"></a>`. A needed line beyond the
-   page's last line is a **hard error**: it means the line-fidelity assumption
-   broke, and the pass must not paper over that.
+The punctuation heuristic considered in review (expanding `-` to `/` in a
+session name and testing it as a directory prefix) is **rejected by name**: it
+was measured to miss `Restriction_Spaces-HOLCF`, a file that carries 16
+needed lines.
 
-### 17.4 The link-check gate, run on the published tree
+### 17.4 The transforms, one walk
 
-After the pass, the gate walks the published tree and the needed-lines table
-and reports:
+Per rendered page kept by §17.2: **relocate** (the map names the output path);
+**rewrite references** — per file type, not per HTML attribute: `href`/`src`
+in HTML *and* `url()` in CSS, each split from its fragment, resolved against
+the page's rendered location, mapped, re-emitted absolute under `/source/`,
+fragment re-attached unchanged (existing entity-anchor ids are kept — pages'
+internal cross-references still use them); a reference the map cannot name is
+a hard error naming the page and the reference. **Inject the line marks**: the
+window is the content of the page's single `<pre class="source">` element;
+`split("\n")` it and prefix piece *n* with `<a id="Ln"></a>` for each needed
+line *n* — piece count *is* line count, so there is no line-1 or EOF edge.
+Two structural facts guard every page, asserted per page because they are the
+whole correctness argument: exactly one `<pre class="source">`, and no newline
+inside any tag (both measured true across all 11,796 files). A needed line
+with no piece to land on is a hard error — the line-fidelity assumption broke.
+A page already containing `id="L<digits>"` is a hard error (measured: zero
+today; the plain prefix `id="L` matches 555 innocent pages and must not be
+the test). Finally the pass **generates** `/source/index.html` and
+`/source/isabelle.css` from the map.
 
-- for every theory in the table: the published page exists, and every needed
-  line's `id="L<n>"` mark is present — **zero misses required**;
-- for every page: every internal `href`/`src` target exists in the published
-  tree (fragment existence is checked for `#L<n>` fragments; the renderer's
-  entity-anchor fragments are trusted, since the pass did not touch ids);
-- the per-record accounting from the table build: how many exported records
-  have a linkable position (the D42 figure), how many do not — reported, not
-  failed, since D42's absent form covers them.
+### 17.5 The link-check gate, on the published tree
 
-Any miss in the first two classes fails the gate, and the tree does not
-upload. The gate is part of the same tool (a check phase over the pass's
-output), so the two can never drift apart on what "the target" means.
+- Every needed (file, line): the mapped page exists and carries `id="L<line>"`
+  — zero misses required.
+- Every reference in every published file — `href`/`src` in HTML, `url()` in
+  CSS — resolves inside the published tree, **fragments included**: a `#L<n>`
+  fragment must match an injected mark, an entity-anchor fragment must match
+  an id on the target page. No fragment is trusted (D49 ruling 6 killed the
+  trusted-anchors clause).
+- Every row's `source_link` from the namespace (sampled or dumped) is either
+  empty or string-equal to a path the published tree serves with the named
+  mark present — the end-to-end clause D49 ruling 2 bought.
+- Reported, not failed: the unresolved-residue count (§17.3), the
+  dropped-unreferenced count (§17.2), and the coverage figures — positioned
+  99.28 %, linked 99.28 % minus the residue.
 
-### 17.5 Acceptance, and the tests that come with the code
+### 17.6 The source-link column and the patch
 
-The pass is accepted when: the full rendered tree maps with zero unmapped
-files, zero unresolvable references, zero collisions; the mark count equals
-the needed-lines total; the gate passes with zero misses; and three
-hand-picked URLs resolve correctly in a browser against a local serving of
-the published tree — one distribution theory (`/source/HOL/HOL.html#L513`,
-which must land on `lemma conjI`), one AFP theory from an umbrella, one
-`.ML` auxiliary page.
+`source_link`: string, `filterable: False`, the finished href
+(`/source/<page>.html#L<line>`) or the empty string. For the live
+`isasearch-2025-2-afp-2026-05-13`: one `patch_rows` run over all 1,337,025
+ids (verified semantics: only named keys written, vectors untouched, a new
+attribute is fine, billing by patched size — ~100 MB of attribute data,
+minutes-to-an-hour at the export's batch shape, reusing its batching and
+checkpointing). Every future export carries the column from the start —
+same lesson as `from_collection`'s schema note. `site_export.py`'s schema and
+`build_document` gain the field; the resolver's output file is their input.
 
-Unit tests (no cslh19, no network — fixture pages a few lines long): the four
-mapping cases plus both mapping errors; reference rewriting for the three
-measured link shapes with fragment preservation; the injector's tag-state
-machine (mark lands after the newline, never inside a tag, line 1 edge, EOF
-edge); the pristine-input guard; the collision guard; a needed line past EOF.
+### 17.7 Acceptance, and the tests that come with the code
 
-### 17.6 What this section does not decide
+Accepted when: the full tree maps with zero unmapped kept files, zero
+unresolvable references, zero collisions; mark count equals the needed-pairs
+total; the gate passes with zero misses and the two reported counts match the
+resolver's; the patch dry-run against a scratch namespace round-trips; and
+three hand-picked URLs render correctly against a local serving of the
+published tree — `/source/HOL.html#L513` landing on `lemma conjI`, one AFP
+theory page, one `.ML` auxiliary page.
 
-Where the published tree is hosted (open in D47, decided with §12.2's step 5);
-whether auxiliary pages are ever deduplicated; nothing about the Worker.
+Unit tests (fixture pages, no cslh19, no network): the resolver's three steps
+and both hard errors; the twins; reference rewriting for the three measured
+link shapes plus CSS `url()`, fragments preserved; the injector's split (mark
+placement, guard regexes, needed-line-past-end, the `id="L<digits>"` test
+not firing on `id="List.…"`); the id-union merge; index generation; the
+collision guard; `source_link` emission including the empty-string case.
+
+### 17.8 What this section does not decide
+
+Where the published tree is hosted (open in D47, decided with §12.2's step 5;
+two facts recorded for that day: the largest page is 23.2 MiB — 7 % under the
+25 MiB per-file cap some static hosts impose, before marks — and `CoreC++` is
+the only name needing a one-time URL round-trip check). Nothing about the
+Worker beyond the shape of `source_link`.
