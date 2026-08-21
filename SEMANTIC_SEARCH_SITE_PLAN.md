@@ -267,6 +267,27 @@ reader of those sections needs to find the decision that used to govern them.
   (§11.1's rate limiting included). §9 stays in this document as the agreed
   design but is **not** to be built yet, and the questions it raises need no
   answer to unblock anything.
+- **D48** (2026-08-21) — **fusion is server-side, and no relevance number is
+  displayed anywhere.** §16.8's measurement showed turbopuffer's `rerank_by:
+  ["RRF"]` drops the per-leg scores, so the vector leg's cosine similarity that
+  D40 displayed cannot be had from a server-fused response. Three options were
+  tabled: fuse client-side in the Worker and keep D40's display; fuse
+  server-side and display nothing; fuse server-side and display the RRF score.
+  The user chose the second. The third was argued against and not taken: the
+  RRF score is a function of rank alone (the top row scores ~0.0328 on
+  essentially every query), so displaying it restates the row's position and
+  says nothing about match quality — the very reason D40 gave for rejecting it
+  originally. **This supersedes D40's display half**: no similarity number on
+  the card, and the "Similarity hover" block that D40 locked into
+  `site/COPY.md` dies with it (copy edit pending the user's verbatim
+  approval). D40's other half — the expanded explanation's clause that the
+  explanation also feeds retrieval — remains true (the BM25 leg still searches
+  it) and stays. A "matched by both legs" badge was floated as an optional
+  replacement signal and is undecided. Engineering facts for the Worker,
+  measured live: the fused row cap is root-level `limit` (root-level `top_k` is
+  silently ignored); per-leg `top_k` sets each leg's depth before fusion; a
+  BM25 leg's `$dist` is a relevance, higher better; at most 16 legs per
+  request, snapshot-isolated.
 - **D47** (2026-08-20) — **the source pages are rendered by us and hosted by us;
   result cards never link to the public AFP or Isabelle websites.** The user
   rejected external linking outright: the public sites present whatever the
@@ -294,21 +315,38 @@ reader of those sections needs to find the decision that used to govern them.
   ourselves, the AFP/distribution split disappears; session names are globally
   unique, so a single template serves every linkable position:
 
-  > `https://<site>/source/<session>/<Theory>.html#<entity name>%7C<suffix>`
+  > `https://<site>/source/<session>/<Theory>.html#L<line>`
 
   The session is resolved Worker-side by matching the position's file basename
   against the row's `theories` array (session-qualified long names); if no
   constituent matches, the card shows D42's absent form. D42's rule — a link iff
   the position starts with `$AFP/` or `~~/`, absolute paths never shown — is
-  unchanged; only the link's target moved. The fragment is the entity anchor the
-  renderer emits on every entity (`id="<Theory>.<name>|fact"` and kin, `%7C` being
-  the escaped `|`); a fragment that misses leaves the reader at the top of the
-  page, which is the page-level link D42 originally asked for — silent, harmless
-  degradation. Measured 2026-08-20 on the public sites (same renderer, so the
-  anchor scheme transfers): anchors exist for all four sampled records, including
-  a dynamically generated indexed member (`divideC_field_splits_simps_1(8)|thm`);
-  **no line-number anchors exist anywhere**, so the `:line` half of a position
-  cannot appear in the URL — the entity anchor replaces it and is more precise.
+  unchanged; only the link's target moved. `<line>` is the position's own line
+  number, and its jump target is an `id="L<line>"` mark that the upload-time
+  pass **injects itself, only at the lines some exported record's position
+  names** (the user's amendment, 2026-08-21: not every line — the needed-lines
+  set is the corpus's distinct (file, line) pairs, which the link-check gate
+  computes anyway, so the injector and the gate share one input). A fragment
+  that misses leaves the reader at the top of the page — silent, harmless
+  degradation to the page-level link.
+
+  **Why injected line marks and not the renderer's own entity anchors** (the
+  original 2026-08-20 choice, reversed 2026-08-21 after measurement): the
+  renderer emits no line anchors anywhere, and its entity anchors have real
+  holes — a locale's bare name has no anchor at all (only `.axioms`/`.intro`/
+  `_def` derivatives exist, so all 9,928 locale rows would miss), a
+  class-parameter constant is anchored under its class-qualified internal name
+  (`…scaleC_class.divideC|const` exists, `…divideC|const` does not), and a
+  lemma's suffix depends on the name's shape rather than its kind (`name|fact`
+  for a plain name, `name(8)|thm` for an indexed member — both kind `lemma`).
+  Quantifying the surviving coverage would have taken a corpus-wide anchor
+  census; injected line marks make the census unnecessary, since they cover
+  every positioned record — 98.8%, D42's own figure — by construction. What
+  makes the injection sound: the rendered `<pre class="source">` block
+  reproduces the source line-for-line (measured: HOL.thy 2203 source lines =
+  2203 pre-block newlines exactly; BWT.thy 148 vs 147, the difference being
+  the trailing-newline convention at EOF only). The kind→anchor-suffix table
+  this paragraph used to require is dead.
 
   **The gate.** Before the rendered tree is uploaded, a link check walks every
   exported document and confirms its target file (and, separately counted, its
@@ -340,10 +378,18 @@ reader of those sections needs to find the decision that used to govern them.
   umbrella databases hold, so the rendered set and the corpus coincide by
   construction.
 
-  **Still open under this decision**: the kind→anchor-suffix table (`|fact` vs
-  `|const` etc. by document `kind`); the full 27-session render (extrapolates to
-  under an hour; an `isabelle build` invocation, so it waits for the user's
-  explicit command); and where the tree is hosted (decided with §12.2's step 5).
+  **The full render ran 2026-08-20** (user-commanded): all 27 umbrella sessions
+  in 24m16s, exit 0 — 11,762 theory pages, 5.1 GB, on cslh19 under
+  `~/.isabelle/Isabelle2025-2/browser_info/`. Coverage clears the registry's
+  10,594 theories, and the base logics (`FOL.html`, `IFOL.html`, `ZF.html`
+  inside `AFP-DEP1-0`) rendered along with everything else the collection
+  loaded.
+
+  **Still open under this decision**: the upload-time pass itself (one walk
+  that restructures into `/source/<session>/`, rewrites every internal href —
+  they are all relative and encode the old layout, measured 2026-08-21 — and
+  injects the needed-lines `id="L<line>"` marks), the link-check gate run over
+  its output, and where the tree is hosted (decided with §12.2's step 5).
 - **D46** (2026-08-18) — **the tokenizer asset carries the export machine's whole
   symbol table, component files included.** On this machine that means
   `contrib/phi-system/symbols` and `contrib/phi-system/symbols-words` on top of the
