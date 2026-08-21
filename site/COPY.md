@@ -262,11 +262,8 @@ If the copy fails:
 
 > Could not copy. Select the expression and copy it yourself.
 
-Similarity hover — **locked by D40, do not edit**:
-
-> Cosine similarity between your query and this entity, computed with
-> Qwen3-Embedding-8B. The result order also accounts for keyword matching, so a
-> lower score can appear higher up.
+The similarity hover is gone — **D48**: no relevance number is displayed
+anywhere, so there is nothing to hover.
 
 ### 4.2 The expanded explanation
 
