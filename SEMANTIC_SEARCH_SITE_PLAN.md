@@ -390,6 +390,8 @@ reader of those sections needs to find the decision that used to govern them.
   they are all relative and encode the old layout, measured 2026-08-21 — and
   injects the needed-lines `id="L<line>"` marks), the link-check gate run over
   its output, and where the tree is hosted (decided with §12.2's step 5).
+  The pass and the gate are designed in **§17** (2026-08-21, awaiting the
+  user's review); implementation follows that review.
 - **D46** (2026-08-18) — **the tokenizer asset carries the export machine's whole
   symbol table, component files included.** On this machine that means
   `contrib/phi-system/symbols` and `contrib/phi-system/symbols-words` on top of the
