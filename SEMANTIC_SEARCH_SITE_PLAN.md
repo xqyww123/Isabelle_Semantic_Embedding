@@ -267,6 +267,25 @@ reader of those sections needs to find the decision that used to govern them.
   (§11.1's rate limiting included). §9 stays in this document as the agreed
   design but is **not** to be built yet, and the questions it raises need no
   answer to unblock anything.
+- **D53** (2026-08-23) — **the `.thy` resolver is a table lookup over
+  `data/theories.json`; the three-step resolver is retired unimplemented.**
+  The user rejected resolving file→theory identity through entity keys and
+  heuristics when a direct correspondence should exist — and it does:
+  `data/theories.json` (long name → source path, the umbrella builds' own
+  driving input, produced by the repository's static Isabelle-side extractor)
+  inverts injectively after the twin-alias fold and was measured to cover
+  **9,784 of 9,784** position files with zero conflicts against the
+  declaring-hash evidence and zero resolved names lacking a page. §17.3 is
+  rewritten around it; the declaring-hash route is demoted to a mandatory
+  zero-conflict cross-check; the shared-base-name tie-break question (115
+  files) dies unasked. Freshness discipline: regenerated with every corpus
+  generation — and enforced by the map step's three staleness gates
+  (coverage, hash agreement, page existence), so a stale table cannot ship.
+  Up-to-dateness and completeness were verified for this generation: all
+  paths exist on disk, the 110 post-dump `.thy` edits are the in-build-window
+  patch batch (path→name unaffected; content identical across machines), the
+  rendered tree's 10,595 derived names and both umbrella theory lists are
+  covered in full.
 - **D52** (2026-08-23) — **the published page name is the theory long name,
   derived at classification time; D49 ruling 1's flat URL stands.** The
   adversarial code review found the defect that forced this ruling: the
@@ -4332,6 +4351,11 @@ of several theories, so the file is the only key that fits both directions.
    needed-lines table — `{"<position file as stored>": [sorted lines]}`,
    9,810 files, 486,346 (file, line) pairs — and the per-record position list
    the resolver and the gate consume.
+4. **`data/theories.json`** (super-repo, git-tracked, byte-identical on both
+   machines): the file-path→long-name table D53 makes the `.thy` resolver —
+   regenerated with every corpus generation by the repository's own static
+   extractor, and guarded against staleness by the map step's three gates
+   (§17.3).
 
 The map is built on cslh19; the scan's output travels there; map, table and
 resolved links ship onward as **one versioned artefact whose content hash the
@@ -4374,28 +4398,51 @@ machine happens to have".
   error the gate proves; anything present but unreferenced is dropped and
   counted in the report. No hand-written inventory to go stale.
 
-### 17.3 The file→page map and the resolver
+### 17.3 The file→page map and the resolver — rewritten 2026-08-23 (D53)
 
-For auxiliary files the map is the path function above. For `.thy` files, in
-order:
+For auxiliary files the map is the path function above. For `.thy` files the
+resolver is **one table lookup** — the user's own insight during the review
+round: a direct file-path→theory-long-name correspondence already exists and
+is authoritative. `data/theories.json` (super-repo, git-tracked, 2.6 MB) maps
+every session theory's long name to its source path; it is the output of the
+repository's own Isabelle-side extractor (`tools/Theory_Info/Get_Thy_Info.thy`
+→ `REPL_Aux.session_theory_infos`, a **static** scan of the component ROOTs
+and theory headers — no heap is loaded), and it is the very input that drove
+the umbrella builds, so it is same-generation with the heaps, the collection
+and the rendered tree by construction.
 
-1. **Exact, no heuristic**: if any name-addressed record positioned in the
-   file names its declaring theory (the key's theory hash, looked up in the
-   registry), the file maps to that theory's page. Covers 8,672 of 9,784
-   distinct `.thy` position files; measured never to contradict the filename
-   outside the two known multi-theory files.
-2. **Stem lookup**: registry names matching the file stem, an exact
-   whole-name hit beating base-name candidates (this resolves the three
-   bare/qualified twins — `HOLCF` vs `HOLCF.HOLCF` and kin); when two pages
-   render the same file, the session-qualified page wins.
-3. **Residue**: the handful of files neither step resolves (measured ~5
-   files, ~185 records, 33 needed lines) get no link — the rows' source links
-   are empty, the gate reports the count, D42's absent form covers the cards.
+1. **Normalise** the symbolic position (`$AFP/<x>` → the snapshot tree,
+   `~~/<x>` → the distribution tree).
+2. **Look up** the inverted table: path → the one long name (inversion is
+   injective after the `(global)`-alias fold of the 2026-08-23 twin cleanup;
+   measured zero multi-name paths over 11,524).
+3. **Page**: the long name's published page by D52's derivation, `X.X`
+   falling back to the bare page `X`.
 
-The punctuation heuristic considered in review (expanding `-` to `/` in a
-session name and testing it as a directory prefix) is **rejected by name**: it
-was measured to miss `Restriction_Spaces-HOLCF`, a file that carries 16
-needed lines.
+Measured on the full corpus: 9,784 of 9,784 position files hit the table,
+every resolved name has a page, `.thy` residue is **zero** — including all
+1,110 pure-lemma files that carry no name-addressed record. The former
+three-step resolver (declaring-hash, then stem lookup, then residue), its
+shared-base-name ambiguity (115 files) and the tie-break rules proposed for
+it are all retired unimplemented; the plan's earlier residue figures
+described that retired design.
+
+**The declaring-hash route survives as a mandatory cross-check, not a
+resolver**: a name-addressed record's key prefix names its declaring theory
+independently of any table, and the map step requires the table's answer to
+agree wherever a file has such records — measured 8,674 of 8,674 files in
+agreement, and one disagreement is a hard error. Two independent evidence
+chains (static session structure vs collection-time keys) watch each other.
+
+**Freshness is enforced, not remembered** (the regeneration discipline,
+user-set 2026-08-23): every corpus generation regenerates `theories.json`
+alongside the collection, with the same extractor over the same snapshot —
+and even a forgotten regeneration cannot ship, because the map step hard-fails
+on each staleness symptom: a position file absent from the table (coverage is
+100 % by construction, so one miss is an error, not residue), a table name
+contradicting a declaring hash (zero-conflict requirement), a resolved name
+without a page (D52's derivation against the rendered tree). The table ships
+inside the artefact's content hash like every other map input.
 
 ### 17.4 The transforms, one walk
 
