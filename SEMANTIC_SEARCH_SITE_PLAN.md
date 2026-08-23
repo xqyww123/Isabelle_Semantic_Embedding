@@ -267,6 +267,56 @@ reader of those sections needs to find the decision that used to govern them.
   (§11.1's rate limiting included). §9 stays in this document as the agreed
   design but is **not** to be built yet, and the questions it raises need no
   answer to unblock anything.
+- **D51** (2026-08-23) — **input-dangling references are stripped, alarmed and
+  reported.** The renderer itself emits links to pages it never writes: it
+  writes a page per auxiliary blob only when the blob produced markup, but
+  links every `Markup.Path` file regardless, so a binary blob yields a
+  dangling `<a>` (measured: exactly one tree-wide today —
+  `PAPP_Impossibility.PAPP_Impossibility_Base_Case.html` referencing
+  `sat_data/papp_impossibility.grat.xz.html`, which does not exist in the
+  rendered tree). The ruling: **a reference whose resolved target does not
+  exist in the rendered tree is input-dangling — the pass strips the `<a>`
+  element, keeping its text (the page reads identically, those words just
+  stop being clickable), prints one WARNING per strip naming the page and
+  the target, and lists every strip in the publish report; the gate restates
+  the count.** This is a general rule keyed on the input, not a patch for one
+  file: any future render's new dangling blobs get the same treatment with no
+  code change. It is sharply distinct from a target that exists in the
+  rendered tree but is missing from the map — that stays a hard error, since
+  a link the pass itself would break must never be papered over. The alarm
+  discipline (user-set, 2026-08-23): the publish report carries two standing
+  counters — stripped input-dangling references (D51) and exempted
+  site-external references (D50) — so a data update is checked by reading two
+  numbers: a jump in the first means the upstream render grew new broken
+  links, a jump in the second means someone wrote a URL shape worth a look.
+  Today's baselines: 1 and 232.
+- **D50** (2026-08-23) — **the site-external reference class.** The rendered
+  tree contains author-written external links: the `\<^url>` document
+  antiquotation becomes a verbatim `<a href="…">` in the page (its single
+  producer is `document_antiquotations.ML`, rendered unconditionally by
+  `browser_info.scala`), and the real tree carries 232 such references on 129
+  pages. §17.4/§17.5's original resolve-or-die rule can never be satisfied by
+  them, so publish aborted on the first such page. The ruling, verified by an
+  exhaustive census of every `href`/`src`/`url()` value in the tree before it
+  was made: **a reference whose value begins with a URI scheme — matching
+  `^[A-Za-z][A-Za-z0-9+.\-]*:` — or with `//` is site-external; the pass emits
+  it byte-identically (not split at `#`, not resolved, not looked up), and the
+  gate exempts it from the existence and fragment checks, counting it in the
+  report instead.** One shared predicate serves the rewriter, the CSS
+  rewriter and the gate, applied to the whole value before any fragment
+  split. What makes it sound: `:` is structurally illegal in every Isabelle
+  path element (`Path.illegal_char`) and hence in every session, theory and
+  auxiliary-file name, so no site-internal reference can ever match the
+  predicate — zero false positives by construction, and the census found zero
+  scheme-less or protocol-relative external values, zero root-absolute and
+  zero empty references tree-wide. The count is reported because `\<^url>`
+  validates nothing: a future scheme-less external URL would read as internal
+  and fail loudly, and a jump in the exempted count is the cheap tripwire for
+  URL-shaped surprises. This narrows D49 ruling 4's "anything referenced but
+  absent is a hard error" to site-internal references — external targets were
+  never the published tree's to serve, and D47's no-external-links stance
+  governs the links *we* emit on cards, not hyperlinks AFP authors wrote
+  inside their own prose.
 - **D49** (2026-08-21) — **the six rulings of §17's adversarial review round.**
   §17's first draft went through a 2-turn adversarial debate (two independent
   reviewers, correctness and elegance lenses, every claim measured against the
@@ -4312,7 +4362,20 @@ in HTML *and* `url()` in CSS, each split from its fragment, resolved against
 the page's rendered location, mapped, re-emitted absolute under `/source/`,
 fragment re-attached unchanged (existing entity-anchor ids are kept — pages'
 internal cross-references still use them); a reference the map cannot name is
-a hard error naming the page and the reference. **Inject the line marks**: the
+a hard error naming the page and the reference. **Except site-external
+references (D50)**: a reference whose value begins with a URI scheme
+(`^[A-Za-z][A-Za-z0-9+.\-]*:`) or with `//` is emitted byte-identically — not
+split at `#`, not resolved, not looked up — and counted in the report; the
+same predicate, applied to the whole value before any fragment split, governs
+`href`/`src` and stylesheet `url()` alike, so there is one rule and not one
+per file type. Isabelle forbids `:` in every path element
+(`Path.illegal_char`), so no published page can be named in a way the
+predicate would mistake for a scheme. **And except input-dangling references
+(D51)**: a site-internal reference whose resolved target does not exist in
+the rendered tree — the input was already broken — has its `<a>` element
+stripped, text kept, one WARNING per strip, every strip listed in the
+report. A target that exists in the rendered tree but is missing from the
+map remains a hard error: broken-by-us is never papered over. **Inject the line marks**: the
 window is the content of the page's single `<pre class="source">` element;
 `split("\n")` it and prefix piece *n* with `<a id="Ln"></a>` for each needed
 line *n* — piece count *is* line count, so there is no line-1 or EOF edge.
@@ -4333,13 +4396,21 @@ the test). Finally the pass **generates** `/source/index.html` and
   CSS — resolves inside the published tree, **fragments included**: a `#L<n>`
   fragment must match an injected mark, an entity-anchor fragment must match
   an id on the target page. No fragment is trusted (D49 ruling 6 killed the
-  trusted-anchors clause).
+  trusted-anchors clause). A site-external reference — by §17.4's predicate
+  (D50), applied to the whole value before any fragment split — is exempt
+  from both checks: the gate verifies the published tree, and an external
+  target is not the tree's to serve. It is counted and reported, never failed
+  on; a root-absolute reference not under `/source/` remains a hard error,
+  since the pass emits no such reference.
 - Every row's `source_link` from the namespace (sampled or dumped) is either
   empty or string-equal to a path the published tree serves with the named
   mark present — the end-to-end clause D49 ruling 2 bought.
 - Reported, not failed: the unresolved-residue count (§17.3), the
-  dropped-unreferenced count (§17.2), and the coverage figures — positioned
-  99.28 %, linked 99.28 % minus the residue.
+  dropped-unreferenced count (§17.2), the exempted site-external count (D50,
+  baseline 232), the stripped input-dangling count (D51, baseline 1), and the
+  coverage figures — positioned 99.28 %, linked 99.28 % minus the residue.
+  The two D50/D51 counters are the standing alarm for every future data
+  update: read two numbers instead of re-auditing the tree.
 
 ### 17.6 The source-link column and the patch
 
