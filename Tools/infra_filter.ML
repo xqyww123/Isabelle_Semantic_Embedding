@@ -16,6 +16,12 @@ signature INFRA_FILTER = sig
      is_infra_dynamic_fact: string -> bool,
      is_infra_method: string -> bool,
      is_declared_infra_thm: string * thm -> bool,
+     (* Which rule rejected this entity, or NONE if it was kept.  `is_infra_*`
+        is `is_some` of these, so there is one disjunction, not two that must
+        be kept in agreement.  A cascade rejection reads "const:<name>" -- ask
+        `infra_const_rule` again to learn why that constant is infrastructure. *)
+     infra_const_rule: string -> typ option -> string option,
+     infra_thm_rule: string * thm -> string option,
      has_infra_decls: bool}
 end
 
@@ -128,7 +134,10 @@ fun gen_infra_filters (context : Context.generic)
        is_infra_type: string -> bool, is_infra_class: string -> bool,
        is_infra_locale: string -> bool,
        is_infra_dynamic_fact: string -> bool, is_infra_method: string -> bool,
-       is_declared_infra_thm: string * thm -> bool, has_infra_decls: bool} =
+       is_declared_infra_thm: string * thm -> bool,
+       infra_const_rule: string -> typ option -> string option,
+       infra_thm_rule: string * thm -> string option,
+       has_infra_decls: bool} =
   let
     (* User-declared infra entities (see `Infra_Decl` above). *)
     val (decl_consts, decl_thms, decl_types) = Infra_Decl.get context
@@ -340,36 +349,46 @@ fun gen_infra_filters (context : Context.generic)
       | returns_prop (Type("prop", [])) = true
       | returns_prop _ = false
 
-    val infra_const_cache : bool Strhashtab.table = Strhashtab.empty 4096
-    fun is_infra_const' name typ_opt =
+    (* First rule that fires, or NONE.  Thunks keep the short-circuit the plain
+       `orelse` chain had: the later tests (on_bnf_origin_pos, the_constraint)
+       are not cheap. *)
+    fun first_rule tests =
+      let fun go [] = NONE
+            | go ((why, f) :: rest) = if f () then SOME why else go rest
+      in go tests end
+
+    val infra_const_cache : string option Strhashtab.table = Strhashtab.empty 4096
+    fun infra_const_rule name typ_opt =
       case Strhashtab.lookup infra_const_cache name of
         SOME result => result
       | NONE =>
           let val result =
             (* explicit declaration takes precedence over `preserved_set` *)
-            Symtab.defined decl_consts name
-            orelse (not (Strhashtab.defined preserved_set name)
-            andalso (
-            Name_Space.is_concealed const_space name
-            orelse is_hidden const_space name
-            orelse is_from_infra_theory name  (* e.g. Minilang.* internal consts *)
-            orelse exists (fn pfx => String.isPrefix pfx name) internal_prefixes
-            orelse exists (fn pfx => String.isPrefix pfx name) pre_prefixes
-            orelse exists (fn infix_ => String.isSubstring infix_ name) inst_infixes
-            orelse has_class_variant name
-            orelse Strhashtab.defined quotient_typedef_infra name
-            orelse let val base = Long_Name.base_name name
-                   in String.isPrefix "Abs_" base orelse String.isPrefix "Rep_" base end
-            orelse (exists (fn pfx => String.isPrefix pfx name) adt_record_prefixes
-                    andalso on_bnf_origin_pos name)
-            orelse String.isSubstring ".class." name
-            orelse (String.isSuffix "_class" (Long_Name.base_name name)
-                    andalso returns_prop (case typ_opt of
-                              SOME T => T
-                            | NONE => (case try (Consts.the_constraint consts) name of
-                                         SOME T => T | NONE => dummyT)))))
+            if Symtab.defined decl_consts name then SOME "declared"
+            else if Strhashtab.defined preserved_set name then NONE
+            else first_rule
+             [("concealed",       fn () => Name_Space.is_concealed const_space name),
+              ("hidden",          fn () => is_hidden const_space name),
+              ("infra_theory",    fn () => is_from_infra_theory name),  (* e.g. Minilang.* *)
+              ("internal_prefix", fn () => exists (fn pfx => String.isPrefix pfx name) internal_prefixes),
+              ("pre_bnf_prefix",  fn () => exists (fn pfx => String.isPrefix pfx name) pre_prefixes),
+              ("inst_infix",      fn () => exists (fn infix_ => String.isSubstring infix_ name) inst_infixes),
+              ("class_variant",   fn () => has_class_variant name),
+              ("quotient_typedef", fn () => Strhashtab.defined quotient_typedef_infra name),
+              ("abs_rep_name",    fn () => let val base = Long_Name.base_name name
+                                           in String.isPrefix "Abs_" base
+                                              orelse String.isPrefix "Rep_" base end),
+              ("adt_record",      fn () => exists (fn pfx => String.isPrefix pfx name) adt_record_prefixes
+                                           andalso on_bnf_origin_pos name),
+              ("class_infix",     fn () => String.isSubstring ".class." name),
+              ("class_pred",      fn () => String.isSuffix "_class" (Long_Name.base_name name)
+                                           andalso returns_prop (case typ_opt of
+                                             SOME T => T
+                                           | NONE => (case try (Consts.the_constraint consts) name of
+                                                        SOME T => T | NONE => dummyT)))]
               val _ = Strhashtab.update infra_const_cache (name, result)
           in result end
+    fun is_infra_const' name typ_opt = is_some (infra_const_rule name typ_opt)
     fun is_infra_const name = is_infra_const' name NONE
 
     (* --- ADT infrastructure theorem names --- *)
@@ -429,21 +448,37 @@ fun gen_infra_filters (context : Context.generic)
       | is_internal_class _ = false
     fun is_internal_constant (name, T) = is_infra_const' name (SOME T)
 
-    fun is_infra_thm (full_name, thm) =
-        decl_infra_thm thm   (* user-declared infra theorem (matched by proposition) *)
-        orelse Name_Space.is_concealed fact_space full_name
-        orelse is_hidden fact_space full_name
-        (* No accessible short name in this context (e.g. shadowed, or a
-           class-localized fact outside its locale): the agent cannot cite it by
-           name, so it is useless to surface. Facts.extern marks such names with
-           a "??." prefix (this is the exact string the agent would see). *)
-        orelse String.isPrefix "??." (Facts.extern ctxt facts full_name)
-        orelse is_from_infra_theory full_name
-        orelse is_ADT_infra_thm full_name
-        orelse is_inductive_infra_thm full_name
-        orelse Term.exists_Const is_internal_constant (Thm.prop_of thm)
-        orelse is_internal_class (Thm.prop_of thm)
-        orelse smart_size_of_term (Thm.prop_of thm) > 1000
+    (* The first infrastructure constant a proposition mentions.  Term.exists_Const
+       answers whether, not which, and the cascade bucket needs which. *)
+    fun first_internal_const thm =
+      Term.fold_aterms
+        (fn Const c => (fn acc => if is_some acc then acc
+                                  else if is_internal_constant c then SOME (fst c) else NONE)
+          | _ => I)
+        (Thm.prop_of thm) NONE
+
+    fun infra_thm_rule (full_name, thm) =
+      case first_rule
+             [("declared",  fn () => decl_infra_thm thm),  (* matched by proposition *)
+              ("concealed", fn () => Name_Space.is_concealed fact_space full_name),
+              ("hidden",    fn () => is_hidden fact_space full_name),
+              (* No accessible short name in this context (e.g. shadowed, or a
+                 class-localized fact outside its locale): the agent cannot cite it
+                 by name, so it is useless to surface. Facts.extern marks such
+                 names with a "??." prefix (the exact string the agent would see). *)
+              ("shadowed",  fn () => String.isPrefix "??." (Facts.extern ctxt facts full_name)),
+              ("infra_theory",    fn () => is_from_infra_theory full_name),
+              ("adt_infra",       fn () => is_ADT_infra_thm full_name),
+              ("inductive_infra", fn () => is_inductive_infra_thm full_name)] of
+        SOME why => SOME why
+      | NONE =>
+          (case first_internal_const thm of
+             SOME c => SOME ("const:" ^ c)
+           | NONE =>
+               first_rule
+                 [("internal_class", fn () => is_internal_class (Thm.prop_of thm)),
+                  ("too_big", fn () => smart_size_of_term (Thm.prop_of thm) > 1000)])
+    fun is_infra_thm x = is_some (infra_thm_rule x)
 
     (* Stricter than is_infra_thm: also rejects induction rules from theory
        prefixes that emit too-generic auto-generated rules (e.g. Basic_BNFs's
@@ -545,6 +580,8 @@ fun gen_infra_filters (context : Context.generic)
      is_infra_dynamic_fact = is_infra_dynamic_fact,
      is_infra_method = is_infra_method,
      is_declared_infra_thm = is_declared_infra_thm,
+     infra_const_rule = infra_const_rule,
+     infra_thm_rule = infra_thm_rule,
      has_infra_decls = has_infra_decls}
   end
 

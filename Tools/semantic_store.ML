@@ -1284,7 +1284,7 @@ fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_
       val {is_infra_const, is_infra_thm, is_infra_induct_thm,
            is_infra_type, is_infra_class, is_infra_locale,
            is_infra_dynamic_fact, is_infra_method,
-           is_declared_infra_thm, has_infra_decls} =
+           is_declared_infra_thm, has_infra_decls, ...} =
         Infra_Filter.gen_infra_filters init_context
       val {entries = cached_entries0, intro = cached_intro0, elim = cached_elim0,
            induct = cached_induct0, case_ = cached_case0, facts = cached_facts} =
