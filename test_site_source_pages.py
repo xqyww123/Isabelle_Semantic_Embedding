@@ -763,7 +763,11 @@ def test_the_gate_counts_a_missing_mark(tmp_path, monkeypatch):
                        region="", sample=0) >= 1
 
 
-def test_the_gate_trusts_no_fragment(tmp_path, monkeypatch):
+def test_an_inherited_fragment_miss_is_reported_not_failed(tmp_path, monkeypatch,
+                                                           capsys):
+    """D54: every fragment is still checked, but one inherited from the
+    rendered pages that misses is counted — the reader lands at the top of
+    the right page — while the pipeline's own fragments stay zero-miss."""
     repo, rendered, scan_path = _fixture(tmp_path, monkeypatch)
     artefact = _run_map(tmp_path, repo, rendered, scan_path)
     out = str(tmp_path / "published")
@@ -774,7 +778,9 @@ def test_the_gate_trusts_no_fragment(tmp_path, monkeypatch):
     with open(target, "w", encoding="utf-8") as f:
         f.write(content.replace('id="A.B.foo|fact"', 'id="renamed"'))
     assert sp.run_gate(published=out, artefact_path=artefact, namespace=None,
-                       region="", sample=0) >= 1
+                       region="", sample=0) == 0
+    assert "reported, not failed (D54): 1 inherited fragment(s)" \
+        in capsys.readouterr().out
 
 
 def test_the_gate_ignores_external_references_and_counts_them(tmp_path, monkeypatch,
@@ -834,8 +840,9 @@ def test_the_gate_misses_no_promised_page(tmp_path, monkeypatch):
                        region="", sample=0) >= 1
 
 
-def test_a_fragment_into_a_binary_target_fails_instead_of_crashing(tmp_path,
-                                                                   monkeypatch):
+def test_a_fragment_into_a_binary_target_reports_instead_of_crashing(tmp_path,
+                                                                     monkeypatch,
+                                                                     capsys):
     """The review's third blocker, inverted: the gate never opens a
     fragment-less binary target, and a fragment INTO one is a failure, not a
     UnicodeDecodeError traceback."""
@@ -849,8 +856,11 @@ def test_a_fragment_into_a_binary_target_fails_instead_of_crashing(tmp_path,
     with open(page, "w", encoding="utf-8") as f:
         f.write(content.replace(
             "</body>", '<a href="/source/fonts/TestFont.ttf#x">f</a></body>'))
+    # an INHERITED fragment into a binary target: never opened as UTF-8, and
+    # under D54 the miss is counted, not failed — no crash either way
     assert sp.run_gate(published=out, artefact_path=artefact, namespace=None,
-                       region="", sample=0) >= 1
+                       region="", sample=0) == 0
+    assert "reported, not failed (D54)" in capsys.readouterr().out
 
 
 # --- the patch (§17.6), with a stubbed API ------------------------------------

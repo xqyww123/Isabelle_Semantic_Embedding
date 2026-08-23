@@ -267,6 +267,23 @@ reader of those sections needs to find the decision that used to govern them.
   (§11.1's rate limiting included). §9 stays in this document as the agreed
   design but is **not** to be built yet, and the questions it raises need no
   answer to unblock anything.
+- **D54** (2026-08-23) — **the gate's zero-miss clause splits by fragment
+  provenance.** The first real gate run found §17.5's premise incomplete: a
+  missing fragment can be broken-by-us, but it can also be broken-by-the-
+  renderer — the rendered tree itself carries **106** `offset_…` fragment
+  references (all of that one shape, none an entity name; 77 of them into
+  `HOL-Real_Asymp.Multiseries_Expansion_Bounds`) whose target pages never
+  received the id, verified in the input before any transform.  The ruling:
+  a fragment this pipeline **composed or injected** — a row link's `#L<n>`,
+  a needed mark — keeps the zero-miss hard requirement; a fragment
+  **inherited** from the rendered pages is still checked, every one, but a
+  miss is counted and reported instead of failed — the reader lands at the
+  top of the right page, D47's silent harmless degradation, and blocking
+  publication on the renderer's own omission would park the pipeline behind
+  an upstream bug forever.  The count joins D50's and D51's as the alarm
+  family's **third standing number**, baseline 106.  Stripping those anchors
+  was considered and rejected: the target page is right, and destroying a
+  nine-tenths-good link is worse than a top-of-page landing.
 - **D53** (2026-08-23) — **the `.thy` resolver is a table lookup over
   `data/theories.json`; the three-step resolver is retired unimplemented.**
   The user rejected resolving file→theory identity through entity keys and
@@ -4560,16 +4577,22 @@ the test). Finally the pass **generates** `/source/index.html` and
   from both checks: the gate verifies the published tree, and an external
   target is not the tree's to serve. It is counted and reported, never failed
   on; a root-absolute reference not under `/source/` remains a hard error,
-  since the pass emits no such reference.
+  since the pass emits no such reference. **Fragments split by provenance
+  (D54)**: one this pipeline composed or injected misses at zero tolerance;
+  one inherited from the rendered pages is still checked but a miss is
+  counted and reported — the renderer emits `offset_…` references it never
+  anchors (106 today), and an inherited miss is a top-of-page landing, not
+  a broken page.
 - Every row's `source_link` from the namespace (sampled or dumped) is either
   empty or string-equal to a path the published tree serves with the named
   mark present — the end-to-end clause D49 ruling 2 bought.
 - Reported, not failed: the unresolved-residue count (§17.3), the
   dropped-unreferenced count (§17.2), the exempted site-external count (D50,
-  baseline 232), the stripped input-dangling count (D51, baseline 1), and the
-  coverage figures — positioned 99.28 %, linked 99.28 % minus the residue.
-  The two D50/D51 counters are the standing alarm for every future data
-  update: read two numbers instead of re-auditing the tree.
+  baseline 232), the stripped input-dangling count (D51, baseline 1), the
+  inherited-fragment-miss count (D54, baseline 106), and the coverage
+  figures — positioned 99.28 %, linked 99.28 % minus the residue.  The three
+  D50/D51/D54 counters are the standing alarm for every future data update:
+  read three numbers instead of re-auditing the tree.
 
 ### 17.6 The source-link column and the patch
 

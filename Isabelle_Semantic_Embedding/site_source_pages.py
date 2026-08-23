@@ -1109,7 +1109,14 @@ def run_gate(*, published: str, artefact_path: str, namespace: 'str | None',
     is string-equal to a path the tree serves with the named mark present.
     Site-external references are exempt and counted (D50), and the count must
     equal the publish report's, or the alarm's two numbers were never
-    comparable.  Target-major two passes: references are collected first,
+    comparable.  Fragments are checked by PROVENANCE (D54, 2026-08-23): a
+    fragment this pipeline composed or injected — a row link's `#L<n>`, a
+    needed mark — misses at zero tolerance; a fragment inherited from the
+    rendered tree is still checked, but a miss is counted and reported (the
+    alarm family's third number), because the renderer itself emits
+    `offset_…` references it never anchors, and an inherited miss lands the
+    reader at the top of the right page — D47's silent, harmless
+    degradation.  Target-major two passes: references are collected first,
     then each *fragment-bearing* target is read once for its ids and dropped
     — memory is one page's ids (source pages are read once per pass, so a
     page that is also a target is read twice; that is the price of not
@@ -1137,8 +1144,11 @@ def run_gate(*, published: str, artefact_path: str, namespace: 'str | None',
         with open(os.path.join(published, rel), encoding="utf-8") as f:
             return f.read()
 
-    # Pass 1 — collect every reference, keyed by target page.
-    wanted: 'dict[str, set[str]]' = {}      # target rel -> fragments (may hold "")
+    # Pass 1 — collect every reference, keyed by target page.  Two provenance
+    # buckets (D54): fragments inherited from the rendered pages, and
+    # fragments this pipeline composed (row links, needed marks).
+    wanted: 'dict[str, set[str]]' = {}      # inherited: rel -> fragments (may hold "")
+    wanted_own: 'dict[str, set[str]]' = {}  # ours: rel -> fragments, zero-miss
     external = 0
     checked_refs = 0
     for rel in sorted(files):
@@ -1196,13 +1206,13 @@ def run_gate(*, published: str, artefact_path: str, namespace: 'str | None',
         elif not fragment:
             fail(f"link for {doc_id} is {link!r}, which carries no fragment")
         else:
-            wanted.setdefault(rel, set()).add(fragment)
+            wanted_own.setdefault(rel, set()).add(fragment)
     for page, lines in needed_by_page.items():
         rel = published_to_rel(page)
         if rel not in files:
             fail(f"{page} is needed and the tree does not serve it")
             continue
-        wanted.setdefault(rel, set()).update(line_fragment(n) for n in lines)
+        wanted_own.setdefault(rel, set()).update(line_fragment(n) for n in lines)
 
     # Pass 2 — visit each fragment-bearing target once.  A target wanted only
     # with the empty fragment was already proven to exist in pass 1 and is
@@ -1210,20 +1220,34 @@ def run_gate(*, published: str, artefact_path: str, namespace: 'str | None',
     # review's third blocker.  A non-empty fragment against a non-markup
     # target is a failure, not a traceback.
     checked_fragments = 0
-    for rel in sorted(wanted):
-        fragments = {f for f in wanted[rel] if f}
-        if not fragments:
+    inherited_misses: 'list[tuple[str, str]]' = []
+    for rel in sorted(set(wanted) | set(wanted_own)):
+        inherited = {f for f in wanted.get(rel, ()) if f}
+        own = wanted_own.get(rel, set())
+        if not inherited and not own:
             continue
         try:
             ids = _ids_in_tags(_read(rel))
         except UnicodeDecodeError:
-            fail(f"{rel} is not a markup file, yet {len(fragments)} "
-                 f"reference(s) name a fragment in it")
+            if own:
+                fail(f"{rel} is not a markup file, yet {len(own)} composed "
+                     f"link(s)/mark(s) name a fragment in it")
+            inherited_misses.extend((rel, f) for f in sorted(inherited))
             continue
-        for fragment in fragments:
+        for fragment in own:
             checked_fragments += 1
             if fragment not in ids:
                 fail(f"{rel} carries no id for fragment {fragment!r}")
+        for fragment in inherited:
+            checked_fragments += 1
+            if fragment not in ids:
+                inherited_misses.append((rel, fragment))
+    if inherited_misses:
+        _log(f"  reported, not failed (D54): {len(inherited_misses)} "
+             f"inherited fragment(s) the rendered tree never anchored — the "
+             f"alarm family's third number (baseline 106, all offset_…)")
+        for rel, fragment in inherited_misses[:5]:
+            _log(f"    {rel}#{fragment}")
 
     total = len(links)
     positioned = sum(1 for _id, fi, _line in artefact["records"] if fi >= 0)
