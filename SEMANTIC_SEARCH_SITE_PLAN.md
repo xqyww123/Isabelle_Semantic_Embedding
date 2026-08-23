@@ -4621,8 +4621,12 @@ unresolvable references, zero collisions; mark count equals the needed-pairs
 total; the gate passes with zero misses and the two reported counts match the
 resolver's; the patch dry-run against a scratch namespace round-trips; and
 three hand-picked URLs render correctly against a local serving of the
-published tree — `/source/HOL.html#L513` landing on `lemma conjI`, one AFP
-theory page, one `.ML` auxiliary page.
+published tree — `/source/HOL.HOL.html#L513` landing on `lemma conjI` (the
+registry records theory HOL under `HOL.HOL`, so that is its published long
+name — verified 2026-08-23, the mark sits on exactly that lemma), one AFP
+theory page (`/source/Forcing.Arities.html#L235`), one `.ML` auxiliary page
+(`/source/_aux/AFP/AutoCorres2/function_pointer.ML.html#L298`) — all three
+checked and landing on 2026-08-23.
 
 Unit tests (fixture trees, no cslh19, no database, no network — the list of
 the 2026-08-23 implementation, 100 tests): D50's predicate (every scheme
