@@ -154,10 +154,18 @@ def load_artefact(path: str, kind: str, fmt: int) -> 'tuple[dict, str]':
     return body, digest
 
 
+_MAP_FIELDS = ("files", "records", "file_page_map", "residue", "source_lines",
+               "classification", "tree_fingerprint", "theories_sha256",
+               "registry_fingerprint")
+
+
 def _validate_map_body(path: str, body: dict) -> None:
     """The structural facts the composer relies on, enforced at load rather
-    than remembered: `file_page_map` and `residue` partition `files`, and
-    every record's file index is in range."""
+    than remembered: every field present, `file_page_map` and `residue`
+    partition `files`, and every record's file index is in range."""
+    missing = [f for f in _MAP_FIELDS if f not in body]
+    if missing:
+        raise SourcePagesError(f"{path}: map body lacks {missing}")
     files = body["files"]
     mapped, residue = set(body["file_page_map"]), set(body["residue"])
     if set(files) != mapped | residue or mapped & residue:
@@ -176,7 +184,8 @@ def source_links(body: dict) -> 'dict[str, str]':
     never disagree with the map it came from."""
     fpm = body["file_page_map"]
     pages = [fpm.get(f) for f in body["files"]]
-    links = {doc_id: (f"{pages[fi]}#L{line}" if fi >= 0 and pages[fi] else "")
+    links = {doc_id: (f"{pages[fi]}#{line_fragment(line)}"
+                      if fi >= 0 and pages[fi] else "")
              for doc_id, fi, line in body["records"]}
     if len(links) != len(body["records"]):
         raise SourcePagesError(
@@ -275,6 +284,10 @@ class RenderedTree:
         self.fonts: 'list[str]' = []
         self.dropped: 'dict[str, int]' = {}
         self.unclassified: 'list[str]' = []
+        # EVERY file the walk saw, kept and dropped alike, with its size (Q3):
+        # the sealed set D51's dangling decision reads instead of the live
+        # filesystem, and what the tree fingerprint derives from.
+        self.inventory: 'dict[str, int]' = {}
 
     def _drop(self, what: str) -> None:
         self.dropped[what] = self.dropped.get(what, 0) + 1
@@ -286,6 +299,7 @@ def classify_rendered_tree(root: str) -> RenderedTree:
         rel_dir = os.path.relpath(dirpath, root)
         for name in filenames:
             rel = name if rel_dir == "." else f"{rel_dir}/{name}".replace(os.sep, "/")
+            tree.inventory[rel] = os.path.getsize(os.path.join(dirpath, name))
             parts = rel.split("/")
             if ".browser_info" in parts:
                 tree._drop(".browser_info bookkeeping")
@@ -378,11 +392,13 @@ def invert_theories(theories: dict) -> 'tuple[dict[str, str], dict[str, str]]':
     The prefixes are detected from the table itself: every path sits under
     exactly one of two roots — the AFP snapshot (the one containing `/thys/`)
     and the distribution."""
-    aliases = {a for a in theories
-               if "." in a
-               and a == f'{(b := a.rsplit(".", 1)[-1])}.{b}'
-               and a.rsplit(".", 1)[-1] in theories
-               and theories[a.rsplit(".", 1)[-1]]["path"] == theories[a]["path"]}
+    aliases = set()
+    for a in theories:
+        if "." in a:
+            b = a.rsplit(".", 1)[-1]
+            if (a == f"{b}.{b}" and b in theories
+                    and theories[b]["path"] == theories[a]["path"]):
+                aliases.add(a)
     inverted: 'dict[str, str]' = {}
     for name, info in theories.items():
         if name in aliases:
@@ -394,13 +410,32 @@ def invert_theories(theories: dict) -> 'tuple[dict[str, str], dict[str, str]]':
                 f"{path!r} — the inversion must be injective")
         inverted[path] = name
 
-    afp = {p[:p.index("/thys/") + len("/thys/")] for p in inverted if "/thys/" in p}
-    home = {p.split("/src/")[0] + "/" for p in inverted if "/thys/" not in p}
-    if len(afp) != 1 or len(home) != 1:
+    # The AFP root is the prefix up to `/thys/` (no distribution path contains
+    # that segment — measured); the distribution root is the literal common
+    # string prefix of everything else, cut at its last `/` — NOT
+    # `posixpath.commonpath`, which normalises the leading `./` away.  The
+    # check below is the invariant `normalize_position` actually needs, not a
+    # proxy: every path must start with exactly one of the two prefixes.
+    # (Distribution components live under `contrib/`, not `src/` — the four
+    # Naproche theories are the measured case a `/src/` split would break.)
+    afp_set = {p[:p.index("/thys/") + len("/thys/")]
+               for p in inverted if "/thys/" in p}
+    if len(afp_set) != 1:
         raise SourcePagesError(
-            f"theories.json paths do not sit under exactly two roots: "
-            f"afp={sorted(afp)}, home={sorted(home)}")
-    return inverted, {"$AFP/": afp.pop(), "~~/": home.pop()}
+            f"theories.json's AFP paths sit under {len(afp_set)} roots: "
+            f"{sorted(afp_set)}")
+    afp = afp_set.pop()
+    home_paths = [p for p in inverted if "/thys/" not in p]
+    common = os.path.commonprefix(home_paths)
+    home = common[:common.rindex("/") + 1] if "/" in common else ""
+    bad = [p for p in inverted
+           if p.startswith(afp) == p.startswith(home) or not (
+               p.startswith(afp) or p.startswith(home))]
+    if not home or bad:
+        raise SourcePagesError(
+            f"theories.json paths do not partition under two roots "
+            f"(afp={afp!r}, home={home!r}); offending: {bad[:5]}")
+    return inverted, {"$AFP/": afp, "~~/": home}
 
 
 def normalize_position(file: str, prefixes: 'dict[str, str]') -> str:
@@ -415,7 +450,7 @@ def build_file_page_map(scan: dict, inverted: 'dict[str, str]',
                         prefixes: 'dict[str, str]',
                         registry_by_hash: 'dict[str, str]',
                         theory_pages: 'dict[str, str]', aux_copies: 'dict[str, list[str]]',
-                        ) -> 'tuple[dict[str, str], dict[str, str]]':
+                        ) -> 'tuple[dict[str, str], dict[str, str], list[str]]':
     """D53's resolver, `(file → published page, residue)`.  For a `.thy` file
     the answer is one table lookup, and each of the three staleness gates is a
     hard error, not residue: a position file the table misses (coverage is
@@ -426,6 +461,7 @@ def build_file_page_map(scan: dict, inverted: 'dict[str, str]',
     declaring = scan["declaring_theory_hashes"]
     file_page_map: 'dict[str, str]' = {}
     residue: 'dict[str, str]' = {}
+    no_evidence: 'list[str]' = []
     for file in scan["files"]:
         if file.endswith(".thy"):
             name = inverted.get(normalize_position(file, prefixes))
@@ -436,7 +472,11 @@ def build_file_page_map(scan: dict, inverted: 'dict[str, str]',
             hashes = declaring.get(file)
             if hashes:
                 named = {registry_by_hash[h] for h in hashes if h in registry_by_hash}
-                if name not in named:
+                # No resolvable hash is absence of evidence, not contradicting
+                # evidence — this registry may simply not know the file.
+                if not named:
+                    no_evidence.append(file)
+                elif name not in named:
                     raise SourcePagesError(
                         f"{file}: theories.json says {name!r} but the file's "
                         f"name-addressed records name {sorted(named)} — the two "
@@ -460,40 +500,71 @@ def build_file_page_map(scan: dict, inverted: 'dict[str, str]',
                 f"{page_of[page]} and {file} both map to {page} — two files "
                 f"cannot share one page's line marks")
         page_of[page] = file
-    return file_page_map, residue
+    return file_page_map, residue, no_evidence
 
 
-def tree_fingerprint(root: str, rels: 'list[str]') -> str:
-    """sha256 over `rel\\0size` of every kept file, sorted — what pins the
-    artefact to the tree it was built from; publish recomputes and refuses on
-    drift."""
+def tree_fingerprint(inventory: 'dict[str, int]') -> str:
+    """sha256 over `rel\\0size` of the whole sealed inventory, sorted (Q3) —
+    a value derived from the inventory, never a second source of truth."""
     h = hashlib.sha256()
-    for rel in sorted(rels):
-        try:
-            size = os.path.getsize(os.path.join(root, rel))
-        except OSError:
-            raise SourcePagesError(
-                f"{rel} vanished from the rendered tree") from None
-        h.update(f"{rel}\0{size}\n".encode("utf-8"))
+    for rel in sorted(inventory):
+        h.update(f"{rel}\0{inventory[rel]}\n".encode("utf-8"))
     return h.hexdigest()
 
 
-def _kept_rels(classification: dict) -> 'list[str]':
-    return (list(classification["theory_pages"].values())
-            + [rel for rels in classification["aux_pages"].values() for rel in rels]
-            + classification["css"] + classification["fonts"])
+# The two generated files claim their published paths before any relocated
+# file can (the collision guard pre-seeds them).
+GENERATED_PAGES = (f"{SITE_PREFIX}index.html", f"{SITE_PREFIX}isabelle.css")
 
 
-def run_map(*, scan_path: str, rendered: str, theories_path: str, out: str) -> None:
+def build_relocation(classification: dict) -> 'dict[str, str]':
+    """THE map from every kept rendered file to its published path — built
+    once from the classification and used for the rewrite, the walk and the
+    fingerprint alike, so the set publish transforms and the set the seal
+    covers cannot diverge.  Collisions are checked per class: theory pages
+    and fonts are one-to-one, the auxiliary copies and the stylesheet copies
+    are many-to-one **by construction** (keyed by symbolic path / collapsing
+    to the one generated stylesheet), and the generated pages' paths are
+    pre-claimed."""
+    relocation: 'dict[str, str]' = {}
+    claimed: 'dict[str, str]' = {page: "<generated>" for page in GENERATED_PAGES}
+
+    def claim(rel: str, page: str) -> None:
+        if page in claimed:
+            raise SourcePagesError(
+                f"{claimed[page]} and {rel} both publish to {page}")
+        claimed[page] = rel
+        relocation[rel] = page
+
+    for name, rel in classification["theory_pages"].items():
+        claim(rel, f"{SITE_PREFIX}{name}.html")
+    for sym, rels in classification["aux_pages"].items():
+        page = aux_page(sym)
+        claim(rels[0], page)
+        for rel in rels[1:]:
+            relocation[rel] = page        # many-to-one by construction
+    for rel in classification["fonts"]:
+        claim(rel, f"{SITE_PREFIX}fonts/{rel.rsplit('/', 1)[-1]}")
+    for rel in classification["css"]:
+        relocation[rel] = f"{SITE_PREFIX}isabelle.css"   # collapses by design
+    return relocation
+
+
+def run_map(*, scan_path: str, rendered: str, theories_path: str, out: str,
+            repo_root: 'str | None' = None) -> None:
     """Builds the classification, the file→page map and the per-file source
-    line counts, and seals them with the scan's triples into the artefact.
-    Runs beside the rendered tree, the **authoritative** registry (§17.1:
-    cslh19's copy) and the two source trees."""
+    line counts, and seals them — with the scan's triples, the table's and
+    the registry's identity, and the whole tree inventory — into the
+    artefact.  Runs on the host that holds the rendered tree, the registry
+    and the two source trees (the pipeline is host-generic: every input is a
+    path, and the seals below are what make the artefact trustworthy
+    wherever it was built)."""
     from .site_export import theory_registry
 
     scan, _ = load_artefact(scan_path, "scan", SCAN_FORMAT)
-    with open(theories_path, encoding="utf-8") as f:
-        inverted, prefixes = invert_theories(json.load(f))
+    with open(theories_path, "rb") as f:
+        theories_bytes = f.read()
+    inverted, prefixes = invert_theories(json.loads(theories_bytes))
     _log(f"theories.json: {len(inverted)} path(s); prefixes {prefixes}")
 
     tree = classify_rendered_tree(rendered)
@@ -507,13 +578,17 @@ def run_map(*, scan_path: str, rendered: str, theories_path: str, out: str) -> N
          f"{sum(len(c) for c in tree.aux_copies.values())} auxiliary cop(ies) of "
          f"{len(tree.aux_copies)} symbolic path(s)")
 
-    file_page_map, residue = build_file_page_map(
+    file_page_map, residue, no_evidence = build_file_page_map(
         scan, inverted, prefixes, registry_by_hash, theory_pages, tree.aux_copies)
+    if no_evidence:
+        _log(f"  {len(no_evidence)} file(s) whose declaring hashes this "
+             f"registry cannot resolve — cross-check had no evidence there")
 
     # B3: the real source files' line counts, read where they exist — the one
     # check that catches a wrong file→page pick AND validates the
     # line-fidelity assumption the whole injection rests on.
-    repo_root = os.path.dirname(os.path.dirname(theories_path)) or "."
+    if repo_root is None:
+        repo_root = os.path.dirname(os.path.dirname(theories_path)) or "."
     source_lines: 'dict[str, int]' = {}
     for file in file_page_map:
         real = os.path.join(repo_root, normalize_position(file, prefixes))
@@ -531,7 +606,9 @@ def run_map(*, scan_path: str, rendered: str, theories_path: str, out: str) -> N
         "dropped": tree.dropped,
         "underived": underived,
         "unclassified": tree.unclassified,
+        "inventory": tree.inventory,
     }
+    registry_names_sorted = "\n".join(sorted(registry_names))
     body = {
         "kind": "map",
         "format": ARTEFACT_FORMAT,
@@ -539,9 +616,19 @@ def run_map(*, scan_path: str, rendered: str, theories_path: str, out: str) -> N
         "records": scan["records"],
         "file_page_map": file_page_map,
         "residue": residue,
+        "no_evidence": sorted(no_evidence),
         "source_lines": source_lines,
         "classification": classification,
-        "tree_fingerprint": tree_fingerprint(rendered, _kept_rels(classification)),
+        "tree_fingerprint": tree_fingerprint(tree.inventory),
+        # The identity seals (the review's chain): which table and which
+        # registry produced this mapping — §17.3's "the table ships inside
+        # the artefact's content hash", made literal.
+        "theories_sha256": hashlib.sha256(theories_bytes).hexdigest(),
+        "registry_fingerprint": {
+            "entries": len(registry_by_hash),
+            "names_sha256": hashlib.sha256(
+                registry_names_sorted.encode("utf-8")).hexdigest(),
+        },
     }
     links = source_links(body)          # the duplicate-id check fires here too
     linked = sum(1 for v in links.values() if v)
@@ -570,6 +657,30 @@ _LINE_MARK = re.compile(r'id="L\d+"')   # \d+ and nothing looser: bare `id="L`
                                         # matches 555 innocent pages (§17.4)
 _PRE_OPEN = '<pre class="source">'
 _PRE_CLOSE = "</pre>"
+
+
+def line_fragment(n: int) -> str:
+    """The fragment a line mark answers to — THE one spelling of the `L<n>`
+    convention; the composer, the injector and the gate all call here."""
+    return f"L{n}"
+
+
+def line_mark(n: int) -> str:
+    return f'<a id="{line_fragment(n)}"></a>'
+
+
+def classify_reference(ref: str, page_dir: str):
+    """One reading of a reference value for the stripper, the rewriter and
+    the gate alike: `("external", None)` (D50), `("samepage", fragment)`, or
+    `("internal", (rendered-tree-relative target, fragment))` — resolved
+    against the page's rendered location."""
+    if is_external(ref):
+        return "external", None
+    target, _, fragment = ref.partition("#")
+    if not target:
+        return "samepage", fragment
+    resolved = posixpath.normpath(posixpath.join(page_dir, target))
+    return "internal", (resolved, fragment)
 
 
 def assert_page_structure(page: str, page_rel: str) -> None:
@@ -601,27 +712,27 @@ class RefCounters:
 
 def strip_dangling_anchors(content: str, page_dir: str,
                            relocation: 'dict[str, str]', page_rel: str,
-                           rendered_root: str, counters: RefCounters) -> str:
-    """D51: an `<a>` whose site-internal target does not exist in the rendered
-    tree is input-dangling — the renderer emitted a link to a page it never
-    wrote.  The anchor is stripped, its text kept (the page reads identically,
-    those words just stop being clickable), one WARNING per strip, every strip
-    counted and named in the report.  A target that exists in the rendered
-    tree but is missing from the relocation map stays for `rewrite_html_refs`
-    to refuse: broken-by-us is never papered over."""
+                           inventory: 'set[str]', counters: RefCounters) -> str:
+    """D51: an `<a>` whose site-internal `href` target does not exist in the
+    rendered tree — by the artefact's **sealed inventory**, never the live
+    filesystem (Q3) — is input-dangling: the renderer emitted a link to a
+    page it never wrote.  The anchor is stripped, its text kept (the page
+    reads identically, those words just stop being clickable), one WARNING
+    per target with the strip count, and the alarm counter counts **anchors**
+    (a page linking one dead blob five times counts five).  A target that
+    exists in the rendered tree but is missing from the relocation map stays
+    for `rewrite_html_refs` to refuse (broken-by-us is never papered over),
+    and a dangling `src=` is not stripped — it too falls through to the
+    rewriter's hard error, since D51 rules anchors only."""
     dangling: 'set[str]' = set()
     for tag in _TAG.finditer(content):
         for m in _REF_ATTR.finditer(tag.group(0)):
-            ref = m.group(2)
-            if is_external(ref):
+            if m.group(1) != "href":
                 continue
-            target = ref.partition("#")[0]
-            if not target:
-                continue
-            resolved = posixpath.normpath(posixpath.join(page_dir, target))
-            if resolved not in relocation and \
-                    not os.path.exists(os.path.join(rendered_root, resolved)):
-                dangling.add(ref)
+            kind, payload = classify_reference(m.group(2), page_dir)
+            if kind == "internal" and payload[0] not in relocation \
+                    and payload[0] not in inventory:
+                dangling.add(m.group(2))
     for ref in sorted(dangling):
         pattern = re.compile(
             r'<a\b[^>]*href="' + re.escape(ref) + r'"[^>]*>((?:(?!</?a\b).)*?)</a>',
@@ -631,7 +742,7 @@ def strip_dangling_anchors(content: str, page_dir: str,
             raise SourcePagesError(
                 f"{page_rel}: the dangling reference {ref!r} sits in a shape "
                 f"the anchor-stripper cannot cut (nested or unclosed <a>)")
-        counters.stripped.append((page_rel, ref))
+        counters.stripped.extend([(page_rel, ref)] * n)
         _log(f"WARNING: stripped {n} dangling anchor(s) to {ref!r} on "
              f"{page_rel} — the rendered tree never wrote that target (D51)")
     return content
@@ -648,13 +759,13 @@ def rewrite_html_refs(content: str, page_dir: str,
     cannot name is a hard error naming the page and the reference."""
     def fix_ref(m: 're.Match') -> str:
         attr, ref = m.group(1), m.group(2)
-        if is_external(ref):
+        kind, payload = classify_reference(ref, page_dir)
+        if kind == "external":
             counters.external += 1
             return m.group(0)
-        target, _, fragment = ref.partition("#")
-        if not target:
+        if kind == "samepage":
             return m.group(0)             # a same-page fragment does not move
-        resolved = posixpath.normpath(posixpath.join(page_dir, target))
+        resolved, fragment = payload
         published = relocation.get(resolved)
         if published is None:
             raise SourcePagesError(
@@ -673,10 +784,11 @@ def rewrite_css_urls(content: str, css_dir: str,
     not per HTML attribute (§17.4); D50's predicate applies here too, so there
     is one rule and not one per file type."""
     def fix_url(m: 're.Match') -> str:
-        if is_external(m.group(1)):
+        kind, payload = classify_reference(m.group(1), css_dir)
+        if kind == "external":
             counters.external += 1
             return m.group(0)
-        resolved = posixpath.normpath(posixpath.join(css_dir, m.group(1)))
+        resolved = payload[0] if kind == "internal" else css_rel
         published = relocation.get(resolved)
         if published is None:
             raise SourcePagesError(
@@ -713,7 +825,7 @@ def inject_line_marks(page: str, lines: 'list[int]', page_rel: str,
             raise SourcePagesError(
                 f"{page_rel} shows {len(pieces)} source line(s) but line {n} "
                 f"is needed — the line-fidelity assumption broke (§17.4)")
-        pieces[n - 1] = f'<a id="L{n}"></a>' + pieces[n - 1]
+        pieces[n - 1] = line_mark(n) + pieces[n - 1]
     return head + _PRE_OPEN + "\n".join(pieces) + close + tail
 
 
@@ -722,24 +834,35 @@ def _ids_in_tags(text: str) -> 'set[str]':
             for m in re.finditer(r'\bid="([^"]*)"', tag.group(0))}
 
 
-def _without_tag_ids(line: str) -> str:
-    return _TAG.sub(lambda tag: re.sub(r'\bid="[^"]*"', 'id=""', tag.group(0)),
-                    line)
+_TITLE_OR_H1 = re.compile(r"<(title|h1)\b")
 
 
-def merge_aux_copies(copies: 'list[tuple[str, str]]') -> 'tuple[str, bool]':
-    """D49 ruling 6: one auxiliary page per symbolic path, and the conflicting
-    copies — byte-identical except in their entity-anchor ids — publish the
-    id-union, so every fragment reference into any copy keeps landing.
-    `(merged content, whether copies conflicted)`.
+def merge_aux_copies(sym: str, copies: 'list[tuple[str, str]]',
+                     ) -> 'tuple[str, str, bool]':
+    """D49 ruling 6 as amended 2026-08-23: one auxiliary page per symbolic
+    path, publishing the id-union of all copies so every fragment reference
+    keeps landing.  `(base copy's rel, merged content, whether copies
+    conflicted)` — the caller must rewrite the merged content in the BASE
+    copy's directory context, since its reference strings are the base's.
 
-    The merge is line-aligned: lines must agree once id attributes are blanked
-    (anything more than an id difference is not the measured conflict and stops
-    the pass), and an id another copy carries on a line the base lacks becomes
-    an empty anchor at the front of that line — same line, same landing."""
-    (base_rel, base), *rest = copies
+    The amended tolerance — the invariant measured true on all 12 real
+    conflicts: copies must agree **line-for-line in text once the title and
+    heading are set aside** (tags erased, `<title>`/`<h1>` lines exempt).
+    That admits the three measured conflict shapes the old byte-level test
+    refused — differing title wording, an entity-anchor *element* present in
+    one copy only, and reference strings resolved through different sessions
+    — while still refusing any real content divergence.  The base copy is the
+    one whose title names the symbolic path (ties broken by sorted rendered
+    location); ids other copies carry on a line become empty anchors at the
+    front of the base's line — same line, same landing."""
+    def title_names_sym(content: str) -> bool:
+        m = re.search(r"<title>([^<]*)</title>", content)
+        return bool(m) and sym in m.group(1)
+
+    ordered = sorted(copies, key=lambda c: (not title_names_sym(c[1]), c[0]))
+    (base_rel, base), *rest = ordered
     if all(content == base for _rel, content in rest):
-        return base, False
+        return base_rel, base, False
     base_lines = base.split("\n")
     merged = list(base_lines)
     for rel, content in rest:
@@ -747,19 +870,20 @@ def merge_aux_copies(copies: 'list[tuple[str, str]]') -> 'tuple[str, bool]':
         if len(lines) != len(merged):
             raise SourcePagesError(
                 f"{rel} and {base_rel} render one file with different line "
-                f"counts — not the measured id-only conflict")
+                f"counts — beyond D49 ruling 6's amended tolerance")
         for i, other in enumerate(lines):
             if other == base_lines[i]:
                 continue
-            if _without_tag_ids(other) != _without_tag_ids(base_lines[i]):
+            if _TAG.sub("", other) != _TAG.sub("", base_lines[i]) and not (
+                    _TITLE_OR_H1.search(other) or _TITLE_OR_H1.search(base_lines[i])):
                 raise SourcePagesError(
-                    f"{rel} and {base_rel} differ beyond entity-anchor ids at "
-                    f"line {i + 1} — not the measured id-only conflict")
+                    f"{rel} and {base_rel} differ in text at line {i + 1} — "
+                    f"beyond D49 ruling 6's amended tolerance")
             extra = _ids_in_tags(other) - _ids_in_tags(merged[i])
             if extra:
                 anchors = "".join(f'<a id="{x}"></a>' for x in sorted(extra))
                 merged[i] = anchors + merged[i]
-    return "\n".join(merged), True
+    return base_rel, "\n".join(merged), True
 
 
 # The generated index page's copy — approved verbatim by the user, 2026-08-23.
@@ -811,12 +935,14 @@ def published_to_rel(page: str) -> str:
 def run_publish(*, rendered: str, artefact_path: str, out: str) -> None:
     """The pass (§17.4): one walk driven by the artefact's classification —
     not a fresh tree walk, so publish transforms exactly what the map
-    classified, and the tree fingerprint refuses a tree that moved since.
-    Everything goes into a fresh staging directory atomically renamed to
-    `out`; the pass removes its own staging on failure and never deletes a
-    directory it was handed."""
-    artefact, _ = load_artefact(artefact_path, "map", ARTEFACT_FORMAT)
+    classified; the sealed inventory refuses a tree that moved since, and
+    each file's size is verified again at the moment it is read.  Everything
+    goes into a fresh staging directory atomically renamed to `out`; the
+    pass removes its own staging on failure and never deletes a directory it
+    was handed."""
+    artefact, artefact_hash = load_artefact(artefact_path, "map", ARTEFACT_FORMAT)
     cls = artefact["classification"]
+    inventory: 'dict[str, int]' = cls["inventory"]
     out = out.rstrip("/")
     staging = out + ".building"
     for path in (out, staging):
@@ -825,32 +951,19 @@ def run_publish(*, rendered: str, artefact_path: str, out: str) -> None:
                 f"{path} already exists; the pass never deletes a handed path — "
                 f"move it aside yourself if it is stale")
 
-    got = tree_fingerprint(rendered, _kept_rels(cls))
-    if got != artefact["tree_fingerprint"]:
-        raise SourcePagesError(
-            "the rendered tree is not the one the artefact was built from — "
-            "re-run map (D53's freshness discipline)")
-
-    relocation: 'dict[str, str]' = {}
-    for name, rel in cls["theory_pages"].items():
-        relocation[rel] = f"{SITE_PREFIX}{name}.html"
-    for sym, rels in cls["aux_pages"].items():
-        for rel in rels:
-            relocation[rel] = aux_page(sym)
-    for rel in cls["css"]:
-        relocation[rel] = f"{SITE_PREFIX}isabelle.css"
-    for rel in cls["fonts"]:
-        relocation[rel] = f"{SITE_PREFIX}fonts/{rel.rsplit('/', 1)[-1]}"
-    # One collision guard over every relocation target: distinct sources may
-    # share a target only in the classes where many-to-one is the point (the
-    # merged auxiliary copies, the single stylesheet).
-    seen: 'dict[str, str]' = {}
-    for rel, page in relocation.items():
-        if page in seen and not (page == f"{SITE_PREFIX}isabelle.css"
-                                 or page.startswith(f"{SITE_PREFIX}_aux/")):
+    relocation = build_relocation(cls)
+    for rel in relocation:
+        try:
+            size = os.path.getsize(os.path.join(rendered, rel))
+        except OSError:
             raise SourcePagesError(
-                f"{seen[page]} and {rel} both publish to {page}")
-        seen[page] = rel
+                f"{rel} vanished from the rendered tree — re-run map (D53's "
+                f"freshness discipline)") from None
+        if size != inventory.get(rel):
+            raise SourcePagesError(
+                f"{rel} is {size} byte(s), the sealed inventory says "
+                f"{inventory.get(rel)} — the tree moved since the map; re-run "
+                f"map")
 
     needed_by_page = needed_lines_by_page(artefact)
     source_lines = artefact["source_lines"]
@@ -868,11 +981,14 @@ def run_publish(*, rendered: str, artefact_path: str, out: str) -> None:
         with open(dest, "w", encoding="utf-8") as f:
             f.write(content)
 
+    inventory_set = set(inventory)
+
     def _transform(rel: str, content: str, page: str) -> str:
         nonlocal marks
         assert_page_structure(content, rel)
         content = strip_dangling_anchors(content, posixpath.dirname(rel),
-                                         relocation, rel, rendered, counters)
+                                         relocation, rel, inventory_set,
+                                         counters)
         content = rewrite_html_refs(content, posixpath.dirname(rel),
                                     relocation, rel, counters)
         lines = needed_by_page.get(page)
@@ -895,24 +1011,31 @@ def run_publish(*, rendered: str, artefact_path: str, out: str) -> None:
             for rel in rels:
                 with open(os.path.join(rendered, rel), encoding="utf-8") as f:
                     copies.append((rel, f.read()))
-            content, conflicted = merge_aux_copies(copies)
+            base_rel, content, conflicted = merge_aux_copies(sym, copies)
             merged_conflicts += conflicted
             page = aux_page(sym)
-            _write(page, _transform(rels[0], content, page))
+            # The merged content is the base copy's wholesale, so the rewrite
+            # runs in the BASE copy's directory context.
+            _write(page, _transform(base_rel, content, page))
 
         # §17.2: exactly one generated stylesheet with absolute font URLs.
         # Each rendered copy is rewritten in its own directory and the results
-        # must agree — the copies differ only in their font-URL depth, and a
-        # second surviving variant means the tree is not what was measured.
-        rewritten_css = set()
+        # must agree; the D50 counter counts the ONE surviving stylesheet, not
+        # all 335 rewrites — the copies are asserted identical, so any copy's
+        # count is the published count.
+        rewritten_css: 'set[str]' = set()
+        css_counters = RefCounters()
         for rel in cls["css"]:
+            per_copy = RefCounters()
             with open(os.path.join(rendered, rel), encoding="utf-8") as f:
                 rewritten_css.add(rewrite_css_urls(
-                    f.read(), posixpath.dirname(rel), relocation, rel, counters))
+                    f.read(), posixpath.dirname(rel), relocation, rel, per_copy))
+            css_counters = per_copy
         if len(rewritten_css) != 1:
             raise SourcePagesError(
                 f"the {len(cls['css'])} stylesheet copies rewrite to "
                 f"{len(rewritten_css)} distinct texts, not one")
+        counters.external += css_counters.external
         _write(f"{SITE_PREFIX}isabelle.css", rewritten_css.pop())
 
         for rel in cls["fonts"]:
@@ -921,8 +1044,13 @@ def run_publish(*, rendered: str, artefact_path: str, out: str) -> None:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.copyfile(os.path.join(rendered, rel), dest)
 
-        _write(f"{SITE_PREFIX}index.html",
-               generate_index(sorted(cls["theory_pages"])))
+        # The generated index passes through the same external counting as
+        # every page, so the report's number covers the whole published tree.
+        index_content = generate_index(sorted(cls["theory_pages"]))
+        counters.external += sum(
+            1 for tag in _TAG.finditer(index_content)
+            for m in _REF_ATTR.finditer(tag.group(0)) if is_external(m.group(2)))
+        _write(f"{SITE_PREFIX}index.html", index_content)
 
         if marks != expected_marks:
             raise SourcePagesError(
@@ -930,9 +1058,14 @@ def run_publish(*, rendered: str, artefact_path: str, out: str) -> None:
                 f"{expected_marks} — some mapped page was never written")
 
         # The report is part of the published output (B12): written into
-        # staging, so a tree without its report is unrepresentable.  Its two
-        # standing counters are D50/D51's alarm.
+        # staging, so a tree without its report is unrepresentable, and it
+        # ships publicly with the tree — exempt, by the user's ruling of
+        # 2026-08-23, from §17.2's umbrella-name prohibition, so its path
+        # lists carry raw rendered paths.  Its two standing counters are
+        # D50/D51's alarm, and `artefact_hash` is what lets the gate refuse
+        # a (tree, artefact) pair that never belonged together.
         report = {
+            "artefact_hash": artefact_hash,
             "published": {
                 "theory pages": len(cls["theory_pages"]),
                 "auxiliary pages": len(cls["aux_pages"]),
@@ -974,12 +1107,17 @@ def run_gate(*, published: str, artefact_path: str, namespace: 'str | None',
     mark, every site-internal reference in every published file resolves —
     fragments included, no anchor trusted — and every non-empty composed link
     is string-equal to a path the tree serves with the named mark present.
-    Site-external references are exempt and counted (D50).  Target-major two
-    passes: references are collected first, then each target page is read
-    once and dropped — memory is one page's ids, and no file is read twice."""
-    artefact, _ = load_artefact(artefact_path, "map", ARTEFACT_FORMAT)
+    Site-external references are exempt and counted (D50), and the count must
+    equal the publish report's, or the alarm's two numbers were never
+    comparable.  Target-major two passes: references are collected first,
+    then each *fragment-bearing* target is read once for its ids and dropped
+    — memory is one page's ids (source pages are read once per pass, so a
+    page that is also a target is read twice; that is the price of not
+    holding every page's id set)."""
+    artefact, artefact_hash = load_artefact(artefact_path, "map", ARTEFACT_FORMAT)
     links = source_links(artefact)
     needed_by_page = needed_lines_by_page(artefact)
+    cls = artefact["classification"]
 
     files: 'set[str]' = set()
     for dirpath, _dirnames, filenames in os.walk(published):
@@ -1031,6 +1169,18 @@ def run_gate(*, published: str, artefact_path: str, namespace: 'str | None',
                 continue
             wanted.setdefault(target_rel, set()).add(fragment)
 
+    # Every output the classification promises must be served — the generated
+    # index is the one page nothing else references, so "the index links every
+    # theory page" cannot cover the index itself.
+    for page in list(GENERATED_PAGES) + [
+            f"{SITE_PREFIX}{name}.html" for name in cls["theory_pages"]] + [
+            aux_page(sym) for sym in cls["aux_pages"]] + [
+            f"{SITE_PREFIX}fonts/{rel.rsplit('/', 1)[-1]}"
+            for rel in cls["fonts"]]:
+        if published_to_rel(page) not in files:
+            fail(f"the classification promises {page} and the tree does not "
+                 f"serve it")
+
     # The composed row links, checked literally (D49 ruling 2's end-to-end
     # clause: the string the site will emit is the string that must work), and
     # the needed marks — folded into the same target-major sweep.
@@ -1052,31 +1202,53 @@ def run_gate(*, published: str, artefact_path: str, namespace: 'str | None',
         if rel not in files:
             fail(f"{page} is needed and the tree does not serve it")
             continue
-        wanted.setdefault(rel, set()).update(f"L{n}" for n in lines)
+        wanted.setdefault(rel, set()).update(line_fragment(n) for n in lines)
 
-    # Pass 2 — visit each target once.
+    # Pass 2 — visit each fragment-bearing target once.  A target wanted only
+    # with the empty fragment was already proven to exist in pass 1 and is
+    # never read: the 13 fonts are binary, and opening them as UTF-8 was the
+    # review's third blocker.  A non-empty fragment against a non-markup
+    # target is a failure, not a traceback.
     checked_fragments = 0
     for rel in sorted(wanted):
-        ids = _ids_in_tags(_read(rel))
-        for fragment in wanted[rel]:
-            if not fragment:
-                continue
+        fragments = {f for f in wanted[rel] if f}
+        if not fragments:
+            continue
+        try:
+            ids = _ids_in_tags(_read(rel))
+        except UnicodeDecodeError:
+            fail(f"{rel} is not a markup file, yet {len(fragments)} "
+                 f"reference(s) name a fragment in it")
+            continue
+        for fragment in fragments:
             checked_fragments += 1
             if fragment not in ids:
                 fail(f"{rel} carries no id for fragment {fragment!r}")
 
     total = len(links)
+    positioned = sum(1 for _id, fi, _line in artefact["records"] if fi >= 0)
     _log(f"checked {checked_refs} reference(s); {external} site-external "
          f"exempted (D50); {checked_fragments} fragment(s) verified on "
-         f"{len(wanted)} page(s)")
+         f"{sum(1 for r in wanted.values() if any(r))} page(s)")
     if total:
-        _log(f"checked {total} row link(s): {total - empty} linked, {empty} "
-             f"empty ({(total - empty) / total:.2%} linked)")
+        _log(f"coverage: positioned {positioned / total:.2%}, linked "
+             f"{(total - empty) / total:.2%} of {total} row link(s) "
+             f"({empty} empty)")
     _log(f"reported, not failed: {len(artefact['residue'])} residue file(s)")
     report_path = os.path.join(published, "publish-report.json")
     if os.path.exists(report_path):
         with open(report_path, encoding="utf-8") as f:
             report = json.load(f)
+        if report.get("artefact_hash") != artefact_hash:
+            fail(f"the published tree was built from artefact "
+                 f"{str(report.get('artefact_hash'))[:12]}…, not from this one "
+                 f"({artefact_hash[:12]}…) — gate the pair that belongs "
+                 f"together")
+        if report.get("external references exempted (D50)") != external:
+            fail(f"the publish report exempted "
+                 f"{report.get('external references exempted (D50)')} external "
+                 f"reference(s), the gate counted {external} — the alarm's two "
+                 f"numbers must agree")
         _log(f"publish report: dropped {report.get('dropped')}, "
              f"external exempted {report.get('external references exempted (D50)')}, "
              f"dangling stripped {report.get('dangling anchors stripped (D51)')}")
@@ -1224,9 +1396,9 @@ def run_patch(*, artefact_path: str, namespace: str, region: str,
     after = _count()
     if after != before:
         raise SourcePagesError(
-            f"the namespace grew from {before} to {after} row(s) during the "
-            f"patch — patch_rows must never create rows; inspect before "
-            f"anything else touches it")
+            f"the namespace's row count changed from {before} to {after} "
+            f"during the patch — patch_rows must never create or remove "
+            f"rows; inspect before anything else touches it")
     _log(f"patched {done} row(s); {namespace} still holds {after} row(s)")
 
 
@@ -1257,6 +1429,10 @@ def build_parser(**kw) -> argparse.ArgumentParser:
     mp.add_argument("--rendered", required=True, help="the rendered tree's root")
     mp.add_argument("--theories", required=True,
                     help="data/theories.json — D53's file-path→long-name table")
+    mp.add_argument("--repo-root",
+                    help="the checkout root the table's relative paths resolve "
+                         "against (default: two levels above --theories; pass "
+                         "it when --theories points at a copy)")
     mp.add_argument("--out", required=True, help="where the artefact goes")
 
     pub = sub.add_parser("publish", help="the pass (§17.4): rendered tree → "
@@ -1301,7 +1477,8 @@ def run_from_args(args: argparse.Namespace) -> int:
             run_scan(isabelle_home=home, afp_dir=afp, out=args.out)
         elif args.step == "map":
             run_map(scan_path=args.scan, rendered=args.rendered,
-                    theories_path=args.theories, out=args.out)
+                    theories_path=args.theories, out=args.out,
+                    repo_root=args.repo_root)
         elif args.step == "publish":
             run_publish(rendered=args.rendered, artefact_path=args.artefact,
                         out=args.out)

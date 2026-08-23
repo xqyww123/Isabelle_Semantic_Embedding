@@ -346,7 +346,11 @@ reader of those sections needs to find the decision that used to govern them.
   site-external references (D50) — so a data update is checked by reading two
   numbers: a jump in the first means the upstream render grew new broken
   links, a jump in the second means someone wrote a URL shape worth a look.
-  Today's baselines: 1 and 232.
+  Today's baselines: 1 and 232.  The report lives inside the published tree
+  (a tree without its report is unrepresentable, and the gate cross-checks
+  its counters and its artefact hash) and therefore ships publicly; the user
+  ruled (2026-08-23) that it is **exempt** from §17.2's umbrella-name
+  prohibition — its path lists carry raw rendered paths.
 - **D50** (2026-08-23) — **the site-external reference class.** The rendered
   tree contains author-written external links: the `\<^url>` document
   antiquotation becomes a verbatim `<a href="…">` in the page (its single
@@ -4374,31 +4378,48 @@ duplicate side was deleted in the 2026-08-23 twin cleanup; the one genuine
 case is `AutoCorres2/c-parser/CLocals.thy`, whose ML machinery mints entities
 for 11 theories with positions in its own file.)
 
-### 17.1 Inputs, and the one machine that builds the mapping
+### 17.1 Inputs — host-generic, and single-host in practice
 
-1. **The rendered tree** (cslh19, 5.1 GB): 10,597 theory pages + 1,165
-   auxiliary pages + 34 renderer index pages + 398 non-HTML files (335
-   per-directory `isabelle.css` copies in 9 variants, 30 `session_graph.pdf`,
-   34 `.browser_info/` bookkeeping files, 13 font files, `isabelle.gif`).
-2. **The registry — cslh19's copy only** (§7.3's authority, 10,594 names).
-   The workstation's copy holds 38 extra names, all private project theories
-   (`Phi_System.*`, `Minilang.*`, `Isabelle_RPC.*`, …); it must never feed a
-   public mapping, both for reproducibility and for D42's
-   keep-private-things-private spirit.
-3. **The corpus scan** (this workstation, where the store lives): produces the
-   needed-lines table — `{"<position file as stored>": [sorted lines]}`,
-   9,810 files, 486,346 (file, line) pairs — and the per-record position list
-   the resolver and the gate consume.
-4. **`data/theories.json`** (super-repo, git-tracked, byte-identical on both
-   machines): the file-path→long-name table D53 makes the `.thy` resolver —
-   regenerated with every corpus generation by the repository's own static
-   extractor, and guarded against staleness by the map step's three gates
-   (§17.3).
+The pipeline binds to no machine (user-directed, 2026-08-23): every step's
+input is a path argument, and the seals below are what make an artefact
+trustworthy wherever it was built.  The operating model is **one host** — the
+machine that holds the semantic DB **that produced the live namespace** (the
+scan must count what the namespace holds) and the rendered tree; on
+2026-08-23 the rendered tree and the AFP-ALL-4 heap chain were synced from
+cslh19 to this workstation (`~/.isabelle/Isabelle2025-2/browser_info`,
+`~/heaps-AFP-ALL4/` — a separate directory, mounted via `ISABELLE_PATH` when
+rendering, never overwriting the local heaps), so scan, map, publish, gate
+and patch all run here and cslh19 retires to a backup.
 
-The map is built on cslh19; the scan's output travels there; map, table and
-resolved links ship onward as **one versioned artefact whose content hash the
-gate re-checks**, so no component ever reads "whichever registry or table this
-machine happens to have".
+1. **The rendered tree** (5.1 GB): 10,597 theory pages + 1,165 auxiliary
+   pages + 34 renderer index pages + 398 non-HTML files (335 per-directory
+   `isabelle.css` copies in 9 variants, 30 `session_graph.pdf`, 34
+   `.browser_info/` bookkeeping files, 13 font files, `isabelle.gif`).
+2. **The registry** (§7.3): whichever copy the map host holds — its identity
+   (entry count + digest of the sorted names) is **sealed into the
+   artefact**, and D53's zero-conflict cross-check plus the derivation's
+   registry lookups are what guard correctness; private extra names
+   (`Phi_System.*`, …) cannot reach a public mapping because no rendered
+   page and no position file resolves to them.
+3. **The corpus scan** (beside the store): the per-record position triples
+   — 9,810 files, 486,346 (file, line) pairs — and the declaring-theory
+   evidence the cross-check consumes; the needed-lines table is derived from
+   the same triples (Q4).
+4. **`data/theories.json`** (super-repo, git-tracked): the
+   file-path→long-name table D53 makes the `.thy` resolver — regenerated
+   with every corpus generation by the repository's own static extractor,
+   guarded against staleness by the map step's three gates (§17.3), and its
+   sha256 sealed into the artefact.
+
+Everything ships as **one versioned artefact whose content hash every later
+step re-checks** — and the artefact itself seals its inputs' identities
+(Q3, 2026-08-23): the table's sha256, the registry fingerprint, and the
+rendered tree's full `{file: size}` inventory, kept and dropped files alike,
+so D51's dangling decision reads sealed data instead of the live filesystem
+and publish verifies each file's size at the moment it reads it.  Downstream,
+the publish report carries the artefact's hash and the gate refuses a
+(tree, artefact) pair that never belonged together; the patch checkpoint and
+the export checkpoint both pin the artefact hash they were started under.
 
 ### 17.2 The published layout
 
@@ -4560,7 +4581,13 @@ ids — 1,337,025 as exported, minus the 16 twin-duplicate rows deleted in the
 untouched, a new
 attribute is fine, billing by patched size — ~100 MB of attribute data,
 minutes-to-an-hour at the export's batch shape, reusing its batching and
-checkpointing). Every future export carries the column from the start —
+checkpointing). The export **requires** the artefact — `--no-source-links`
+is the explicit opt-out, `--dump` included (ruled 2026-08-23: a dump with
+silently empty links is the same trap one level down), the two flags
+together are refused, the artefact is resolved before any network action,
+and a document id the artefact does not name stops the export instead of
+shipping a silently empty link. Every future export carries the column from
+the start —
 same lesson as `from_collection`'s schema note. `site_export.py`'s schema and
 `build_document` gain the field; the resolver's output file is their input.
 

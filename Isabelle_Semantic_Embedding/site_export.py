@@ -718,7 +718,8 @@ def _groups(items, size: int):
         yield group
 
 
-def _read_checkpoint(path: str, base: str) -> 'tuple[str, bytes, int] | None':
+def _read_checkpoint(path: str, base: str,
+                     links_digest: 'str | None') -> 'tuple[str, bytes, int] | None':
     """The unfinished run's namespace, the last key it got confirmation for and how
     many documents it had upserted by then; None when there is nothing to resume.
 
@@ -735,15 +736,22 @@ def _read_checkpoint(path: str, base: str) -> 'tuple[str, bytes, int] | None':
             f"{path} is a checkpoint for {namespace!r}, which is not a generation of "
             f"{base!r} — a different Isabelle release or AFP snapshot. Delete it or "
             f"point --checkpoint elsewhere.")
+    if state.get("links_digest") != links_digest:
+        raise ExportError(
+            f"{path} was written under a different source-links artefact — a "
+            f"resume would leave every already-upserted row carrying the old "
+            f"artefact's links.  Delete the checkpoint to start the namespace "
+            f"over, or resume with the artefact it was started with.")
     _log(f"resuming {namespace} after {state['documents']} document(s)")
     return namespace, bytes.fromhex(state["last_key"]), int(state["documents"])
 
 
-def _write_checkpoint(path: str, namespace: str, last: bytes, done: int) -> None:
+def _write_checkpoint(path: str, namespace: str, last: bytes, done: int,
+                      links_digest: 'str | None') -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"namespace": namespace, "last_key": last.hex(),
-                   "documents": done}, f)
+                   "documents": done, "links_digest": links_digest}, f)
     os.replace(tmp, path)
 
 
@@ -757,6 +765,33 @@ def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
     import contextlib
     from . import isabelle_tokenizer
 
+    # The artefact is resolved FIRST — a pure local read, before the asset
+    # comparison, the API key, the separator probe's live upsert and the
+    # namespace listing — because a missing artefact is an argument error and
+    # must not cost a billed write (the A3/B5 ruling: a re-export without it
+    # would erase the patched source_link column on every row; shipping
+    # without links takes the explicit --no-source-links).
+    if source_links_path and no_source_links:
+        raise ExportError(
+            "--source-links and --no-source-links contradict each other; "
+            "pass exactly one")
+    if source_links_path:
+        from . import site_source_pages as ssp
+        body, links_digest = ssp.load_artefact(source_links_path, "map",
+                                               ssp.ARTEFACT_FORMAT)
+        source_links = ssp.source_links(body)
+        _log(f"{len(source_links)} source link(s) composed from "
+             f"{source_links_path} ({links_digest[:12]})")
+    elif no_source_links:
+        source_links, links_digest = None, None
+        _log("--no-source-links: every source_link ships EMPTY — D42's absent "
+             "form on every card")
+    else:
+        raise ExportError(
+            "no --source-links artefact: an export without it would erase the "
+            "source_link column on every row (§17.6).  Pass the artefact, or "
+            "--no-source-links to ship without links on purpose.")
+
     asset, text, digest = emit_asset(committed_asset,
                                      change_intended=change_intended)
     _log(f"asset {digest[:12]} (tokenizer_rule {asset['tokenizer_rule']})")
@@ -769,7 +804,8 @@ def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
     base = namespace_base(isabelle_home, afp_dir)
     # Against the override when there is one: that is the name this run will use, and
     # checking a scratch run's checkpoint against the production base rejects it.
-    resumed = None if dump else _read_checkpoint(checkpoint, name_override or base)
+    resumed = None if dump else _read_checkpoint(checkpoint, name_override or base,
+                                             links_digest)
     if resumed is not None:
         namespace, resume_after, done = resumed
     else:
@@ -787,27 +823,6 @@ def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
     tokenize = isabelle_tokenizer.Tokenizer(asset)
     registry = theory_registry()
     _log(f"{len(registry)} theory-hash registry entr(ies)")
-
-    # The artefact is required by default (the A3/B5 ruling): a re-export
-    # upserts whole rows, so running without it would silently erase the
-    # patched source_link column on every row.  Shipping without links takes
-    # the explicit --no-source-links.
-    if source_links_path:
-        from . import site_source_pages as ssp
-        body, _digest = ssp.load_artefact(source_links_path, "map",
-                                          ssp.ARTEFACT_FORMAT)
-        source_links = ssp.source_links(body)
-        _log(f"{len(source_links)} source link(s) composed from "
-             f"{source_links_path}")
-    elif no_source_links:
-        source_links = None
-        _log("--no-source-links: every source_link ships EMPTY — D42's absent "
-             "form on every card")
-    else:
-        raise ExportError(
-            "no --source-links artefact: an export without it would erase the "
-            "source_link column on every row (§17.6).  Pass the artefact, or "
-            "--no-source-links to ship without links on purpose.")
 
     path = vector_store_path(vector_store)
     with contextlib.ExitStack() as stack:
@@ -849,7 +864,8 @@ def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
                                  BATCH_WORKERS):
                 list(pool.map(upsert, [b for b, _ in group]))
                 done += sum(len(b) for b, _ in group)
-                _write_checkpoint(checkpoint, namespace, group[-1][1], done)
+                _write_checkpoint(checkpoint, namespace, group[-1][1], done,
+                                  links_digest)
                 if done % (BATCH_ROWS * BATCH_WORKERS * 10) == 0:
                     # A full corpus is tens of gigabytes over hours; a bare count says
                     # nothing about whether it is progressing or crawling.

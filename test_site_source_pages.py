@@ -63,10 +63,12 @@ def test_no_site_internal_shape_matches_the_external_predicate():
 def _map_body(**kw):
     body = {"kind": "map", "format": sp.ARTEFACT_FORMAT,
             "files": [], "records": [], "file_page_map": {}, "residue": {},
-            "source_lines": {}, "classification": {
+            "no_evidence": [], "source_lines": {}, "classification": {
                 "theory_pages": {}, "aux_pages": {}, "css": [], "fonts": [],
-                "dropped": {}, "underived": [], "unclassified": []},
-            "tree_fingerprint": ""}
+                "dropped": {}, "underived": [], "unclassified": [],
+                "inventory": {}},
+            "tree_fingerprint": "", "theories_sha256": "",
+            "registry_fingerprint": {"entries": 0, "names_sha256": ""}}
     body.update(kw)
     return body
 
@@ -156,6 +158,10 @@ _THEORIES = {
     "A.A": {"path": "./contrib/afp-2026-05-13/thys/E/A.thy", "deps": []},
     "A.B": {"path": "./contrib/afp-2026-05-13/thys/E/B.thy", "deps": []},
     "HOL.List": {"path": "./contrib/Isabelle2025-2/src/HOL/List.thy", "deps": []},
+    # a distribution COMPONENT theory, not under src/ — the measured Naproche
+    # shape that broke the old "/src/" root inference
+    "Naproche.Build": {"path": "./contrib/Isabelle2025-2/contrib/naproche-1/Isabelle/Main/Build.thy",
+                       "deps": []},
     "G": {"path": "./contrib/afp-2026-05-13/thys/G/G.thy", "deps": []},
     # the (global)-alias twin: same path under the qualified spelling
     "G.G": {"path": "./contrib/afp-2026-05-13/thys/G/G.thy", "deps": []},
@@ -262,7 +268,7 @@ def _scan_body(files, declaring=None, records=None):
 
 def test_the_resolver_is_one_table_lookup():
     inverted, prefixes, pages, aux = _resolver_inputs()
-    fmap, residue = sp.build_file_page_map(
+    fmap, residue, _noev = sp.build_file_page_map(
         _scan_body(["$AFP/E/A.thy", "~~/src/HOL/List.thy", "$AFP/E/u.ML"]),
         inverted, prefixes, {}, pages, aux)
     assert fmap == {"$AFP/E/A.thy": "/source/A.A.html",
@@ -290,9 +296,20 @@ def test_a_table_name_contradicting_the_declaring_hashes_is_a_hard_error():
             inverted, prefixes, {"aa": "Somewhere.Else"}, pages, aux)
 
 
+def test_unresolvable_declaring_hashes_are_no_evidence_not_a_conflict():
+    """A registry gap is absence of evidence: the file resolves normally and
+    is reported, never failed on."""
+    inverted, prefixes, pages, aux = _resolver_inputs()
+    fmap, _res, noev = sp.build_file_page_map(
+        _scan_body(["$AFP/E/A.thy"], declaring={"$AFP/E/A.thy": ["ff" * 16]}),
+        inverted, prefixes, {}, pages, aux)
+    assert fmap["$AFP/E/A.thy"] == "/source/A.A.html"
+    assert noev == ["$AFP/E/A.thy"]
+
+
 def test_agreeing_declaring_hashes_pass_the_cross_check():
     inverted, prefixes, pages, aux = _resolver_inputs()
-    fmap, _ = sp.build_file_page_map(
+    fmap, _res, _noev = sp.build_file_page_map(
         _scan_body(["$AFP/E/A.thy"], declaring={"$AFP/E/A.thy": ["aa"]}),
         inverted, prefixes, {"aa": "A.A"}, pages, aux)
     assert fmap["$AFP/E/A.thy"] == "/source/A.A.html"
@@ -310,7 +327,7 @@ def test_a_resolved_name_without_a_page_is_a_hard_error():
 
 def test_an_unrendered_auxiliary_file_is_residue_not_an_error():
     inverted, prefixes, pages, aux = _resolver_inputs()
-    fmap, residue = sp.build_file_page_map(
+    fmap, residue, _noev = sp.build_file_page_map(
         _scan_body(["$AFP/E/other.ML"]), inverted, prefixes, {}, pages, aux)
     assert not fmap and residue == {"$AFP/E/other.ML": "no rendered auxiliary copy"}
 
@@ -387,32 +404,46 @@ def test_css_urls_rewrite_per_file_type_and_externals_are_exempt():
     assert counters.external == 1
 
 
-def test_a_dangling_input_anchor_is_stripped_text_kept_and_reported(tmp_path):
-    """D51: the renderer emitted a link to a page it never wrote — strip the
-    anchor, keep the words, count and name the strip."""
-    rendered = tmp_path / "rendered"
-    (rendered / "Unsorted" / "S1").mkdir(parents=True)
+def test_a_dangling_input_anchor_is_stripped_text_kept_and_reported():
+    """D51: the renderer emitted a link to a page it never wrote — by the
+    SEALED inventory, not the live filesystem (Q3) — strip the anchor, keep
+    the words, count each stripped anchor."""
     page = ('<a href="sat_data/x.grat.xz.html"><span>proof file</span></a>'
-            ' and <a href="A.B.html">fine</a>')
+            ' and <a href="A.B.html">fine</a>'
+            ' and <a href="sat_data/x.grat.xz.html">again</a>')
     counters = sp.RefCounters()
     out = sp.strip_dangling_anchors(page, "Unsorted/S1", _RELOC,
-                                    "Unsorted/S1/A.A.html", str(rendered),
+                                    "Unsorted/S1/A.A.html", set(_RELOC),
                                     counters)
-    assert out == '<span>proof file</span> and <a href="A.B.html">fine</a>'
+    assert out == ('<span>proof file</span> and <a href="A.B.html">fine</a>'
+                   ' and again')
+    # the alarm counts ANCHORS: two anchors to one dead target count two
     assert counters.stripped == [("Unsorted/S1/A.A.html",
-                                  "sat_data/x.grat.xz.html")]
+                                  "sat_data/x.grat.xz.html")] * 2
 
 
-def test_a_target_present_in_the_rendered_tree_is_not_stripped(tmp_path):
+def test_a_target_present_in_the_sealed_inventory_is_not_stripped():
     """Broken-by-us is never papered over: the file exists in the input, so a
     missing relocation entry stays for the rewrite to refuse."""
-    rendered = tmp_path / "rendered"
-    (rendered / "Unsorted" / "S1").mkdir(parents=True)
-    (rendered / "Unsorted" / "S1" / "present.html").write_text("x")
     page = '<a href="present.html">p</a>'
+    inventory = set(_RELOC) | {"Unsorted/S1/present.html"}
     counters = sp.RefCounters()
     out = sp.strip_dangling_anchors(page, "Unsorted/S1", _RELOC,
-                                    "Unsorted/S1/A.A.html", str(rendered),
+                                    "Unsorted/S1/A.A.html", inventory,
+                                    counters)
+    assert out == page and not counters.stripped
+    with pytest.raises(sp.SourcePagesError):
+        sp.rewrite_html_refs(out, "Unsorted/S1", _RELOC,
+                             "Unsorted/S1/A.A.html", sp.RefCounters())
+
+
+def test_a_dangling_src_is_not_stripped_but_refused_by_the_rewriter():
+    """D51 rules anchors only: a dangling src falls through to the ordinary
+    hard error, with the right diagnosis."""
+    page = '<img src="gone.png"/>'
+    counters = sp.RefCounters()
+    out = sp.strip_dangling_anchors(page, "Unsorted/S1", _RELOC,
+                                    "Unsorted/S1/A.A.html", set(_RELOC),
                                     counters)
     assert out == page and not counters.stripped
     with pytest.raises(sp.SourcePagesError):
@@ -477,27 +508,57 @@ def test_a_page_showing_a_different_files_line_count_is_a_hard_error():
 
 def test_identical_copies_merge_to_themselves():
     content = _page("one\ntwo")
-    merged, conflicted = sp.merge_aux_copies([("a", content), ("b", content)])
+    base, merged, conflicted = sp.merge_aux_copies("$AFP/E/u.ML",
+                                                   [("a", content), ("b", content)])
     assert merged == content and not conflicted
 
 
 def test_conflicting_copies_publish_the_id_union():
     a = _page('<a id="mldef"></a>one\ntwo')
     b = _page('<a id="mldef2"></a>one\ntwo')
-    merged, conflicted = sp.merge_aux_copies([("a", a), ("b", b)])
+    _base, merged, conflicted = sp.merge_aux_copies("$AFP/E/u.ML",
+                                                    [("a", a), ("b", b)])
     assert conflicted
     line_one = merged.split("\n")[0]
     assert 'id="mldef"' in line_one and 'id="mldef2"' in line_one
 
 
-def test_copies_differing_beyond_ids_stop_the_pass():
+def test_an_entity_anchor_element_present_in_one_copy_only_merges():
+    """The amended tolerance's second measured shape (splitter.ML:490): the
+    anchor is a whole element, and the span run splits differently — the
+    TEXT is identical, so the copies merge and the id-union lands."""
+    a = _page('<span>‹</span><span class="entity_def" id="HOL.split|attribute">'
+              '<span>split</span></span><span>›</span>\ntwo')
+    b = _page('<span>‹split›</span>\ntwo')
+    _base, merged, conflicted = sp.merge_aux_copies("~~/src/Provers/splitter.ML",
+                                                    [("a", a), ("b", b)])
+    assert conflicted and 'id="HOL.split|attribute"' in merged
+
+
+def test_differing_titles_merge_and_the_symbolic_title_wins():
+    """The amended tolerance's first measured shape: the renderer names the
+    file relative to the presenting session; the base is the copy whose
+    title carries the symbolic path."""
+    qualified = ('<html><head><title>File ‹$AFP/E/util.ML›</title></head>'
+                 '<body><pre class="source">one</pre></body></html>')
+    bare = ('<html><head><title>File ‹util.ML›</title></head>'
+            '<body><pre class="source">one</pre></body></html>')
+    base, merged, conflicted = sp.merge_aux_copies(
+        "$AFP/E/util.ML", [("z_sorted_last", qualified), ("a_sorted_first", bare)])
+    assert conflicted
+    assert base == "z_sorted_last" and "‹$AFP/E/util.ML›" in merged
+
+
+def test_copies_differing_in_text_stop_the_pass():
     with pytest.raises(sp.SourcePagesError):
-        sp.merge_aux_copies([("a", _page("one\ntwo")), ("b", _page("eins\ntwo"))])
+        sp.merge_aux_copies("$AFP/E/u.ML",
+                            [("a", _page("one\ntwo")), ("b", _page("eins\ntwo"))])
 
 
 def test_copies_of_different_lengths_stop_the_pass():
     with pytest.raises(sp.SourcePagesError):
-        sp.merge_aux_copies([("a", _page("one\ntwo")), ("b", _page("one"))])
+        sp.merge_aux_copies("$AFP/E/u.ML",
+                            [("a", _page("one\ntwo")), ("b", _page("one"))])
 
 
 # --- the index (D49 ruling 5, copy approved 2026-08-23) -----------------------
@@ -515,7 +576,9 @@ def test_the_index_carries_the_approved_copy_and_groups_by_session_prefix():
 
 # --- the pass and the gate, end to end on a fixture tree ----------------------
 
-_CSS = "@font-face {{ src: url('{}fonts/TestFont.ttf'); }}\n.source {{ color: black; }}"
+_CSS = ("@font-face {{ src: url('{}fonts/TestFont.ttf'); }}\n"
+        "@import url('https://cdn.example.org/x.css');\n"
+        ".source {{ color: black; }}")
 
 _REG_HASH = "aa" * 16      # the stub registry's one declaring-theory hash
 
@@ -539,10 +602,13 @@ def _fixture(tmp_path, monkeypatch):
         "A.B": {"path": "./contrib/afp-2026-05-13/thys/E/B.thy", "deps": []},
         "HOL.List": {"path": "./contrib/Isabelle2025-2/src/HOL/List.thy",
                      "deps": []},
+        "Nap.Build": {"path": "./contrib/Isabelle2025-2/contrib/nap-1/Build.thy",
+                      "deps": []},
     }), encoding="utf-8")
     for rel, lines in (("contrib/afp-2026-05-13/thys/E/A.thy", 3),
                        ("contrib/afp-2026-05-13/thys/E/B.thy", 1),
                        ("contrib/Isabelle2025-2/src/HOL/List.thy", 4),
+                       ("contrib/Isabelle2025-2/contrib/nap-1/Build.thy", 1),
                        ("contrib/afp-2026-05-13/thys/E/u.ML", 2)):
         p = repo / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -554,7 +620,7 @@ def _fixture(tmp_path, monkeypatch):
         "index.html": "<html/>",
         "isabelle.css": _CSS.format(""),
         "isabelle.gif": "GIF",
-        "fonts/TestFont.ttf": "FONT",
+
         "Unsorted/index.html": "<html/>",
         "Unsorted/S1/index.html": '<a href="session_graph.pdf">g</a>',
         "Unsorted/S1/session_graph.pdf": "PDF",
@@ -582,6 +648,10 @@ def _fixture(tmp_path, monkeypatch):
         path = rendered / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+    # a REAL binary font: opening it as UTF-8 must never happen (the review's
+    # third blocker was the gate decoding the 13 real .ttf files)
+    (rendered / "fonts").mkdir(exist_ok=True)
+    (rendered / "fonts" / "TestFont.ttf").write_bytes(b"\x00\x01\x80\x99FONT\xff")
 
     from Isabelle_Semantic_Embedding import site_export
     monkeypatch.setattr(site_export, "theory_registry",
@@ -635,7 +705,9 @@ def test_map_publish_and_gate_pass_end_to_end(tmp_path, monkeypatch, capsys):
     assert "Isabelle source pages" in idx and 'href="/source/A.B.html"' in idx
     report = json.loads(read("publish-report.json"))
     assert report["marks injected"] == 4
-    assert report["external references exempted (D50)"] == 1
+    # 1 wiki link + 1 css @import — the css external is counted ONCE although
+    # the fixture renders four stylesheet copies (the ×335 defect's regression)
+    assert report["external references exempted (D50)"] == 2
     assert report["dangling anchors stripped (D51)"] == 1
     assert report["auxiliary conflicts merged"] == 1
 
@@ -714,7 +786,71 @@ def test_the_gate_ignores_external_references_and_counts_them(tmp_path, monkeypa
     assert sp.run_gate(published=out, artefact_path=artefact, namespace=None,
                        region="", sample=0) == 0
     logged = capsys.readouterr().out
-    assert "1 site-external exempted (D50)" in logged
+    assert "2 site-external exempted (D50)" in logged   # wiki + css @import
+
+
+def test_the_gate_refuses_a_tree_built_from_another_artefact(tmp_path, monkeypatch):
+    """The identity chain: publish stamps the artefact hash into the report,
+    and the gate refuses a (tree, artefact) pair that never belonged
+    together."""
+    repo, rendered, scan_path = _fixture(tmp_path, monkeypatch)
+    artefact = _run_map(tmp_path, repo, rendered, scan_path)
+    out = str(tmp_path / "published")
+    sp.run_publish(rendered=str(rendered), artefact_path=artefact, out=out)
+    body, _ = sp.load_artefact(artefact, "map", sp.ARTEFACT_FORMAT)
+    body["no_evidence"] = ["tweown_evidence"]
+    other = str(tmp_path / "artefact-b.json")
+    sp.write_artefact(other, body)
+    assert sp.run_gate(published=out, artefact_path=other, namespace=None,
+                       region="", sample=0) >= 1
+
+
+def test_the_gate_fails_when_the_alarm_counters_disagree(tmp_path, monkeypatch):
+    """The report's D50 number and the gate's own count must agree, or the
+    alarm was never comparable."""
+    repo, rendered, scan_path = _fixture(tmp_path, monkeypatch)
+    artefact = _run_map(tmp_path, repo, rendered, scan_path)
+    out = str(tmp_path / "published")
+    sp.run_publish(rendered=str(rendered), artefact_path=artefact, out=out)
+    report_path = os.path.join(out, "publish-report.json")
+    with open(report_path, encoding="utf-8") as f:
+        report = json.load(f)
+    report["external references exempted (D50)"] += 5
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f)
+    assert sp.run_gate(published=out, artefact_path=artefact, namespace=None,
+                       region="", sample=0) >= 1
+
+
+def test_the_gate_misses_no_promised_page(tmp_path, monkeypatch):
+    """The generated index is the one page nothing references — a publish
+    that lost it must not gate green."""
+    repo, rendered, scan_path = _fixture(tmp_path, monkeypatch)
+    artefact = _run_map(tmp_path, repo, rendered, scan_path)
+    out = str(tmp_path / "published")
+    sp.run_publish(rendered=str(rendered), artefact_path=artefact, out=out)
+    os.remove(os.path.join(out, "index.html"))
+    assert sp.run_gate(published=out, artefact_path=artefact, namespace=None,
+                       region="", sample=0) >= 1
+
+
+def test_a_fragment_into_a_binary_target_fails_instead_of_crashing(tmp_path,
+                                                                   monkeypatch):
+    """The review's third blocker, inverted: the gate never opens a
+    fragment-less binary target, and a fragment INTO one is a failure, not a
+    UnicodeDecodeError traceback."""
+    repo, rendered, scan_path = _fixture(tmp_path, monkeypatch)
+    artefact = _run_map(tmp_path, repo, rendered, scan_path)
+    out = str(tmp_path / "published")
+    sp.run_publish(rendered=str(rendered), artefact_path=artefact, out=out)
+    page = os.path.join(out, "A.B.html")
+    with open(page, encoding="utf-8") as f:
+        content = f.read()
+    with open(page, "w", encoding="utf-8") as f:
+        f.write(content.replace(
+            "</body>", '<a href="/source/fonts/TestFont.ttf#x">f</a></body>'))
+    assert sp.run_gate(published=out, artefact_path=artefact, namespace=None,
+                       region="", sample=0) >= 1
 
 
 # --- the patch (§17.6), with a stubbed API ------------------------------------

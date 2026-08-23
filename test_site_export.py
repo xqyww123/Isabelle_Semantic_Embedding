@@ -310,15 +310,29 @@ def test_a_checkpoint_names_the_namespace_it_belongs_to(tmp_path):
     """Resuming into the wrong namespace would skip the first half of a fresh index
     and leave a hole nothing reports."""
     path = str(tmp_path / "cp.json")
-    se._write_checkpoint(path, "isasearch-a-3", b"\x01\x02", 7)
+    se._write_checkpoint(path, "isasearch-a-3", b"\x01\x02", 7, "dig")
     # An unfinished run resumes into its OWN generation, not a fresh one.
-    assert se._read_checkpoint(path, "isasearch-a") == ("isasearch-a-3", b"\x01\x02", 7)
+    assert se._read_checkpoint(path, "isasearch-a", "dig") \
+        == ("isasearch-a-3", b"\x01\x02", 7)
     with pytest.raises(se.ExportError):
-        se._read_checkpoint(path, "isasearch-b")
+        se._read_checkpoint(path, "isasearch-b", "dig")
+
+
+def test_a_checkpoint_pins_the_source_links_artefact(tmp_path):
+    """B6: a resume under a re-generated artefact would leave every
+    already-upserted row carrying the old artefact's links — refused."""
+    path = str(tmp_path / "cp.json")
+    se._write_checkpoint(path, "isasearch-a", b"\x01", 3, "old-digest")
+    with pytest.raises(se.ExportError):
+        se._read_checkpoint(path, "isasearch-a", "new-digest")
+    # --no-source-links runs pin None, and mixing the two modes is refused too
+    with pytest.raises(se.ExportError):
+        se._read_checkpoint(path, "isasearch-a", None)
 
 
 def test_no_checkpoint_means_start_from_the_beginning(tmp_path):
-    assert se._read_checkpoint(str(tmp_path / "absent.json"), "isasearch-a") is None
+    assert se._read_checkpoint(str(tmp_path / "absent.json"), "isasearch-a",
+                               None) is None
 
 
 # --- §12.1's credential rule ------------------------------------------------
