@@ -218,34 +218,30 @@ def _split(s):
 def test_a_document_carries_exactly_the_fields_the_schema_declares():
     """Two halves of one statement: a field in one and not the other is either an
     attribute turbopuffer types by guesswork or a column nothing ever fills."""
-    doc = se.build_document(b"k", _record(), ["HOL.List"], _vector(), _split, {})
+    doc = se.build_document(b"k", _record(), ["HOL.List"], _vector(), _split, "")
     assert set(doc) == set(se.namespace_schema(4))
 
 
 def test_the_position_is_a_symbolic_path_and_a_line():
-    doc = se.build_document(b"k", _record(), ["HOL.List"], _vector(), _split, {})
+    doc = se.build_document(b"k", _record(), ["HOL.List"], _vector(), _split, "")
     assert doc["position"] == "$AFP/Q/J.thy:42"
 
 
 def test_a_record_without_a_position_says_so_with_an_empty_string():
     doc = se.build_document(b"k", _record(position=None), ["HOL.List"], _vector(),
-                            _split, {})
+                            _split, "")
     assert doc["position"] == ""
 
 
-def test_the_source_link_is_looked_up_by_document_id():
+def test_the_source_link_is_carried_verbatim():
     """§17.6: resolution happened once, at map time (D49 ruling 2) — the export
-    only looks the row up in the artefact's links."""
-    links = {se.document_id(b"k"): "/source/HOL.List.html#L92"}
-    doc = se.build_document(b"k", _record(), ["HOL.List"], _vector(), _split, links)
-    assert doc["source_link"] == "/source/HOL.List.html#L92"
-
-
-def test_a_record_the_links_do_not_name_gets_the_empty_string():
-    """D42's absent form, end to end: an empty `source_link` is what makes the
-    card show no link at all."""
+    only carries the composed string; the empty string is D42's absent form.
+    A document id the artefact does not name raises in `iter_documents`
+    instead of shipping silently empty (the A3/B5 ruling)."""
     doc = se.build_document(b"k", _record(), ["HOL.List"], _vector(), _split,
-                            {"someone-else": "/source/X.html#L1"})
+                            "/source/HOL.List.html#L92")
+    assert doc["source_link"] == "/source/HOL.List.html#L92"
+    doc = se.build_document(b"k", _record(), ["HOL.List"], _vector(), _split, "")
     assert doc["source_link"] == ""
 
 
@@ -254,7 +250,7 @@ def test_a_collection_member_is_indexed_under_its_raw_name():
     filter for the whole namespace, so a pasted `coll(_)` matches nothing — which the
     user ruled intended on 2026-08-19."""
     doc = se.build_document(b"k", _record(name="Foo.bar_1", from_collection="Foo.bars"),
-                            ["HOL.List"], _vector(), _split, {})
+                            ["HOL.List"], _vector(), _split, "")
     assert doc["name_subtokens"] == _split("Foo.bar_1")
     assert doc["from_collection"] == "Foo.bars"
 
@@ -265,7 +261,7 @@ def test_the_vector_goes_up_as_little_endian_float32():
     import base64
     import numpy as np
     doc = se.build_document(b"k", _record(), ["HOL.List"],
-                            np.array([1.0, 2.0, 3.0, 4.0], dtype="float32"), _split, {})
+                            np.array([1.0, 2.0, 3.0, 4.0], dtype="float32"), _split, "")
     back = np.frombuffer(base64.b64decode(doc["vector"]), dtype="<f4")
     assert list(back) == [1.0, 2.0, 3.0, 4.0]
 

@@ -213,7 +213,7 @@ def namespace_schema(dimension: int) -> dict:
 
 
 def build_document(key: bytes, rec, theories: 'list[str]', vector: np.ndarray,
-                   tokenize, source_links: 'dict[str, str]') -> dict:
+                   tokenize, source_link: str) -> dict:
     """§8.1 steps 2 to 5 for one record.
 
     `name_subtokens` comes from the raw `name` and never from the displayed form: a
@@ -222,15 +222,14 @@ def build_document(key: bytes, rec, theories: 'list[str]', vector: np.ndarray,
     to a different field, so a pasted `coll(_)` matches nothing — intended, and ruled
     on 2026-08-19 (§8.1 step 5).
 
-    `source_links` is the resolved-links half of §17's artefact, keyed by document
-    id: the finished href the card will emit, empty (or absent, same thing) meaning
-    D42's absent form.  Resolution happened once, at map time (D49 ruling 2) — this
-    function only looks the row up."""
+    `source_link` is the finished href the card will emit, composed from §17's
+    artefact by `site_source_pages.source_links`; the empty string is D42's
+    absent form.  Resolution happened once, at map time (D49 ruling 2) — the
+    export only carries the string."""
     name = rec.name or ""
     expr = rec.expr or ""
-    doc_id = document_id(key)
     return {
-        "id": doc_id,
+        "id": document_id(key),
         "group": group_of(name, expr),
         "vector": base64.b64encode(
             vector.astype("<f4", copy=False).tobytes()).decode("ascii"),
@@ -240,7 +239,7 @@ def build_document(key: bytes, rec, theories: 'list[str]', vector: np.ndarray,
         "theories": theories,
         "kind": rec.kind.label,
         "position": (f"{rec.position[0]}:{rec.position[1]}" if rec.position else ""),
-        "source_link": source_links.get(doc_id, ""),
+        "source_link": source_link,
         "from_collection": rec.from_collection or "",
         "expr_subtokens": tokenize(expr),
         "name_subtokens": tokenize(name),
@@ -667,15 +666,30 @@ def iter_shippable(sessions, registry, counts) -> 'Iterator[tuple[bytes, object,
 
 
 def iter_documents(sessions, registry, get_vector, tokenize, counts,
-                   source_links: 'dict[str, str]') -> 'Iterator[tuple[bytes, dict]]':
-    """§8.1 steps 0 and 2 to 5, one record at a time, in key order."""
+                   source_links: 'dict[str, str] | None') -> 'Iterator[tuple[bytes, dict]]':
+    """§8.1 steps 0 and 2 to 5, one record at a time, in key order.
+
+    `source_links` is the composed link per document id, or None when the
+    export was explicitly told to ship without links (`--no-source-links`).
+    With an artefact present, a document id it does not name is an error, not
+    an empty link: the artefact's records cover every published id, so absence
+    means the store moved since the scan — a stale artefact must not ship as
+    silently-absent links (the A3/B5 ruling, 2026-08-23)."""
     for key, rec, theories in iter_shippable(sessions, registry, counts):
         vector = get_vector(key)
         if vector is None:
             raise ExportError(f"{rec.name!r} lost its vector between the "
                               f"completeness gate and the export")
+        if source_links is None:
+            link = ""
+        else:
+            link = source_links.get(document_id(key))
+            if link is None:
+                raise ExportError(
+                    f"{rec.name!r} is not in the source-links artefact — the "
+                    f"store moved since the scan; re-run scan and map (§17)")
         counts["exported"] += 1
-        yield key, build_document(key, rec, theories, vector, tokenize, source_links)
+        yield key, build_document(key, rec, theories, vector, tokenize, link)
 
 
 def _batches(documents, rows: int, size: int):
@@ -737,7 +751,8 @@ def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
         vector_store: 'str | None', region: str, dump: 'str | None',
         checkpoint: str, limit: 'int | None', change_intended: bool,
         skip_gate: bool, name_override: 'str | None' = None,
-        source_links_path: 'str | None' = None) -> str:
+        source_links_path: 'str | None' = None,
+        no_source_links: bool = False) -> str:
     """§8.1 end to end.  Returns the namespace that was written."""
     import contextlib
     from . import isabelle_tokenizer
@@ -773,14 +788,26 @@ def run(*, isabelle_home: str, afp_dir: str, committed_asset: str,
     registry = theory_registry()
     _log(f"{len(registry)} theory-hash registry entr(ies)")
 
+    # The artefact is required by default (the A3/B5 ruling): a re-export
+    # upserts whole rows, so running without it would silently erase the
+    # patched source_link column on every row.  Shipping without links takes
+    # the explicit --no-source-links.
     if source_links_path:
-        from .site_source_pages import load_artefact
-        source_links = load_artefact(source_links_path)["links"]
-        _log(f"{len(source_links)} source link(s) from {source_links_path}")
+        from . import site_source_pages as ssp
+        body, _digest = ssp.load_artefact(source_links_path, "map",
+                                          ssp.ARTEFACT_FORMAT)
+        source_links = ssp.source_links(body)
+        _log(f"{len(source_links)} source link(s) composed from "
+             f"{source_links_path}")
+    elif no_source_links:
+        source_links = None
+        _log("--no-source-links: every source_link ships EMPTY — D42's absent "
+             "form on every card")
     else:
-        source_links = {}
-        _log("no --source-links: every source_link will be empty — D42's absent "
-             "form on every card (§17.6 wants the artefact here)")
+        raise ExportError(
+            "no --source-links artefact: an export without it would erase the "
+            "source_link column on every row (§17.6).  Pass the artefact, or "
+            "--no-source-links to ship without links on purpose.")
 
     path = vector_store_path(vector_store)
     with contextlib.ExitStack() as stack:
@@ -869,8 +896,12 @@ def build_parser(**kw) -> argparse.ArgumentParser:
                    help="the previous export's asset, which D46 compares against")
     p.add_argument("--vector-store", help="the vector store to publish from")
     p.add_argument("--source-links", metavar="ARTEFACT",
-                   help="§17's artefact, whose resolved links fill each row's "
-                        "source_link; without it every source_link is empty")
+                   help="§17's artefact; each row's source_link is composed "
+                        "from it (required unless --no-source-links)")
+    p.add_argument("--no-source-links", action="store_true",
+                   help="ship every source_link empty, on purpose — a "
+                        "re-export without the artefact would otherwise "
+                        "erase the patched column")
     p.add_argument("--region", default=DEFAULT_REGION)
     p.add_argument("--namespace", help="write into this namespace instead of the "
                                        "next free generation; for a live smoke test")
@@ -902,7 +933,8 @@ def run_from_args(args: argparse.Namespace) -> int:
             checkpoint=args.checkpoint,
             limit=args.limit, change_intended=args.asset_change_intended,
             skip_gate=args.skip_completeness_gate, name_override=args.namespace,
-            source_links_path=args.source_links)
+            source_links_path=args.source_links,
+            no_source_links=args.no_source_links)
     except ExportError as e:
         print(f"[site-export] {e}", file=sys.stderr)
         return 1

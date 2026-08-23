@@ -4532,12 +4532,34 @@ three hand-picked URLs render correctly against a local serving of the
 published tree — `/source/HOL.html#L513` landing on `lemma conjI`, one AFP
 theory page, one `.ML` auxiliary page.
 
-Unit tests (fixture pages, no cslh19, no network): the resolver's three steps
-and both hard errors; the twins; reference rewriting for the three measured
-link shapes plus CSS `url()`, fragments preserved; the injector's split (mark
-placement, guard regexes, needed-line-past-end, the `id="L<digits>"` test
-not firing on `id="List.…"`); the id-union merge; index generation; the
-collision guard; `source_link` emission including the empty-string case.
+Unit tests (fixture trees, no cslh19, no database, no network — the list of
+the 2026-08-23 implementation, 100 tests): D50's predicate (every scheme
+shape external, no internal shape matching, colon-in-fragment safe); the
+envelope (round trip, tamper, wrong kind/format) and the map body's load
+validation (partition, index range); the composer (`source_links` per record
+class, duplicate ids) and the derived needed-lines; D53's inversion (alias
+fold, injectivity, prefix detection), normalisation, the one-lookup resolver
+and its three staleness gates as hard errors, the agreeing cross-check, the
+auxiliary residue, the page-collision guard; D52's derivation (dotted stem,
+session-dir stem, global bare, underived dropped, long-name collision, the
+twins deriving two names) and `page_for_name`'s twin preference plus the
+`X.X`→bare fallback; reference rewriting for the three measured link shapes
+plus CSS `url()`, fragments preserved, externals byte-identical and counted,
+unmapped-but-present hard error, displayed `href="…"` text untouched; D51's
+strip (text kept, counted and named; present-in-tree targets never
+stripped); the structural assertions on every page shape and the
+`id="List.…"` non-firing; the injector (placement, needed-only, EOF,
+past-end, B3's source-line-count mismatch with its ±1); the id-union merge;
+the index carrying the approved copy and the session-prefix grouping; and,
+end to end on a fixture world (repo root + rendered tree + registry stub):
+map→publish→gate green with the report's two alarm counters at their
+expected values, publish refusing a moved tree, a handed directory, and
+removing its own staging on failure, the gate counting a missing mark and a
+renamed entity anchor; the patch against a stubbed API (every id once,
+artefact-hash pinning, namespace/hash checkpoint refusals, resume
+arithmetic, completed-rerun no-op, count-mismatch refusal) and the
+stratified namespace sample failing on a short return.  `source_link`
+emission including the empty-string case lives in the export's own tests.
 
 ### 17.8 What this section does not decide
 
