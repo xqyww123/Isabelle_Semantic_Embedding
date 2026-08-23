@@ -267,6 +267,39 @@ reader of those sections needs to find the decision that used to govern them.
   (§11.1's rate limiting included). §9 stays in this document as the agreed
   design but is **not** to be built yet, and the questions it raises need no
   answer to unblock anything.
+- **D52** (2026-08-23) — **the published page name is the theory long name,
+  derived at classification time; D49 ruling 1's flat URL stands.** The
+  adversarial code review found the defect that forced this ruling: the
+  renderer names a page by `print_short` — the theory's **base** name when it
+  is presented in its own session, the full long name only under a foreign
+  session (`document_info.scala`) — so the real tree holds 280 base-named
+  pages (HOL 115, HOL-Library 148, Pure 3, and the 17 global theories'
+  pages), and code that reads the stem as the long name silently loses
+  16.6 % of needed pairs and maps 103 distribution files onto same-base-named
+  AFP pages. The ruling: the pass derives each page's long name and publishes
+  `/source/<derived long name>.html` — §17.2's URL becomes true by
+  construction rather than aspiration, and page-name uniqueness now rests on
+  long-name uniqueness instead of one render's measured stem distinctness
+  (609 registry base names are shared by 2+ long names; a future re-render
+  could collide stems). **The derivation rule**, verified exhaustively
+  against the real tree × the full registry (10,597 × 10,594; zero
+  collisions, zero double-hits, zero records losing their link):
+  1. a stem containing `.` **is** the long name — a theorem, not a
+     heuristic: `Long_Name` makes a dot in a base name impossible, so a
+     dotted stem proves foreign-session presentation and `print_short` = the
+     full name;
+  2. a dotless stem resolves to `<session dir>.<stem>` when the registry
+     holds that name (261 pages), else to the bare `stem` itself (the 17
+     global theories); both-hit ambiguity was measured at zero, and the four
+     pages resolving to neither (`Pure` bootstrap/example theories, zero
+     entity ids, referenced only by their dropped session index) are dropped
+     and counted.
+  Amendment ratified with the rule: a registry name of shape `X.X` that
+  derives no page falls back to the bare page `X` — the global-theory
+  presentation of the same theory; `HOL-CSP.HOL-CSP` is the one such name
+  today. Independent oracle: entity-anchor ids carry the theory's base name
+  and agree on 9,893 of the 9,897 pages that have ids at all, the four
+  exceptions being imports-only theories with no own entities.
 - **D51** (2026-08-23) — **input-dangling references are stripped, alarmed and
   reported.** The renderer itself emits links to pages it never writes: it
   writes a page per auxiliary blob only when the blob produced markup, but
@@ -4307,9 +4340,12 @@ machine happens to have".
 
 ### 17.2 The published layout
 
-- **Theory pages, flat** (D49 ruling 1): `/source/<theory long name>.html`.
-  All 10,597 stems are distinct tree-wide; 17 long names have no session
-  component and are ordinary pages here.
+- **Theory pages, flat** (D49 ruling 1): `/source/<theory long name>.html`,
+  the long name **derived** from the rendered location by D52's verified rule
+  — the renderer names a home-session page by the theory's base name, so the
+  stem alone is not the long name. Uniqueness rests on long names being
+  unique by construction, not on any one render's stem census; 17 long names
+  have no session component (global theories) and are ordinary pages here.
 - **Auxiliary pages**: `/source/_aux/AFP/<rest>.html` for `$AFP/<rest>`
   positions, `/source/_aux/ISABELLE_HOME/<rest>.html` for `~~/<rest>` — a pure
   function of the symbolic position, computable with zero lookup, verified
@@ -4323,9 +4359,16 @@ machine happens to have".
   rendered CSS copies and `isabelle.gif` (referenced by nothing) are dropped.
 - **Our index** (D49 ruling 5): one generated `/source/index.html`, every
   published theory long name as a link, grouped by session, alphabetical,
-  styled by the same CSS. The renderer's 34 index pages and the 30
-  `session_graph.pdf` only they reference are dropped; the published tree's
-  only other entry points are result cards and cross-references.
+  styled by the same CSS. The group is the **derived long name's session
+  prefix** (ruled 2026-08-23 with D52): correct for every dotted name, and a
+  global theory's bare name heads its own small group — its name is its
+  natural headword, so `Main` or `IFOL` standing alone is cosmetic, not
+  wrong. Grouping by the rendered session *directory* was considered and
+  rejected: the AFP pages' directories are the umbrella build names
+  (`AFP-DEP1-0`, …), which must never leak into anything public. The
+  renderer's 34 index pages and the 30 `session_graph.pdf` only they
+  reference are dropped; the published tree's only other entry points are
+  result cards and cross-references.
 - **Everything else** (D49 ruling 4): the declared published classes are the
   five above; anything a published page references that is absent is a hard
   error the gate proves; anything present but unreferenced is dropped and
