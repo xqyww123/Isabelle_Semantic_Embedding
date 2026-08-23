@@ -4456,8 +4456,16 @@ and the rendered tree by construction.
 2. **Look up** the inverted table: path → the one long name (inversion is
    injective after the `(global)`-alias fold of the 2026-08-23 twin cleanup;
    measured zero multi-name paths over 11,524).
-3. **Page**: the long name's published page by D52's derivation, `X.X`
-   falling back to the bare page `X`.
+3. **Page**: the long name's published page by D52's derivation, with the
+   two twin branches — both ruled 2026-08-23: a bare name `X` **prefers the
+   session-qualified twin page `X.X`** when both pages exist (fires once on
+   the real corpus), and an `X.X` name with no page of its own **falls back
+   to the bare page `X`** (zero hits today — the alias fold pre-empts it —
+   kept because its deadness is a property of this table generation, not a
+   guarantee).  Ratified with them: the twin pages **both publish** and the
+   index lists both (rendered cross-references point into each, so dropping
+   either would break links); the line marks and every row link land on the
+   qualified twin only.
 
 Measured on the full corpus: 9,784 of 9,784 position files hit the table,
 every resolved name has a page, `.thy` residue is **zero** — including all
