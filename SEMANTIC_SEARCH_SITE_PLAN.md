@@ -4333,8 +4333,14 @@ unrepresentable, which is the entire idempotence story. **The file→page map**
 is the pass's central artefact: for every source file some position names, the
 published page that renders it. **The needed-lines table** is keyed by the
 position file — not by theory: 85 % of positioned records have no declaring
-theory at all (D13), 25 theories span up to 6 files, and 2 files carry records
-of several theories, so the file is the only key that fits both directions.
+theory at all (D13), 25 theories span up to 6 files, and one file carries
+records of several theories, so the file is the only key that fits both
+directions. (The review corrected this last count: the original "2 files"
+counted `Restriction_Spaces-HOLCF.thy`, which is not a multi-theory file but
+the twin phenomenon — one theory collected under two names — and its
+duplicate side was deleted in the 2026-08-23 twin cleanup; the one genuine
+case is `AutoCorres2/c-parser/CLocals.thy`, whose ML machinery mints entities
+for 11 theories with positions in its own file.)
 
 ### 17.1 Inputs, and the one machine that builds the mapping
 
@@ -4506,8 +4512,10 @@ the test). Finally the pass **generates** `/source/index.html` and
 
 `source_link`: string, `filterable: False`, the finished href
 (`/source/<page>.html#L<line>`) or the empty string. For the live
-`isasearch-2025-2-afp-2026-05-13`: one `patch_rows` run over all 1,337,025
-ids (verified semantics: only named keys written, vectors untouched, a new
+`isasearch-2025-2-afp-2026-05-13`: one `patch_rows` run over all **1,337,009**
+ids — 1,337,025 as exported, minus the 16 twin-duplicate rows deleted in the
+2026-08-23 cleanup — (verified semantics: only named keys written, vectors
+untouched, a new
 attribute is fine, billing by patched size — ~100 MB of attribute data,
 minutes-to-an-hour at the export's batch shape, reusing its batching and
 checkpointing). Every future export carries the column from the start —
