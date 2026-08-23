@@ -309,10 +309,15 @@ reader of those sections needs to find the decision that used to govern them.
      full name;
   2. a dotless stem resolves to `<session dir>.<stem>` when the registry
      holds that name (261 pages), else to the bare `stem` itself (the 17
-     global theories); both-hit ambiguity was measured at zero, and the four
-     pages resolving to neither (`Pure` bootstrap/example theories, zero
-     entity ids, referenced only by their dropped session index) are dropped
-     and counted.
+     global theories); both-hit ambiguity was measured at zero, and the
+     **two** pages resolving to neither (`Pure/Pure/ML_Bootstrap`,
+     `Pure/Pure/Sessions` — zero entity ids, referenced only by their
+     dropped session index) are dropped and counted.  (Corrected 2026-08-23:
+     an earlier count said four, wrongly assuming the dotted-stem branch also
+     consults the registry — it does not, by design: a dotted stem *is* the
+     long name by `Long_Name`'s theorem, so the two `Pure-ex.*` pages publish
+     under their stems, harmlessly — no position resolves to them and nothing
+     links them.)
   Amendment ratified with the rule: a registry name of shape `X.X` that
   derives no page falls back to the bare page `X` — the global-theory
   presentation of the same theory; `HOL-CSP.HOL-CSP` is the one such name
@@ -412,6 +417,33 @@ reader of those sections needs to find the decision that used to govern them.
      ids, byte-identical otherwise) merge their id sets, so none of the
      266,134 fragment references into auxiliary pages breaks; the gate stops
      trusting any fragment and checks them all.
+
+     **Amendment to ruling 6** (2026-08-23, from the implementation review;
+     user-approved). The ruling's parenthesis — "the 12 content-conflicting
+     copies (differing only in entity-anchor ids, byte-identical otherwise)"
+     — was measured again against the real tree and is **wrong**. Twelve
+     symbolic paths still conflict, but in three ways, not one: **eight**
+     differ only in entity-anchor id *values*, as ruled; **three**
+     (`$AFP/Case_Labeling/util.ML`, `~~/src/HOL/Library/Tools/smt_word.ML`,
+     `~~/src/HOL/Library/Tools/word_lib.ML`) also differ in the `<title>` and
+     `<h1>` file-name text, because the renderer names the file relative to
+     the session presenting it; **one** (`~~/src/Provers/splitter.ML`, line
+     490) differs in element *structure* — an `entity_def` span present in
+     one copy and absent in the other, which also re-splits the surrounding
+     span run. Two of them (`smt_word.ML`, `word_lib.ML`) further carry
+     different cross-reference targets: one copy links `HOL-Library.Word`,
+     the other `Zip_Benchmarks.Word` — two different published pages for the
+     same entity, both of which exist and both of which carry the fragment.
+     The invariant that *does* hold across all twelve, measured: **with
+     `<title>` and `<h1>` blanked and all markup erased, the text is
+     identical and the line counts are equal.** The ruling therefore
+     becomes: *auxiliary copies of one symbolic path must agree line-for-line
+     in text once the title and heading are set aside; the published page is
+     the copy whose title names the symbolic path (ties broken by sorted
+     rendered location), carrying the id-union of all copies; any other
+     difference stops the pass.* The measured baselines move with it:
+     **1,139** symbolic paths from **1,165** rendered copies (§17.2's
+     1,399/1,466 was stale).
 - **D48** (2026-08-21) — **fusion is server-side, and no relevance number is
   displayed anywhere.** §16.8's measurement showed turbopuffer's `rerank_by:
   ["RRF"]` drops the per-leg scores, so the vector leg's cosine similarity that
@@ -4380,10 +4412,12 @@ machine happens to have".
   positions, `/source/_aux/ISABELLE_HOME/<rest>.html` for `~~/<rest>` — a pure
   function of the symbolic position, computable with zero lookup, verified
   exact on all 26 `.ML` files that carry needed lines. **One page per symbolic
-  path** (D49 ruling 6): the 1,466 rendered copies collapse to 1,399 paths;
-  the 12 paths whose copies conflict — only in entity-anchor ids,
-  byte-identical otherwise — publish the id-union merge, so all 266,134
-  fragment references into auxiliary pages keep landing.
+  path** (D49 ruling 6, as amended 2026-08-23): the 1,165 rendered copies
+  collapse to 1,139 paths; the 12 paths whose copies conflict publish the
+  id-union merge under the amended tolerance — line-for-line text equality
+  once `<title>`/`<h1>` are set aside, the copy whose title names the
+  symbolic path as the base — so all 266,134 fragment references into
+  auxiliary pages keep landing.
 - **Assets, generated not copied**: exactly one `/source/isabelle.css` whose
   `@font-face` URLs are absolute (`/source/fonts/…`), plus `fonts/`. The 335
   rendered CSS copies and `isabelle.gif` (referenced by nothing) are dropped.
