@@ -963,6 +963,34 @@ def test_a_completed_patch_rerun_does_nothing_and_says_so(tmp_path, monkeypatch,
     assert "nothing to do" in capsys.readouterr().out
 
 
+def test_a_non_integer_count_refuses_the_patch_even_with_the_flag(tmp_path,
+                                                                  monkeypatch):
+    # a None count silently satisfied --allow-count-mismatch once; the guard
+    # must prove nothing from missing evidence
+    artefact, calls, fake_request = _patch_world(tmp_path, None)
+    from Isabelle_Semantic_Embedding import site_export
+    monkeypatch.setattr(site_export, "request", fake_request)
+    monkeypatch.setattr(site_export, "api_key", lambda: "k")
+    with pytest.raises(sp.SourcePagesError, match="not an\\s+integer"):
+        sp.run_patch(artefact_path=artefact, namespace="ns", region="r",
+                     checkpoint=str(tmp_path / "cp.json"), limit=None,
+                     allow_count_mismatch=True)
+    assert not calls["patched"]
+
+
+def test_an_unwritable_checkpoint_fails_before_any_row_is_patched(tmp_path,
+                                                                  monkeypatch):
+    artefact, calls, fake_request = _patch_world(tmp_path, 6)
+    from Isabelle_Semantic_Embedding import site_export
+    monkeypatch.setattr(site_export, "request", fake_request)
+    monkeypatch.setattr(site_export, "api_key", lambda: "k")
+    with pytest.raises(OSError):
+        sp.run_patch(artefact_path=artefact, namespace="ns", region="r",
+                     checkpoint=str(tmp_path / "no_such_dir" / "cp.json"),
+                     limit=None, allow_count_mismatch=False)
+    assert not calls["patched"]
+
+
 # --- the namespace sample (stubbed) -------------------------------------------
 
 def test_the_namespace_sample_is_stratified_and_fails_on_short_return(monkeypatch):
@@ -983,3 +1011,26 @@ def test_the_namespace_sample_is_stratified_and_fails_on_short_return(monkeypatc
     monkeypatch.setattr(site_export, "api_key", lambda: "k")
     failures = sp._gate_namespace_sample(links, "ns", "r", sample=4)
     assert failures == 1          # the short return, and nothing else
+
+
+def test_the_namespace_sample_pins_both_endpoints(monkeypatch):
+    links = {f"id{i:02d}": f"/source/P.html#L{i}" for i in range(40)}
+    seen = {}
+
+    def fake_request(method, path, payload=None, *, region, key, attempts=6):
+        if "aggregate_by" in (payload or {}):
+            return {"aggregations": {"rows": len(links)}}
+        seen["chosen"] = payload["filters"][2]
+        return {"rows": [{"id": i, "source_link": links[i]}
+                         for i in seen["chosen"]]}
+
+    from Isabelle_Semantic_Embedding import site_export
+    monkeypatch.setattr(site_export, "request", fake_request)
+    monkeypatch.setattr(site_export, "api_key", lambda: "k")
+    assert sp._gate_namespace_sample(links, "ns", "r", sample=4) == 0
+    ids = sorted(links)
+    assert seen["chosen"][0] == ids[0] and seen["chosen"][-1] == ids[-1], \
+        "a sample that skips an endpoint leaves a blind window there"
+    assert len(seen["chosen"]) == 4
+    with pytest.raises(sp.SourcePagesError):
+        sp._gate_namespace_sample(links, "ns", "r", sample=1)

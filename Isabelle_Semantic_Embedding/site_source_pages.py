@@ -1292,11 +1292,17 @@ def run_gate(*, published: str, artefact_path: str, namespace: 'str | None',
 def _gate_namespace_sample(links: 'dict[str, str]', namespace: str, region: str,
                            sample: int) -> int:
     """§17.5's namespace clause: the live rows' `source_link` must equal the
-    composed strings.  The sample is stratified across the sorted id space —
-    an ascending prefix would be exactly the slice a half-finished patch wrote
-    first — fetched by an `id In` filter, and fewer rows returned than asked
-    for is itself a failure: a gate must not pass on missing evidence."""
+    composed strings.  The sample is pinned to equidistant endpoints of the
+    sorted id space — `ids[i*(n-1)//(sample-1)]` always probes both ends, where
+    a stride-and-truncate slice leaves a blind tail exactly where a
+    half-finished patch stopped — fetched by an `id In` filter, and fewer rows
+    returned than asked for is itself a failure: a gate must not pass on
+    missing evidence."""
     from .site_export import api_key, request
+    if sample < 2:
+        raise SourcePagesError(
+            f"--sample {sample} cannot pin both endpoints of the id space; "
+            f"use at least 2")
     key = api_key()
     failures = 0
     got = request("POST", f"/v2/namespaces/{namespace}/query",
@@ -1308,8 +1314,11 @@ def _gate_namespace_sample(links: 'dict[str, str]', namespace: str, region: str,
         _log(f"  FAIL {namespace} holds {count} row(s), the artefact composes "
              f"{len(links)}")
     ids = sorted(links)
-    step = max(1, len(ids) // max(1, sample))
-    chosen = ids[::step][:sample]
+    n = len(ids)
+    if n <= sample:
+        chosen = ids
+    else:
+        chosen = [ids[i * (n - 1) // (sample - 1)] for i in range(sample)]
     rows = request("POST", f"/v2/namespaces/{namespace}/query",
                    {"rank_by": ["id", "asc"], "top_k": len(chosen),
                     "filters": ["id", "In", chosen],
@@ -1351,17 +1360,27 @@ def run_patch(*, artefact_path: str, namespace: str, region: str,
     checkpoint advances only after its whole group is confirmed — the export's
     resume story, reused.  The checkpoint pins the artefact's content hash: a
     resume against a different artefact would skip rows whose links changed."""
-    from .site_export import BATCH_WORKERS, _groups, api_key, request
+    from .site_export import (BATCH_WORKERS, SOURCE_LINK_SCHEMA, _groups,
+                              api_key, request)
 
     artefact, artefact_hash = load_artefact(artefact_path, "map", ARTEFACT_FORMAT)
     links = source_links(artefact)
     key = api_key()
+    # 1.3M rows against documented 429 backpressure past 1M unindexed writes:
+    # the patch needs a far longer retry horizon than the export's default.
+    attempts = 12
 
     def _count() -> int:
         got = request("POST", f"/v2/namespaces/{namespace}/query",
                       {"aggregate_by": {"rows": ["Count", "id"]}},
-                      region=region, key=key)
-        return got.get("aggregations", {}).get("rows")
+                      region=region, key=key, attempts=attempts)
+        rows = got.get("aggregations", {}).get("rows")
+        if not isinstance(rows, int) or isinstance(rows, bool):
+            raise SourcePagesError(
+                f"the namespace count query returned {rows!r}, not an "
+                f"integer — the count guards prove nothing from missing "
+                f"evidence, so the patch refuses to run on it")
+        return rows
 
     before = _count()
     _log(f"{namespace}: {before} row(s); artefact composes {len(links)} link(s)")
@@ -1397,24 +1416,31 @@ def run_patch(*, artefact_path: str, namespace: str, region: str,
     if limit is not None:
         todo = todo[:limit]
 
-    schema = {"source_link": {"type": "string", "filterable": False}}
+    def _write_checkpoint(done: int) -> None:
+        tmp = checkpoint + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"namespace": namespace, "done": done,
+                       "artefact_hash": artefact_hash}, f)
+        os.replace(tmp, checkpoint)
+
+    # Written before the first batch: an unwritable checkpoint path must fail
+    # here, not after a batch group has already landed on the live store.
+    _write_checkpoint(done)
+
+    schema = {"source_link": SOURCE_LINK_SCHEMA}
 
     def patch(batch: 'list[str]') -> None:
         request("POST", f"/v2/namespaces/{namespace}",
                 {"patch_rows": [{"id": i, "source_link": links[i]}
                                 for i in batch],
-                 "schema": schema}, region=region, key=key)
+                 "schema": schema}, region=region, key=key, attempts=attempts)
 
     batches = _groups(todo, PATCH_ROWS)
     with concurrent.futures.ThreadPoolExecutor(BATCH_WORKERS) as pool:
         for group in _groups(batches, BATCH_WORKERS):
             list(pool.map(patch, group))
             done += sum(len(b) for b in group)
-            tmp = checkpoint + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"namespace": namespace, "done": done,
-                           "artefact_hash": artefact_hash}, f)
-            os.replace(tmp, checkpoint)
+            _write_checkpoint(done)
             _log(f"  {done} row(s) patched")
 
     after = _count()

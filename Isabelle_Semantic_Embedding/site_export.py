@@ -36,6 +36,7 @@ import hashlib
 import itertools
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -177,6 +178,13 @@ def theory_subtokens(theories: 'list[str]', tokenize) -> 'list[str]':
     return out
 
 
+# The one declaration of the patched column.  `run_patch` (site_source_pages)
+# sends exactly this fragment, so the patch and the export can never diverge on
+# type or filterability — a filterable divergence would silently re-index the
+# live store.
+SOURCE_LINK_SCHEMA = {"type": "string", "filterable": False}
+
+
 # §6.1, in its order.  The schema and the document builder below are two halves of
 # one statement and must be read together.
 def namespace_schema(dimension: int) -> dict:
@@ -196,7 +204,7 @@ def namespace_schema(dimension: int) -> dict:
         "theories": {"type": "[]string", "filterable": False},
         "kind": {"type": "string", "filterable": True},
         "position": {"type": "string", "filterable": False},
-        "source_link": {"type": "string", "filterable": False},
+        "source_link": SOURCE_LINK_SCHEMA,
         "from_collection": {"type": "string", "filterable": False},
         # filtering — one declaration for all three, which is D23: the `All` panel
         # Ors one typed string across them, so a field that tokenised differently
@@ -535,6 +543,7 @@ def request(method: str, path: str, body: 'dict | None' = None, *,
         headers["Content-Type"] = "application/json"
     for attempt in range(1, attempts + 1):
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        retry_after = None
         try:
             with urllib.request.urlopen(req, timeout=300) as resp:
                 raw = resp.read()
@@ -545,12 +554,22 @@ def request(method: str, path: str, body: 'dict | None' = None, *,
                 raise ExportError(
                     f"{method} {path} -> HTTP {e.code}: {detail}") from None
             reason = f"HTTP {e.code}: {detail}"
+            try:
+                retry_after = float(e.headers.get("Retry-After", ""))
+            except ValueError:
+                pass
         except (urllib.error.URLError, OSError, TimeoutError) as e:
             if attempt == attempts:
                 raise ExportError(f"{method} {path} failed: {e}") from None
             reason = str(e)
+        # The server's Retry-After outranks the local schedule (429 backpressure
+        # names its own horizon); jitter keeps concurrent workers from thundering
+        # back in lockstep.
         delay = min(2 ** attempt, 60)
-        _log(f"{method} {path}: {reason}; retrying in {delay}s "
+        if retry_after is not None:
+            delay = max(delay, min(retry_after, 300))
+        delay += random.uniform(0, delay / 4)
+        _log(f"{method} {path}: {reason}; retrying in {delay:.1f}s "
              f"({attempt}/{attempts - 1})")
         time.sleep(delay)
     raise AssertionError("unreachable")
