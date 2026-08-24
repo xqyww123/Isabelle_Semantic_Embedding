@@ -60,6 +60,15 @@ member resolves from the agent's bare `C`, `parse_thm_xname` returns no index
 an index-free live name; keep the stored name. See also the last paragraph of this section, which
 removes the need for Python to reassemble anything at all.
 
+> **Ruling (2026-08-24, supersedes the guard at THIS site's live-rendered branch only).** The
+> by-name query display was later reworked to re-render name AND expression against the live
+> query context in one call (`QUERY_BY_NAME_LIVE_RENDER_PLAN.md`, requirement 1). On that
+> live-rendered branch the live name wins, unconsulted by the member-name guard above: name and
+> content come from the same live enumeration, so citing the shown name reproduces the shown
+> content — the two-moment mismatch this guard exists to prevent cannot arise, which is §2.3's
+> own exemption for the Isa-Mini/AoA retrieval path. The guard still governs the fallback branch
+> (kinds with no live renderer), where the displayed content is stored and the mismatch is real.
+
 **The interpretation agent's `query` MCP tool** (`semantics.py:1441-1459` → `query_by_name_raw`
 `:1486` → `Semantic_DB.query(uk, with_pretty=True)` `:678-692` → `Record.pretty_print`
 `:279-283`). This serves the **stored** name to the LLM that writes the corpus's English
