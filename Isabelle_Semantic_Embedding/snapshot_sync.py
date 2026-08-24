@@ -731,7 +731,7 @@ _EXPORT_BATCH = 10_000     # keys per write transaction of the compacting rewrit
 
 def _ships_predicate() -> 'Callable[[bytes, bytes], bool]':
     """THE test for whether a key belongs in a published artifact -- the snapshot
-    payload here, the site's namespace in SEMANTIC_SEARCH_SITE_PLAN.md §8.1.
+    payload here, the site's namespace in contrib/isasearch-web/SEMANTIC_SEARCH_SITE_PLAN.md §8.1.
 
     (CHECK_OUTDATE_PLAN §9, the export filter job): a published artifact carries
     PERSISTENT data only.  Drops the 0xF0 global version counter (the publishing

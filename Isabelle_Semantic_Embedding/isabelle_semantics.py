@@ -1067,12 +1067,6 @@ def cmd_export(args: argparse.Namespace) -> None:
     _run_fail_fast(snapshot_sync.export, args.outdir)
 
 
-def cmd_site_export(args: argparse.Namespace) -> None:
-    _require_db()
-    from Isabelle_Semantic_Embedding import site_export
-    sys.exit(site_export.run_from_args(args))
-
-
 # The HF dev-sync source of the published snapshot (see manage_data.py at the
 # repo root; the release workflow downloads exactly this file).
 HF_DATASET = "ANTPG/MLML-data"
@@ -1625,21 +1619,15 @@ def main() -> None:
              "stamped, gates run. Used by CI; offline.")
     p_export.add_argument("outdir", help="Output directory (must be empty or absent)")
 
-    # site-export
-    # The export states its own option set; adopting that parser here is what keeps
-    # `isabelle-semantics site-export --help` and `python -m ...site_export --help`
-    # from drifting apart.
-    from Isabelle_Semantic_Embedding import site_export
-    sub.add_parser("site-export", parents=[site_export.build_parser(add_help=False)],
-        help="Export the semantic database into the public search site's "
-             "turbopuffer namespace (SEMANTIC_SEARCH_SITE_PLAN.md §8).")
+    # The public search site's export and page pipeline live in
+    # contrib/isasearch-web (site_export.py there); no subcommand here.
 
     args = parser.parse_args()
     {"collect": cmd_collect, "list": cmd_list, "remove": cmd_remove,
      "prune": cmd_prune, "orphans": cmd_orphans,
      "reindex": cmd_reindex, "fsck": cmd_fsck, "embed": cmd_embed,
      "status": cmd_status, "pull": cmd_pull, "release": cmd_release,
-     "export": cmd_export, "site-export": cmd_site_export,
+     "export": cmd_export,
      "post-install-system-db": cmd_post_install_system_db}[args.command](args)
 
 
