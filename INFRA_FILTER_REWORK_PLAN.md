@@ -75,7 +75,7 @@ the source is simply switched off.
 | D3 | Key the marker on theory **long** names, not base names. One `Symtab.set`, three consumers. | 08-20 |
 | D4 | Populate that set by **enumeration**, not by "session default plus exceptions". | 08-20 |
 | D5 | `learning.ML:123` keeps calling `Infra_Filter.is_infra_theory`; `Algebra_Aux` entering AoA-learning scope is accepted. | 08-20 |
-| D6 | Hoist the theory marking out of the `preserved_set` guard — **after** step 1's measurement. | 08-20 |
+| D6 | Hoist the theory marking out of the `preserved_set` guard — **after** step 1's measurement. **REVOKED 08-24**: the ordering is semantically correct as it stands; see the ruling block under "Why the marking must beat `preserved_set`". Steps 3 and 3½ are void. | 08-20, revoked 08-24 |
 | D7 | Unfuse effect 3: `is_excluded_theory` keeps only the three base theories. | 08-20 |
 | D8 | `MIR.thy` is discarded whole. Its 21 items of ordinary mathematics are accepted as lost. | 08-20 |
 | D9 | `Polynomial_List` stays kept and gets interpreted. | 08-20 |
@@ -171,7 +171,7 @@ Ferrack, Reflected_Multivariate_Polynomial) plus 6 `.ML`. The argument stands on
 the file set: the maintenance a session default would save is maintenance on a
 scenario that has not occurred.
 
-### Why the marking must beat `preserved_set` (D6)
+### Why the marking must beat `preserved_set` (D6 — REVOKED 08-24, ruling below)
 
 `is_infra_const'` has three tiers (`:348-370`):
 
@@ -207,6 +207,31 @@ The fix is two lines — move `is_from_infra_theory` up beside `decl_consts` —
 it makes the tiering read as an invariant: explicit judgements beat the veto,
 heuristics never do. **It also widens the cascade**, which is why it waits for
 step 1's measurement, and why step 3½ exists.
+
+> **REVOKED (owner ruling, 2026-08-24).** The argument above mistakes two
+> different judgements for one. Declaring a single constant infrastructure and
+> marking a theory are not the same judgement at different granularity: the
+> marking says "what this theory *declares* is machinery", while the
+> mentioned-constant cascade in `is_infra_thm` amplifies any constant-level
+> judgement into "any theorem *anywhere* that touches this name is machinery".
+> For genuinely internal names that amplification is sound — nothing legitimate
+> touches them. For a datatype's constructors it is not: they are the type's
+> public interface, and downstream libraries legitimately build on them. The
+> 1,451 `floatarith`-mentioning records are not collateral noise but exactly
+> the content retrieval exists for — `Straight_Line_Program.slp_of_fa.simps(N)`
+> is a defining equation of a function in an AFP verified-numerics development.
+> So the current ordering is not an accident violating a tier invariant; it is
+> the correct boundary: **the marking's kill zone stops at the public interface
+> of the types it declares.** A middle form — hoist the direct judgement but
+> exempt the cascade — was considered and rejected as incoherent: the store
+> would keep `slp_of_fa.simps(3)`, whose statement names the constructor
+> `Add`, while refusing to answer a query for `Add` itself.
+>
+> Consequences: steps 3 and 3½ are void (step 1 loses its gating role but
+> keeps every other purpose); the asymmetry becomes deliberate (the type name
+> `MIR.Ifm` is judged infrastructure, its constructor `MIR.fm.Eq` is not); the
+> ordering is documented as load-bearing by a comment at the `preserved_set`
+> veto in `infra_filter.ML`.
 
 ### Why unfusing is safe and what it buys (D7)
 
@@ -411,8 +436,9 @@ brought in deliberately with `Thy_Info.use_thy_legacy` to test the collision.
 
 **So the change is looser, and looser in the right direction**: it stops
 `class_infix` fighting `preserved_set` over record accessors, which is exactly
-what `preserved_set` exists to protect — decoupling that matters because D6
-narrows `preserved_set`'s reach. Not measured: which of those 38 names actually
+what `preserved_set` exists to protect — decoupling that was doubly
+motivated while D6 planned to narrow `preserved_set`'s reach (D6 revoked 08-24;
+the change stands on its own merits). Not measured: which of those 38 names actually
 change status, since `inst_infix` (position 6) and `abs_rep_name` (position 9)
 fire before `class_infix` (position 11) and `preserved_set` precedes the chain;
 the store already holds 61 distinct `Decl.class.*` names, so most of the family
@@ -433,7 +459,7 @@ driving a significant share of cascade rejections.**
 | --- | --- |
 | Separate "this entity deserves no record" from "any theorem mentioning it is worthless" | The cascade is intended and documented (`:52-53`) and is right for genuine machinery. The fault was one input, not the rule. |
 | Session default plus a keep-list | See D4. Rots toward silent deletion. |
-| Mark the reflected datatypes and add "a constant whose type mentions an infrastructure type is infrastructure" | Not judged on its merits — it was killed as "its only target is `MIR`'s `rdvd` group, which D8 discards", while D8's stated ground was that no rescue exists, which was itself wrong. It stands rejected because D8's real reason (zero users) stands. Independently: it cannot work for `Approximation_Bounds` (no `datatype`) or `Rat_Pair` (`Num` is a `type_synonym`), needs D6 first, and would promote the `infra_const_cache` key defect from latent to live. |
+| Mark the reflected datatypes and add "a constant whose type mentions an infrastructure type is infrastructure" | Not judged on its merits — it was killed as "its only target is `MIR`'s `rdvd` group, which D8 discards", while D8's stated ground was that no rescue exists, which was itself wrong. It stands rejected because D8's real reason (zero users) stands. Independently: it cannot work for `Approximation_Bounds` (no `datatype`) or `Rat_Pair` (`Num` is a `type_synonym`), needs D6 first (since revoked), and would promote the `infra_const_cache` key defect from latent to live. |
 | "`Dense_Linear_Order`'s cascade is provably empty because it declares no HOL constant" | It declares four locales (`:323, :334, :364, :394`); a locale with assumptions yields a predicate constant. |
 | Retire `Infra_Filter.is_infra_theory` as callerless | It has a live caller, `tasks/AoA-learning/learning.ML:123`. |
 
@@ -513,7 +539,8 @@ revisions, or the companion asserted each of these, and they were wrong:
   facts — because the alias's fact name passes `:441` and its statement names no
   infrastructure constant. **But those 13 have never been collected: store scan
   gives `MathBench_Prover` 0 records.**
-- "Each theory is all-or-nothing." False; see D6.
+- "Each theory is all-or-nothing." False: a marked theory's constructors
+  escape via the `preserved_set` veto — deliberately, since D6's revocation.
 - "`Cooper.unit`, `MIR.eq`, `Parametric_Ferrante_Rackoff.Add` cannot collide."
   Two of the three do not exist: the real names are `MIR.fm.Eq` and
   `Parametric_Ferrante_Rackoff.tm.Add`, constructors, and therefore exactly the
@@ -556,8 +583,8 @@ revisions, or the companion asserted each of these, and they were wrong:
 ## 6. Order of operations
 
 **Steps 1→2 and 4→5 do not gate each other** — step 2 consumes nothing from step
-1, and step 4 is sizing only (D10 says budget is not a gate). The real gates are
-1→3 and 3→3½. **The first irreversible step is 5**: step 4 is `dry_run'`,
+1, and step 4 is sizing only (D10 says budget is not a gate). The former gates 1→3 and
+3→3½ died with D6's revocation — no step gates on another now. **The first irreversible step is 5**: step 4 is `dry_run'`,
 documented at `semantic_store.ML:1848-1851` as "No driver is involved: nothing
 runs". **Step 6 shares no file and no decision with steps 1-5 and should run in
 parallel from day one.**
@@ -569,12 +596,11 @@ rejections **by `(rule, responsible theory long name)`, not by rule alone** —
 today the marking covers all 21 session theories via `infra_session_thy_prefixes`,
 after step 2 it covers 17 + `Minilang` + `Code_Evaluation`, and a rule-only
 bucket folds in constants of the four theories that stop being marked and cannot
-be corrected afterwards. **Re-run after step 2 and again after step 3**: the
-hoist moves the marking above the `preserved_set` veto while the other eleven
-rules stay below it, so a constant previously attributed to `class_variant` or
-`abs_rep_name` re-attributes to the marking. Re-running costs nothing.
+be corrected afterwards. **Re-run after step 2** — the coverage change re-attributes constants between
+the marking and the other rules, and re-running costs nothing. (The third run
+after the hoist is gone with D6's revocation.)
 
-This answers: the size of D6's blast radius; how many `Taylor_Models` theorems
+This answers: how many `Taylor_Models` theorems
 the `Polynomial_List` cascade costs; whether `EC_Common`'s 12 lost lemmas died to
 the session marking or to `class_variant` or both; and whether `inst_infix`
 drives enough cascade rejections to revive the narrow-cascade proposal.
@@ -607,9 +633,8 @@ fun is_excluded_theory thy =
 ```
 
 An implementer who writes the final form here has silently executed **step 5
-three steps early**: the unfuse ships before the hoist, the 17 theories get
-collected under the un-hoisted filter, and the store fills with records the hoist
-then rejects. D3's "one set, three consumers" framing is what tells the
+early**: the unfuse ships and the 17 theories get collected before step 4's
+sizing, and before anyone decided to collect them. D3's "one set, three consumers" framing is what tells the
 implementer to keep it — step 5 removes the third consumer.
 
 Also in step 2: rewrite `learning.ML:119-122`'s comment. It justifies skipping by
@@ -617,15 +642,10 @@ Also in step 2: rewrite `learning.ML:119-122`'s comment. It justifies skipping b
 after D7. The durable rationale is that these are machinery proofs whose learned
 experience is worthless regardless of retrievability.
 
-**Step 3 — hoist the marking (D6), if step 1 supports it.**
-
-**Step 3½ — decide what happens to the records the hoist invalidates.**
-The hoist's blast radius is the 1,451 `floatarith`-mentioning records (and
-whatever step 1 adds to that). After it, the filter rejects them; **no other step
-deletes them.** The codebase already knows filter changes do not propagate —
-`is_declared_infra_thm` exists precisely because "the live KNN CACHED pass does
-not re-filter" (`infra_filter.ML:522-531`). **Purge, re-collect, or accept —
-undecided.**
+**Steps 3 and 3½ — VOID (D6 revoked 08-24).** There is no hoist, so no
+records are invalidated and no purge/re-collect/accept decision exists. The
+revocation ruling is recorded under "Why the marking must beat
+`preserved_set`" in §3.
 
 **Step 4 — `dry_run'` the 17 marked and 3 kept theories.**
 `semantic_store.ML:1862`, no LLM, no build. Sizing only. Note that 106 of
@@ -640,14 +660,18 @@ never reached the store, plus the 11 new `Dense_Linear_Order` aliases (D13).
 
 **Step 6 — the Python-side skip list (D11).** See §8. Independent; start it now.
 
-**Not in any step, and needed**: get the filter tests into a session that runs.
-`Test_Infra_Session_Prefixes.thy` is **in no ROOT at all** and never references
-`Infra_Filter` — a step-2 plan to "fix the fake test" would target a file nothing
-builds. `Test_LTE_InfraFilter.thy` sits in Isa-Mini's `Infra_Filter_Test`
-session, which is **entirely commented out**. `Infra_Test.thy` (four
-`gen_infra_filters` sites) is in no session either. Only `Infra_Decl_Test` and
-`Test_All` are in the opt-in `Semantic_Embedding_Test` session. **This refactor
-is going in largely uncovered.**
+**Not in any step, and needed**: RUN the filter tests around step 2. **Ruled
+08-24: running them does not require ROOT membership** — evaluate the test
+files directly (isabelle-mcp / Isa-REPL over a heap that precompiles the
+imports); "in no session" only means the build system will never run them by
+itself, not that they cannot be run. The inventory: `Infra_Test.thy` (four
+`gen_infra_filters` sites, in no session) and `Test_LTE_InfraFilter.thy` (its
+`Infra_Filter_Test` session is entirely commented out) are the real tests —
+evaluate them before and after step 2 as the regression pair.
+`Infra_Decl_Test` and `Test_All` live in the opt-in `Semantic_Embedding_Test`
+session. `Test_Infra_Session_Prefixes.thy` never references `Infra_Filter`, so
+running it tests nothing — repair or delete it is a separate small decision,
+still open.
 
 ## 7. State of the code
 
@@ -765,12 +789,17 @@ pre-fix worst case.
 
 ## 9. Still open
 
-1. **Step 3½** — purge, re-collect, or accept the records the hoist invalidates.
-2. **`tools/slurm.py:95`** still forces `RPC_Host=127.0.0.1:27182` on every
+1. ~~**Step 3½** — purge, re-collect, or accept the records the hoist
+   invalidates.~~ Void — D6 revoked 08-24: no hoist, nothing invalidated.
+2. ~~**`tools/slurm.py:95`** still forces `RPC_Host=127.0.0.1:27182` on every
    compute node; if nothing is LISTENing there, every REPL hard-errors on its
    first RPC call. `tools/slurm_run_server.sh:26`'s default was removed but is
-   defeated by this caller. A production behaviour decision.
-3. **The filter tests** — get them into a session that runs (§6).
+   defeated by this caller. A production behaviour decision.~~ Ruled 08-24:
+   intended behaviour, leave as is.
+3. **The filter tests** — run them around step 2 by evaluating the files
+   directly (ruled 08-24: ROOT membership not required; see §6). Open sliver:
+   `Test_Infra_Session_Prefixes.thy` is fake (never references `Infra_Filter`)
+   — repair or delete, undecided.
 4. **`infra_const_cache` keys on `name` while the function takes
    `(name, typ_opt)`** (`:343-372`); call sites disagree (`:373` `NONE`, `:430`
    `SOME T`). No reachable divergence was constructed by three reviewers.
@@ -827,3 +856,53 @@ pre-fix worst case.
 - **Never open a bare TCP connection to port 6666** — it kills a running Isa-REPL
   server. Use `ss`/`lsof`.
 - **`isabelle` is not on PATH.** Use `contrib/Isabelle2025-2/bin/isabelle`.
+
+## 11. Session state at the 2026-08-24 hand-back (read before resuming step 1)
+
+The session that owns this plan spent 08-23/24 closing its OTHER thread (the
+by-name query live render; see the superproject's
+`QUERY_BY_NAME_LIVE_RENDER_PLAN.md`, all committed). Nothing in §1-§10 changed.
+What DID change is the environment this plan's steps will run in:
+
+- **Build permission is broad now.** The owner approved `isabelle build` for
+  the sessions this work needs (2026-08-23) — no longer only `SE_Check`. Never
+  `-c`/`-f`. So step 1's unblock may simply be a small session with both
+  `HOL-Decision_Procs` and `Semantic_Embedding` as parents, instead of the
+  `Thy_Info.use_thy_legacy` console trick (§6 keeps that as the no-build
+  route).
+- **Port 6666 is occupied by ANOTHER session's REPL server** (a
+  `MathBench_Prover` hierarchy server, up for hours as of 08-24 evening). Do
+  not kill it; do not probe it with a bare TCP connect. Run any REPL this
+  plan needs on an isolated port. The recipe that worked, end to end:
+  1. `RPC_Host=<addr>` set means the heap build itself needs a Python host
+     LISTENING there (`Semantic_Embedding.thy`'s `end` checks); start one
+     first: `python3 -c 'import Isabelle_RPC_Host;
+     Isabelle_RPC_Host.fork_and_launch__()' 127.0.0.1:27183 <log-file>`.
+  2. `contrib/Isa-REPL/repl_server.sh 127.0.0.1:6667 <BASE_SESSION> <outdir>
+     -d /home/qiyuan/Current/MLML -d contrib/Semantic_Embedding [-d …]` with
+     `PATH` including `contrib/Isabelle2025-2/bin` and `RPC_Host` exported.
+     Ready when a LINE-INITIAL `Running REPL<pid> ...` appears (the banner
+     also contains that string — anchor the grep).
+  3. The REPL build runs `-o quick_and_dirty=true`, which keys a SEPARATE
+     heap chain under `~/.isabelle/Isabelle2025-2/heaps/` — first launch
+     rebuilds Pure upward (~10 min), later launches reuse it.
+  4. `27182` is what `tools/slurm.py` forces; leave it to the other session's
+     infrastructure and use 27183+ for isolated work.
+- **`MathBench_ProverBase` heap exists and is loadable** — the other
+  session's server hierarchy loads `HOL-Analysis → HOL-Complex_Analysis →
+  MathBench_ProverBase → MathBench_Prover` from the user heap dir, so §6
+  step 1's console route has its heap ready.
+- **Python processes need `EMBEDDING_API_KEY` in the process environment**
+  (`os.getenv`); it lives in `~/.isabelle/Isabelle2025-2/etc/settings`, so
+  export it via `"$(contrib/Isabelle2025-2/bin/isabelle getenv -b
+  EMBEDDING_API_KEY)"` before running anything that touches semantic
+  retrieval. Without it every semantic query dies with "no embedding service
+  is configured".
+- **The store's vectors were re-embedded at some point after 2026-07-09**
+  (provenance not investigated): KNN similarity scores drifted ~0.01
+  deterministically, and five Isa-Mini golden baselines were re-baselined to
+  the drifted scores (owner-approved 08-24). If step 1's measurements are
+  ever compared against pre-drift numbers, know the vectors moved.
+
+**Post-hand-back, same day (08-24): D6 was revoked.** See the decision table,
+the ruling block in §3, and §6 — steps 3 and 3½ are void.

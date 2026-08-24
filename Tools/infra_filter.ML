@@ -365,6 +365,11 @@ fun gen_infra_filters (context : Context.generic)
           let val result =
             (* explicit declaration takes precedence over `preserved_set` *)
             if Symtab.defined decl_consts name then SOME "declared"
+            (* The theory marking (rule infra_theory below) deliberately does NOT:
+               it judges what a marked theory declares and stops at a type's public
+               interface (constructors, selectors, ...).  Hoisted above this veto,
+               the mentioned-constant cascade in is_infra_thm would erase every
+               downstream development built on a marked theory's datatypes. *)
             else if Strhashtab.defined preserved_set name then NONE
             else first_rule
              [("concealed",       fn () => Name_Space.is_concealed const_space name),
