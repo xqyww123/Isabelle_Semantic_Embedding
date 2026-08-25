@@ -1,10 +1,9 @@
 signature INFRA_FILTER = sig
   val smart_size_of_term : term -> int
-  val is_infra_session : theory -> bool
-  (* True if the theory is infrastructure: either it belongs to an infra session
-     (is_infra_session) or its base name is an infra base theory (e.g. Minilang).
-     Whole-theory predicate for callers that want to exclude a theory outright
-     (e.g. the AoA-learning target scope), complementing the per-entity filters. *)
+  (* True if the theory is marked as infrastructure: a member of the enumerated
+     set of theory long names (infra_theory_long_names below).  Whole-theory
+     predicate for callers that want to exclude a theory outright (e.g. the
+     AoA-learning target scope), complementing the per-entity filters. *)
   val is_infra_theory : theory -> bool
   val gen_infra_filters : Context.generic ->
     {is_infra_const: string -> bool,
@@ -29,23 +28,78 @@ structure Infra_Filter : INFRA_FILTER = struct
 
 val smart_size_of_term = smart_size_of_term (* from Performant_Isabelle_ML *)
 
-val infra_session_names = ["HOL-Decision_Procs"]
-fun is_infra_session thy =
-  member (op =) infra_session_names
-    (Long_Name.qualifier (Context.theory_long_name thy))
-
-(* Theory base-names whose own entities are infrastructure (filtered out of
-   retrieval).  Minilang.thy defines internal proof-language plumbing
-   (TAG/GOAL/PROTECT/ISO_* constants + their _def lemmas, and helper lemmas
-   like Ball_*_comm); `hide_const (open)` only hides their short names, so the
-   fully-qualified `Minilang.*` names still leak — matched here by prefix.
-   `"Minilang."` does not match sibling theories like `Minilang_AoA.` (the
-   char after `Minilang` is `.` vs `_`). *)
-val infra_base_theory_names = ["Minilang"]
+(* Theories whose own entities are infrastructure: no records, not retrievable,
+   and their constants cascade (any theorem whose statement mentions one is
+   dropped too, via is_infra_thm).  The marking is an ENUMERATED set of theory
+   LONG names:
+   - long names, because a base name is not an identity — the AFP has its own
+     `Cooper` and `Approximation`, both ordinary mathematics;
+   - enumeration rather than "session default plus exceptions", because a
+     theory added upstream then defaults to ordinary mathematics: machinery
+     shows up as visible store noise, which is repairable, whereas a session
+     default deletes mathematics silently (the Algebra_Aux incident).
+   Composition (40 names):
+   - 15 marked HOL-Decision_Procs theories — reflected-syntax machinery behind
+     decision procedures.  The session's ordinary-mathematics theories
+     (Algebra_Aux, Polynomial_List, DP_Library, Approximation,
+     Approximation_Bounds, Rat_Pair) are deliberately NOT here; per-theory
+     rationale in DECISION_PROCS_INFRA_THEORY_LIST.md.
+   - 23 tool-support theories (Quickcheck/Nitpick/SMT internals, code-generator
+     bridges, HOL-Real_Asymp's expansion engine), each vetted against AFP
+     statement-level citations; evidence table in TOOL_THEORY_MARKING_LIST.md.
+     `HOL.Random`, `HOL.Predicate_Compile` and `HOL.Code_Numeral` are
+     deliberately absent — AFP entries state lemmas about their constants.
+   - `Minilang.Minilang`: internal proof-language plumbing (TAG/GOAL/PROTECT/
+     ISO_* constants + their _def lemmas); `hide_const (open)` only hides the
+     short names, the fully-qualified names still leak.
+   - `HOL.Code_Evaluation`: evaluation-oracle plumbing. *)
+val infra_theory_long_names = Symtab.make_set [
+  (* HOL-Decision_Procs, marked (15) *)
+  "HOL-Decision_Procs.Commutative_Ring",
+  "HOL-Decision_Procs.Commutative_Ring_Complete",
+  "HOL-Decision_Procs.Reflective_Field",
+  "HOL-Decision_Procs.Conversions",
+  "HOL-Decision_Procs.Cooper",
+  "HOL-Decision_Procs.Ferrack",
+  "HOL-Decision_Procs.MIR",
+  "HOL-Decision_Procs.Reflected_Multivariate_Polynomial",
+  "HOL-Decision_Procs.Dense_Linear_Order",
+  "HOL-Decision_Procs.Parametric_Ferrante_Rackoff",
+  "HOL-Decision_Procs.Decision_Procs",
+  "HOL-Decision_Procs.Commutative_Ring_Ex",
+  "HOL-Decision_Procs.Approximation_Ex",
+  "HOL-Decision_Procs.Approximation_Quickcheck_Ex",
+  "HOL-Decision_Procs.Dense_Linear_Order_Ex",
+  (* tool support (23) *)
+  "HOL.Quickcheck_Exhaustive",
+  "HOL.Quickcheck_Narrowing",
+  "HOL.Quickcheck_Random",
+  "HOL.Random_Pred",
+  "HOL.Random_Sequence",
+  "HOL.Lazy_Sequence",
+  "HOL.Limited_Sequence",
+  "HOL.Nitpick",
+  "HOL.Nunchaku",
+  "HOL.SMT",
+  "HOL.Meson",
+  "HOL.Metis",
+  "HOL.Record",
+  "HOL.Typerep",
+  "HOL.Extraction",
+  "HOL-Library.Code_Test",
+  "HOL-Library.Code_Lazy",
+  "HOL-Library.Code_Target_Nat",
+  "HOL-Library.Code_Target_Int",
+  "HOL-Library.Code_Cardinality",
+  "Tools.Code_Generator",
+  "HOL-Real_Asymp.Multiseries_Expansion",
+  "HOL-Real_Asymp.Lazy_Eval",
+  (* proof-language / evaluation plumbing (2) *)
+  "Minilang.Minilang",
+  "HOL.Code_Evaluation"]
 
 fun is_infra_theory thy =
-  is_infra_session thy orelse
-  member (op =) infra_base_theory_names (Long_Name.base_name (Context.theory_long_name thy))
+  Symtab.defined infra_theory_long_names (Context.theory_long_name thy)
 
 (* User-declared infrastructure entities (via `declare [[infra_constant c ...]]`,
    `declare [[infra_type T ...]]`, `declare some_lemma[infra_thm]`), consulted by
@@ -160,7 +214,16 @@ fun gen_infra_filters (context : Context.generic)
     val locale_space = Locale.locale_space (Context.theory_of context)
     fun is_hidden space name =
       Long_Name.is_hidden (Name_Space.intern space name)
-    val type_names = Name_Space.get_names type_space
+    (* Entity → declaring-theory membership in the marking, via the name-space
+       entry rather than the spelling of the name: instantiation-generated
+       names are qualified by type, not by declaring theory (e.g.
+       Set.typerep_set_inst.typerep_set is declared in HOL.List). *)
+    fun is_from_infra_space space name =
+      (case try (Name_Space.theory_name {long = true} space) name of
+         SOME t => Symtab.defined infra_theory_long_names t
+       | NONE => false)
+    val all_type_names = Name_Space.get_names type_space
+    val type_names = all_type_names
       |> filter (fn name =>
           name <> "fun"
           andalso not (Name_Space.is_concealed type_space name)
@@ -190,6 +253,9 @@ fun gen_infra_filters (context : Context.generic)
               map_filter safe_const_name (#ctrs cs)
               @ maps (map_filter safe_const_name) (#selss cs)
               @ map_filter safe_const_name [#casex cs]
+              (* discriminators (isl, lnull, ...): user-facing interface cited
+                 in AFP statements — whitelisted like the selectors *)
+              @ map_filter safe_const_name (#discs cs)
         fun bnf_names T =
           case Context.cases BNF_Def.bnf_of_global BNF_Def.bnf_of context T of
             NONE => []
@@ -216,8 +282,16 @@ fun gen_infra_filters (context : Context.generic)
               (case #fp_co_induct_sugar fp of
                 NONE => []
               | SOME sugar => map_filter safe_const_name [#co_rec sugar])
+        (* the size-plugin family (size_list, size_option, ...): user-facing
+           (List.thy proves a lemma section about size_list; 78 AFP entries cite
+           it).  The whole family, via the plugin's own registry. *)
+        fun size_names T =
+          case BNF_LFP_Size.size_of_global thy T of
+            NONE => []
+          | SOME (size_name, _) => [size_name]
         val (all_names, prefixes) = fold (fn T => fn (names, pfxs) =>
           let val ns = ctr_sugar_names T @ bnf_names T @ record_names T @ co_rec_names T
+                       @ size_names T
           in (ns @ names, if null ns then pfxs else (T ^ ".") :: pfxs) end)
           type_names ([], [])
       in (all_names, prefixes) end
@@ -309,45 +383,60 @@ fun gen_infra_filters (context : Context.generic)
            | NONE => NONE))
       type_names
 
-    (* Class instance constant infixes *)
-    val inst_infixes = map (fn T => "_" ^ Long_Name.base_name T ^ "_inst.") type_names
+    (* Class instance constant infixes.  Deliberately over the UNFILTERED
+       type-name list: `instantiation` machinery is also generated for the `fun`
+       type (Sup_fun_inst.Sup_fun, ...) and for concealed types (Quickcheck's),
+       and those instance constants are the same plumbing.  The other consumers
+       of type names keep the filtered list. *)
+    val inst_infixes = map (fn T => "_" ^ Long_Name.base_name T ^ "_inst.") all_type_names
 
-    val infra_session_thy_prefixes =
-      map_filter (fn anc =>
-        if is_infra_session anc
-        then SOME (Context.theory_base_name anc ^ ".")
-        else NONE) (Theory.ancestors_of thy)
+    (* Constant-NAME prefixes of lifting/transfer plumbing, plus the HOL.equal
+       constant itself.  These are name tests, not theory identities: rel_fun,
+       bi_unique &c. are cited by thousands of transfer_rule lemmas yet are
+       plumbing — kept rejected by design (ruled 08-24).  Theory-identity
+       marking lives in infra_theory_long_names instead. *)
+    val internal_prefixes = ["Lifting.", "BNF_Def.", "Transfer.",
+          "HOL.equal", "ATP.", "Code_Evaluation."]
 
-    val internal_prefixes = ["Lifting.", "BNF_Def.", "Transfer.", "BNF_Cardinal_Order_Relation.",
-          "HOL.equal", "ATP.", "Code_Evaluation."] @ infra_session_thy_prefixes
+    (* Rule class_pred, authoritative form: the exact set of class-predicate
+       constant names.  Logic.const_of_class appends "_class" to the class's
+       full name, so this is a subset of the old string test (fail-closed), and
+       it cannot produce a locale predicate (Sigma_Algebra.subset_class
+       survives with no returns-prop guard). *)
+    val class_pred_set =
+      Strhashtab.make_set (map Logic.const_of_class (Sign.all_classes thy))
 
-    val infra_theory_prefixes =
-      ["Code_Evaluation."]
-      @ map (fn n => n ^ ".") infra_base_theory_names
-      @ infra_session_thy_prefixes
-    fun is_from_infra_theory name =
-      exists (fn pfx => String.isPrefix pfx name) infra_theory_prefixes
-
-    (* Pre-compute names that have a _class variant as a constant.
-       For each constant "a.b_class.c", record "a.b.c" as having a class variant. *)
+    (* Rule class_variant's kill set: the locale-level twins of type-class
+       operations, enumerated from the class package's OWN operations registry
+       (Class.these_operations).  Each entry's key is the class-namespace
+       constant "A.B_class.c"; stripping the `_class` suffix off its qualifier
+       gives the foundational locale twin "A.B.c".  The two are declared as a
+       pair in one foundation step in the same theory, so the derived name can
+       only denote that twin or no constant at all.  Only the `class` target
+       machinery registers operations -- `interpretation P: L ...` copies never
+       contribute -- so a human interpretation prefix colliding with a genuine
+       class prefix (Algebra_Aux's `interpretation field_class: field ...`,
+       AFP Elliptic_Locale's likewise) cannot condemn the interpreted locale's
+       general constants.  The `_class` SUFFIX test on the qualifier is a
+       correctness guard, not a heuristic: parameter entries conform, and
+       extra-qualified keys ("A.B_class.q.c") must be skipped, matching the
+       old gate's behaviour on them.  `Class.is_class` drops Axclass-only
+       classes (e.g. HOL.type): they carry no Class data and would make
+       these_operations raise. *)
     val has_class_variant_set =
-      let val all_const_names = #constants (Consts.dest consts) |> map fst
-      in Strhashtab.make_set (map_filter (fn cname =>
-           if String.isSubstring "_class." cname then
-             let val qual = Long_Name.qualifier cname
-                 val base = Long_Name.base_name cname
-             in if String.isSuffix "_class" qual then
-                  SOME (String.concat [
-                    String.substring (qual, 0, size qual - 6), ".", base])
-                else NONE
-             end
-           else NONE) all_const_names)
-      end
+      Strhashtab.make_set (map_filter (fn (key, _) =>
+        let val qual = Long_Name.qualifier key
+        in if String.isSuffix "_class" qual
+           then SOME (String.concat [
+                  String.substring (qual, 0, size qual - 6), ".",
+                  Long_Name.base_name key])
+           else NONE
+        end)
+        (Class.these_operations thy
+          (filter (Class.is_class thy) (Sign.all_classes thy))))
     fun has_class_variant name = Strhashtab.defined has_class_variant_set name
 
-    fun returns_prop (Type("fun", [_, T'])) = returns_prop T'
-      | returns_prop (Type("prop", [])) = true
-      | returns_prop _ = false
+    fun is_declared_const name = can (Consts.the_constraint consts) name
 
     (* First rule that fires, or NONE.  Thunks keep the short-circuit the plain
        `orelse` chain had: the later tests (on_bnf_origin_pos, the_constraint)
@@ -358,7 +447,11 @@ fun gen_infra_filters (context : Context.generic)
       in go tests end
 
     val infra_const_cache : string option Strhashtab.table = Strhashtab.empty 4096
-    fun infra_const_rule name typ_opt =
+    (* The typ option argument is no longer consulted: every type-dependent rule
+       reads the declared type via Consts.the_constraint itself, so the
+       name-keyed cache cannot diverge across call sites that pass different
+       types.  The argument stays for the callers' signature. *)
+    fun infra_const_rule name (_ : typ option) =
       case Strhashtab.lookup infra_const_cache name of
         SOME result => result
       | NONE =>
@@ -374,23 +467,44 @@ fun gen_infra_filters (context : Context.generic)
             else first_rule
              [("concealed",       fn () => Name_Space.is_concealed const_space name),
               ("hidden",          fn () => is_hidden const_space name),
-              ("infra_theory",    fn () => is_from_infra_theory name),  (* e.g. Minilang.* *)
+              ("infra_theory",    fn () => is_from_infra_space const_space name),
               ("internal_prefix", fn () => exists (fn pfx => String.isPrefix pfx name) internal_prefixes),
               ("pre_bnf_prefix",  fn () => exists (fn pfx => String.isPrefix pfx name) pre_prefixes),
               ("inst_infix",      fn () => exists (fn infix_ => String.isSubstring infix_ name) inst_infixes),
               ("class_variant",   fn () => has_class_variant name),
               ("quotient_typedef", fn () => Strhashtab.defined quotient_typedef_infra name),
-              ("abs_rep_name",    fn () => let val base = Long_Name.base_name name
-                                           in String.isPrefix "Abs_" base
-                                              orelse String.isPrefix "Rep_" base end),
               ("adt_record",      fn () => exists (fn pfx => String.isPrefix pfx name) adt_record_prefixes
                                            andalso on_bnf_origin_pos name),
-              ("class_infix",     fn () => String.isSubstring ".class." name),
-              ("class_pred",      fn () => String.isSuffix "_class" (Long_Name.base_name name)
-                                           andalso returns_prop (case typ_opt of
-                                             SOME T => T
-                                           | NONE => (case try (Consts.the_constraint consts) name of
-                                                        SOME T => T | NONE => dummyT)))]
+              (* the .class. qualifier comes only from the `class` command's own
+                 binding qualification; the _axioms companion is its
+                 delta-introduction predicate, machinery.  The base predicate
+                 class.X itself is human-cited (relativization lemmas) and KEPT. *)
+              ("class_infix",     fn () => String.isSubstring ".class." name
+                                           andalso String.isSuffix "_axioms" (Long_Name.base_name name)),
+              ("class_pred",      fn () => Strhashtab.defined class_pred_set name),
+              (* function-package pre-derivation combinator: humans cite f.simps,
+                 never f_sumC.  The f_graph sibling is generated in the same
+                 batch, so its existence makes a hand-written *_sumC name
+                 structurally impossible to misjudge. *)
+              ("sumC_graph",      fn () => String.isSuffix "_sumC" (Long_Name.base_name name)
+                                           andalso is_declared_const
+                                             (String.substring (name, 0, size name - 5) ^ "_graph")),
+              (* Quickcheck's per-type random generators, defined via the
+                 function package inside library theories — same _graph
+                 existence guard as sumC_graph *)
+              ("random_aux_graph", fn () => String.isPrefix "random_aux_" (Long_Name.base_name name)
+                                            andalso is_declared_const (name ^ "_graph")),
+              (* Quickcheck's valtermify_/valterm_ helpers: their declared type
+                 mentions the reflection type Code_Evaluation.term, which a
+                 mathematical constant's type never does *)
+              ("valtermify_term", fn () =>
+                 (String.isPrefix "valtermify_" (Long_Name.base_name name)
+                  orelse String.isPrefix "valterm_" (Long_Name.base_name name))
+                 andalso (case try (Consts.the_constraint consts) name of
+                            SOME T => Term.exists_subtype
+                                        (fn Type (\<^type_name>\<open>Code_Evaluation.term\<close>, _) => true
+                                          | _ => false) T
+                          | NONE => false))]
               val _ = Strhashtab.update infra_const_cache (name, result)
           in result end
     fun is_infra_const' name typ_opt = is_some (infra_const_rule name typ_opt)
@@ -472,7 +586,7 @@ fun gen_infra_filters (context : Context.generic)
                  by name, so it is useless to surface. Facts.extern marks such
                  names with a "??." prefix (the exact string the agent would see). *)
               ("shadowed",  fn () => String.isPrefix "??." (Facts.extern ctxt facts full_name)),
-              ("infra_theory",    fn () => is_from_infra_theory full_name),
+              ("infra_theory",    fn () => is_from_infra_space fact_space full_name),
               ("adt_infra",       fn () => is_ADT_infra_thm full_name),
               ("inductive_infra", fn () => is_inductive_infra_thm full_name)] of
         SOME why => SOME why
@@ -575,13 +689,13 @@ fun gen_infra_filters (context : Context.generic)
      is_infra_type = fn name => Symtab.defined decl_types name
                                 orelse Name_Space.is_concealed type_space name
                                 orelse is_hidden type_space name
-                                orelse is_from_infra_theory name,
+                                orelse is_from_infra_space type_space name,
      is_infra_class = fn name => Name_Space.is_concealed class_space name
                                  orelse is_hidden class_space name
-                                 orelse is_from_infra_theory name,
+                                 orelse is_from_infra_space class_space name,
      is_infra_locale = fn name => Name_Space.is_concealed locale_space name
                                   orelse is_hidden locale_space name
-                                  orelse is_from_infra_theory name,
+                                  orelse is_from_infra_space locale_space name,
      is_infra_dynamic_fact = is_infra_dynamic_fact,
      is_infra_method = is_infra_method,
      is_declared_infra_thm = is_declared_infra_thm,

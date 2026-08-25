@@ -375,7 +375,7 @@ end (*local RPC wrappers*)
 val base_theory_ids = map Context.theory_identifier
       [@{theory Code_Generator}, @{theory Pure}, @{theory Code_Evaluation}]
 
-val is_infra_session = Infra_Filter.is_infra_session
+val is_infra_theory = Infra_Filter.is_infra_theory
 
 (* --- RPC protocol --- *)
 
@@ -1862,10 +1862,13 @@ fun dry_run_payload {file_path, theory_longname, theory_key, entries,
 fun dry_run' (context : Context.generic) : int =
   dry_run_payload (enumerate_entries context)
 
-(* Theories that are never interpreted: infrastructure sessions, and the three base
-   theories every HOL theory sits on. They are still TRAVERSED THROUGH -- see collect_cone. *)
+(* Theories that are never interpreted: theories marked as infrastructure, and the
+   three base theories every HOL theory sits on. They are still TRAVERSED THROUGH --
+   see collect_cone.  (The is_infra_theory disjunct is scheduled for deletion so the
+   marked theories' proof METHODS get collected -- INFRA_FILTER_REWORK_PLAN.md step 5;
+   until then the marking keeps its third consumer here.) *)
 fun is_excluded_theory thy =
-  is_infra_session thy orelse
+  is_infra_theory thy orelse
   member (op =) base_theory_ids (Context.theory_identifier thy)
 
 (* Whole ancestor cone of `roots`, in topological order (parents first), with a shared
