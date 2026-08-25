@@ -70,7 +70,7 @@ the source is simply switched off.
 
 | # | Decision | Date |
 | --- | --- | --- |
-| D1 | The classification stands: ~~**3 theories kept, 17 marked**~~ **5 kept, 15 marked** — the 08-24 constant-verdict audit moved `Approximation` (`interpret_floatarith`/`approx` ecosystem, cited by 20 AFP files) and `Rat_Pair` (`INum`, used by Taylor_Models) to kept; `Reflected_Multivariate_Polynomial` stays marked (zero external citers). See `DECISION_PROCS_INFRA_THEORY_LIST.md`. | 08-19, revised 08-20 and 08-24 |
+| D1 | The classification stands: ~~**3 theories kept, 17 marked**~~ **6 kept, 15 marked** (the 08-24 revision wrote "5 kept" — an arithmetic slip: 3 original keeps + `Approximation_Bounds` (08-20) + `Approximation` + `Rat_Pair` (08-24) = 6, matching the authoritative verdict table's six keep rows and 21 = 6 + 15) — the 08-24 constant-verdict audit moved `Approximation` (`interpret_floatarith`/`approx` ecosystem, cited by 20 AFP files) and `Rat_Pair` (`INum`, used by Taylor_Models) to kept; `Reflected_Multivariate_Polynomial` stays marked (zero external citers). See `DECISION_PROCS_INFRA_THEORY_LIST.md`. | 08-19, revised 08-20 and 08-24 |
 | D2 | Retire the session concept. `infra_session_names` emptied, `is_infra_session` deleted. | 08-19 |
 | D3 | Key the marker on theory **long** names, not base names. One `Symtab.set`, three consumers. | 08-20 |
 | D4 | Populate that set by **enumeration**, not by "session default plus exceptions". | 08-20 |
@@ -1296,12 +1296,73 @@ The committed `INFRA_FILTER_STEP2_*.tsv` reflect the final (registry) filter.
 ### Environment notes for steps 4/5
 
 - `Infra_Test.thy` as committed imports the full `Semantic_Embedding`, whose
-  theory-end hook launches the attached RPC Python host. Under isabelle-mcp
-  `ISABELLE_RPC_PYTHON` is unset and the discovered `/usr/bin/python3` lacks
-  the `Isabelle_RPC_Host` wheel, so the parent theory errors at `end` (the
-  evidence files record the same constraint: the variable cannot be injected
-  from inside a session — export it in the shell that starts the Isabelle
-  process, value `/home/qiyuan/Current/MLML/.venv/bin/python3`). The same gap
-  will block step 4's `dry_run'` (it RPCs to Python) under isabelle-mcp.
+  theory-end hook launches the attached RPC Python host.  **The launch failure
+  is specific to the isabelle-mcp SERVER's process environment** (its PATH
+  resolves `command -v python3` to `/usr/bin/python3`, which lacks the
+  `Isabelle_RPC_Host` wheel, and `ISABELLE_RPC_PYTHON` is unset there; the
+  variable cannot be injected from inside a session).  From the Claude Bash
+  shell there is NO gap — verified 08-25:
+  `isabelle env bash -c 'command -v python3'` returns
+  `/home/qiyuan/Current/MLML/.venv/bin/python3` and the wheel imports — so any
+  Isabelle process started from that shell (console, `isabelle process`, REPL
+  server) launches the attached host with zero configuration.  Step 4's
+  `dry_run'` (it RPCs to Python) therefore runs from the shell as-is; only
+  isabelle-mcp-hosted evaluation is blocked, and editing the machine-wide
+  `~/.isabelle/.../etc/settings` was proposed and WITHDRAWN as unnecessary.
 - Step 5 (unfuse + collect) remains the first irreversible step; nothing of it
   was touched here.
+
+## 14. Session state at the 2026-08-25 second hand-back (read before step 4)
+
+Steps 1 and 2 are DONE, COMMITTED and VERIFIED (submodule `4cde1bd`,
+superproject `fa17c9b`); nothing of this session is uncommitted.  The owner
+directed: proceed through the remaining steps one at a time, **step 4 next**.
+
+### Step 4 — what to do
+
+Run `dry_run'` (`Tools/semantic_store.ML:1862`,
+`dry_run' : Context.generic -> int`) once per theory for the **21**
+`HOL-Decision_Procs` theories — the 6 kept (`Algebra_Aux`, `Polynomial_List`,
+`DP_Library`, `Approximation`, `Approximation_Bounds`, `Rat_Pair`) and the 15
+marked — and record the per-theory counts in this section.  Read
+`semantic_store.ML:1840-1870` first for what the int means and the
+`enumerate_entries` path.  Purpose: real entity counts for step 5's budget
+(every current figure is a grep of top-level commands; `Polynomial_List` has
+106/113 lemmas in class targets, so its true count exceeds the command count),
+and the D9 decision input (`Polynomial_List` keep may be revisited on these
+numbers).  Sizing only — D10 says budget is not a gate, and `dry_run'` runs
+nothing (`:1848-1851`).
+
+### How to run it (environment verified 08-25)
+
+- **From the Claude Bash shell, zero configuration**: the shell's PATH puts
+  `/home/qiyuan/Current/MLML/.venv/bin/python3` first, Isabelle's bash
+  discovers it (`isabelle env bash -c 'command -v python3'` verified), and the
+  attached RPC host launches.  Do NOT use isabelle-mcp for this — its server
+  process finds the wrong python (see §13's corrected note).  Use
+  `isabelle process`/`console` with an ML script writing a TSV; no
+  `isabelle build` (standing rule), loading theories from source into a live
+  process is fine and allowed.
+- Heap route (the §6 step-1 blocker note still applies — no heap has both
+  sides): either `-l MathBench_ProverBase` (with
+  `-d tasks/MathBench_Prover -d contrib/Performant_Isabelle_ML
+  -d contrib/afp-2026-05-13/thys -d contrib/Isabelle_RPC`; most of
+  Decision_Procs precompiled via the `Reflective_Field` import) then
+  `Thy_Info.use_thy` for `HOL-Decision_Procs.Decision_Procs` and
+  `Semantic_Embedding.Semantic_Embedding`; or `-l Semantic_Embedding` and load
+  Decision_Procs from source.  Per-theory context:
+  `Context.Theory (Thy_Info.get_theory "HOL-Decision_Procs.<X>")`.
+- `EMBEDDING_API_KEY` is already in `~/.isabelle/Isabelle2025-2/etc/settings`,
+  so the Isabelle process and its attached host inherit it — never print it.
+- Port 6666 still belongs to ANOTHER session's `MathBench_Prover` REPL server:
+  never probe it with a bare TCP connect, never kill it.  The isabelle-mcp
+  prover (session `MathBench_ProverBase`) may still be running; it is
+  independent and can be left alone or terminated.
+
+### After step 4 (unchanged queue)
+
+Step 5 (unfuse + collect — FIRST IRREVERSIBLE step, needs the owner's go and
+the 11 new `Dense_Linear_Order` aliases written per D13), step 6 (Python skip
+list behind an RPC callback, §8 — independent, can interleave), D16 backfill
+(separate budgeted activity), and the test debt (§13: LTE expectation table +
+stale spellings; `Test_Infra_Session_Prefixes.thy` repair-or-delete, §9.3).
