@@ -1498,11 +1498,75 @@ which matches the measured 9 marked-side methods exactly; the 17-entity
 enumerated-vs-due gap in the kept-6 table remains an unverified reading
 (shared content-addressed keys) — it gates nothing.
 
+### Step 5 — DONE (2026-08-25/26), with verification
+
+The owner gave the go; the unfuse landed and the collection ran in two parts.
+
+**The unfuse (D7).**  `is_excluded_theory` (`Tools/semantic_store.ML`) keeps only
+`base_theory_ids`; the `is_infra_theory` disjunct and the now-unused local alias
+`val is_infra_theory = Infra_Filter.is_infra_theory` are gone.  `learning.ML`
+keeps its own direct caller of `Infra_Filter.is_infra_theory`, so the marking
+still has a consumer outside this file.
+
+**Part A — the 21 `HOL-Decision_Procs` roots.**  1,956 entities, 14 theories
+with a cost line, **$28.16**, `Interpretation done` with no failures.  The
+counts reproduce step 4 exactly: the six kept theories' 1,933, the fifteen
+marked theories' **9 methods and nothing else**, and 14 entities of
+`HOL-Library.Old_Recdef` that the ancestor-cone rule brings along.
+
+**Part B — root `MathBench_Prover.MathBench_Prover`.**  3,435 entities:
+`MathBench_ProverBase.Geo_Real2` 3,343 (never collected before — unrelated debt
+the cone rule sweeps in; the owner ruled to pay it), `MathBench_Prover` 82,
+`Auto_Sledgehammer` 8, `Minilang.Minilang` 2 (its methods — the 40th marked
+theory, confirming D17 once more).  Itemised cost **$17.75**; the three
+interrupted attempts' partial spend is not itemised (their records did land, so
+the retry only paid for the remainder).
+
+**Verification against the store (1,349,142 records):**
+
+- All **9 methods** are present with sound English: `Cooper.cooper`,
+  `Ferrack.rferrack`, `MIR.mir`, `Dense_Linear_Order.dlo`,
+  `Dense_Linear_Order.ferrack`, `Commutative_Ring.ring`,
+  `Reflective_Field.field`, `Parametric_Ferrante_Rackoff.frpar`/`frpar2`.
+  Retrieval can reach them for the first time — before the unfuse the whole
+  theory was skipped.
+- **D17's kill is real in the live path**: `Cooper.fm.Eq`, `MIR.num.C`,
+  `Commutative_Ring.pol.Pc` — three representatives of the 172 datatype-machinery
+  constants — have **zero** records.
+- Kept-side record counts match step 4 per theory (`Algebra_Aux` 440,
+  `Polynomial_List` 164, `Approximation_Bounds` 311, `Rat_Pair` 80,
+  `DP_Library` 7).
+- **All 24 `lemmas` aliases are collected** (D13 finally cashed in): the 11 new
+  `Dense_Linear_Order` ones, the 3 from 06-17, and the 10 `Approximation_Bounds`
+  ones, every one stored under `MathBench_Prover.*`.  `ln_bounds` is a
+  two-conclusion lemma and appears as `ln_bounds(1)`/`ln_bounds(2)` — an exact
+  name match misses it; it is present.
+- `Geo_Real2` contributes exactly 3,343 records, matching its dry run.
+
+**Operational notes for the next collection run** (each cost a failed attempt
+here):
+
+- `semantics_manage collect` defaults `--repl-addr` to **127.0.0.1:6666**, which
+  on this machine belongs to ANOTHER session's REPL server.  Always pass an
+  explicit port.
+- Start the REPL server with `RPC_Host=<host:port>` exported, and run the CLI
+  with the matching `--rpc-addr`; the CLI's in-process host only serves the
+  Isabelle side when that variable points at it (`debug_launcher.py:6`).  The
+  host process must `import Isabelle_Semantic_Embedding.semantic_interpretation`,
+  or every `Semantic_Store.*` call fails with "Unknown procedure".
+- Run BOTH the REPL server and the collection detached (`setsid`): harness-managed
+  background tasks get reaped, and a reaped REPL kills the collection with it.
+- The Claude Code driver raises `FatalAgentError: Stream idle timeout` on a
+  transient API stall.  A retry loop is the fix — records are written
+  incrementally, so each attempt resumes and only pays for the remainder (this
+  run needed two attempts for part B).
+- `isabelle console` cannot be used for any of this: a raw ML process has no
+  bash_process server, so `Isabelle_System.bash_process` — and with it the whole
+  RPC host launch — is unavailable (§14's step-4 results).
+
 ### After step 4 (unchanged queue)
 
-Step 5 (unfuse + collect — FIRST IRREVERSIBLE step; its two preconditions are
-now met: D9 reaffirmed on step 4's numbers and D13's 11 aliases written and
-compile-checked, so all that remains is the owner's go), step 6 (Python skip
+~~Step 5~~ (DONE — see the section above), step 6 (Python skip
 list behind an RPC callback, §8 — independent, can interleave), D16 backfill
 (separate budgeted activity), and the test debt (§13: LTE expectation table +
 stale spellings; `Test_Infra_Session_Prefixes.thy` repair-or-delete, §9.3).
