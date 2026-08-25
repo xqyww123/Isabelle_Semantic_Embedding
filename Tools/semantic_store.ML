@@ -47,6 +47,9 @@ signature SEMANTIC_STORE = sig
      no theory marked interpreted -- the same theories stay due until a live run
      completes (write-back discipline 3). *)
   val dry_run : bool -> Context.generic list -> string list * int
+  (* Level 2 alone, one theory, no level-1 due-filter -- exposed for sizing
+     measurements (INFRA_FILTER_REWORK_PLAN.md step 4). *)
+  val dry_run' : Context.generic -> int
 
   (* How the record we are about to write names its entity, of any kind
      (DYNAMIC_MEMBER_NAMING_PLAN.md §2.2).  Distinct from

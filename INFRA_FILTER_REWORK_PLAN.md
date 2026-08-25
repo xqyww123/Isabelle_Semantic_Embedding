@@ -86,6 +86,7 @@ the source is simply switched off.
 | D14 | Every name-string guess in the rule chain is retired **only** where an authoritative Isabelle query replaces it with no coverage loss. Where no such query exists, the guess stays. One rule at a time, each with evidence. See §3. | 08-23 |
 | D15 | **The tool-support marking list (08-25)**: 23 theories join the marking set, from the KEPT-side audit's ~558 unmarked tool constants, each vetted for AFP statement-level citations by a dedicated research pass — `HOL.Quickcheck_Exhaustive`, `HOL.Quickcheck_Narrowing`, `HOL.Quickcheck_Random`, `HOL.Random_Pred`, `HOL.Random_Sequence`, `HOL.Lazy_Sequence`, `HOL.Limited_Sequence`, `HOL.Nitpick`, `HOL.Nunchaku`, `HOL.SMT`, `HOL.Meson`, `HOL.Metis`, `HOL.Record` (iso_tuple layer; user record fields are whitelisted separately), `HOL.Typerep`, `HOL.Extraction`, `HOL-Library.Code_Test`, `HOL-Library.Code_Lazy`, `HOL-Library.Code_Target_Nat`, `HOL-Library.Code_Target_Int`, `HOL-Library.Code_Cardinality`, `Tools.Code_Generator`, `HOL-Real_Asymp.Multiseries_Expansion`, `HOL-Real_Asymp.Lazy_Eval`. **Withheld under the zero-casualty bar**: `HOL.Random` (JinjaThreads' random scheduler and Containers' benchmark generators would lose hand-written defining equations) and `HOL.Predicate_Compile` (three entries' hand-written `code_pred_intro` rules). **Never mark `HOL.Code_Numeral`**: `nat_of_integer`/`int_of_integer` appear in statements across ~100 AFP entries (92 files cite `nat_of_integer` alone, spot-verified) — the `Algebra_Aux` failure at 10x scale. Evidence table and known plumbing casualties: `TOOL_THEORY_MARKING_LIST.md`; the post-step-2 re-run is the final check (textual grep cannot see mentions that appear only after unfolding). | 08-25 |
 | D16 | **Store reconciliation with the reworked filter (08-25)**: the store and the new filter disagree in both directions — entities the old filter wrongly rejected have no records (`EC_Common`'s 44, the `Abs_fps` 239, the `class.linorder` relativization lemmas, …), and records exist for entities the new filter now rejects (`_sumC`, instance plumbing, D15's 23 theories' constants). Ruling: **backfill later, never purge.** Legacy records the new filter would reject stay as visible noise (the step-3½ question, returned in a new guise, answered "accept"). Backfill is a later activity: when scheduled, an offline re-filter pass over the store (pure ML, no LLM, no build) buckets newly-accepted entities by declaring theory into a sized worklist; collection then covers those theories. Not part of steps 1-6. | 08-25 |
+| D17 | **In a marked theory only proof methods deserve records (08-25)**: the theory marking now beats the `preserved_set` veto in `is_infra_const'`, so a marked theory's datatype machinery (constructors, `case_*`/`rec_*`/`size_*`, (co)datatype `map`/`rel`/`set`/`corec`) is judged infrastructure instead of surviving as kept-side noise; methods are untouched (they never route through the constant judgement — they survived the pre-D17 chain although its `infra_theory` rule would have caught them if they did route through it). Partially supersedes the 08-24 ordering ruling under D6, whose floatarith argument survives as classification discipline: a theory whose declarations have external statement-level users must be KEPT (`Approximation_Bounds`, `Approximation`, `Rat_Pair`), never marked-and-vetoed. Kill list: exactly **254 constants**, every one datatype machinery (`INFRA_FLIP_SET.tsv`; 39/40 marked theories measured, `Minilang.Minilang` not in the measurement heap). Cascade delta: **zero** — none of 92,217 kept theorems in the 723-theory heap mentions any of the 254 (post-change kept count invariant at exactly 92,217), and a full-store scan (1,343,777 records, 3,690 raw hits) found no genuine kept external mention either: 3,212 `typerep_*_def` plumbing hits already cascade-rejected today (heap probe: 108 such facts, 0 kept before AND after), 114 same-suffix different-constant false positives (`FOL_Harrison.fm.Not`, Taylor_Models' own `poly.Bound` — its `Polynomial_Expression.thy:19` declares its own datatype, so D1's "zero external citers" for `Reflected_Multivariate_Polynomial` stands), 364 stale own-records of marked theories (D16 territory). | 08-25 |
 
 ### Why long names (D3), with the number
 
@@ -234,6 +235,15 @@ step 1's measurement, and why step 3½ exists.
 > `MIR.Ifm` is judged infrastructure, its constructor `MIR.fm.Eq` is not); the
 > ordering is documented as load-bearing by a comment at the `preserved_set`
 > veto in `infra_filter.ML`.
+>
+> **Partially superseded by D17 (2026-08-25).** For marked theories the
+> ordering flipped back: the marking now beats the veto, so a marked theory's
+> datatype machinery dies.  What survives of this ruling: (a) the floatarith
+> argument, as classification discipline — a theory whose declarations have
+> external statement-level users is KEPT, never marked-and-vetoed (which is
+> why the D17 cascade delta measured zero); (b) the incoherence verdict on
+> the middle form (kill the constant, exempt the cascade) — D17 kills both,
+> coherently.  Full measurement: the D17 row and the §14 addendum.
 
 ### Why unfusing is safe and what it buys (D7)
 
@@ -242,7 +252,9 @@ constants, `:1452` theorems, `:1547` methods), so interpreting a marked theory
 costs only the survivors. `MIR.thy`'s 213 reflection lemmas never enter the
 payload. What does enter is the two kinds the marking does not gate: **10 proof
 methods and 1 `named_theorems`**. `lemmas` aliasing cannot recover a method, so
-this is the only route to them.
+this is the only route to them.  (Figures predate D1's 08-24 revision:
+`Approximation` — holding 1 method and the 1 `named_theorems` — moved to the
+kept side with it; the marked-side payload measures 9 methods, §14.)
 
 `is_excluded_theory` has to be rewritten regardless — it keys off
 `is_infra_session`, which D2 retires, and it is what keeps the three kept
@@ -1335,6 +1347,10 @@ nothing (`:1848-1851`).
 
 ### How to run it (environment verified 08-25)
 
+> **SUPERSEDED (2026-08-25, same day):** the console route below failed in
+> practice -- see "Step 4 results" for why (no bash_process server in a raw
+> ML process) and for the Isa-REPL recipe that actually ran.
+
 - **From the Claude Bash shell, zero configuration**: the shell's PATH puts
   `/home/qiyuan/Current/MLML/.venv/bin/python3` first, Isabelle's bash
   discovers it (`isabelle env bash -c 'command -v python3'` verified), and the
@@ -1358,6 +1374,129 @@ nothing (`:1848-1851`).
   never probe it with a bare TCP connect, never kill it.  The isabelle-mcp
   prover (session `MathBench_ProverBase`) may still be running; it is
   independent and can be left alone or terminated.
+
+### Step 4 results (measured 2026-08-25)
+
+The recipe above needed two corrections and one accommodation, all verified:
+
+- **The `isabelle console` route does NOT work.**  Its raw ML process has no
+  bash_process server (that server is a protocol handler attached to PIDE and
+  build sessions, `Pure/System/bash.scala`), so (a) replaying the `by (smt ...)`
+  proofs while loading Decision_Procs from source fails, and (b) Isabelle_RPC
+  cannot launch the attached Python host at all -- it discovers python, probes
+  it and holds the host through `Isabelle_System.bash_process`
+  (`Isabelle_RPC/Tools/RPC.ML:203/698/738`).  The measurement instead ran on a
+  private Isa-REPL server (`repl_server.sh` is exempt from the no-build rule and
+  runs the ML process under `isabelle build`, which has bash_process):
+  `contrib/Isa-REPL/repl_server.sh 127.0.0.1:6712 MathBench_ProverBase <outdir>
+  -o threads=10 -o document=false` (no `-d` flags needed -- the registered
+  components cover every session involved), then from the Python client
+  `load_theory` of `Semantic_Embedding.Semantic_Embedding` and
+  `HOL-Decision_Procs.Decision_Procs` (both load from source, so the reworked
+  filter is in force), then `run_ML` against theory `Isa_REPL.Isa_REPL` of an
+  `ML_Context.eval_in` indirection that compiles the driver file in the
+  `Semantic_Embedding.Semantic_Embedding` context (`run_ML`'s sender ref lives
+  only in Isa_REPL's ML environment, `Semantic_Store` only in
+  Semantic_Embedding's).
+- **`dry_run'` was not exported.**  The signature now carries
+  `val dry_run' : Context.generic -> int` (`Tools/semantic_store.ML`, commented
+  as exposed for this measurement).  The exported aggregate `dry_run` cannot
+  substitute: its level 1 drops excluded theories, i.e. every marked theory.
+- **The driver must first call
+  `Remote_Procedure_Calling.load ["Isabelle_Semantic_Embedding"]`.**  The host
+  registers the `Semantic_Store.*` procedures only when that Python module is
+  imported (the interpret path does this in `interpret_command.ML:83`); without
+  it every dry-run RPC fails with "Unknown procedure".
+
+Per-theory counts.  `enumerated` = length of `enumerate_entries`' entries (the
+theory's entities that survive the infra filter); `dry_run` = the count after
+Python's cache filter (entities the LLM would actually be asked about).  Raw
+TSVs: `INFRA_FILTER_STEP4_DRY_RUN.tsv`, `INFRA_FILTER_STEP4_KINDS.tsv`.
+
+| theory | status | enumerated | dry_run | by kind |
+| --- | --- | ---: | ---: | --- |
+| Algebra_Aux | kept | 448 | 440 | 403 theorem, 41 rule, 4 constant |
+| Polynomial_List | kept | 164 | 164 | 143 theorem, 16 constant, 3 rule, 1 class, 1 locale |
+| DP_Library | kept | 7 | 7 | 6 theorem, 1 constant |
+| Approximation | kept | 937 | 931 | 833 theorem, 65 constant, 35 rule, 2 type, 1 method, 1 theorem_collection |
+| Approximation_Bounds | kept | 314 | 311 | 235 theorem, 50 constant, 29 rule |
+| Rat_Pair | kept | 80 | 80 | 62 theorem, 17 constant, 1 type |
+| Commutative_Ring | marked | 23 | 23 | 22 constant, 1 method |
+| Commutative_Ring_Complete | marked | 0 | 0 | |
+| Reflective_Field | marked | 30 | 30 | 29 constant, 1 method |
+| Conversions | marked | 0 | 0 | |
+| Cooper | marked | 31 | 31 | 30 constant, 1 method |
+| Ferrack | marked | 27 | 27 | 26 constant, 1 method |
+| MIR | marked | 31 | 31 | 30 constant, 1 method |
+| Reflected_Multivariate_Polynomial | marked | 11 | 11 | 11 constant |
+| Dense_Linear_Order | marked | 2 | 2 | 2 method |
+| Parametric_Ferrante_Rackoff | marked | 26 | 26 | 24 constant, 2 method |
+| Decision_Procs | marked | 0 | 0 | |
+| Commutative_Ring_Ex | marked | 0 | 0 | |
+| Approximation_Ex | marked | 0 | 0 | |
+| Approximation_Quickcheck_Ex | marked | 0 | 0 | |
+| Dense_Linear_Order_Ex | marked | 0 | 0 | |
+
+Readings:
+
+- **Kept 6 total: 1,950 enumerated / 1,933 due.**  None of this is a step-5
+  increment -- the kept theories are collectible today; it is the as-yet
+  uncollected Decision_Procs share of the ordinary budget.  The 17-entity gap
+  is entities whose universal keys already carry interpretation records
+  (content-addressed keys shared with already-interpreted theories).
+- **Marked 15 total: 181 enumerated = 181 due, split 172 constants + 9 methods
+  + 0 theorems.**  The 9 methods (Commutative_Ring 1, Reflective_Field 1,
+  Cooper 1, Ferrack 1, MIR 1, Dense_Linear_Order 2,
+  Parametric_Ferrante_Rackoff 2) are step 5's actual payload.  The 172
+  constants are datatype machinery that survives because the preserved_set
+  veto fires before the infra_theory rule -- the D4-accepted kept-side noise,
+  now quantified: 95% of the marked-side increment.  The owner may want to
+  revisit D4 with this number before step 5.  Note the measured method count
+  is 9, not the "10 methods + 1 named_theorems" the step-5 scope sentence
+  grep-estimated; Approximation (kept) holds a further 1 method + 1
+  theorem_collection, which may account for the difference -- owner to
+  reconcile at the step-5 go decision.
+- **D9 input: Polynomial_List's true entity count is 164** (143 theorems, 16
+  constants, 3 rules, 1 class, 1 locale) -- versus the ~113 top-level commands
+  the earlier grep counted; the class-target lemmas are indeed enumerated.
+- **Approximation dominates the kept side at 937** (833 theorems); together
+  with Approximation_Bounds (314) it carries 64% of the kept-side budget.
+
+### Step 4 addendum — the D17 ruling (2026-08-25, same sitting)
+
+The owner reviewed the 172/181 reading above, had the 172 verified name by
+name (`INFRA_FILTER_STEP4_MARKED_SURVIVORS.tsv` — every one a reflected-syntax
+datatype's constructors/`case`/`rec`/`size`), and ruled what is now D17: in a
+marked theory, every entity except proof methods is infrastructure.  The
+gating measurements and the post-change verification, all archived:
+
+- Full flip set: 254 constants across the 39 loaded marked theories (172
+  Decision_Procs + 82 tool-side), zero theorems/types/classes —
+  `INFRA_FLIP_SET.tsv`.
+- Heap cascade: 0 of 92,217 kept theorems mention any of the 254.  The scan is
+  conservative: it walks `Thm.full_prop_of` (a superset of the real cascade's
+  `Thm.prop_of`) and matches by name, which mirrors `is_internal_constant`
+  exactly since the typ argument is no longer consulted.
+- Store scan: 1,343,777 records, 3,690 raw hits, all classified (see the D17
+  row): typerep plumbing already rejected today, same-suffix false positives,
+  and marked theories' own stale records.  The Taylor_Models check also
+  re-confirmed D1: its `poly` is a local copy, not a citation of
+  `Reflected_Multivariate_Polynomial`.
+- Implementation: `infra_filter.ML` — `is_from_infra_space const_space` hoisted
+  above the `preserved_set` veto (bucket label "infra_theory" kept), the now
+  unreachable `infra_theory` row removed from the rule list, the 08-24
+  load-bearing comment replaced by the D17 one.
+- Post-change verification: marked-theory survivors are methods only —
+  constants, theorems, types and classes are all zero across the 39; the
+  plain-theory kept count is invariant at exactly 92,217; the 108 in-heap
+  `typerep_*_def` facts are 0-kept both before and after.
+
+Two reconciliations from the same sitting: the "10 methods + 1
+named_theorems" figure in the D7 section predates D1's 08-24 revision
+(`Approximation`, holding 1 method + 1 theorem collection, moved to kept),
+which matches the measured 9 marked-side methods exactly; the 17-entity
+enumerated-vs-due gap in the kept-6 table remains an unverified reading
+(shared content-addressed keys) — it gates nothing.
 
 ### After step 4 (unchanged queue)
 
