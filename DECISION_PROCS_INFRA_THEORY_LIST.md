@@ -71,10 +71,10 @@ interpretation cost of a `keep`.
 | `Cooper` | infra | 2607 | 119 | 54 | reflected Presburger QE |
 | `Ferrack` | infra | 2526 | 120 | 56 | reflected linear-real QE |
 | `MIR` | infra | 5709 | 238 | 104 | reflected mixed int/real QE — **real loss, see below** |
-| `Approximation` | infra | 1187 | 33 | 22 | `floatarith` reflection + the trusted oracle |
+| `Approximation` | **keep** (08-24) | 1187 | 33 | 22 | `floatarith` reflection + the trusted oracle — re-ruled: `interpret_floatarith`/`approx`/`bounded_by` are cited by 20 AFP files; oracle plumbing entering the store is accepted noise (D4: deletion is invisible, noise is not) |
 | `Approximation_Bounds` | **keep** | 3101 | 119 | 19 | the authors split this file out as the ordinary-mathematics half |
 | `Reflected_Multivariate_Polynomial` | infra | 2038 | 144 | 41 | reflected `poly` terms; zero ordinary mathematics |
-| `Rat_Pair` | infra | 589 | 42 | 17 | rationals as `int × int` for the reflected procedures |
+| `Rat_Pair` | **keep** (08-24) | 589 | 42 | 17 | rationals as `int × int` — re-ruled: `INum`/`isnormNum` are used by AFP Taylor_Models |
 | `Dense_Linear_Order` | infra | 881 | 81 | 13 | QE rule tables — **small loss, see below** |
 | `Parametric_Ferrante_Rackoff` | infra | 4013 | 212 | 88 | reflected `tm`/`fm` QE with polynomial parameters |
 | `Decision_Procs` | infra | 17 | 0 | 0 | imports only; nothing between `begin` and `end` |
@@ -457,3 +457,16 @@ and the code. These are the rulings.
    `contrib/Isa-Mini/Test/Test_Infra_Session_Prefixes.thy:6-14`.
 
 Interpreting the theories moved to `keep` is a separate, budgeted run.
+
+## Revision (2026-08-24): `Approximation` and `Rat_Pair` re-ruled keep
+
+The step-1 constant-verdict audit (see `INFRA_FILTER_REWORK_PLAN.md` §7) found
+both theories hold externally-cited mathematics: `Approximation`'s
+`interpret_floatarith` (20 AFP files), `approx`, `approx_form`, `bounded_by`,
+`isDERIV`; `Rat_Pair`'s `INum`, `isnormNum` (AFP Taylor_Models). Owner ruling:
+both move to **keep** — for `Approximation` the oracle plumbing entering the
+store is accepted as visible-and-repairable noise, preferred over invisible
+deletion of the downstream cascade victims. `Reflected_Multivariate_Polynomial`
+stays marked: genuine polynomial library but zero external citers
+(Taylor_Models forked it rather than import it); re-rule if a citer appears.
+The marked set drops from 17 to **15**; kept rises from 3 to **5**.
