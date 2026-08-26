@@ -1727,3 +1727,67 @@ non-concealed constants rejected: 54.
 
 The logs are not committed — the recipe above reproduces them in under three
 minutes.
+
+## 17. Session state at the 2026-08-26 second hand-back (read before step 6)
+
+**Done and committed this round** (submodules Isa-Mini `e9c449a`,
+Semantic_Embedding `8203d8a`; superproject `f05883b`): the test debt of §15's
+item 1, recorded as D18 and detailed in §16.  Steps 1, 2, 4 and 5 and D17/D13
+were already done and committed before it.
+
+### Hugging Face publish of the step-5 records
+
+The ~5,400 records collected in step 5 were local to `CSLCW2U` only.  Published
+on 08-26 via the `sync-semantic-embedding-db` skill's publishing section:
+
+- Confirmed no process held the cache (`lsof +D` exit 1, no `/proc/*/fd` match).
+- Packaged to `contrib/Semantic_Embedding/Isabelle_Semantic_Embedding.tar.zst`,
+  **9,231,452,560 bytes**, with the documented `--exclude`s (`embed_cache`,
+  `system`, `.install_system_db.lock`) — packed to a `.new` name and renamed
+  only after verification, so a failed pack cannot destroy the previous
+  snapshot.
+- Verified before uploading: the whole stream decompresses and parses as a
+  valid tar (16 entries); `semantics.lmdb/data.mdb` and the vector store's
+  `data.mdb` both carry the 2026-08-26 00:31 mtime of the step-5 collection.
+- **The tarball is ~1 MB SMALLER than the 08-20 one despite ~5,400 new
+  records.** Not a defect: LMDB files are preallocated (the vector store's
+  `data.mdb` is a constant 16,667,185,152 bytes), so new records fill free
+  pages instead of growing the file, and the compressed size then moves with
+  content compressibility alone.  Do not use tarball size as a freshness check
+  — use the mtimes.
+- **Budget hours for the upload: essentially the whole 9.23 GB goes over the
+  wire.**  Hugging Face's Xet layer deduplicates against the previous upload,
+  and its early "New Data Upload" estimate is misleadingly small (it read
+  134 MB, then 1.48 GB, and finally converged on 9.06 GB of 9.23 GB) — do not
+  trust it early.  Dedup finds almost nothing here because a collection
+  rewrites and reorganises LMDB pages throughout, so the chunks differ even
+  where the logical content does not.  At the ~1 MB/s this link averaged, the
+  upload took about two and a half hours.  Its progress bar advances in bursts
+  separated by stalls of a minute or more; that is batching, not a hang —
+  confirm by sampling `/proc/net/dev` and the bar together (here: ~30 MB of bar
+  per 15 s while 40-50 MB was actually sent).  `upload_file` commits only at
+  the very end, so killing a slow upload discards ALL of it and the next
+  attempt starts from byte zero.
+
+**The conda data release that follows (`isabelle-semantics release`) is a
+human's call and must never be dispatched from here.**
+
+### Next work: step 6 — the Python-side skip list (D11)
+
+Read **§8 in full first**; it is complete and names every call site.  In short:
+`semantics.py:127` holds a literal `_SKIP_THEORY_LONG_NAMES`, which (a) is
+compared by BASE name at `:132-135` — D3's mistake in the other language — and
+(b) defeats the candidate cache, because `_is_default` (`context.py:85-95`)
+requires an empty exclusion list while `semantics.py` passes four excluded
+theory names on every call, so every pattern-free query re-enumerates the whole
+live context over RPC.  Three traps §8 records: `_cached_or_call_thm`
+(`:150-176`) is a twin needing the same fix and carries the expensive kinds;
+`_is_default` ALSO requires `ctxt is None`, which may be a second cause and must
+be checked before scoping the fix; and `run_fleet_eval.sh:201-229` shares one
+RPC host across a fleet, so a module-level host cache is not safely scoped.
+Step 1 of §8 is research: `git log -L` on the `HOL.Typerep` line, to decide
+whether this is one concept or two.
+
+### Still needing the owner's go
+
+**D16 backfill** — a separately budgeted activity (§15).  Nothing else is open.
