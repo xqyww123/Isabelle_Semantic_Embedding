@@ -1939,3 +1939,41 @@ membership on the live list drops `HOL.Typerep` and passes `Foo.Typerep`.  The
 post-hoist `_auto_embed` path itself is pinned by
 `test_exclusion_is_by_full_long_name`; the live run doubles as the
 nested-comment parse check on the edited `.ML`.
+
+
+## 19. D16 backfill, phase 1 (2026-08-26) — the gap is sized
+
+Owner authorised the backfill and placed it on `cslh19`.  Phase 1 (the free
+sizing pass) ran there the same day; phase 2 (LLM collection) awaits the
+owner's read of these numbers.
+
+**How it was measured.**  A scratch session `D16_Scan` on the `AFP-ALL-4` heap
+(one authorised `isabelle build`, no `-b`; 59 min, 16 threads) iterated
+`Thy_Info.get_names ()` — all 9,331 heap theories — and ran
+`Semantic_Store.enumerate_entries` on each: the very function collection uses,
+so the accepted-entity list is the collection work set by construction.  Zero
+per-theory errors.  Joined on this machine against a dump of every store
+record's `(kind, name)` (1,349,142 records, 1,300,607 distinct pairs), with
+the four excluded base theories dropped (the scan enumerates every heap theory
+directly; `collect_cone` would never reach those four).
+
+**The numbers.**  1,428,393 accepted entities; 1,234,134 already recorded;
+**194,259 missing** — the backfill worklist — across **5,604 theories**.
+By kind: 168,720 theorems, 12,199 constants, 5,334 intro / 4,167 elim /
+1,462 induction / 1,438 case-split rules, 628 locales, 289 types, 12 methods,
+6 collections, 4 classes.  Coverage split: only 53 theories are fully
+uncovered (1,894 entities); 192,365 of the missing entities sit in 5,551
+theories that already have records — the filter-rework delta, not a coverage
+hole.  Validation: `Abs_fps` (both copies) and `Crypto_Standards.EC_Common`'s
+lemmas — D16's own named examples — appear in the worklist.
+
+**Caveats.**  The join is by `(kind, name)`: a record stored under an older
+name spelling (the dynamic-member renaming) counts as missing, so the figure
+is an upper bound on genuinely uninterpreted entities.  The worklist TSV
+(kind, name, theory) lives in the session scratchpad and as the raw scan on
+`cslh19:~/scratch_d16_backfill_20260826/afp_accepted_entities.tsv`; it is
+reproducible from this recipe at the cost of one build.
+
+**Scale context.**  Step 5's collection was ~5,400 records; this worklist is
+~36x that.  Phase 2's shape (all of it, a slice, or by-kind priorities) is the
+owner's call on cost.
