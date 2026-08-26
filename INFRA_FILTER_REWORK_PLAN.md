@@ -1570,3 +1570,68 @@ here):
 list behind an RPC callback, §8 — independent, can interleave), D16 backfill
 (separate budgeted activity), and the test debt (§13: LTE expectation table +
 stale spellings; `Test_Infra_Session_Prefixes.thy` repair-or-delete, §9.3).
+
+
+## 15. Session state at the 2026-08-26 hand-back (read before continuing)
+
+**Done and committed** (submodule `b46666f`, superproject `3dc7d96`, and the
+commits before them): steps 1, 2, 4 and 5; D17 (in a marked theory only proof
+methods deserve records) implemented and verified; D13 cashed in (24 aliases
+collected); D9 reaffirmed on step 4's numbers.  Nothing of this work is
+uncommitted.
+
+### PENDING — publish the new records to Hugging Face
+
+The step-5 collection wrote **~5,400 new records** (1,956 from part A, 3,435
+from part B) into the LOCAL cache only (`~/.cache/Isabelle_Semantic_Embedding`
+on `CSLCW2U`).  No other machine or user has them.  The owner asked (08-26) to
+record that an HF sync is wanted later.  Procedure: the `sync-semantic-embedding-db`
+skill's "Publishing the local cache as the new snapshot" section — confirm no
+process is writing the cache, package with the documented `--exclude`s, run
+`./manage_data.py update -y`, then commit and push `data/manifest.json` (that
+file ONLY).  **The conda data release that follows is a human's call and must
+never be dispatched from here.**
+
+### Next work, in the recommended order
+
+1. **Test debt** — the only thing currently in a broken state.
+   `Test_LTE_InfraFilter.thy`'s hard-coded expectation table predates this
+   round's rulings, so 5 lines FAIL BY DESIGN; a test that must fail is a trap
+   for the next reader.  Same file: the spellings `Sum_Type.sum.size_sum` /
+   `Product_Type.prod.size_prod` do not exist in this distribution (the real
+   names are `Basic_BNF_LFPs.sum.size_sum` / `Basic_BNF_LFPs.prod.size_prod`,
+   KEPT under both filters), and it hard-codes `~/.isabelle/Isabelle2024/log/`
+   paths while we run Isabelle2025-2.  Update the table against §13's ruled
+   deltas.
+2. **Step 6 — the Python-side skip list (D11, §8).**  Independent of everything
+   else, and it repairs a LIVE per-query performance defect: `_is_default`
+   (`context.py:85-95`) requires an empty exclusion list, `semantics.py` passes
+   four excluded theory names on every call, so the candidate cache NEVER fires
+   and each pattern-free query re-enumerates the whole live context over RPC.
+   The same step retires Python's base-name comparison (D3's mistake in the
+   other language) by making an ML callback the authority.  Read §8 in full
+   first — it names the two call sites, the `_cached_or_call_thm` twin, the
+   `ctxt is None` sub-condition to check, and the host-cache scoping trap
+   (`run_fleet_eval.sh:201-229` shares one host across a fleet).
+3. **D16 backfill** — the biggest remaining value, and a SEPARATE BUDGETED
+   activity needing the owner's go: an offline re-filter pass over the store
+   buckets newly-accepted entities (EC_Common's rescued lemmas, the `Abs_fps`
+   239, the `class.linorder` relativization lemmas, …) by declaring theory into
+   a sized worklist, then collection covers those theories.
+
+### Open decision for the owner
+
+`contrib/Isa-Mini/Test/Test_Infra_Session_Prefixes.thy` — repair or delete
+(open since 08-24, §9.3).  It is a fake test: its name is about infra SESSION
+prefixes, it never references `Infra_Filter`, and D2 retired the session
+concept entirely.  **Recommendation: delete** — it covers a concept that no
+longer exists, and keeping it suggests coverage that is not there.
+
+### Environment facts worth not rediscovering
+
+Collections run on `CSLCW2U` (14 cores, 62 GB).  Ports in use by OTHER
+sessions: **6666** (a `MathBench_Prover` Isa-REPL) and **6677** (a
+`Phi_System_Base` one) — never probe with a bare TCP connect, never kill.
+`/tmp` is a 24 GB tmpfs that has been sitting at 99% (one stale session's
+scratchpad holds 20 GB); the owner delegated the cleanup elsewhere on 08-26.
+The step-5 section above carries the collection-run operational notes.
