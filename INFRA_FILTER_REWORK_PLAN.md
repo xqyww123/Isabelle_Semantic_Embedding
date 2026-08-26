@@ -1872,14 +1872,25 @@ it needs a design decision, not a mechanical edit:
   advances — same key, different correct answer.  So an argument-keyed cache is
   stale by construction exactly where the volume is.
 
-Open for the owner: fix-with-invalidation (needs a design; theory identifiers
+~~Open for the owner: fix-with-invalidation (needs a design; theory identifiers
 give a cheap staleness token for the theory-context path, the proof-context path
-has none), retire the cache branches, or leave as recorded.  The `??.`
-measurement note at the end of §8 keeps its conclusion either way.  A shared
-`Connection.cached(attr, factory)` helper was weighed in the 08-26 review and
-set aside: its natural users are the eleven `_ctx_*` caches above, so building
-it now would freeze the current no-invalidation shape into a named abstraction
-before the invalidation question is ruled — and ship with one user.
+has none), retire the cache branches, or leave as recorded.~~  **RULED 08-26:
+retire.**  `_is_default`, `_cached_or_call` and `_cached_or_call_thm` are
+deleted from `Isabelle_RPC_Host/context.py`; the eleven entity functions call
+`_call`/`_call_thm` directly, and the module docstring records why (no
+invalidation against a live name space; the retrieval path never hit it) and
+that a future cache needs a staleness token designed first.  The suspected
+`show_defs` degradation dies with the cache — `_get_definition_with_pos` now
+always enumerates live.  The rationale for retiring over fixing: the cache's
+net contribution was negative (zero savings on the retrieval path, a silent
+staleness hazard on the definition-source path), and whether the 0.07-0.4 s
+per-query enumeration cost justifies a *designed* cache is a measurement to
+take on real AoA workload before any redesign.  The `??.` measurement note at
+the end of §8 keeps its conclusion — with the cache gone, the fold now runs in
+full on every query permanently, which is what those numbers already assumed.
+A shared `Connection.cached(attr, factory)` helper was weighed in the 08-26
+review and set aside; with the `_ctx_*` caches now deleted its premise is
+gone, and it should return only as part of a future designed cache.
 
 ### Review follow-up (08-26, same day)
 

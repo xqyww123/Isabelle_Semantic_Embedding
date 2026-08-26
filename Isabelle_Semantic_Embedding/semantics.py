@@ -1482,11 +1482,11 @@ async def _get_definition_with_pos(
 ) -> tuple[str, IsabellePosition] | None:
     """Look up the source code and position of the command defining an entity.
 
-    Uses cached entity enumeration to find the definition position,
-    then calls command_at_position to retrieve the source. A non-None
-    *ctxt* resolves the enumeration under that (file, offset) context —
-    note this bypasses the per-connection enumeration cache, costing a
-    full uncached enumeration RPC per call.
+    Enumerates the kind's entities live to find the definition position
+    (a full enumeration RPC per call — the enumeration cache was retired
+    2026-08-26, see INFRA_FILTER_REWORK_PLAN.md §18), then calls
+    command_at_position to retrieve the source. A non-None *ctxt* resolves
+    the enumeration under that (file, offset) context.
 
     Returns ``(source, cmd_pos)`` where *cmd_pos* is an
     `IsabellePosition` for the command start (symbol offset), or ``None``
