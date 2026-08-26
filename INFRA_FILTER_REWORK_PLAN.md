@@ -87,6 +87,7 @@ the source is simply switched off.
 | D15 | **The tool-support marking list (08-25)**: 23 theories join the marking set, from the KEPT-side audit's ~558 unmarked tool constants, each vetted for AFP statement-level citations by a dedicated research pass — `HOL.Quickcheck_Exhaustive`, `HOL.Quickcheck_Narrowing`, `HOL.Quickcheck_Random`, `HOL.Random_Pred`, `HOL.Random_Sequence`, `HOL.Lazy_Sequence`, `HOL.Limited_Sequence`, `HOL.Nitpick`, `HOL.Nunchaku`, `HOL.SMT`, `HOL.Meson`, `HOL.Metis`, `HOL.Record` (iso_tuple layer; user record fields are whitelisted separately), `HOL.Typerep`, `HOL.Extraction`, `HOL-Library.Code_Test`, `HOL-Library.Code_Lazy`, `HOL-Library.Code_Target_Nat`, `HOL-Library.Code_Target_Int`, `HOL-Library.Code_Cardinality`, `Tools.Code_Generator`, `HOL-Real_Asymp.Multiseries_Expansion`, `HOL-Real_Asymp.Lazy_Eval`. **Withheld under the zero-casualty bar**: `HOL.Random` (JinjaThreads' random scheduler and Containers' benchmark generators would lose hand-written defining equations) and `HOL.Predicate_Compile` (three entries' hand-written `code_pred_intro` rules). **Never mark `HOL.Code_Numeral`**: `nat_of_integer`/`int_of_integer` appear in statements across ~100 AFP entries (92 files cite `nat_of_integer` alone, spot-verified) — the `Algebra_Aux` failure at 10x scale. Evidence table and known plumbing casualties: `TOOL_THEORY_MARKING_LIST.md`; the post-step-2 re-run is the final check (textual grep cannot see mentions that appear only after unfolding). | 08-25 |
 | D16 | **Store reconciliation with the reworked filter (08-25)**: the store and the new filter disagree in both directions — entities the old filter wrongly rejected have no records (`EC_Common`'s 44, the `Abs_fps` 239, the `class.linorder` relativization lemmas, …), and records exist for entities the new filter now rejects (`_sumC`, instance plumbing, D15's 23 theories' constants). Ruling: **backfill later, never purge.** Legacy records the new filter would reject stay as visible noise (the step-3½ question, returned in a new guise, answered "accept"). Backfill is a later activity: when scheduled, an offline re-filter pass over the store (pure ML, no LLM, no build) buckets newly-accepted entities by declaring theory into a sized worklist; collection then covers those theories. Not part of steps 1-6. | 08-25 |
 | D17 | **In a marked theory only proof methods deserve records (08-25)**: the theory marking now beats the `preserved_set` veto in `is_infra_const'`, so a marked theory's datatype machinery (constructors, `case_*`/`rec_*`/`size_*`, (co)datatype `map`/`rel`/`set`/`corec`) is judged infrastructure instead of surviving as kept-side noise; methods are untouched (they never route through the constant judgement — they survived the pre-D17 chain although its `infra_theory` rule would have caught them if they did route through it). Partially supersedes the 08-24 ordering ruling under D6, whose floatarith argument survives as classification discipline: a theory whose declarations have external statement-level users must be KEPT (`Approximation_Bounds`, `Approximation`, `Rat_Pair`), never marked-and-vetoed. Kill list: exactly **254 constants**, every one datatype machinery (`INFRA_FLIP_SET.tsv`; 39/40 marked theories measured, `Minilang.Minilang` not in the measurement heap). Cascade delta: **zero** — none of 92,217 kept theorems in the 723-theory heap mentions any of the 254 (post-change kept count invariant at exactly 92,217), and a full-store scan (1,343,777 records, 3,690 raw hits) found no genuine kept external mention either: 3,212 `typerep_*_def` plumbing hits already cascade-rejected today (heap probe: 108 such facts, 0 kept before AND after), 114 same-suffix different-constant false positives (`FOL_Harrison.fm.Not`, Taylor_Models' own `poly.Bound` — its `Polynomial_Expression.thy:19` declares its own datatype, so D1's "zero external citers" for `Reflected_Multivariate_Polynomial` stands), 364 stale own-records of marked theories (D16 territory). | 08-25 |
+| D18 | **Test debt closed (08-26)**: `Test_LTE_InfraFilter.thy`'s expectation table is corrected to this round's ruled verdicts and now passes 21/21 in its own AFP-heavy context. Owner rulings the same day: the `Infra_Filter_Test` session in `contrib/Isa-Mini/ROOT` **stays commented out** (disabled by the owner 2026-05-24; it drags in twelve AFP sessions), so the test is run on demand, not by any build; `contrib/Isa-Mini/Test/Test_Infra_Session_Prefixes.thy` is **deleted** (it never referenced `Infra_Filter` and D2 retired the session concept); the file's dead `diagnose_const` is **deleted**. See §16 for the verification and the reusable recipe. | 08-26 |
 
 ### Why long names (D3), with the number
 
@@ -1015,10 +1016,12 @@ pre-fix worst case.
    first RPC call. `tools/slurm_run_server.sh:26`'s default was removed but is
    defeated by this caller. A production behaviour decision.~~ Ruled 08-24:
    intended behaviour, leave as is.
-3. **The filter tests** — run them around step 2 by evaluating the files
+3. ~~**The filter tests** — run them around step 2 by evaluating the files
    directly (ruled 08-24: ROOT membership not required; see §6). Open sliver:
    `Test_Infra_Session_Prefixes.thy` is fake (never references `Infra_Filter`)
-   — repair or delete, undecided.
+   — repair or delete, undecided.~~ **CLOSED 08-26** (D18, §16):
+   `Test_LTE_InfraFilter.thy` corrected and re-verified 21/21;
+   `Test_Infra_Session_Prefixes.thy` deleted.
 4. **`infra_const_cache` keys on `name` while the function takes
    `(name, typ_opt)`** (`:343-372`); call sites disagree (`:373` `NONE`, `:430`
    `SOME T`). No reachable divergence was constructed by three reviewers.
@@ -1594,7 +1597,8 @@ never be dispatched from here.**
 
 ### Next work, in the recommended order
 
-1. **Test debt** — the only thing currently in a broken state.
+1. ~~**Test debt**~~ **DONE 08-26 — see §16.**  (Original entry: the only
+   thing then in a broken state.)
    `Test_LTE_InfraFilter.thy`'s hard-coded expectation table predates this
    round's rulings, so 5 lines FAIL BY DESIGN; a test that must fail is a trap
    for the next reader.  Same file: the spellings `Sum_Type.sum.size_sum` /
@@ -1635,3 +1639,91 @@ sessions: **6666** (a `MathBench_Prover` Isa-REPL) and **6677** (a
 `/tmp` is a 24 GB tmpfs that has been sitting at 99% (one stale session's
 scratchpad holds 20 GB); the owner delegated the cleanup elsewhere on 08-26.
 The step-5 section above carries the collection-run operational notes.
+
+## 16. Test debt closed (2026-08-26) — expectation table corrected and re-verified
+
+`contrib/Isa-Mini/Test_InfraFilter/Test_LTE_InfraFilter.thy` was left failing
+five lines BY DESIGN after the 08-25 rule edits (§13): its hard-coded
+expectation table still encoded the pre-ruling verdicts.  It now passes
+**21/21** in its own AFP-heavy context, confirmed by two live runs.
+
+### The five corrected expectations
+
+Each was `true` (expected infrastructure) and is now `false` (kept), because the
+rule that used to catch it was deleted or narrowed by a ruling:
+
+| Constant | Old rule that killed it | Now |
+| --- | --- | --- |
+| `List.list.size_list` | `adt_record` | KEPT — the size family is cited by ordinary induction proofs |
+| `Product_Type.prod.Abs_prod` | `abs_rep_name` | KEPT — an Abs_/Rep_ name pattern is no longer a verdict on its own |
+| `Product_Type.prod.Rep_prod` | `abs_rep_name` | KEPT |
+| `Multiset.multiset.Abs_multiset` | `abs_rep_name` | KEPT |
+| `FSet.fset.Abs_fset` | `abs_rep_name` | KEPT |
+
+`Multiset.multiset.Rep_multiset` and `FSet.fset.Rep_fset` stay rejected and
+their expectations are unchanged — they die on `hidden`, because those two
+libraries `hide_const` the Rep morphism, not on the deleted name-pattern rule.
+`List.list.size_list_inst.size_list` likewise stays rejected, on `inst_infix`.
+
+Before running anything, the same five flips were already recoverable from two
+independent measurements on disk: the 08-25 12:24 run of this very test
+(`$ISABELLE_HOME_USER/log/infra_filter_pos_test.log`, five FAIL lines) and the
+committed `INFRA_FILTER_STEP2_CONST_VERDICTS.tsv` (`adt_record`/`abs_rep_name`
+→ `KEPT` for exactly those five).  The live run was done anyway and agreed.
+
+### The other repairs in the same file
+
+- **Non-existent constant names.**  The size spot-check queried
+  `Sum_Type.sum.size_sum` and `Product_Type.prod.size_prod`, which do not exist
+  in this distribution — the real names are `Basic_BNF_LFPs.sum.size_sum` and
+  `Basic_BNF_LFPs.prod.size_prod`.  A query on an unknown name interns to a
+  `??.`-hidden name and therefore always printed "filtered", a meaningless
+  verdict that read like evidence.  Fixed, and the block now carries expected
+  values (both are KEPT; their `*_inst.*` companions are rejected).
+- **Misleading spot-check labels.**  The Abs_/Rep_ block printed
+  `PASS (unexpected?)` for morphisms that are now correctly kept.  It carries
+  expected values too, so only a genuine disagreement prints `UNEXPECTED`.
+- **Hard-coded `~/.isabelle/Isabelle2024/log/` output paths** → `$ISABELLE_HOME_USER/log/`.
+- **Dead code deleted**: `diagnose_const` (defined, never called, two of its
+  rules hard-wired to `false`, rule names no longer matching the filter),
+  together with `internal_prefixes` and `fact_space`, which nothing else read.
+  The surviving diagnostic's heading now says what it actually reports.
+
+### Reusable recipe: running this test in ~2.5 minutes
+
+The test's context needs six AFP entries plus HOL-IMP / HOL-Data_Structures /
+HOL-Algebra.  All of them are already compiled into the **`AFP-ALL-4`** heap
+chain (`tools/Build_AFP_Image/AFP-DEP0/`, 9,331 theories) — the only missing
+import is `Performant_Isabelle_ML`.  So a three-file scratch session suffices:
+
+```
+session Infra_LTE_Check = "AFP-ALL-4" +
+  sessions Performant_Isabelle_ML
+  theories Test_LTE_InfraFilter
+```
+
+with `Test_LTE_InfraFilter.thy` (its `ML_file` path pointed at the copy beside
+it) and `infra_filter.ML` in the same directory, then
+`isabelle build -d . -o threads=8 -o document=false Infra_LTE_Check`.
+**No `-b`** — the session heap is not written, so this costs no disk.  Owner
+authorised this one build explicitly on 08-26; it is not covered by the
+standing REPL-server exemption, so **ask again next time**.
+
+Run on `cslh19` (24 cores, 56 GB free), where the `AFP-ALL-4` chain lives in
+`contrib/Isabelle2025-2/heaps/`: 2:38 the first time, 2:21 the second, of which
+~46 s is the session itself and the rest is loading the AFP session structure.
+Nothing in that machine's git checkout was touched — it is far behind this one
+and carries other people's uncommitted work — the three files went into
+`~/scratch_infra_lte_20260826/` by `rsync`.  On THIS machine the run was
+declined: 12 GB available against 41 GB of swap already in use, with other
+sessions' Isabelle processes live.
+
+### Measured totals from the verified run (context: 723-theory AFP-heavy)
+
+Constants 7,691 total / **4,320** rejected (08-25 pre-D17: 4,244; the +76 is
+D17's marking hoist net of rule 7's narrowed kill set).  Theorems 78,417 /
+21,973.  Types 291 / 134.  Classes 282 / 13.  Locales 527 / 15.  Hidden
+non-concealed constants rejected: 54.
+
+The logs are not committed — the recipe above reproduces them in under three
+minutes.
