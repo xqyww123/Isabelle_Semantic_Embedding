@@ -125,22 +125,16 @@ def record_constituent_hashes(raw: bytes) -> 'set[bytes] | None':
 
 async def excluded_theory_names(connection: Connection) -> list[str]:
     """Long names of the theories excluded from interpretation and from entity
-    enumeration.  ML owns the list (`base_theories` in semantic_store.ML); this used
-    to be a literal here, kept in step with it by hand.  Cached per CONNECTION, not
-    module-level: one RPC host serves a whole fleet of Isabelle processes
+    enumeration.  ML owns the list (`base_theories` in semantic_store.ML); callers
+    match FULL long names against it -- a base name is not an identity
+    (INFRA_FILTER_REWORK_PLAN.md D3).  Cached per CONNECTION, not module-level:
+    one RPC host serves a whole fleet of Isabelle processes
     (tools/aoa_putnam_eval/run_fleet_eval.sh)."""
     cached = getattr(connection, "_excluded_theory_names", None)
     if cached is None:
-        cached = list(await connection.callback("Semantic_Store.excluded_theory_names", None))
+        cached = tuple(await connection.callback("Semantic_Store.excluded_theory_names", None))
         connection._excluded_theory_names = cached  # type: ignore[attr-defined]
-    return cached
-
-
-async def is_thy_skipped(connection: Connection, name: str) -> bool:
-    """Check whether a theory should be skipped from interpretation.  Compares the
-    FULL long name: a base name is not an identity (INFRA_FILTER_REWORK_PLAN.md D3),
-    and this used to reject any theory whose base name happened to be `Typerep`."""
-    return name in await excluded_theory_names(connection)
+    return list(cached)  # tuple in the slot, fresh list out: no caller can edit the authority
 
 
 migrate_on_hash_change: bool = False
@@ -2032,6 +2026,7 @@ class Semantic_Vector_Store(Vector_Store):
                      if interpret_in_auto_embed is None
                      else interpret_in_auto_embed)
         if interpret:
+            excluded = set(await excluded_theory_names(self.connection))
             names: set[str] = set()
             seen_th: set[bytes] = set()
             for k in missing:
@@ -2042,7 +2037,7 @@ class Semantic_Vector_Store(Vector_Store):
                     continue
                 seen_th.add(th)
                 name = await self.connection.callback("Theory_Hash.theory_name_of", th)
-                if name is not None and not await is_thy_skipped(self.connection, name):
+                if name is not None and name not in excluded:
                     names.add(name)
             if names:
                 await update_interpretations(

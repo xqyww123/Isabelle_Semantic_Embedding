@@ -8,9 +8,9 @@ annoyance the warning-discipline ruling removed.  What this file now guards:
   * gate off   -> no warning, no interpretation; already-ready keys still embed
   * field off  -> 段(1) skipped wholesale: not even the config gets read
   * field+gate -> the point fix delegates to update_interpretations with the
-    missing entities' theory names -- the current theory NOT excluded (the old
-    exclusion starved the entities the running proof needs most), skipped infra
-    theories and unresolvable hashes dropped
+    missing entities' theory names -- the current theory always passed (the old
+    behaviour starved the entities the running proof needs most), the excluded
+    base theories and unresolvable hashes dropped
   * the shell: small n interprets silently; big n with ask_user=False warns
     with the dry run's real entity count and does nothing
   * NEVER a theory mark (review R6): "fully embedded" may only be asserted by
@@ -38,7 +38,7 @@ def _thm(ths: list) -> bytes:
     return xor_theory_prefix(ths) + bytes([int(EntityKind.THEOREM)]) + b"\x00" * 15
 
 
-T_CUR, T_SKIP, T_UNK = _thy(1), _thy(2), _thy(3)
+T_CUR, T_EXCL, T_UNK = _thy(1), _thy(2), _thy(3)
 CUR_NAME = "Scratch.Current"
 
 
@@ -46,10 +46,12 @@ class _StubConn:
     """Minimal Connection: configurable gate, ML-Option-like callbacks,
     captured output.  ``dry`` is what the cone callback's dry run reports."""
 
-    def __init__(self, names: dict, gate: bool, dry=((), 0)):
+    # excluded: one name, never the production four -- ML owns that list
+    def __init__(self, names: dict, gate: bool, dry=((), 0), excluded=("Pure",)):
         self.names = names
         self.gate = gate
         self.dry = dry
+        self.excluded = excluded
         self.warnings: list = []
         self.tracings: list = []
         self.calls: list = []
@@ -65,6 +67,8 @@ class _StubConn:
             return self.names.get(arg)      # None mirrors the ML NONE
         if name == "Theory_Hash.process_serial_of":
             return ("test-process", 1)
+        if name == "Semantic_Store.excluded_theory_names":
+            return list(self.excluded)  # a fresh list, as a real round-trip gives
         if name == "Semantic_Store.interpret_theories":
             ctxt, names, force, dry_run, include_context = arg
             return [list(self.dry[0]), self.dry[1]] if dry_run else [[], -1]
@@ -80,7 +84,8 @@ class _StubConn:
         raise AssertionError("_auto_embed must never ask at query time")
 
 
-def _store(monkeypatch, names, gate, ready_key=None, field=True, dry=((), 0)):
+def _store(monkeypatch, names, gate, ready_key=None, field=True, dry=((), 0),
+           excluded=("Pure",)):
     # monkeypatch, not assignment: a bare `S.Semantic_DB.get_many = ...` would
     # stay patched on the module singleton for every LATER test file in the
     # same pytest run (measured: it blinded test_incremental_criteria's scans).
@@ -88,7 +93,7 @@ def _store(monkeypatch, names, gate, ready_key=None, field=True, dry=((), 0)):
         ({"interpretation": "x"} if k == ready_key else None) for k in ks])
     monkeypatch.setattr(S, "document_text_of", lambda rec: "doc")
     store = object.__new__(S.Semantic_Vector_Store)
-    store.connection = _StubConn(names, gate, dry)
+    store.connection = _StubConn(names, gate, dry, excluded)
     store.enable_interpret_in_auto_embed = field
 
     async def _embed(records, force=False):
@@ -110,7 +115,7 @@ def test_gate_off_is_silent_and_still_embeds_ready_keys(monkeypatch):
     """The user switched the gate off: no warning, no live interpretation --
     and the already-interpreted key still gets its vector."""
     plain = [_thy(10 + i) for i in range(3)]
-    names = {T_CUR: CUR_NAME, T_SKIP: "Pure", T_UNK: None}
+    names = {T_CUR: CUR_NAME, T_EXCL: "Pure", T_UNK: None}
     names.update({t: f"HOL.Thy{i}" for i, t in enumerate(plain)})
     ready_key = _ent(plain[0], "already_ready")
     missing = [_ent(t, f"c{i}") for i, t in enumerate(plain)] + [ready_key]
@@ -135,11 +140,11 @@ def test_field_off_skips_paragraph_one_entirely(monkeypatch):
 
 
 def test_point_fix_passes_theory_names_including_the_current_theory(monkeypatch):
-    """The name list is the point fix; the current theory is NOT excluded, the
-    skipped/unresolvable ones are.  A small n runs silently (no warning)."""
+    """The name list is the point fix; the current theory is always passed, the
+    excluded/unresolvable ones are dropped.  A small n runs silently (no warning)."""
     plain = _thy(10)
-    names = {T_CUR: CUR_NAME, T_SKIP: "Pure", T_UNK: None, plain: "HOL.Thy0"}
-    missing = [_ent(T_CUR, "cur"), _ent(T_SKIP, "skip"), _ent(T_UNK, "unk"),
+    names = {T_CUR: CUR_NAME, T_EXCL: "Pure", T_UNK: None, plain: "HOL.Thy0"}
+    missing = [_ent(T_CUR, "cur"), _ent(T_EXCL, "excl"), _ent(T_UNK, "unk"),
                _ent(plain, "c0"), _thm([plain])]
     store = _store(monkeypatch, names, gate=True, dry=(("HOL.Thy0",), 2))
 
@@ -148,12 +153,28 @@ def test_point_fix_passes_theory_names_including_the_current_theory(monkeypatch)
     dry_calls = _interpret_calls(conn)
     assert dry_calls, "the point fix must reach the cone callback"
     ctxt, passed_names, force, dry_run, include_context = dry_calls[0]
-    assert CUR_NAME in passed_names                  # the old exclusion is the fixed defect
+    assert CUR_NAME in passed_names                  # dropping it was the fixed defect
     assert "Pure" not in passed_names and None not in passed_names
     assert include_context is False                  # point fix, not the startup sweep
     # n = 2 < threshold: interpreted silently, warning-free
     assert any(not a[3] for a in dry_calls), "small n must run live silently"
     assert conn.warnings == []
+    assert store.marks == []                         # R6: never a theory mark
+
+
+def test_exclusion_is_by_full_long_name(monkeypatch):
+    """Same base name, opposite fates: the list is matched WHOLE, so a theory
+    that merely ends in an excluded name survives (D3 -- a base name is not an
+    identity; the deleted Python literal compared base names and dropped both)."""
+    t_hit, t_near = _thy(20), _thy(21)
+    names = {t_hit: "HOL.Typerep", t_near: "Foo.Typerep"}
+    missing = [_ent(t_hit, "c0"), _ent(t_near, "c1")]
+    store = _store(monkeypatch, names, gate=True, dry=(("Foo.Typerep",), 2),
+                   excluded=["HOL.Typerep"])
+
+    asyncio.run(store._auto_embed(missing))
+    _, passed_names, _, _, _ = _interpret_calls(store.connection)[0]
+    assert passed_names == ["Foo.Typerep"]           # both directions, one assertion
     assert store.marks == []                         # R6: never a theory mark
 
 

@@ -947,7 +947,17 @@ yet are lifting plumbing — kept rejected by design for now.
    `preserved_set` — this is the deliberate boundary from D6's revocation
    (the kill zone stops at a type's public interface), not a miss.
 
-## 8. The Python-side skip list (D11)
+## 8. The Python-side skip list (D11) — DONE 08-26 (D19, §18)
+
+> Item 1 (why `HOL.Typerep`?) was researched and came back empty — `git log -L`
+> shows the literal born whole in `7e2253d` with no rationale recorded (D19).
+> Item 2 (the ML authority callback) is done.  Item 3 (the candidate cache)
+> turned out to need a design decision and is reopened in §18.  Everything below
+> quotes the PRE-step-6 code: the `_SKIP_THEORY_LONG_NAMES` literal and the
+> base-name comparison are deleted, `base_theories` in `semantic_store.ML` is the
+> authority, and the two sets are now EQUAL — step 5 removed the
+> `is_infra_theory` disjunct, D19 added `HOL.Typerep` — so the bold divergence
+> claim below is superseded.  Line numbers are historical.
 
 `semantics.py:127` keeps its own list:
 
@@ -1811,6 +1821,9 @@ Executed as ruled (D11 + D19).  The edits:
   per-Isabelle-process.  `is_thy_skipped(connection, name)` is now async and
   compares the FULL long name.  The two retrieval call sites pass
   `theories_not_include=await excluded_theory_names(self.connection)`.
+  *(Superseded by the review follow-up below: `is_thy_skipped` was folded into
+  `_auto_embed` as an inline membership test — "excluded" is now the single name
+  for this concept on both sides.)*
 
 **Verification (e2e over a real RPC round-trip, 08-26).**  An Isa-REPL server on
 a scratch port (base `HOL`, `-l Semantic_Embedding`) loaded the edited ML from
@@ -1820,9 +1833,14 @@ Python functions against the live connection.  All green:
 - callback returns `[Tools.Code_Generator, Pure, HOL.Code_Evaluation, HOL.Typerep]`;
 - `is_thy_skipped`: `HOL.Typerep` → true, **`Foo.Typerep` → false** (the D3 fix
   observable), `Pure`/`HOL.Code_Evaluation`/`Tools.Code_Generator` → true,
-  `HOL.List` → false;
+  `HOL.List` → false; *(the function is gone since the review follow-up; the
+  check now lives inline in `_auto_embed` and the D3 behaviour is pinned by
+  `test_exclusion_is_by_full_long_name`)*
 - the second `excluded_theory_names` call returned the same list object
-  (per-connection cache hit).
+  (per-connection cache hit).  *(True of the code as it stood; the review
+  follow-up made the cache a tuple returning a fresh list per call, so object
+  identity no longer holds — the cache is pinned by
+  `test_one_fetch_per_connection` and `test_a_caller_cannot_corrupt_the_cache`.)*
 
 Environment notes: `isabelle console` cannot host this stack (no Scala process —
 `Remote_Procedure_Calling.thy` needs `make_directory`); `isabelle process` no
@@ -1857,4 +1875,56 @@ it needs a design decision, not a mechanical edit:
 Open for the owner: fix-with-invalidation (needs a design; theory identifiers
 give a cheap staleness token for the theory-context path, the proof-context path
 has none), retire the cache branches, or leave as recorded.  The `??.`
-measurement note at the end of §8 keeps its conclusion either way.
+measurement note at the end of §8 keeps its conclusion either way.  A shared
+`Connection.cached(attr, factory)` helper was weighed in the 08-26 review and
+set aside: its natural users are the eleven `_ctx_*` caches above, so building
+it now would freeze the current no-invalidation shape into a named abstraction
+before the invalidation question is ruled — and ship with one user.
+
+### Review follow-up (08-26, same day)
+
+`9b7d0b4` went through an adversarial review (two independent reviewers, two
+cross-examination rounds, a solution-design debate, and an elegance gate); the
+confirmed findings and their fixes landed as one follow-up commit:
+
+1. **The tracked Python suite had broken** — the step-6 verification was
+   live-RPC only and never ran it.  `test_auto_embed_gate_off.py`'s `_StubConn`
+   whitelists callback names and raised on the new
+   `Semantic_Store.excluded_theory_names` (4 of 6 tests failed; measured against
+   the parent commit).  The stub now answers it from a fixture parameter
+   (`excluded=("Pure",)` — never the production four: ML owns that list), and
+   the file gains `test_exclusion_is_by_full_long_name`, the first test anywhere
+   to pin the D3 full-long-name comparison (`HOL.Typerep` dropped AND
+   `Foo.Typerep` survives).
+2. **`is_thy_skipped` deleted** — the last "skipped" name for this concept;
+   `_auto_embed` now fetches `excluded = set(await excluded_theory_names(...))`
+   once per query, hoisted above the loop and inside the `interpret` gate, and
+   tests membership inline.  Cost of the hoist: at most one extra RPC per
+   connection in the degenerate no-resolvable-hash case.
+3. **The cache holds a tuple and returns a fresh list per call** — no caller
+   can edit the authority; pinned by the new `test_excluded_theory_names.py`
+   (one fetch per connection, per-connection scope — the fleet property — and
+   cache-corruption immunity).
+4. **Two false ML comments corrected**: the D7 paragraph above
+   `is_excluded_theory` implied no base theory is marked (three of four are, and
+   `Tools.Code_Generator` declares `code_simp`) — it now states the structural
+   reason exclusion loses no method: all four are Main ancestors and
+   `is_infra_method` drops every Main-ancestor method, so D7's hazard only ever
+   applied outside the Main cone.  `collect_cone`'s example list dropped
+   `HOL.Typerep`, which D19 made a deliberate exclusion rather than a miss.
+5. **Plan drift closed**: §8 got its DONE header and the superseded-divergence
+   note; the three superseded evidence bullets above are annotated in place,
+   never deleted.  The parent repo's `FLAT_PATH_REMOVAL_PLAN.md:75` row (its
+   premise — a Python-skipped theory awaiting cone interpretation — cannot
+   arise after D19) was replaced by a one-line note, per the owner's ruling.
+
+Verification of the follow-up (all measured 08-26): full Python suite — the 4
+broken tests restored plus 4 new tests, all green (10 failed / 306 passed / 3
+errors, the failures exactly the pre-existing unrelated set); and a fresh live
+Isa-REPL e2e — the callback returns the four names, two
+`excluded_theory_names` calls on one connection fired the ML callback exactly
+ONCE and returned distinct fresh lists off a tuple-typed cache slot, and
+membership on the live list drops `HOL.Typerep` and passes `Foo.Typerep`.  The
+post-hoist `_auto_embed` path itself is pinned by
+`test_exclusion_is_by_full_long_name`; the live run doubles as the
+nested-comment parse check on the edited `.ML`.

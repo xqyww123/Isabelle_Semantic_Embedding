@@ -375,11 +375,10 @@ end (*local RPC wrappers*)
 
 (* The theories that are never interpreted and never enter the retrieval candidate
    pool: Isabelle's meta-logic kernel plus the code generator's own machinery.
-   Python used to hold its own copy of this list and compare BASE names, so any
-   theory named `Typerep` under any session was skipped -- D3's "a base name is not
-   an identity" mistake in the other language.  The callback below makes this list
-   the single authority; ids and names are both derived from `base_theories`, so
-   they cannot drift (INFRA_FILTER_REWORK_PLAN.md D11). *)
+   The callback below makes this list the single authority -- Python used to hold
+   a base-name-compared copy of it (D3's mistake in the other language); ids and
+   names are both derived from `base_theories`, so they cannot drift
+   (INFRA_FILTER_REWORK_PLAN.md D11, D19). *)
 val base_theories =
       [@{theory Code_Generator}, @{theory Pure}, @{theory Code_Evaluation},
        @{theory Typerep}]
@@ -1883,11 +1882,13 @@ fun dry_run' (context : Context.generic) : int =
 (* Theories that are never interpreted: `base_theories`, the kernel and code-generator
    base every HOL theory sits on. They are still TRAVERSED THROUGH -- see collect_cone.
 
-   A theory marked as infrastructure is NOT excluded here (INFRA_FILTER_REWORK_PLAN.md
-   step 5, D7): excluding it hid its proof METHODS, which are the one thing worth
-   retrieving from such a theory -- `cooper`, `mir`, `dlo` and friends.  What the
-   marking does gate is the ENTITY judgement (D17: in a marked theory only methods
-   deserve records), so enumerating one now costs a handful of entries. *)
+   Infrastructure MARKING never excludes (INFRA_FILTER_REWORK_PLAN.md step 5, D7):
+   excluding a marked theory hid its proof METHODS -- `cooper`, `mir`, `dlo` -- and
+   marking gates the ENTITY judgement instead (D17).  Three of these four ARE marked;
+   excluding them loses no method (not even `code_simp`) because all four are Main
+   ancestors and is_infra_method (infra_filter.ML) drops every method declared in
+   Main or an ancestor of it.  `base_theory_names` above exports the same list to
+   Python. *)
 fun is_excluded_theory thy =
   member (op =) base_theory_ids (Context.theory_identifier thy)
 
@@ -1900,8 +1901,8 @@ fun is_excluded_theory thy =
    collected. Stopping at one -- as this used to -- left its non-excluded ancestors out of the
    cone entirely: a single-root collect of Elliptic_Axclass, whose sole import is the infra
    theory HOL-Decision_Procs.Reflective_Field, yielded a cone of one and interpreted it against
-   an empty store; and HOL.Typerep / HOL.Predicate / HOL.Lazy_Sequence / HOL.Limited_Sequence,
-   which sit behind HOL.Code_Evaluation, were missed even by a full-AFP run. *)
+   an empty store; and HOL.Predicate / HOL.Lazy_Sequence / HOL.Limited_Sequence, which
+   sit behind HOL.Code_Evaluation, were missed even by a full-AFP run. *)
 fun collect_cone (roots : theory list) : theory list =
   let
     val seen = Inthashtab.empty 64
