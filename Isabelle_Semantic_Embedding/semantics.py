@@ -123,16 +123,24 @@ def record_constituent_hashes(raw: bytes) -> 'set[bytes] | None':
     return {bytes(h) for _, h in vals[5]}
 
 
-# Long theory names to exclude from interpretation and entity enumeration.
-_SKIP_THEORY_LONG_NAMES = ["Pure", "Tools.Code_Generator", "HOL.Code_Evaluation", "HOL.Typerep"]
+async def excluded_theory_names(connection: Connection) -> list[str]:
+    """Long names of the theories excluded from interpretation and from entity
+    enumeration.  ML owns the list (`base_theories` in semantic_store.ML); this used
+    to be a literal here, kept in step with it by hand.  Cached per CONNECTION, not
+    module-level: one RPC host serves a whole fleet of Isabelle processes
+    (tools/aoa_putnam_eval/run_fleet_eval.sh)."""
+    cached = getattr(connection, "_excluded_theory_names", None)
+    if cached is None:
+        cached = list(await connection.callback("Semantic_Store.excluded_theory_names", None))
+        connection._excluded_theory_names = cached  # type: ignore[attr-defined]
+    return cached
 
-# Base names (after the last dot) for matching theories under different session qualifiers.
-_SKIP_THEORY_BASES = {n.rsplit(".", 1)[-1] for n in _SKIP_THEORY_LONG_NAMES}
 
-def is_thy_skipped(name: str) -> bool:
-    """Check whether a theory should be skipped from interpretation."""
-    base = name.rsplit(".", 1)[-1] if "." in name else name
-    return base in _SKIP_THEORY_BASES
+async def is_thy_skipped(connection: Connection, name: str) -> bool:
+    """Check whether a theory should be skipped from interpretation.  Compares the
+    FULL long name: a base name is not an identity (INFRA_FILTER_REWORK_PLAN.md D3),
+    and this used to reject any theory whose base name happened to be `Typerep`."""
+    return name in await excluded_theory_names(connection)
 
 
 migrate_on_hash_change: bool = False
@@ -2034,7 +2042,7 @@ class Semantic_Vector_Store(Vector_Store):
                     continue
                 seen_th.add(th)
                 name = await self.connection.callback("Theory_Hash.theory_name_of", th)
-                if name is not None and not is_thy_skipped(name):
+                if name is not None and not await is_thy_skipped(self.connection, name):
                     names.add(name)
             if names:
                 await update_interpretations(
@@ -2152,7 +2160,7 @@ class Semantic_Vector_Store(Vector_Store):
                 return [], warnings, 0
             from Isabelle_RPC_Host.context import entities_of
             entries, branch_local, warnings = await entities_of(self.connection, kinds,
-                                     theories_not_include=_SKIP_THEORY_LONG_NAMES,
+                                     theories_not_include=await excluded_theory_names(self.connection),
                                      term_patterns=term_patterns,
                                      type_patterns=type_patterns,
                                      theories_include=theories_include,
@@ -2168,7 +2176,7 @@ class Semantic_Vector_Store(Vector_Store):
                 return [], warnings, 0
             from Isabelle_RPC_Host.context import entities_of
             entries, branch_local, warnings = await entities_of(self.connection, kinds,
-                                     theories_not_include=_SKIP_THEORY_LONG_NAMES,
+                                     theories_not_include=await excluded_theory_names(self.connection),
                                      term_patterns=term_patterns,
                                      type_patterns=type_patterns,
                                      theories_include=theories_include,

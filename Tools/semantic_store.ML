@@ -373,10 +373,27 @@ fun clean_wip () : int =
 
 end (*local RPC wrappers*)
 
-(* val base_theory_keys = map (Universal_Key.key_of_theory (Context.Theory @{theory}))
-       ["Pure", "Tools.Code_Generator", "HOL.Code_Evaluation"] *)
-val base_theory_ids = map Context.theory_identifier
-      [@{theory Code_Generator}, @{theory Pure}, @{theory Code_Evaluation}]
+(* The theories that are never interpreted and never enter the retrieval candidate
+   pool: Isabelle's meta-logic kernel plus the code generator's own machinery.
+   Python used to hold its own copy of this list and compare BASE names, so any
+   theory named `Typerep` under any session was skipped -- D3's "a base name is not
+   an identity" mistake in the other language.  The callback below makes this list
+   the single authority; ids and names are both derived from `base_theories`, so
+   they cannot drift (INFRA_FILTER_REWORK_PLAN.md D11). *)
+val base_theories =
+      [@{theory Code_Generator}, @{theory Pure}, @{theory Code_Evaluation},
+       @{theory Typerep}]
+val base_theory_ids = map Context.theory_identifier base_theories
+val base_theory_names = map Context.theory_long_name base_theories
+
+val _ = Theory.setup (Context.theory_map (
+  Remote_Procedure_Calling.register_global_callback {
+    name = "Semantic_Store.excluded_theory_names",
+    arg_schema = MessagePackBinIO.Unpack.unpackUnit,
+    ret_schema = MessagePackBinIO.Pack.packList MessagePackBinIO.Pack.packString,
+    function = fn () => base_theory_names,
+    timeout = NONE
+  }))
 
 (* --- RPC protocol --- *)
 
@@ -1863,8 +1880,8 @@ fun dry_run_payload {file_path, theory_longname, theory_key, entries,
 fun dry_run' (context : Context.generic) : int =
   dry_run_payload (enumerate_entries context)
 
-(* Theories that are never interpreted: the three base theories every HOL theory
-   sits on. They are still TRAVERSED THROUGH -- see collect_cone.
+(* Theories that are never interpreted: `base_theories`, the kernel and code-generator
+   base every HOL theory sits on. They are still TRAVERSED THROUGH -- see collect_cone.
 
    A theory marked as infrastructure is NOT excluded here (INFRA_FILTER_REWORK_PLAN.md
    step 5, D7): excluding it hid its proof METHODS, which are the one thing worth

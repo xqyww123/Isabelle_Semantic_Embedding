@@ -88,6 +88,7 @@ the source is simply switched off.
 | D16 | **Store reconciliation with the reworked filter (08-25)**: the store and the new filter disagree in both directions — entities the old filter wrongly rejected have no records (`EC_Common`'s 44, the `Abs_fps` 239, the `class.linorder` relativization lemmas, …), and records exist for entities the new filter now rejects (`_sumC`, instance plumbing, D15's 23 theories' constants). Ruling: **backfill later, never purge.** Legacy records the new filter would reject stay as visible noise (the step-3½ question, returned in a new guise, answered "accept"). Backfill is a later activity: when scheduled, an offline re-filter pass over the store (pure ML, no LLM, no build) buckets newly-accepted entities by declaring theory into a sized worklist; collection then covers those theories. Not part of steps 1-6. | 08-25 |
 | D17 | **In a marked theory only proof methods deserve records (08-25)**: the theory marking now beats the `preserved_set` veto in `is_infra_const'`, so a marked theory's datatype machinery (constructors, `case_*`/`rec_*`/`size_*`, (co)datatype `map`/`rel`/`set`/`corec`) is judged infrastructure instead of surviving as kept-side noise; methods are untouched (they never route through the constant judgement — they survived the pre-D17 chain although its `infra_theory` rule would have caught them if they did route through it). Partially supersedes the 08-24 ordering ruling under D6, whose floatarith argument survives as classification discipline: a theory whose declarations have external statement-level users must be KEPT (`Approximation_Bounds`, `Approximation`, `Rat_Pair`), never marked-and-vetoed. Kill list: exactly **254 constants**, every one datatype machinery (`INFRA_FLIP_SET.tsv`; 39/40 marked theories measured, `Minilang.Minilang` not in the measurement heap). Cascade delta: **zero** — none of 92,217 kept theorems in the 723-theory heap mentions any of the 254 (post-change kept count invariant at exactly 92,217), and a full-store scan (1,343,777 records, 3,690 raw hits) found no genuine kept external mention either: 3,212 `typerep_*_def` plumbing hits already cascade-rejected today (heap probe: 108 such facts, 0 kept before AND after), 114 same-suffix different-constant false positives (`FOL_Harrison.fm.Not`, Taylor_Models' own `poly.Bound` — its `Polynomial_Expression.thy:19` declares its own datatype, so D1's "zero external citers" for `Reflected_Multivariate_Polynomial` stands), 364 stale own-records of marked theories (D16 territory). | 08-25 |
 | D18 | **Test debt closed (08-26)**: `Test_LTE_InfraFilter.thy`'s expectation table is corrected to this round's ruled verdicts and now passes 21/21 in its own AFP-heavy context. Owner rulings the same day: the `Infra_Filter_Test` session in `contrib/Isa-Mini/ROOT` **stays commented out** (disabled by the owner 2026-05-24; it drags in twelve AFP sessions), so the test is run on demand, not by any build; `contrib/Isa-Mini/Test/Test_Infra_Session_Prefixes.thy` is **deleted** (it never referenced `Infra_Filter` and D2 retired the session concept); the file's dead `diagnose_const` is **deleted**. See §16 for the verification and the reusable recipe. | 08-26 |
+| D19 | **`HOL.Typerep` joins the excluded base theories; one list, ML-owned (08-26)**: the owner ruled the ML and Python exclusion lists unify on FOUR theories — `Pure`, `Tools.Code_Generator`, `HOL.Code_Evaluation`, `HOL.Typerep`. `base_theories` in `semantic_store.ML` is the single authority; ids and long names both derive from it, and the global callback `Semantic_Store.excluded_theory_names` hands the long names to Python. Python's literal `_SKIP_THEORY_LONG_NAMES` and its base-name comparison are deleted (D3's "a base name is not an identity" mistake, fixed in the other language). Consequence accepted with the ruling: the store's 27 existing `Typerep.*` records (all code-generator machinery: `typerep.case_cong`, `typerep_class.typerep_of`, …) become legacy records that nothing will interpret again — D16's "backfill later, never purge" already covers records the current policy would not create. §8's research step came back empty: `git log -L` shows the four-name literal born whole in commit `7e2253d` (2026-03-23) with no rationale recorded. | 08-26 |
 
 ### Why long names (D3), with the number
 
@@ -701,7 +702,7 @@ Delete the **`is_infra_theory`** disjunct from `is_excluded_theory`, leaving onl
 their methods), and `MathBench_Prover` — 13 aliases written 2026-06-17 that have
 never reached the store, plus the 11 new `Dense_Linear_Order` aliases (D13).
 
-**Step 6 — the Python-side skip list (D11).** See §8. Independent; start it now.
+**Step 6 — the Python-side skip list (D11).** See §8. **DONE 08-26** (D19, §18); §8 item 3 (the candidate cache) was split off as an open design question — see §18.
 
 **Not in any step, and needed**: RUN the filter tests around step 2. **Ruled
 08-24: running them does not require ROOT membership** — evaluate the test
@@ -1772,7 +1773,7 @@ on 08-26 via the `sync-semantic-embedding-db` skill's publishing section:
 **The conda data release that follows (`isabelle-semantics release`) is a
 human's call and must never be dispatched from here.**
 
-### Next work: step 6 — the Python-side skip list (D11)
+### Next work: step 6 — the Python-side skip list (D11) — DONE 08-26 (D19, §18)
 
 Read **§8 in full first**; it is complete and names every call site.  In short:
 `semantics.py:127` holds a literal `_SKIP_THEORY_LONG_NAMES`, which (a) is
@@ -1791,3 +1792,69 @@ whether this is one concept or two.
 ### Still needing the owner's go
 
 **D16 backfill** — a separately budgeted activity (§15).  Nothing else is open.
+
+
+## 18. Step 6 landed (2026-08-26) — the skip list is ML-owned, verified end-to-end
+
+Executed as ruled (D11 + D19).  The edits:
+
+- **`Tools/semantic_store.ML`**: `base_theories` now lists the four theories
+  (D19) and is the single source — `base_theory_ids` (for `is_excluded_theory`)
+  and `base_theory_names` (for Python) both derive from it.  A global callback
+  `Semantic_Store.excluded_theory_names` (unit → string list, modelled on
+  `Theory_Hash.theory_name_of`) returns the long names.
+- **`Isabelle_Semantic_Embedding/semantics.py`**: the `_SKIP_THEORY_LONG_NAMES`
+  literal and `_SKIP_THEORY_BASES` are gone.  `excluded_theory_names(connection)`
+  fetches the list over RPC and caches it per CONNECTION — deliberately not
+  module-level, because one RPC host serves a whole fleet of Isabelle processes
+  (`tools/aoa_putnam_eval/run_fleet_eval.sh:201-229`), and per-connection is
+  per-Isabelle-process.  `is_thy_skipped(connection, name)` is now async and
+  compares the FULL long name.  The two retrieval call sites pass
+  `theories_not_include=await excluded_theory_names(self.connection)`.
+
+**Verification (e2e over a real RPC round-trip, 08-26).**  An Isa-REPL server on
+a scratch port (base `HOL`, `-l Semantic_Embedding`) loaded the edited ML from
+source; a scratch theory called a temporary Python relay which invoked the new
+Python functions against the live connection.  All green:
+
+- callback returns `[Tools.Code_Generator, Pure, HOL.Code_Evaluation, HOL.Typerep]`;
+- `is_thy_skipped`: `HOL.Typerep` → true, **`Foo.Typerep` → false** (the D3 fix
+  observable), `Pure`/`HOL.Code_Evaluation`/`Tools.Code_Generator` → true,
+  `HOL.List` → false;
+- the second `excluded_theory_names` call returned the same list object
+  (per-connection cache hit).
+
+Environment notes: `isabelle console` cannot host this stack (no Scala process —
+`Remote_Procedure_Calling.thy` needs `make_directory`); `isabelle process` no
+longer exists under that name in Isabelle2025-2 and `process_theories`'s adhoc
+session cannot declare `sessions` dependencies.  The Isa-REPL route works and
+costs ~2 min end to end.
+
+### What §8 item 3 turned out to be (the candidate cache) — recorded, NOT acted on
+
+§8 item 3 said "make `_cached_or_call`/`_cached_or_call_thm` key their caches on
+the arguments".  Research this round found the item rests on missing information;
+it needs a design decision, not a mechanical edit:
+
+- **The cache has NO invalidation.**  The eleven `_ctx_*` attributes on the
+  connection (`context.py:190-368`) are set (`:115`, `:170`) and never cleared —
+  no delete, no versioning, anywhere in the repo.  A connection lives as long as
+  the Isabelle process's socket, across arbitrarily many commands, while the ML
+  side enumerates the LIVE name space (`context.ML:1018`).
+- **It is not dormant.**  The definition-source path
+  (`semantics.py:1495`, `_get_definition_with_pos`) passes no filters and hits
+  the cache whenever `ctxt` is None — its own docstring says so.  Read-code
+  conclusion, not yet reproduced live: after the session proves a new lemma, a
+  `query … show_defs` on that lemma finds no key in the stale cached list and
+  the `try/except` at `semantics.py:1557-1559` silently drops the
+  "Definition:" section.
+- **Keying on the arguments cannot fix the big consumer.**  AoA passes
+  `ctxt=self.name` on every lookup (`IsaMini/AoA/model.py:2365`); ctxt selects
+  WHICH proof context to enumerate, and that context changes as the proof
+  advances — same key, different correct answer.  So an argument-keyed cache is
+  stale by construction exactly where the volume is.
+
+Open for the owner: fix-with-invalidation (needs a design; theory identifiers
+give a cheap staleness token for the theory-context path, the proof-context path
+has none), retire the cache branches, or leave as recorded.  The `??.`
+measurement note at the end of §8 keeps its conclusion either way.
