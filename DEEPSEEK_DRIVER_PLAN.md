@@ -768,3 +768,54 @@ One real turn through the changed driver: `DeepSeek.V4-pro` resolved through
 silent (only the pinned model billed — the eleven pins held), cost repriced
 ($0.047258 vs the CLI's $0.196463), and the real `write_cost` recorded
 `driver='DeepSeek' model='deepseek-v4-pro'`.
+
+## 11. First production run on cslh19 (2026-08-27) — two field findings
+
+### 11.1 The backend choice does not travel with `--driver`
+
+`isabelle-semantics collect --driver DeepSeek.V4-pro` sets a module variable in
+the process that drives the REPL.  The interpretation agent does NOT run there:
+Isabelle starts its own RPC host (`Isabelle_RPC_Host.run_attached__`) and the
+agent runs inside it, so the flag never reaches `_resolve_driver` and the run
+falls back to the default backend.  Measured: a run launched with the flag
+produced non-zero `cache_creation` tokens and cost $0.5483 — Claude Opus rates
+for those counts to the cent — i.e. it ran on ClaudeCode while asking for
+DeepSeek.
+
+What DOES reach that process is the environment Isabelle hands to what it
+spawns.  So a DeepSeek collection run needs its REPL server started with
+
+    source envir.sh && source secret.sh \
+      && export INTERPRETATION_DRIVER=DeepSeek.V4-pro \
+      && ./repl_server.sh <addr> AFP-ALL-4 <out> -l Semantic_Embedding … -o threads=24
+
+(`-o threads=N` is also the interpretation's concurrency width.)  Verified
+after the change: `cache_write=0` (DeepSeek never reports cache creation),
+cost $0.1465 matching the peak-rate arithmetic exactly, and the theory records
+reading `DeepSeek.deepseek-v4-pro`.
+
+Follow-up landed in this round: the driver now WARNS, once per process, when
+the ambient `ANTHROPIC_BASE_URL` differs from ours.  It is not a refusal (we
+override it) — but that ambient value is exactly what runs whenever the backend
+selection does not reach this class, which is how the run above reached a
+third-party relay.
+
+### 11.2 `ANTHROPIC_BASE_URL` in Isabelle's own settings
+
+`$ISABELLE_HOME_USER/etc/settings` on cslh19 exported
+`ANTHROPIC_BASE_URL=https://api.openai-next.com` plus a key for that relay.
+Isabelle passes its settings to every process it launches, including the RPC
+host, so every interpretation run there went through the relay — and a
+DeepSeek key sent to it came back as ECONNRESET after ten retries.  Both lines
+are now commented out on the owner's instruction (they already were on the
+development machine, which is why the same code behaved differently there).
+
+### 11.3 Insufficient balance arrives as model TEXT, not as a status
+
+The first real DeepSeek batch stopped with
+`model_said='API Error: 402 Insufficient Balance'`, `error='unknown'`,
+`api_error_status=None`.  So §3.2's open question is answered: the adapter does
+NOT surface 402 as a status, and the 402 entry in `status_messages` never
+fires.  The failure is loud (the unrecognised bucket), but it reaches the user
+as a traceback rather than as `MSG_BILLING`.  Matching the text would fix that;
+NOT DONE — it changes the classifier and needs an owner ruling.

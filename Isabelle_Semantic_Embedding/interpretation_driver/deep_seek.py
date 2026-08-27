@@ -22,6 +22,7 @@ Measured against the live endpoint (2026-08-27):
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -31,6 +32,8 @@ from ..semantic_interpretation import FatalAgentError
 from . import register_interpretation_driver
 from .claude_code import ClaudeCodeDriver
 from .config import MissingPricing, pricing_of
+
+_log = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.deepseek.com/anthropic"
 # Deliberately NOT honoring $DEEPSEEK_BASE_URL: in this repo that variable
@@ -63,6 +66,10 @@ _HIJACK_ENV = (
 # Claude names this endpoint hard-rejects, and a weaker model writing the
 # compaction summary would be a second quality variable.  Whether each path
 # fires in headless SDK use is unmeasured -- pinning makes it not matter.
+#: Whether the ambient-endpoint warning below has been given.  Process-wide:
+#: a driver is rebuilt per recycle and per theory.
+_ambient_base_url_warned = False
+
 _AUX_MODEL_ENV = (
     "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_MODEL", "ANTHROPIC_SMALL_FAST_MODEL",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
@@ -131,6 +138,21 @@ class DeepSeekDriver(ClaudeCodeDriver):
                 "Semantic interpretation failed: DEEPSEEK_API_KEY is not set "
                 "in the environment, so the DeepSeek backend cannot "
                 "authenticate. Export it, then retry.")
+        global _ambient_base_url_warned
+        ambient = os.environ.get("ANTHROPIC_BASE_URL", "")
+        if ambient and ambient != _BASE_URL and not _ambient_base_url_warned:
+            # Not a refusal: _options overrides it, so THIS driver still talks
+            # to DeepSeek.  It is worth saying out loud because the ambient
+            # value is what runs whenever the backend selection does not reach
+            # this class -- which is how a run meant for DeepSeek once went to
+            # a third-party relay (the driver spec was set in the process that
+            # drives the REPL, while the agent runs in the RPC host Isabelle
+            # starts, 2026-08-27).
+            _ambient_base_url_warned = True
+            _log.warning("the environment points ANTHROPIC_BASE_URL at %r; this "
+                         "driver overrides it with %r, but any interpretation "
+                         "run that does NOT reach this driver will use the "
+                         "environment's endpoint", ambient, _BASE_URL)
         hijacked = [v for v in _HIJACK_ENV if os.environ.get(v)]
         if hijacked:
             raise FatalAgentError(

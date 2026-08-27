@@ -34,6 +34,7 @@ def _controlled_environment(monkeypatch):
     comes from the constant above rather than the user's config, and the
     process-wide record of already-reported models starts empty."""
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
     for var in DS._HIJACK_ENV:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(DS, "pricing_of", lambda model: _V4_PRO)
@@ -111,6 +112,31 @@ def test_a_hijacking_env_var_is_refused_and_named(monkeypatch, var):
     with pytest.raises(FatalAgentError) as e:
         _driver()
     assert var in str(e.value)
+
+
+def test_an_ambient_endpoint_is_warned_about_but_not_refused(monkeypatch, caplog):
+    """The environment pointing ANTHROPIC_BASE_URL elsewhere is not a refusal --
+    this driver overrides it.  It IS worth one warning, because that ambient
+    value is what runs whenever the backend selection never reaches this class
+    (measured: a DeepSeek run whose --driver flag stayed in the process driving
+    the REPL, while the agent ran in the RPC host Isabelle starts, went to a
+    third-party relay instead)."""
+    monkeypatch.setattr(DS, "_ambient_base_url_warned", False)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.somewhere-else.com")
+    with caplog.at_level("WARNING"):
+        driver = _driver()
+        _driver()                      # second construction, same process
+    assert driver._options().env["ANTHROPIC_BASE_URL"] == DS._BASE_URL
+    warned = [r for r in caplog.records if "somewhere-else" in r.getMessage()]
+    assert len(warned) == 1, "one line per process, not one per theory"
+
+
+def test_our_own_endpoint_in_the_environment_is_not_warned_about(monkeypatch, caplog):
+    monkeypatch.setattr(DS, "_ambient_base_url_warned", False)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", DS._BASE_URL)
+    with caplog.at_level("WARNING"):
+        _driver()
+    assert not caplog.records
 
 
 def test_missing_pricing_is_fatal_at_construction(monkeypatch):
