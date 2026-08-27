@@ -64,6 +64,23 @@ def _resolve_driver(from_isabelle: str) -> tuple[str, str]:
     driver_name, _, model = spec.partition(".")
     return driver_name, model
 
+
+def _resolve_driver_and_model(from_isabelle: str):
+    """`_resolve_driver`, then the backend class and its canonical model name.
+
+    One function because the three steps are one decision: a misspelt backend
+    and a shorthand model name are both configuration errors, and both must be
+    settled BEFORE the task is built -- the task's model is what the database
+    records, so a name normalised any later would be recorded wrong."""
+    driver_name, model = _resolve_driver(from_isabelle)
+    driver_cls = resolve_interpretation_driver_class(driver_name)
+    if driver_cls is None:
+        raise FatalAgentError(
+            f"Semantic interpretation failed: unknown interpretation driver "
+            f"{driver_name!r}. Known drivers: "
+            f"{', '.join(available_interpretation_drivers())}.")
+    return driver_name, driver_cls, driver_cls.canonical_model(model)
+
 # --- Context-local state ---
 
 _KIND_CONSTANT = 1
@@ -333,7 +350,7 @@ class InterpretationTask:
         self.batch_range: range = range(0)
         # `total_*` is the pending delta not yet flushed to LMDB; write_cost()
         # accumulates it into the theory record and resets it to 0.  Cost is
-        # flushed per agent round (see _accumulate_usage), mirroring how answers
+        # flushed per agent turn (see the drivers' _record_turn_cost), mirroring how answers
         # are written per-answer (write_answer) — so an interrupt (the parallel
         # scheduler's by-design hard-crash) cannot drop cost for answers that
         # are already cached.
@@ -343,7 +360,7 @@ class InterpretationTask:
         self.total_output_tokens = 0
         self.total_cost_usd = 0.0
         # `run_*` is the cumulative cost of THIS interpret_file invocation; it is
-        # never reset by write_cost(), so it survives the per-round flushes and
+        # never reset by write_cost(), so it survives the per-turn flushes and
         # is reported as `current_cost`.
         self.run_input_tokens = 0
         self.run_cache_creation_tokens = 0
@@ -886,7 +903,7 @@ async def interpret_file(
     # Inherit RPC server's logging configuration (idempotent, no race).  The
     # driver package gets it too: its loggers are NOT children of this module's,
     # so without this the driver's lines (tool allowed/denied, model output,
-    # per-round usage) would silently vanish from the host log.
+    # per-turn usage) would silently vanish from the host log.
     for lg in (_log, logging.getLogger(f"{__package__}.interpretation_driver")):
         if not lg.handlers and connection.server.logger.handlers:
             for h in connection.server.logger.handlers:
@@ -1101,14 +1118,7 @@ async def interpret_file(
 
     # Resolve before any LLM work: a misspelt driver name is a configuration
     # error and should say so immediately rather than mid-run.
-    driver_name, model = _resolve_driver(driver)
-    driver_cls = resolve_interpretation_driver_class(driver_name)
-    if driver_cls is None:
-        raise FatalAgentError(
-            f"Semantic interpretation failed: unknown interpretation driver "
-            f"{driver_name!r}. Known drivers: "
-            f"{', '.join(available_interpretation_drivers())}.")
-    model = driver_cls.canonical_model(model)
+    driver_name, driver_cls, model = _resolve_driver_and_model(driver)
 
     # Build Unicode pretty-prints for all entries
     pretty_prints = [_pretty_print_entry(e) for e in entries]
@@ -1207,7 +1217,7 @@ async def interpret_file(
                                  if task.results[k] is None]
                 raise FatalAgentError(_msg_unanswered(
                     theory_longname, missing_names, len(task.entries)))
-            # Cost is flushed per round in _accumulate_usage, so this is normally
+            # Cost is flushed per turn by the driver, so this is normally
             # a no-op flush; it still returns the up-to-date cumulative totals.
             cum = task.write_cost()
             # current_cost = cost of THIS run; read from the run-level

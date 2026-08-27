@@ -146,18 +146,23 @@ class InterpretationDriver(ABC):
 
     @classmethod
     def canonical_model(cls, model: str) -> str:
-        """The model name to run AND to record.  Normalising here -- before
-        the task is built -- is what keeps task.model, the priced name and
-        the name sent to the API one string.  The base rule is just the
-        default; a driver with user-facing shorthands overrides it."""
-        return model or cls.DEFAULT_MODEL
+        """The model name to run AND to record: what keeps task.model, the
+        priced name and the name sent to the API one string.
+
+        Applied at BOTH doors -- `interpret_file` before it builds the task,
+        and `__init__` for every other way a driver is constructed -- so it
+        MUST be idempotent; an override that is not would make the two doors
+        disagree again.  The base rule is the whitespace-and-default one; a
+        driver with user-facing shorthands expands them on top of it."""
+        return (model or "").strip() or cls.DEFAULT_MODEL
 
     def __init__(self, *, model: str, system_prompt: str,
                  tools: list["SdkMcpTool[Any]"],
                  task: "InterpretationTask",
                  on_context_reset: Callable[[], None]) -> None:
-        # The spec may name only the backend ("Codex"), leaving the model to it.
-        self.model = model or self.DEFAULT_MODEL
+        # The spec may name only the backend ("Codex"), leaving the model to
+        # it.  Same normalisation as interpret_file's, by construction.
+        self.model = self.canonical_model(model)
         self.system_prompt = system_prompt
         self.tools = tools
         self.task = task
@@ -191,14 +196,14 @@ def accumulate_usage(task: "InterpretationTask", *,
                      cache_read_tokens: int = 0,
                      output_tokens: int = 0,
                      cost_usd: float = 0.0) -> None:
-    """Add one round's usage to `task` and flush it to the theory record.
+    """Add one turn's usage to `task` and flush it to the theory record.
 
     Two accumulators, deliberately: ``total_*`` is the pending delta that
     ``write_cost`` folds into LMDB and then zeroes, ``run_*`` is the whole
     invocation's cost and is never reset (it is what ``interpret_file`` reports
     as ``current_cost``).
 
-    Flushing every round -- rather than once at the end -- is what makes an
+    Flushing every turn -- rather than once at the end -- is what makes an
     interrupt safe: the parallel scheduler kills the run by design, and answers
     already written to LMDB become free cache hits on resume, so the cost that
     produced them must already be recorded."""

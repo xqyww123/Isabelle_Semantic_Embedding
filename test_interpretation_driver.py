@@ -346,27 +346,35 @@ def test_the_cli_chosen_model_is_backfilled_into_provenance():
     assert task.model == "claude-cli-pick", "first backfill wins"
 
 
-def test_a_model_echo_mismatch_warns_once_and_never_raises(caplog):
-    """When a configured model and the endpoint's echo disagree, the driver
-    warns -- once per session -- and never raises: a dated slug or an aux-model
-    echo must not kill a cone, but a silently misrouted backend must not stay
-    silent either."""
-    from claude_agent_sdk.types import AssistantMessage
+def test_the_backend_s_own_shorthand_is_canonicalised_at_resolution():
+    """The resolution step must hand back the name the API is given, because
+    the SAME string is what the task records: a spec normalised any later
+    would write a name into the database that no price table and no endpoint
+    knows.  `DeepSeek.V4-pro` is the documented shorthand (README)."""
+    name, cls, model = SI._resolve_driver_and_model("DeepSeek.V4-pro")
+    assert (name, model) == ("DeepSeek", "deepseek-v4-pro")
+    assert cls.NAME == "DeepSeek"
+    # A backend with no shorthands is unaffected: ClaudeCode's empty model
+    # half still means "let the CLI choose".
+    assert SI._resolve_driver_and_model("ClaudeCode")[2] == ""
 
-    from Isabelle_Semantic_Embedding.interpretation_driver.claude_code import (
-        ClaudeCodeDriver,
+
+def test_every_door_into_a_driver_resolves_the_model_the_same_way():
+    """Construction is the other door: a driver built directly (tests, future
+    callers, `make_interpretation_driver`) must land on the same name as the
+    one `interpret_file` records, or provenance and pricing split."""
+    from Isabelle_Semantic_Embedding.interpretation_driver import (
+        resolve_interpretation_driver_class,
     )
+    cls = resolve_interpretation_driver_class("DeepSeek")
+    for spec in ("", "  ", "V4-pro", "deepseek-v4-pro"):
+        assert cls.canonical_model(cls.canonical_model(spec)) \
+            == cls.canonical_model(spec), "canonical_model must be idempotent"
     task = _make_task(1, batch_size=1)
-    task.model = "configured-model"
-    driver = ClaudeCodeDriver(model="configured-model", system_prompt="sys",
-                              tools=[], task=task, on_context_reset=lambda: None)
-    with caplog.at_level(logging.WARNING):
-        driver._handle_message(AssistantMessage(content=[], model="other-model"))
-        driver._handle_message(AssistantMessage(content=[], model="other-model"))
-    warned = [r for r in caplog.records if r.levelno == logging.WARNING
-              and "other-model" in r.getMessage()]
-    assert len(warned) == 1, "exactly one warning, however many echoes"
-    assert task.model == "configured-model", "the configured name is provenance"
+    driver = _ScriptedDriver(script=[], log=[], model="  ", system_prompt="s",
+                             tools=[], task=task, on_context_reset=lambda: None)
+    assert driver.model == "", \
+        "a whitespace-only model half is 'not set', not a model name"
 
 
 # --- explaining the same constant twice ------------------------------------

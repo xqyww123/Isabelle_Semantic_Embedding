@@ -668,3 +668,103 @@ Executed §4 in order; every step done.  Deviations and findings:
    `~/.isabelle/Isabelle2025-2/etc/interpretation_config` (YAML re-parsed to
    verify).
 5. Smoke scripts: scratchpad `deepseek_smoke/smoke1.py` / `smoke2.py`.
+
+## 10. Implementation review (2-turn adversarial debate, two Opus 5 reviewers, 2026-08-27)
+
+Reviewed commit `11c5b77` + Isa-Mini `2324fc5`: one correctness lens, one
+elegance lens, each attacking the other's findings in turn 2.  **No blocker.**
+Both confirmed the ClaudeCode path is behaviourally intact and that no
+reachable flow writes a wrong driver/model/dollar figure.
+
+### 10.1 Culled in cross-examination (do not re-raise)
+
+- "A DeepSeek throttle would be misread as fatal" — REFUTED: the CLI maps
+  HTTP 429 to the `rate_limit` enum vendor-agnostically; the two English text
+  checks are a fallback, not the only route.
+- An `_env()` hook mirroring `status_messages` — the property it would make
+  structural already is (`_options` builds a fresh env dict per call, and
+  `update` cannot remove a key it does not name).
+- Restating `REPORTS_CONTEXT_RESET` in deep_seek.py — §3.2 rules it inherited
+  unchanged; the measurement belongs here, not duplicated in code.
+- Adding the CLI's federated-credential vars to `_HIJACK_ENV` — their profile
+  still reads the pinned `ANTHROPIC_BASE_URL`, so they can only fail loudly;
+  refuse-to-start is too heavy. Recorded as a decision in the code comment.
+- A subclass test for the 400 branch — records the cost of the §3.1.3
+  comment-only ruling; no code should change. See §7.
+
+### 10.2 Owner rulings from this round (2026-08-27)
+
+| # | Ruling |
+|---|---|
+| R12 | **OD-3 adopted**: the model-echo sentinel is replaced by a check of the terminal message's per-model usage (`ResultMessage.model_usage`) against a new `billable_models` extension point — it names EVERY model that billed, including the auxiliary paths the env pins defend, which a single model echo structurally cannot see. Probed 2026-08-27: DeepSeek's adapter populates it. Supersedes R9's sentinel (b). |
+| R13 | **OD-1 declined**: `CONTEXT_WINDOW` stays a per-model table (it is a refusal gate; R8 set the value, not the shape). |
+| R14 | **OD-2 accepted**: `deepseek-v4-flash-vision-exp` dropped from `CONTEXT_WINDOW` so the window table and the price table describe one model set; `MSG_INVALID_REQUEST` now names only the two models this backend runs. |
+| R15 | **OD-4 declined**: the two quota/throttle text checks stay hard-wired; the base docstring is narrowed to what the file honours instead of growing a fourth extension point. |
+
+### 10.3 Fixes landed
+
+Behaviour:
+1. `canonical_model` is applied at BOTH doors — `interpret_file`'s resolution
+   and `InterpretationDriver.__init__` — and the base rule became
+   `(model or "").strip() or cls.DEFAULT_MODEL`, so a whitespace model half
+   (`"DeepSeek. "`) is "not set" rather than a nameless model, and the
+   function is idempotent (the precondition for applying it twice).
+   DeepSeek's override now expands shorthands on top of `super()`, so the
+   default is stated once.
+2. `_raise_for_agent_error` consults the terminal `api_error_status` BEFORE
+   the retry trail, and scans the trail in the table's own order — a run that
+   ends out of balance after a transient 401 no longer says "check your key".
+3. `model_not_found` (the CLI's 404) joins the `invalid_request` branch, so it
+   reaches `MSG_INVALID_REQUEST` instead of the unrecognised bucket.
+4. R12's sentinel: `billable_models` (None on the base = unconstrained,
+   `{self.model}` on DeepSeek) checked against `model_usage` in
+   `_record_turn_cost`, warning once per process per unexpected name.
+5. `ANTHROPIC_DEFAULT_MODEL` added to the pins — it is in the CLI's own
+   model-env group and was the one selector left unpinned; the ten literal
+   lines became a module constant `_AUX_MODEL_ENV` beside `_HIJACK_ENV`.
+6. R14's model-set alignment (see above).
+7. `_resolve_driver_and_model` extracted in `semantic_interpretation.py`: the
+   resolution seam is now testable without LMDB.
+
+Tests (26 in the DeepSeek file, 92 across the four driver files, 0 failed;
+full suite 342 passed with the session's known pre-existing failures):
+the shipped price table is now asserted exactly (a wrong digit had been
+invisible — mirroring codex's `> 0` assertion would NOT have caught it); the
+hijack guard is parametrised over all ten names; the repricing test carries a
+non-zero cache-creation count; the sentinel is tested on both backends; the
+window table is checked against the CLI's enforceable range; resolution is
+tested end to end.
+
+Comments/docs corrected against measurement:
+- the pre-smoke "guessed window → premature compaction" story removed from
+  three sites (the measured behaviour is the opposite polarity: nothing
+  compacts until the enforcement knob is set);
+- the "~100x" alarm ratio replaced everywhere by the measured range (4.8x on
+  a cache-heavy turn, ~100x cache-miss-dominated; **near 1.0 is the alarm**);
+- the CLI clamps `CLAUDE_CODE_AUTO_COMPACT_WINDOW` to 100_000..1_000_000
+  (binary constants) — now recorded on `CONTEXT_WINDOW`, and asserted;
+- both env lists carry their provenance ("read out of CLI 2.1.247");
+- `status_messages` documents that every entry is FATAL;
+- the base class docstring names the three things a third backend must
+  revisit rather than promising they are extension points;
+- two dangling references to the removed `_accumulate_usage`, and the
+  "round"/"turn" split, fixed.
+
+### 10.4 Correction to §9.3(d)
+
+The compaction smoke ran with a 30_000 test window, which is BELOW the CLI's
+enforced minimum of 100_000, so the effective enforcement window was clamped
+and the run did not exercise the branch production takes.  The trigger
+observed at 68,473 tokens is therefore not evidence about the 384_000
+configuration, and §9.3(d)'s "lagging usage estimates" explanation is
+unconfirmed.  What the smoke DID establish stands: without
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` nothing compacts at all, with it
+auto-compact fires and PreCompact reaches `on_context_reset`.
+
+### 10.5 Live re-verification after the fixes (2026-08-27)
+
+One real turn through the changed driver: `DeepSeek.V4-pro` resolved through
+`_resolve_driver_and_model` to `deepseek-v4-pro`, tool call served, sentinel
+silent (only the pinned model billed — the eleven pins held), cost repriced
+($0.047258 vs the CLI's $0.196463), and the real `write_cost` recorded
+`driver='DeepSeek' model='deepseek-v4-pro'`.

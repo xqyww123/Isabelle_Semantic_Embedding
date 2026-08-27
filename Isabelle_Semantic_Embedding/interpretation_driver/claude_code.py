@@ -49,6 +49,12 @@ from . import (
 
 _log = logging.getLogger(__name__)
 
+#: model names already reported as having billed unexpectedly.  Process-wide
+#: on purpose: a driver is rebuilt per recycle and per theory, so an
+#: instance-scoped flag would repeat the same line thousands of times in one
+#: collection run -- which is how a sentinel becomes wallpaper.
+_UNEXPECTED_BILLING_WARNED: set[str] = set()
+
 
 # --- Permission control ---
 
@@ -154,9 +160,14 @@ class ClaudeCodeDriver(InterpretationDriver):
     connection; the CLI subprocess reaches them over the SDK's own transport.
 
     SUBCLASSED by deep_seek.py, which points the same CLI at another vendor's
-    Anthropic-compatible endpoint.  Anything added here that is true only of
-    Anthropic's own API must become one of the extension points below
-    (the MSG_* wording, `status_messages`, `_turn_cost_usd`)."""
+    Anthropic-compatible endpoint.  Four things here are a redirected
+    backend's business and are overridable: the MSG_* wording,
+    `status_messages`, `billable_models` and `_turn_cost_usd`.  Three things
+    are NOT, and a third backend must revisit them rather than assume they
+    port: the two Anthropic-service text checks in `_handle_message` (the
+    usage-cap and rate-limit wordings -- a fallback only, since the CLI
+    classifies a 429 into the `rate_limit` enum vendor-agnostically), and the
+    400 -> PoisonedSessionError reading."""
 
     # Empty = pass no model to the CLI, so the run uses whatever default model
     # the user's own Claude Code configuration selects.  The model that actually
@@ -192,17 +203,32 @@ class ClaudeCodeDriver(InterpretationDriver):
     def __init__(self, **kw: Any) -> None:
         super().__init__(**kw)
         self._client: ClaudeSDKClient | None = None
-        self._model_mismatch_warned = False
 
     @property
     def status_messages(self) -> dict[int, str]:
-        """HTTP statuses this backend can NAME on the inference path (no SDK
-        error enum: we are reading the api_retry trail and the terminal
-        ResultMessage).  A status absent here falls into the loud unrecognised
-        bucket, deliberately.  A property, not a class-body dict: a dict
-        literal would freeze the base wording and defeat a subclass's MSG_*
-        override."""
+        """Statuses whose remedy is to STOP, and the words for each.  NEVER
+        put a retryable status here: every entry raises FatalAgentError, so a
+        429 entry would turn a throttle into a killed cone.
+
+        Read on the inference path only (no SDK error enum: we are reading
+        the api_retry trail and the terminal ResultMessage); a status absent
+        here falls into the loud unrecognised bucket, deliberately.  A
+        property, not a class-body dict: a dict literal would freeze the base
+        wording and defeat a subclass's MSG_* override."""
         return {401: self.MSG_AUTH_FAILED}
+
+    @property
+    def billable_models(self) -> set[str] | None:
+        """The models that may legitimately bill on one turn, or None when
+        this backend does not constrain them.
+
+        None here: the CLI reaches for auxiliary models of its own choosing
+        (background classification, compaction summaries) that no option of
+        ours names, so on Anthropic's own API any model may appear.  A driver
+        that pins every model selector in the environment CAN name the one
+        model that may bill -- and then the terminal message's per-model
+        usage is a direct check that the pinning held."""
+        return None
 
     # --- Message classification ---
 
@@ -230,7 +256,10 @@ class ClaudeCodeDriver(InterpretationDriver):
             fatal(self.MSG_AUTH_FAILED)
         if err == "billing_error":
             fatal(self.MSG_BILLING)
-        if err == "invalid_request":
+        # model_not_found is the CLI's 404 (a model name this endpoint does
+        # not serve) -- the same remedy, and MSG_INVALID_REQUEST is where a
+        # backend names the models it does serve.
+        if err in ("invalid_request", "model_not_found"):
             fatal(self.MSG_INVALID_REQUEST)
 
         # err is None or "unknown": infer from what the run left behind.
@@ -243,8 +272,11 @@ class ClaudeCodeDriver(InterpretationDriver):
         # so an empty api_retry trail is itself part of the signature.
         if "not logged in" in result_text.lower():
             fatal(self.MSG_AUTH_FAILED)
-        named = next((msg for s, msg in self.status_messages.items()
-                      if s == status or s in statuses), None)
+        # The terminal status is the stronger evidence, so it is consulted
+        # first; only then the trail, scanned in the table's own order (a set
+        # holding both 401 and 402 would otherwise pick by hash order).
+        named = self.status_messages.get(status) or next(
+            (msg for s, msg in self.status_messages.items() if s in statuses), None)
         if named is not None:
             fatal(named)
         # Kind strings are SDK vocabulary, not vendor statuses -- no second table.
@@ -271,7 +303,7 @@ class ClaudeCodeDriver(InterpretationDriver):
         Shared by BOTH the batch-0 turn and the missing-entry retry turns.  The
         retry loop used to inline only `_log_message` + the usage recorder,
         swallowing the limit/rate signals — so a usage cap hit during retries
-        span instantly (thousands of "You've hit your limit" rounds with no wait)
+        span instantly (thousands of "You've hit your limit" turns with no wait)
         instead of sleeping until the reset."""
         if RateLimitEvent is not None and isinstance(message, RateLimitEvent):
             if message.rate_limit_info.status == "rejected":
@@ -294,19 +326,12 @@ class ClaudeCodeDriver(InterpretationDriver):
         # the primary classification -- it is stable across CLI versions, unlike the
         # result text.
         if isinstance(message, AssistantMessage):
-            if isinstance(message.model, str) and message.model:
-                if not self.task.model:
-                    # No model configured (DEFAULT_MODEL = "") means the CLI
-                    # chose one; record it so write_cost's provenance names the
-                    # model that ran.
-                    self.task.model = message.model
-                elif (message.model != self.task.model
-                      and not self._model_mismatch_warned):
-                    self._model_mismatch_warned = True   # once per session
-                    _log.warning("the endpoint answered with model %r, not the "
-                                 "configured %r -- check ANTHROPIC_BASE_URL and "
-                                 "the ambient environment",
-                                 message.model, self.task.model)
+            # No model configured (DEFAULT_MODEL = "") means the CLI chose one;
+            # record it so write_cost's provenance names the model that ran.
+            # Which models actually BILLED is a separate, stronger question,
+            # answered from the terminal message (see _record_turn_cost).
+            if not self.task.model and isinstance(message.model, str) and message.model:
+                self.task.model = message.model
             err = getattr(message, "error", None)
             if err is not None:
                 self._raise_for_agent_error(err, None, _model_error_text(message))
@@ -326,7 +351,7 @@ class ClaudeCodeDriver(InterpretationDriver):
             # transcript) carries its text in `errors`, NOT `result` (which is None
             # here), so the result-string checks below would miss it.  Detect via
             # the language-independent api_error_status, and raise BEFORE
-            # _record_turn_cost so the poisoned round does not flush cost.
+            # _record_turn_cost so the poisoned turn does not flush cost.
             # NB a backend where 400 can also mean "malformed request, not
             # poisoned transcript" would need a discriminator here; none is
             # known for DeepSeek yet.
@@ -341,7 +366,7 @@ class ClaudeCodeDriver(InterpretationDriver):
             # FAIL-SAFE.  Everything above is a whitelist of conditions we recognise;
             # this is the catch-all that makes an unrecognised failure loud instead of
             # silent.  Without it, an is_error result we have no branch for -- which is
-            # exactly what an unauthenticated CLI produces -- flows on as if the round
+            # exactly what an unauthenticated CLI produces -- flows on as if the turn
             # had succeeded, the entries stay unanswered, and the theory ends up marked
             # interpreted with nothing in it.
             #
@@ -373,13 +398,38 @@ class ClaudeCodeDriver(InterpretationDriver):
             cache_read_tokens=d_cr, output_tokens=d_out,
             reported_usd=message.total_cost_usd or 0.0)
         # Both figures on purpose: for a redirected backend the CLI figure is
-        # Anthropic-priced (~100x high for DeepSeek) -- the gap collapsing
-        # toward 1x is the alarm that traffic reached Anthropic instead.
+        # Anthropic-priced, and how far above ours it lands depends on the
+        # turn's cache-hit ratio (measured 4.8x on a cache-heavy DeepSeek
+        # turn, ~100x on a cache-miss-dominated one).  A figure NEAR OURS is
+        # the alarm -- it means the tokens really were Anthropic's.
         _log.info("turn usage: %s, cost: $%.6f (CLI reported $%.6f)",
                   message.usage, cost, message.total_cost_usd or 0.0)
+        self._check_billable_models(message)
         accumulate_usage(self.task, input_tokens=d_in, cache_creation_tokens=d_cw,
                          cache_read_tokens=d_cr, output_tokens=d_out,
                          cost_usd=cost)
+
+    def _check_billable_models(self, message: ResultMessage) -> None:
+        """Warn when a model this backend did not expect has billed.
+
+        `model_usage` names EVERY model that billed on the turn, including
+        the auxiliary ones the CLI reaches for on its own -- which the single
+        model field of an assistant message structurally cannot show.  For a
+        backend that pins every model selector, an extra name here means a
+        pin did not hold, which is the failure the whole redirect guards
+        against.  Warn, never raise: a run that is billing correctly must not
+        die because a sentinel disagrees."""
+        expected = self.billable_models
+        usage = getattr(message, "model_usage", None)
+        if expected is None or not isinstance(usage, dict):
+            return
+        for name in usage:
+            if name in expected or name in _UNEXPECTED_BILLING_WARNED:
+                continue
+            _UNEXPECTED_BILLING_WARNED.add(name)
+            _log.warning("model %r billed on this turn, but this backend runs "
+                         "only %s -- check ANTHROPIC_BASE_URL and the ambient "
+                         "environment", name, sorted(expected))
 
     # --- SDK session ---
 

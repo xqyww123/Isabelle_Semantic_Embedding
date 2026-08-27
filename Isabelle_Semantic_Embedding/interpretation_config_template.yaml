@@ -99,11 +99,13 @@ models:
   # them in off-peak windows, so the recorded dollars are an UPPER BOUND of
   # the bill (owner ruling: static peak, no time-of-day logic).  The CLI's
   # own dollar figure is ignored for this backend (it prices at Anthropic
-  # rates, measured ~100x too high).  AoA keeps an independent DeepSeek
-  # price table: contrib/Isa-Mini/IsaMini/AoA/language_model_driver.py --
-  # update both when prices move.
-  # deepseek-v4-flash-vision-exp is deliberately absent: unpriced here
-  # until someone needs it, so a run on it fails loudly instead of free.
+  # rates -- measured 4.8x above ours on a cache-heavy turn and ~100x on a
+  # cache-miss-dominated one).  AoA keeps an independent DeepSeek price
+  # table: contrib/Isa-Mini/IsaMini/AoA/language_model_driver.py -- update
+  # both when prices move.
+  # deepseek-v4-flash-vision-exp is deliberately absent, from here and from
+  # the driver's context-window table alike: unpriced until someone needs
+  # it, so a run on it fails loudly instead of free.
   deepseek-v4-pro:
     pricing:
       input: 1.32e-6         # $1.32 / 1M (cache miss, peak)
