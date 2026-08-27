@@ -35,7 +35,6 @@ from claude_agent_sdk.types import (
 
 from ..semantic_interpretation import (
     FatalAgentError,
-    InterpretationTask,
     PoisonedSessionError,
     RateLimitError,
     ReachLimitError,
@@ -106,7 +105,7 @@ async def _permission_control(
     return {}
 
 
-# --- Message handling ---
+# --- Message helpers (pure: no driver state) ---
 
 def _model_error_text(message: Any) -> str:
     """The model's own words for a failure, e.g.
@@ -144,172 +143,6 @@ async def _list_tools(client: ClaudeSDKClient) -> None:
         _log_message(message)
 
 
-def _accumulate_usage(task: InterpretationTask, message: ResultMessage) -> None:
-    if message.usage:
-        d_in = message.usage.get("input_tokens", 0)
-        d_cw = message.usage.get("cache_creation_input_tokens", 0)
-        d_cr = message.usage.get("cache_read_input_tokens", 0)
-        d_out = message.usage.get("output_tokens", 0)
-    else:
-        d_in = d_cw = d_cr = d_out = 0
-    _log.info("round usage: %s, cost: $%.4f", message.usage, message.total_cost_usd or 0)
-    accumulate_usage(task, input_tokens=d_in, cache_creation_tokens=d_cw,
-                     cache_read_tokens=d_cr, output_tokens=d_out,
-                     cost_usd=message.total_cost_usd or 0.0)
-
-
-# ---------------------------------------------------------------------------
-# User-facing failure text.  Kept together so the wording can be reviewed in one
-# place rather than hunted through the control flow.
-# ---------------------------------------------------------------------------
-
-# One message for both "never logged in" and "login expired".  They are NOT
-# distinguishable at the point we must raise: a live unauthenticated session
-# reports AssistantMessage.error = 'authentication_failed' before the terminal
-# ResultMessage (the only carrier of the "Not logged in" text) ever arrives.  The
-# remedy is identical either way, so guessing would add a wrong claim and no value.
-_MSG_AUTH_FAILED = (
-    "Semantic interpretation failed: Claude Code could not authenticate. "
-    "Run 'claude' and use /login (it may not be logged in, or the login may have "
-    "expired), then retry.")
-
-_MSG_BILLING = (
-    "Semantic interpretation failed: the Claude account has a billing problem. "
-    "Check the account, then retry.")
-
-_MSG_INVALID_REQUEST = (
-    "Semantic interpretation failed: the request was rejected as invalid. "
-    "This is a bug - please report it with the RPC host log.")
-
-
-def _raise_for_agent_error(task: InterpretationTask,
-                           err: str | None,
-                           result_msg: Any,
-                           model_text: str = "") -> None:
-    """Classify a failure and raise.  Never returns.
-
-    `err` is AssistantMessage.error when we have it; otherwise `result_msg` is a
-    failed ResultMessage and the class is inferred from the api_retry trail plus
-    its own fields.  `model_text` is the model's own description of the failure; it is
-    appended to every recognised class because our own summary can be wrong -- the SDK
-    reports an out-of-quota 403 as `authentication_failed`, so "log in again" would be
-    exactly the wrong advice and only this text reveals it."""
-    def fatal(summary: str) -> None:
-        raise FatalAgentError(
-            summary + (f'\nThe model reported: "{model_text}"' if model_text else ""))
-
-    if err == "rate_limit":
-        raise RateLimitError()
-    if err == "server_error":
-        raise TransientAgentError("agent reported a server error")
-    if err == "authentication_failed":
-        fatal(_MSG_AUTH_FAILED)
-    if err == "billing_error":
-        fatal(_MSG_BILLING)
-    if err == "invalid_request":
-        fatal(_MSG_INVALID_REQUEST)
-
-    # err is None or "unknown": infer from what the run left behind.
-    statuses = {s for s, _ in task.api_retry_errors}
-    kinds = {k for _, k in task.api_retry_errors}
-    result_text = (getattr(result_msg, "result", None) or "") if result_msg else ""
-    status = getattr(result_msg, "api_error_status", None) if result_msg else None
-
-    # Never authenticated: the CLI fails locally in ~100 ms with no retries at all,
-    # so an empty api_retry trail is itself part of the signature.
-    if "not logged in" in result_text.lower():
-        fatal(_MSG_AUTH_FAILED)
-    if status == 401 or 401 in statuses or "authentication_failed" in kinds:
-        fatal(_MSG_AUTH_FAILED)
-
-    # Unrecognised: there is no honest one-liner, so let the full traceback through.
-    detail = f"error={err!r} api_error_status={status!r} result={result_text[:500]!r}"
-    if model_text:
-        detail += f" model_said={model_text[:500]!r}"
-    if task.api_retry_errors:
-        detail += f" api_retry={task.api_retry_errors[:10]!r}"
-    errors = getattr(result_msg, "errors", None) if result_msg else None
-    if errors:
-        detail += f" errors={errors!r}"
-    raise FatalAgentError(None, detail)
-
-
-def _handle_message(task: InterpretationTask, message: Any) -> None:
-    """Process one message from a `receive_response` loop: log it, accumulate
-    usage for ResultMessages, and raise ReachLimitError/RateLimitError on a
-    usage-cap or rate-limit signal so `_run_agent`'s handlers apply the 20-min
-    wait / backoff.
-
-    Shared by BOTH the batch-0 turn and the missing-entry retry turns.  The
-    retry loop used to inline only `_log_message` + `_accumulate_usage`,
-    swallowing the limit/rate signals — so a usage cap hit during retries
-    span instantly (thousands of "You've hit your limit" rounds with no wait)
-    instead of sleeping until the reset."""
-    if RateLimitEvent is not None and isinstance(message, RateLimitEvent):
-        if message.rate_limit_info.status == "rejected":
-            raise ReachLimitError()
-        return
-    _log_message(message)
-
-    # `api_retry` system messages are the ONLY place that distinguishes an expired
-    # credential from an unreachable network: both terminate with an identical
-    # ResultMessage (error_during_execution / aborted_streaming) whose `errors`
-    # carry only an opaque [ede_diagnostic] string.  Record them as they stream by
-    # so the terminal message can be classified.
-    if isinstance(message, SystemMessage) and message.subtype == "api_retry":
-        data = message.data or {}
-        task.api_retry_errors.append(
-            (data.get("error_status"), data.get("error")))
-        return
-
-    # The structured error enum (claude_agent_sdk.types.AssistantMessageError) is
-    # the primary classification -- it is stable across CLI versions, unlike the
-    # result text.
-    if isinstance(message, AssistantMessage):
-        # No model configured (DEFAULT_MODEL = "") means the CLI chose one;
-        # record it so write_cost's provenance names the model that ran.
-        if not task.model and isinstance(message.model, str) and message.model:
-            task.model = message.model
-        err = getattr(message, "error", None)
-        if err is not None:
-            _raise_for_agent_error(task, err, None, _model_error_text(message))
-
-    content = getattr(message, "content", None)
-    if content is not None and isinstance(content, list) and content:
-        block = content[0]
-        text = getattr(block, "text", None)
-        if isinstance(text, str):
-            if text.startswith("You've hit your limit"):
-                raise ReachLimitError()
-            if "Rate limit" in text:
-                raise RateLimitError()
-    if isinstance(message, ResultMessage):
-        status = getattr(message, "api_error_status", None)
-        # A hard request-level rejection (e.g. 400 from a lone surrogate in the
-        # transcript) carries its text in `errors`, NOT `result` (which is None
-        # here), so the result-string checks below would miss it.  Detect via
-        # the language-independent api_error_status, and raise BEFORE
-        # _accumulate_usage so the poisoned round does not flush cost.
-        if message.is_error and status == 400:
-            raise PoisonedSessionError()
-        _accumulate_usage(task, message)
-        if message.is_error and message.result:
-            if message.result.startswith("You've hit your limit"):
-                raise ReachLimitError()
-            if "Rate limit" in message.result:
-                raise RateLimitError()
-        # FAIL-SAFE.  Everything above is a whitelist of conditions we recognise;
-        # this is the catch-all that makes an unrecognised failure loud instead of
-        # silent.  Without it, an is_error result we have no branch for -- which is
-        # exactly what an unauthenticated CLI produces -- flows on as if the round
-        # had succeeded, the entries stay unanswered, and the theory ends up marked
-        # interpreted with nothing in it.
-        #
-        # NB: do NOT branch on `subtype`.  It is 'success' even on an auth failure.
-        if message.is_error:
-            _raise_for_agent_error(task, None, message)
-
-
 # --- The driver ---
 
 @register_interpretation_driver("ClaudeCode")
@@ -318,7 +151,12 @@ class ClaudeCodeDriver(InterpretationDriver):
 
     The five interpretation tools are served in-process
     (`create_sdk_mcp_server`), so their handlers keep their live Isabelle RPC
-    connection; the CLI subprocess reaches them over the SDK's own transport."""
+    connection; the CLI subprocess reaches them over the SDK's own transport.
+
+    SUBCLASSED by deep_seek.py, which points the same CLI at another vendor's
+    Anthropic-compatible endpoint.  Anything added here that is true only of
+    Anthropic's own API must become one of the extension points below
+    (the MSG_* wording, `status_messages`, `_turn_cost_usd`)."""
 
     # Empty = pass no model to the CLI, so the run uses whatever default model
     # the user's own Claude Code configuration selects.  The model that actually
@@ -327,9 +165,223 @@ class ClaudeCodeDriver(InterpretationDriver):
     DEFAULT_MODEL = ""
     REPORTS_CONTEXT_RESET = True          # the PreCompact hook below
 
+    # ------------------------------------------------------------------
+    # User-facing failure text.  Kept together so the wording can be reviewed
+    # in one place rather than hunted through the control flow.  Class
+    # attributes so a subclass can substitute its vendor's remedies.
+    # ------------------------------------------------------------------
+
+    # One message for both "never logged in" and "login expired".  They are NOT
+    # distinguishable at the point we must raise: a live unauthenticated session
+    # reports AssistantMessage.error = 'authentication_failed' before the terminal
+    # ResultMessage (the only carrier of the "Not logged in" text) ever arrives.  The
+    # remedy is identical either way, so guessing would add a wrong claim and no value.
+    MSG_AUTH_FAILED = (
+        "Semantic interpretation failed: Claude Code could not authenticate. "
+        "Run 'claude' and use /login (it may not be logged in, or the login may have "
+        "expired), then retry.")
+
+    MSG_BILLING = (
+        "Semantic interpretation failed: the Claude account has a billing problem. "
+        "Check the account, then retry.")
+
+    MSG_INVALID_REQUEST = (
+        "Semantic interpretation failed: the request was rejected as invalid. "
+        "This is a bug - please report it with the RPC host log.")
+
     def __init__(self, **kw: Any) -> None:
         super().__init__(**kw)
         self._client: ClaudeSDKClient | None = None
+        self._model_mismatch_warned = False
+
+    @property
+    def status_messages(self) -> dict[int, str]:
+        """HTTP statuses this backend can NAME on the inference path (no SDK
+        error enum: we are reading the api_retry trail and the terminal
+        ResultMessage).  A status absent here falls into the loud unrecognised
+        bucket, deliberately.  A property, not a class-body dict: a dict
+        literal would freeze the base wording and defeat a subclass's MSG_*
+        override."""
+        return {401: self.MSG_AUTH_FAILED}
+
+    # --- Message classification ---
+
+    def _raise_for_agent_error(self,
+                               err: str | None,
+                               result_msg: Any,
+                               model_text: str = "") -> None:
+        """Classify a failure and raise.  Never returns.
+
+        `err` is AssistantMessage.error when we have it; otherwise `result_msg` is a
+        failed ResultMessage and the class is inferred from the api_retry trail plus
+        its own fields.  `model_text` is the model's own description of the failure; it is
+        appended to every recognised class because our own summary can be wrong -- the SDK
+        reports an out-of-quota 403 as `authentication_failed`, so "log in again" would be
+        exactly the wrong advice and only this text reveals it."""
+        def fatal(summary: str) -> None:
+            raise FatalAgentError(
+                summary + (f'\nThe model reported: "{model_text}"' if model_text else ""))
+
+        if err == "rate_limit":
+            raise RateLimitError()
+        if err == "server_error":
+            raise TransientAgentError("agent reported a server error")
+        if err == "authentication_failed":
+            fatal(self.MSG_AUTH_FAILED)
+        if err == "billing_error":
+            fatal(self.MSG_BILLING)
+        if err == "invalid_request":
+            fatal(self.MSG_INVALID_REQUEST)
+
+        # err is None or "unknown": infer from what the run left behind.
+        statuses = {s for s, _ in self.task.api_retry_errors}
+        kinds = {k for _, k in self.task.api_retry_errors}
+        result_text = (getattr(result_msg, "result", None) or "") if result_msg else ""
+        status = getattr(result_msg, "api_error_status", None) if result_msg else None
+
+        # Never authenticated: the CLI fails locally in ~100 ms with no retries at all,
+        # so an empty api_retry trail is itself part of the signature.
+        if "not logged in" in result_text.lower():
+            fatal(self.MSG_AUTH_FAILED)
+        named = next((msg for s, msg in self.status_messages.items()
+                      if s == status or s in statuses), None)
+        if named is not None:
+            fatal(named)
+        # Kind strings are SDK vocabulary, not vendor statuses -- no second table.
+        if "authentication_failed" in kinds:
+            fatal(self.MSG_AUTH_FAILED)
+
+        # Unrecognised: there is no honest one-liner, so let the full traceback through.
+        detail = f"error={err!r} api_error_status={status!r} result={result_text[:500]!r}"
+        if model_text:
+            detail += f" model_said={model_text[:500]!r}"
+        if self.task.api_retry_errors:
+            detail += f" api_retry={self.task.api_retry_errors[:10]!r}"
+        errors = getattr(result_msg, "errors", None) if result_msg else None
+        if errors:
+            detail += f" errors={errors!r}"
+        raise FatalAgentError(None, detail)
+
+    def _handle_message(self, message: Any) -> None:
+        """Process one message from a `receive_response` loop: log it, accumulate
+        usage for ResultMessages, and raise ReachLimitError/RateLimitError on a
+        usage-cap or rate-limit signal so `_run_agent`'s handlers apply the 20-min
+        wait / backoff.
+
+        Shared by BOTH the batch-0 turn and the missing-entry retry turns.  The
+        retry loop used to inline only `_log_message` + the usage recorder,
+        swallowing the limit/rate signals — so a usage cap hit during retries
+        span instantly (thousands of "You've hit your limit" rounds with no wait)
+        instead of sleeping until the reset."""
+        if RateLimitEvent is not None and isinstance(message, RateLimitEvent):
+            if message.rate_limit_info.status == "rejected":
+                raise ReachLimitError()
+            return
+        _log_message(message)
+
+        # `api_retry` system messages are the ONLY place that distinguishes an expired
+        # credential from an unreachable network: both terminate with an identical
+        # ResultMessage (error_during_execution / aborted_streaming) whose `errors`
+        # carry only an opaque [ede_diagnostic] string.  Record them as they stream by
+        # so the terminal message can be classified.
+        if isinstance(message, SystemMessage) and message.subtype == "api_retry":
+            data = message.data or {}
+            self.task.api_retry_errors.append(
+                (data.get("error_status"), data.get("error")))
+            return
+
+        # The structured error enum (claude_agent_sdk.types.AssistantMessageError) is
+        # the primary classification -- it is stable across CLI versions, unlike the
+        # result text.
+        if isinstance(message, AssistantMessage):
+            if isinstance(message.model, str) and message.model:
+                if not self.task.model:
+                    # No model configured (DEFAULT_MODEL = "") means the CLI
+                    # chose one; record it so write_cost's provenance names the
+                    # model that ran.
+                    self.task.model = message.model
+                elif (message.model != self.task.model
+                      and not self._model_mismatch_warned):
+                    self._model_mismatch_warned = True   # once per session
+                    _log.warning("the endpoint answered with model %r, not the "
+                                 "configured %r -- check ANTHROPIC_BASE_URL and "
+                                 "the ambient environment",
+                                 message.model, self.task.model)
+            err = getattr(message, "error", None)
+            if err is not None:
+                self._raise_for_agent_error(err, None, _model_error_text(message))
+
+        content = getattr(message, "content", None)
+        if content is not None and isinstance(content, list) and content:
+            block = content[0]
+            text = getattr(block, "text", None)
+            if isinstance(text, str):
+                if text.startswith("You've hit your limit"):
+                    raise ReachLimitError()
+                if "Rate limit" in text:
+                    raise RateLimitError()
+        if isinstance(message, ResultMessage):
+            status = getattr(message, "api_error_status", None)
+            # A hard request-level rejection (e.g. 400 from a lone surrogate in the
+            # transcript) carries its text in `errors`, NOT `result` (which is None
+            # here), so the result-string checks below would miss it.  Detect via
+            # the language-independent api_error_status, and raise BEFORE
+            # _record_turn_cost so the poisoned round does not flush cost.
+            # NB a backend where 400 can also mean "malformed request, not
+            # poisoned transcript" would need a discriminator here; none is
+            # known for DeepSeek yet.
+            if message.is_error and status == 400:
+                raise PoisonedSessionError()
+            self._record_turn_cost(message)
+            if message.is_error and message.result:
+                if message.result.startswith("You've hit your limit"):
+                    raise ReachLimitError()
+                if "Rate limit" in message.result:
+                    raise RateLimitError()
+            # FAIL-SAFE.  Everything above is a whitelist of conditions we recognise;
+            # this is the catch-all that makes an unrecognised failure loud instead of
+            # silent.  Without it, an is_error result we have no branch for -- which is
+            # exactly what an unauthenticated CLI produces -- flows on as if the round
+            # had succeeded, the entries stay unanswered, and the theory ends up marked
+            # interpreted with nothing in it.
+            #
+            # NB: do NOT branch on `subtype`.  It is 'success' even on an auth failure.
+            if message.is_error:
+                self._raise_for_agent_error(None, message)
+
+    # --- Usage accounting ---
+
+    def _turn_cost_usd(self, *, input_tokens: int, cache_creation_tokens: int,
+                       cache_read_tokens: int, output_tokens: int,
+                       reported_usd: float) -> float:
+        """Dollars for one turn.  The CLI's own figure is correct for the
+        Anthropic API it was built for; a subclass that redirects the CLI to
+        another vendor's endpoint must reprice the tokens itself (the CLI
+        would price them at Anthropic list prices)."""
+        return reported_usd
+
+    def _record_turn_cost(self, message: ResultMessage) -> None:
+        if message.usage:
+            d_in = message.usage.get("input_tokens", 0)
+            d_cw = message.usage.get("cache_creation_input_tokens", 0)
+            d_cr = message.usage.get("cache_read_input_tokens", 0)
+            d_out = message.usage.get("output_tokens", 0)
+        else:
+            d_in = d_cw = d_cr = d_out = 0
+        cost = self._turn_cost_usd(
+            input_tokens=d_in, cache_creation_tokens=d_cw,
+            cache_read_tokens=d_cr, output_tokens=d_out,
+            reported_usd=message.total_cost_usd or 0.0)
+        # Both figures on purpose: for a redirected backend the CLI figure is
+        # Anthropic-priced (~100x high for DeepSeek) -- the gap collapsing
+        # toward 1x is the alarm that traffic reached Anthropic instead.
+        _log.info("turn usage: %s, cost: $%.6f (CLI reported $%.6f)",
+                  message.usage, cost, message.total_cost_usd or 0.0)
+        accumulate_usage(self.task, input_tokens=d_in, cache_creation_tokens=d_cw,
+                         cache_read_tokens=d_cr, output_tokens=d_out,
+                         cost_usd=cost)
+
+    # --- SDK session ---
 
     def _options(self) -> ClaudeAgentOptions:
         mcp = create_sdk_mcp_server("isabelle_semantics", tools=self.tools)
@@ -394,4 +446,4 @@ class ClaudeCodeDriver(InterpretationDriver):
         assert self._client is not None, "run_turn outside the driver's context"
         await self._client.query(prompt)
         async for message in self._client.receive_response():
-            _handle_message(self.task, message)
+            self._handle_message(message)

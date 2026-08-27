@@ -144,6 +144,14 @@ class InterpretationDriver(ABC):
     #: explain every time (see `mk_desugar_and_explain_tool`'s `dedup`).
     REPORTS_CONTEXT_RESET: bool = False
 
+    @classmethod
+    def canonical_model(cls, model: str) -> str:
+        """The model name to run AND to record.  Normalising here -- before
+        the task is built -- is what keeps task.model, the priced name and
+        the name sent to the API one string.  The base rule is just the
+        default; a driver with user-facing shorthands overrides it."""
+        return model or cls.DEFAULT_MODEL
+
     def __init__(self, *, model: str, system_prompt: str,
                  tools: list["SdkMcpTool[Any]"],
                  task: "InterpretationTask",

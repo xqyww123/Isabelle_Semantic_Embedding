@@ -5,7 +5,9 @@
 #
 # It exists because some backends report only token counts, not money, and the
 # per-theory cost recorded in the semantic database is in dollars.  A backend
-# that reports its own cost (ClaudeCode does) needs no entry here at all.
+# whose reported dollars are correct for the endpoint it actually talked to
+# needs no entry here; the Claude Code CLI's figure is correct only against
+# Anthropic's own API (ClaudeCode: no entry needed; DeepSeek: priced below).
 #
 # Prices are in dollars PER TOKEN:
 #
@@ -88,3 +90,28 @@ models:
       input: 7.5e-7          # $0.75 / 1M
       cached_input: 7.5e-8   # $0.075 / 1M
       output: 4.5e-6         # $4.50 / 1M
+
+  # ---------------------------------------------------------------------
+  # WHAT THE RECORDED DOLLARS MEAN FOR DEEPSEEK (the "DeepSeek" driver: the
+  # Claude Code CLI on DeepSeek's Anthropic-compatible endpoint).  These are
+  # the PEAK list rates, read 2026-08-27 from
+  # https://api-docs.deepseek.com/quick_start/pricing -- DeepSeek halves
+  # them in off-peak windows, so the recorded dollars are an UPPER BOUND of
+  # the bill (owner ruling: static peak, no time-of-day logic).  The CLI's
+  # own dollar figure is ignored for this backend (it prices at Anthropic
+  # rates, measured ~100x too high).  AoA keeps an independent DeepSeek
+  # price table: contrib/Isa-Mini/IsaMini/AoA/language_model_driver.py --
+  # update both when prices move.
+  # deepseek-v4-flash-vision-exp is deliberately absent: unpriced here
+  # until someone needs it, so a run on it fails loudly instead of free.
+  deepseek-v4-pro:
+    pricing:
+      input: 1.32e-6         # $1.32 / 1M (cache miss, peak)
+      cached_input: 4.4e-8   # $0.044 / 1M (cache hit, peak)
+      output: 3.96e-6        # $3.96 / 1M (peak)
+
+  deepseek-v4-flash:
+    pricing:
+      input: 4.4e-7          # $0.44 / 1M (cache miss, peak)
+      cached_input: 1.4e-8   # $0.014 / 1M (cache hit, peak)
+      output: 1.32e-6        # $1.32 / 1M (peak)

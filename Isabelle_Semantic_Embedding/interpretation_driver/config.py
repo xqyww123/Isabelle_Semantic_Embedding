@@ -4,7 +4,10 @@ Lives at ``$ISABELLE_HOME_USER/etc/interpretation_config``, seeded from
 ``interpretation_config_template.yaml``; ``INTERPRETATION_CONFIG_PATH``
 overrides the location.  Same machinery as the embedding config.
 
-A backend that reports its own dollar cost (Claude Code does) never comes here.
+A backend whose reported dollars are correct for the endpoint it actually
+talked to never comes here; the Claude Code CLI's figure is correct only
+against Anthropic's own API, so the redirected DeepSeek backend reprices its
+tokens from this table.
 """
 
 from __future__ import annotations

@@ -1108,7 +1108,7 @@ async def interpret_file(
             f"Semantic interpretation failed: unknown interpretation driver "
             f"{driver_name!r}. Known drivers: "
             f"{', '.join(available_interpretation_drivers())}.")
-    model = model or driver_cls.DEFAULT_MODEL
+    model = driver_cls.canonical_model(model)
 
     # Build Unicode pretty-prints for all entries
     pretty_prints = [_pretty_print_entry(e) for e in entries]

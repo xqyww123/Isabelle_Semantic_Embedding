@@ -60,7 +60,7 @@ The interpreter is chosen with a single setting naming the backend and, optional
 ```isabelle
 declare [[Semantic_Embedding.interpretation_driver = "ClaudeCode.claude-opus-4-8[1m]"]]
 ```
-Written without a model (just `"ClaudeCode"`), the backend's own default model is used. The same value can be given as the `INTERPRETATION_DRIVER` environment variable, or, for a batch run, as `semantics_manage collect --driver`; the command line takes precedence over the Isabelle option, which takes precedence over the environment variable. `ClaudeCode` is currently the only backend; a Codex-based one is under development.
+Written without a model (just `"ClaudeCode"`), the backend's own default model is used. The same value can be given as the `INTERPRETATION_DRIVER` environment variable, or, for a batch run, as `semantics_manage collect --driver`; the command line takes precedence over the Isabelle option, which takes precedence over the environment variable. Three backends exist: `ClaudeCode` (the Claude Code CLI on Anthropic's API; with no model, the CLI's own configured default), `Codex[.model]` (the OpenAI Codex SDK, default `gpt-5.6-sol`), and `DeepSeek[.model]` (the same Claude Code CLI pointed at DeepSeek's Anthropic-compatible endpoint, default `deepseek-v4-pro`; the shorthands `DeepSeek.V4-pro` and `DeepSeek.V4-flash` are also accepted).
 
 The embedding model can be changed through three settings — the driver, the endpoint, and the model name:
 ```isabelle

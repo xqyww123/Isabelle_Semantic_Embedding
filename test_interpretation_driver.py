@@ -330,18 +330,43 @@ def test_claudecode_with_no_model_leaves_the_choice_to_the_cli():
 def test_the_cli_chosen_model_is_backfilled_into_provenance():
     """When the CLI picked the model, the first assistant message names it and
     `_handle_message` records it on the task -- so write_cost never stores an
-    empty model.  An explicitly configured model is NOT overwritten."""
+    empty model.  A later, different echo does NOT overwrite it."""
     from claude_agent_sdk.types import AssistantMessage
 
     from Isabelle_Semantic_Embedding.interpretation_driver.claude_code import (
-        _handle_message,
+        ClaudeCodeDriver,
     )
     task = _make_task(1, batch_size=1)
     assert task.model == ""
-    _handle_message(task, AssistantMessage(content=[], model="claude-cli-pick"))
+    driver = ClaudeCodeDriver(model="", system_prompt="sys", tools=[],
+                              task=task, on_context_reset=lambda: None)
+    driver._handle_message(AssistantMessage(content=[], model="claude-cli-pick"))
     assert task.model == "claude-cli-pick"
-    _handle_message(task, AssistantMessage(content=[], model="something-else"))
+    driver._handle_message(AssistantMessage(content=[], model="something-else"))
     assert task.model == "claude-cli-pick", "first backfill wins"
+
+
+def test_a_model_echo_mismatch_warns_once_and_never_raises(caplog):
+    """When a configured model and the endpoint's echo disagree, the driver
+    warns -- once per session -- and never raises: a dated slug or an aux-model
+    echo must not kill a cone, but a silently misrouted backend must not stay
+    silent either."""
+    from claude_agent_sdk.types import AssistantMessage
+
+    from Isabelle_Semantic_Embedding.interpretation_driver.claude_code import (
+        ClaudeCodeDriver,
+    )
+    task = _make_task(1, batch_size=1)
+    task.model = "configured-model"
+    driver = ClaudeCodeDriver(model="configured-model", system_prompt="sys",
+                              tools=[], task=task, on_context_reset=lambda: None)
+    with caplog.at_level(logging.WARNING):
+        driver._handle_message(AssistantMessage(content=[], model="other-model"))
+        driver._handle_message(AssistantMessage(content=[], model="other-model"))
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING
+              and "other-model" in r.getMessage()]
+    assert len(warned) == 1, "exactly one warning, however many echoes"
+    assert task.model == "configured-model", "the configured name is provenance"
 
 
 # --- explaining the same constant twice ------------------------------------
