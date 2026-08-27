@@ -1977,3 +1977,83 @@ reproducible from this recipe at the cost of one build.
 **Scale context.**  Step 5's collection was ~5,400 records; this worklist is
 ~36x that.  Phase 2's shape (all of it, a slice, or by-kind priorities) is the
 owner's call on cost.
+
+
+## 20. Session state at the 2026-08-27 hand-back (read before touching the backfill)
+
+**Phase 2 is RUNNING on cslh19 right now.**  Owner confirmed full collection
+twice — once at the sizing (§19), once after the pilot recalibrated the price
+(~$17/1k entities measured; total estimate revised to $2,000–3,300, ~5 days
+wall clock at 12 threads).  Do NOT stop it, do NOT start a second collector.
+
+### What runs where
+
+- **REPL server** (cslh19): port 127.0.0.1:26621, base session `AFP-ALL-4`
+  (system heaps in `contrib/Isabelle2025-2/heaps/`), `-l Semantic_Embedding`,
+  `-o threads=12`, env `RPC_Host=127.0.0.1:27191`, launched detached (`setsid`)
+  from `contrib/Isa-REPL/repl_server.sh` with the Isabelle bin on PATH.
+- **Orchestrator** (cslh19): `~/scratch_d16_backfill_20260826/orchestrator.sh`,
+  detached.  Feeds `d16_theory_list.txt` (5,604 theories, missing-count
+  descending) to `~/venv-semantic/bin/isabelle-semantics collect
+  --repl-addr 127.0.0.1:26621 --rpc-addr 127.0.0.1:27191 --reinterpret` in
+  batches of 200; per-batch logs in `batches/batch_NNN.log`, re-entrant via
+  `batches/batch_NNN.done` markers, 5 retries per batch, and it ABORTS if
+  26621 stops listening.  Progress/cost ledger: `orchestrator.log` (one line
+  per batch with the run-cost summary).
+- Records land in **cslh19's** `~/.cache/Isabelle_Semantic_Embedding/
+  semantics.lmdb` — a consistent snapshot of this machine's store taken
+  2026-08-26 (1,360,615 entries at install; cslh19's previous stale DB is
+  preserved as `*.bak-20260826-232929`).  Only `semantics.lmdb` +
+  `theory_hash.lmdb` were shipped; the vector store deliberately not (vectors
+  are a lazy cache, embedding is a separate offline step).
+
+### The owner's standing invariant
+
+**If Isabelle ever enters a session-heap build (compilation), the run has
+FAILED** — the correct path always loads the system `AFP-ALL-4` chain as-is.
+The only sanctioned build is the REPL wrapper session (`Running REPL<pid>`,
+~2.5 min to listen).  Any other `Running <session>` line, or >5 min without
+listening: kill, diagnose environment (the prime suspect is a launch that did
+not source the env), never let it rebuild.  cslh19's user heaps
+(`~/.isabelle/Isabelle2025-2/heaps`) were removed 08-27 on the owner's order
+to eliminate shadowing; do not recreate them.
+
+### Traps already paid for
+
+- **Always `source envir.sh && source secret.sh`** (cslh19's own copies at
+  `/home/xero/Current/MLML/`) before launching anything.  Two failures came
+  from skipping this: `isabelle` absent from non-interactive ssh PATH (first
+  REPL launch died; first collect run's RPC host never started, so
+  `Semantic_Embedding.thy`'s end-of-theory connect errored), and `envir.sh`
+  dies under `set -u` (unbound PYTHONPATH — the orchestrator guards by
+  defaulting it before sourcing, strict mode after).
+- `isabelle-semantics collect` defaults `--repl-addr` to 6666 — ALWAYS pass
+  explicit addresses.
+- `--reinterpret` (force) re-enumerates the whole ancestor cone of every root,
+  and the per-entity cache confines LLM spend to missing/outdated entities —
+  measured in the pilot: 132 cone theories, 3,617 answers, +3,388 records,
+  $61.40, one transient agent failure self-healed by client recycling.
+
+### When the orchestrator finishes (`=== ALL BATCHES DONE ===` in orchestrator.log)
+
+1. Verify: sample the worklist against cslh19's DB; final entry count and the
+   summed batch costs from `orchestrator.log`.
+2. Merge back into THIS machine's store — **merge, never overwrite** (other
+   sessions keep writing locally): snapshot cslh19's `semantics.lmdb` +
+   `theory_hash.lmdb` (lmdb `env.copy(compact=True)`, safe under a live
+   writer), ship here, merge via the repo's own `merge_snapshot.py` /
+   `snapshot_sync` machinery — read it before use.
+3. Publish to HF per the `sync-semantic-embedding-db` skill (budget hours;
+   see §17's Xet lessons).
+4. Record phase-2 results in §19/§20; the conda data release stays human-only.
+5. Cleanup on cslh19: stop the REPL server, archive the collection logs, ask
+   the owner about deleting the two `*.bak-20260826-232929` DB dirs.
+
+### Pending, unrelated to the backfill
+
+- Unpushed: Semantic_Embedding `25a0e3e` (§19) + superproject `d0ea27f`
+  (+ this hand-back commit).  Push only when the owner says so, origin only.
+- phi-system: owner ruled NOT to push; `origin/main` knowingly references a
+  SHA absent from phi-system's remote (15 unpushed commits, other agents').
+- cslh19 contrib repos were synced 08-26 (5 fast-forwarded, 2 detached left
+  untouched: AutoCorrode, phi-system).
