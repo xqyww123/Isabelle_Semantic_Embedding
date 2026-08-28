@@ -137,7 +137,7 @@ def default_semantic_dir() -> str:
 
 def default_theory_hash_dir() -> str:
     # The registry's location AT THE TIME THIS SCRIPT RAN (2026-08-13/14; it is
-    # a completed one-off).  THEORY_HASH_REGISTRY_PLAN.md has since moved the
+    # a completed one-off).  archive/plans/THEORY_HASH_REGISTRY_PLAN.md has since moved the
     # registry into semantic_DB_dir(); this default deliberately keeps naming
     # the layout the re-key actually operated on -- hence --src-theory-hash for
     # anything else.

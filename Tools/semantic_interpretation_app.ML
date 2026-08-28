@@ -9,7 +9,7 @@
                   force (msgpack bool – when true, re-interpret already-finished theories)
 
   Semantic_Store.backfill_positions -- give already-collected records their entity
-  positions (ENTITY_POSITION_PLAN.md §8.2).  No LLM is involved.
+  positions (archive/plans/ENTITY_POSITION_PLAN.md §8.2).  No LLM is involved.
     Client sends: theory_names (msgpack string list — the roots to sweep)
 
   Both:

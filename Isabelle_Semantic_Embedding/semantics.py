@@ -127,7 +127,7 @@ async def excluded_theory_names(connection: Connection) -> list[str]:
     """Long names of the theories excluded from interpretation and from entity
     enumeration.  ML owns the list (`base_theories` in semantic_store.ML); callers
     match FULL long names against it -- a base name is not an identity
-    (INFRA_FILTER_REWORK_PLAN.md D3).  Cached per CONNECTION, not module-level:
+    (archive/plans/INFRA_FILTER_REWORK_PLAN.md D3).  Cached per CONNECTION, not module-level:
     one RPC host serves a whole fleet of Isabelle processes
     (tools/aoa_putnam_eval/run_fleet_eval.sh)."""
     cached = getattr(connection, "_excluded_theory_names", None)
@@ -152,11 +152,11 @@ SEMANTICS_MAP_SIZE: int = 1 << 32   # 4 GiB
 # The unit is KEYS.  Deliberately separate from snapshot_sync._EXPORT_BATCH,
 # which also counts keys: the dirty-page cost per key differs by more than an
 # order of magnitude between the two loops, so folding them into one number
-# would couple two tunables (DYNAMIC_MEMBER_NAMING_PLAN.md §3).
+# would couple two tunables (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §3).
 _WRITE_BATCH: int = 10_000
 
 
-# --- the positional record codec's shared ritual (DYNAMIC_MEMBER_NAMING_PLAN.md §3) ---
+# --- the positional record codec's shared ritual (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §3) ---
 # One-off migration passes read and write records positionally.  These are THE
 # shared spellings of that ritual; a pass must not redeclare the pad or the
 # indices against _decode's bare literals (a second copy of those numbers is
@@ -185,7 +185,7 @@ def backup_store(path: str) -> str:
     backup path.  THE owner of the tree's ``.bak-%Y%m%d-%H%M%S`` suffix
     convention -- future spellings point here instead of inlining strftime.
 
-    Does the free-space check ENTITY_POSITION_PLAN.md (h) sizes by hand: a
+    Does the free-space check archive/plans/ENTITY_POSITION_PLAN.md (h) sizes by hand: a
     compacted copy needs at most the store's used bytes free beside it, and
     aborting with both numbers beats ENOSPC halfway through a copy.
 
@@ -329,7 +329,7 @@ class _Semantic_DB:
         # when its answer lands (write-back discipline 4).
         interpreted_at: 'int | None' = None
         # Where this entity is declared in Isabelle source, as
-        # (portable symbolic file path, line, byte column) -- ENTITY_POSITION_PLAN.md §1.
+        # (portable symbolic file path, line, byte column) -- archive/plans/ENTITY_POSITION_PLAN.md §1.
         #
         # NB TWO COLUMN CONVENTIONS COEXIST IN THIS PACKAGE.  This column counts
         # UTF-8 BYTES from the start of the line.  hover.py renders entity locations
@@ -338,7 +338,7 @@ class _Semantic_DB:
         # bytes (1,501 of 10,297 AFP and 665 of 2,266 Isabelle .thy files contain
         # some).  Never feed this column to a position.py API without converting.
         #
-        # ADVISORY, not authoritative (ENTITY_POSITION_PLAN.md §11.1): recorded on
+        # ADVISORY, not authoritative (archive/plans/ENTITY_POSITION_PLAN.md §11.1): recorded on
         # the publisher's AFP snapshot; a consumer's sources may differ, and a
         # content-preserving edit moves the line without changing the key.
         #
@@ -346,7 +346,7 @@ class _Semantic_DB:
         # written before this field existed.
         position: 'tuple[str, int, int] | None' = None
         # Full name of the dynamic collection this record's NAME was invented
-        # from (DYNAMIC_MEMBER_NAMING_PLAN.md §2.2): set iff the enumeration
+        # from (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.2): set iff the enumeration
         # adopted no static name for the member and therefore invented its name
         # as coll(i).  It records the provenance of the *name*, not the origin
         # of the *entity* -- a member that carries a real name is
@@ -435,8 +435,8 @@ class _Semantic_DB:
 
         The codec is positional tail-append (8 -> 12 with the incremental
         invalidation fields, CHECK_OUTDATE_PLAN.md §3.1; 12 -> 13 with the entity
-        position, ENTITY_POSITION_PLAN.md §4; 13 -> 14 with from_collection,
-        DYNAMIC_MEMBER_NAMING_PLAN.md §2.2).  NB code from before the 12-field
+        position, archive/plans/ENTITY_POSITION_PLAN.md §4; 13 -> 14 with from_collection,
+        archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.2).  NB code from before the 12-field
         codec truncates at [:8] and would DROP the four incremental fields on its
         next write of the record, and code from before the 13- or 14-field codecs
         drops `position` / `from_collection` the same way -- do not run a pre-§3.1 or pre-position build
@@ -908,15 +908,15 @@ class _Semantic_DB:
         stated as a PER-FIELD condition and ENFORCED here rather than
         documented on a caller: only a field the embedded document is NOT
         built from may take this path (the assert below).  Grants recorded so
-        far: `position` (ENTITY_POSITION_PLAN.md L6, approved explicitly for
+        far: `position` (archive/plans/ENTITY_POSITION_PLAN.md L6, approved explicitly for
         the entity-position migration); `from_collection`
-        (DYNAMIC_MEMBER_NAMING_PLAN.md §4 open item 1, approved explicitly
+        (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §4 open item 1, approved explicitly
         for migrate_from_collection.py on 2026-08-19).
 
         BATCHED, not one transaction: a single write transaction rewriting the
         whole store overruns LMDB's dirty-page list and rolls everything back
         after however long it ran, while holding the store's only write lock
-        throughout (DYNAMIC_MEMBER_NAMING_PLAN.md §3).  `_WRITE_BATCH` counts
+        throughout (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §3).  `_WRITE_BATCH` counts
         keys; see its comment for why it is not snapshot_sync._EXPORT_BATCH."""
         if field in _Semantic_DB._EMBEDDED_DOC_FIELDS:
             raise AssertionError(
@@ -1291,7 +1291,7 @@ Semantic_DB = _Semantic_DB()
 SemanticRecord = _Semantic_DB.Record
 
 
-# --- the two live-name substitution rules (DYNAMIC_MEMBER_NAMING_PLAN.md §2.1) ---
+# --- the two live-name substitution rules (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.1) ---
 # Two rules, so two named functions -- the name at the call site IS the policy.
 # There is no single substitution: some callers must take the live name
 # unconditionally, others only for members; a flag parameter would put a
@@ -1484,7 +1484,7 @@ async def _get_definition_with_pos(
 
     Enumerates the kind's entities live to find the definition position
     (a full enumeration RPC per call — the enumeration cache was retired
-    2026-08-26, see INFRA_FILTER_REWORK_PLAN.md §18), then calls
+    2026-08-26, see archive/plans/INFRA_FILTER_REWORK_PLAN.md §18), then calls
     command_at_position to retrieve the source. A non-None *ctxt* resolves
     the enumeration under that (file, offset) context.
 
@@ -2745,7 +2745,7 @@ async def _mark_interpreted(arg: Any, connection: Connection) -> None:
 
 @isabelle_remote_procedure("Semantic_Store.backfill_positions")
 async def _backfill_positions(arg: Any, connection: Connection) -> tuple[int, int]:
-    """ENTITY_POSITION_PLAN.md §8.3.  The theory name rides along only so a failure
+    """archive/plans/ENTITY_POSITION_PLAN.md §8.3.  The theory name rides along only so a failure
     here can say which theory it was working on; ML owns the per-theory report."""
     theory_longname, entries = arg
     try:

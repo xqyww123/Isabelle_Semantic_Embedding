@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Backfill entity positions into an already-collected semantics.lmdb
-(ENTITY_POSITION_PLAN.md §8).
+(archive/plans/ENTITY_POSITION_PLAN.md §8).
 
 Records collected before the position field existed carry ``position = None``.
 This pass gives them the real thing.  Route A: it RECOMPUTES each entity's
@@ -85,7 +85,7 @@ def _backup() -> str:
 
 
 def _scan() -> dict:
-    """The completeness scan (ENTITY_POSITION_PLAN.md §8.4).
+    """The completeness scan (archive/plans/ENTITY_POSITION_PLAN.md §8.4).
 
     Counts entity records by codec length, and among 13-field ones how many carry a
     position.  Two populations are excluded from the reachable count because no

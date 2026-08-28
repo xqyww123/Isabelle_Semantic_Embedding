@@ -43,10 +43,10 @@ val smart_size_of_term = smart_size_of_term (* from Performant_Isabelle_ML *)
      decision procedures.  The session's ordinary-mathematics theories
      (Algebra_Aux, Polynomial_List, DP_Library, Approximation,
      Approximation_Bounds, Rat_Pair) are deliberately NOT here; per-theory
-     rationale in DECISION_PROCS_INFRA_THEORY_LIST.md.
+     rationale in archive/plans/DECISION_PROCS_INFRA_THEORY_LIST.md.
    - 23 tool-support theories (Quickcheck/Nitpick/SMT internals, code-generator
      bridges, HOL-Real_Asymp's expansion engine), each vetted against AFP
-     statement-level citations; evidence table in TOOL_THEORY_MARKING_LIST.md.
+     statement-level citations; evidence table in archive/plans/TOOL_THEORY_MARKING_LIST.md.
      `HOL.Random`, `HOL.Predicate_Compile` and `HOL.Code_Numeral` are
      deliberately absent — AFP entries state lemmas about their constants.
    - `Minilang.Minilang`: internal proof-language plumbing (TAG/GOAL/PROTECT/
@@ -465,7 +465,7 @@ fun gen_infra_filters (context : Context.generic)
                whose declarations have external users belongs on the kept side
                (the floatarith precedent), and the measured cascade delta of this
                hoist is zero -- 254 constants, none mentioned by any of the
-               92,217 kept theorems scanned (INFRA_FLIP_SET.tsv). *)
+               92,217 kept theorems scanned (archive/data/INFRA_FLIP_SET.tsv). *)
             else if is_from_infra_space const_space name then SOME "infra_theory"
             else if Strhashtab.defined preserved_set name then NONE
             else first_rule

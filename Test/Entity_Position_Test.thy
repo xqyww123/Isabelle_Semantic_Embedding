@@ -13,7 +13,7 @@ lemma Pos_Test_Lemma: \<open>Pos_Test_A \<or> \<not> Pos_Test_A\<close>
 
 text \<open>Two lemmas with ONE proposition: their universal key is content-addressed and
   therefore identical, so the enumeration dedups them and the survivor's position is
-  the one that gets stored (ENTITY_POSITION_PLAN.md §8.6).
+  the one that gets stored (archive/plans/ENTITY_POSITION_PLAN.md §8.6).
 
   The names are chosen so that ALPHABETICAL order is the REVERSE of source order.
   \<open>Facts.dest_static\<close> ends in \<open>sort_by #1\<close>, so when the source-order tie-break is
@@ -141,7 +141,7 @@ in
 end
 \<close>
 
-section \<open>Entity_Position (ENTITY_POSITION_PLAN.md §5, tests T1--T6)\<close>
+section \<open>Entity_Position (archive/plans/ENTITY_POSITION_PLAN.md §5, tests T1--T6)\<close>
 
 ML \<open>
 (* Independent verification of a byte column: slice the raw bytes of the line

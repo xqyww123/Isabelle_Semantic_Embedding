@@ -1,6 +1,6 @@
 """The snapshot artifact: system-DB discovery, the manual installer, the exporter.
 
-The semantic database is layered (see SEMANTIC_DB_LAYERED_PLAN.md): a writable
+The semantic database is layered (see archive/plans/SEMANTIC_DB_LAYERED_PLAN.md): a writable
 user DB under ``semantic_DB_dir()`` and a read-only **system DB** delivered as
 the ``isabelle-semantic-data`` conda data package.  This module owns everything
 about that artifact:

@@ -3,7 +3,7 @@ theory Entity_Position_Refusal_Test
 begin
 
 text \<open>
-  T9's refusal half (ENTITY_POSITION_PLAN.md \<section>12, \<section>16.4): when the
+  T9's refusal half (archive/plans/ENTITY_POSITION_PLAN.md \<section>12, \<section>16.4): when the
   check_theorem_name_in_file RPC fails, enumerate_entries degrades
   (tie_break_degraded = true), and backfill_theory must REFUSE the theory --
   warn, count it under `refused`, and never call the backfill_positions write

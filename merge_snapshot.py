@@ -33,7 +33,7 @@ the other:
                    incoming tombstone, no local vector -> write the tombstone
                    key only local                -> untouched
 
-  theory_hash.lmdb the merge rule of THEORY_HASH_REGISTRY_PLAN.md §14.6: a WIP
+  theory_hash.lmdb the merge rule of archive/plans/THEORY_HASH_REGISTRY_PLAN.md §14.6: a WIP
                    entry never crosses a machine; a new hash is copied; a newer
                    timestamp for the same name refreshes the entry; and two
                    NAMES on one hash is the sentinel case -- reported loudly,
@@ -159,7 +159,7 @@ def plan_vectors(incoming: str, local: str, changed_records: set):
 
 
 def plan_registry(incoming: str, local: str):
-    """The theory-hash registry's merge rule (THEORY_HASH_REGISTRY_PLAN.md §14.6).
+    """The theory-hash registry's merge rule (archive/plans/THEORY_HASH_REGISTRY_PLAN.md §14.6).
 
     WIP entries never cross a machine; a new key is copied; the newer timestamp
     refreshes an entry that carries the same name; two names on one key is the
@@ -310,7 +310,7 @@ def main() -> int:
               f"added {rstats['added']}  refreshed {rstats['refreshed']}  "
               f"wip-skipped {rstats['wip_skipped']}")
         for k, cur_name, name in conflicts:
-            # The sentinel (THEORY_HASH_REGISTRY_PLAN.md §14.6): impossible
+            # The sentinel (archive/plans/THEORY_HASH_REGISTRY_PLAN.md §14.6): impossible
             # under the post-2026-08-13 hash scheme, so firing IS the news.
             print(f"  !!! ONE HASH, TWO NAMES (kept local): {k.hex()}\n"
                   f"      local    {cur_name!r}\n"

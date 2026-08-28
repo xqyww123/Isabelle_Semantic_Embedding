@@ -1,4 +1,4 @@
-"""The layered read of the theory-hash registry (THEORY_HASH_REGISTRY_PLAN.md §8).
+"""The layered read of the theory-hash registry (archive/plans/THEORY_HASH_REGISTRY_PLAN.md §8).
 
 The registry, `theory_hash.lmdb`, maps a 16-byte theory hash to msgpack
 ``[theory long name, last-seen unix seconds]``. Its user layer — the writable

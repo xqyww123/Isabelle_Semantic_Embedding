@@ -48,11 +48,11 @@ signature SEMANTIC_STORE = sig
      completes (write-back discipline 3). *)
   val dry_run : bool -> Context.generic list -> string list * int
   (* Level 2 alone, one theory, no level-1 due-filter -- exposed for sizing
-     measurements (INFRA_FILTER_REWORK_PLAN.md step 4). *)
+     measurements (archive/plans/INFRA_FILTER_REWORK_PLAN.md step 4). *)
   val dry_run' : Context.generic -> int
 
   (* How the record we are about to write names its entity, of any kind
-     (DYNAMIC_MEMBER_NAMING_PLAN.md §2.2).  Distinct from
+     (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.2).  Distinct from
      Context_Callbacks.entry_name, which answers a different question over a
      different population: "how is this CACHED THEOREM entry called in the
      context being queried" -- theorems only, and its member case carries no
@@ -72,7 +72,7 @@ signature SEMANTIC_STORE = sig
      universal key, prompt hint, locale provenance, constituents,
      from_collection (the full name of the dynamic collection the name was
      invented from, NONE for a name adopted from the producer --
-     DYNAMIC_MEMBER_NAMING_PLAN.md §2.2), semantic digest, dependency edges.  `tie_break_degraded` says the source-order offsets behind
+     archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.2), semantic digest, dependency edges.  `tie_break_degraded` says the source-order offsets behind
      the theorem dedup are not real, so the surviving occurrence -- and hence its
      position -- may be the wrong one (§8.6).  Exposed for tests. *)
   val enumerate_entries : Context.generic ->
@@ -86,7 +86,7 @@ signature SEMANTIC_STORE = sig
      position_report: Entity_Position.report,
      tie_break_degraded: bool}
 
-  (* The position backfill (ENTITY_POSITION_PLAN.md §8): give the records already
+  (* The position backfill (archive/plans/ENTITY_POSITION_PLAN.md §8): give the records already
      collected from the AFP their entity positions, with no LLM involved.  Route A
      -- the universal keys are RECOMPUTED by re-running the enumeration above,
      which is what makes the backfill agree with collection on which occurrence of
@@ -378,7 +378,7 @@ end (*local RPC wrappers*)
    The callback below makes this list the single authority -- Python used to hold
    a base-name-compared copy of it (D3's mistake in the other language); ids and
    names are both derived from `base_theories`, so they cannot drift
-   (INFRA_FILTER_REWORK_PLAN.md D11, D19). *)
+   (archive/plans/INFRA_FILTER_REWORK_PLAN.md D11, D19). *)
 val base_theories =
       [@{theory Code_Generator}, @{theory Pure}, @{theory Code_Evaluation},
        @{theory Typerep}]
@@ -410,13 +410,13 @@ local
           (NONE for theorem-alike entities and for persistent theories) and its
           dependency edges as the targets' CURRENT universal keys ([] likewise). *)
        (* Field 4 is the entity position (portable symbolic file path, line, byte
-          column), NONE when there is none -- ENTITY_POSITION_PLAN.md §6.  It used
+          column), NONE when there is none -- archive/plans/ENTITY_POSITION_PLAN.md §6.  It used
           to be the bare line, and the wire is not backward compatible: an ML build
           and a Python package on opposite sides of this change cannot talk. *)
        (* Field 9 (after the constituents, BEFORE the incremental pair) is
           from_collection: the full name of the dynamic collection the entry's
           name was invented from, nil for a name adopted from the producer
-          (DYNAMIC_MEMBER_NAMING_PLAN.md §2.2). *)
+          (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.2). *)
        packList (packTuple11 (pack_entry_kind, packString, packString,
                               packOption (packTuple3 (packString, packInt, packInt)),
                               packBytes, packString,
@@ -481,7 +481,7 @@ val interpret_file_dry_run_cmd :
   timeout = NONE
 }
 
-(* The position backfill (ENTITY_POSITION_PLAN.md §8.3).  Python writes each uk's
+(* The position backfill (archive/plans/ENTITY_POSITION_PLAN.md §8.3).  Python writes each uk's
    position onto the record it already has, in ONE write transaction per theory, and
    touches no theory-status record at all (L9).  Returns (hit, missing): records
    updated, and enumerated keys with no record (legitimate -- never interpreted).
@@ -598,7 +598,7 @@ local
 in
 fun key_kind_ord (k1, k2) = int_ord (entity_kind_rank k1, entity_kind_rank k2)
 end
-(* §2.2 of DYNAMIC_MEMBER_NAMING_PLAN.md: one value answering "what is this
+(* §2.2 of archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md: one value answering "what is this
    entity called" -- not a name plus a separate index plus a separate flag kept
    in step by hand.  See the signature for its relationship to
    Context_Callbacks.entry_name. *)
@@ -662,7 +662,7 @@ val contains_cmd
    ONLY this function (build_entries) is shared by interpret' and
    interpret'.  build_entries itself renders a Member's coll(i) -- and sets
    from_collection in the same match, so the two can never disagree
-   (DYNAMIC_MEMBER_NAMING_PLAN.md §2.2); the Part C (entity_kind_int, name)
+   (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.2); the Part C (entity_kind_int, name)
    uniqueness assert below runs on the live interpret' path. *)
 fun build_entries (context : Context.generic)
     (raw : (Universal_Key.entity * entity_name * Position.T * Universal_Key.universal_key) list)
@@ -751,7 +751,7 @@ fun build_entries (context : Context.generic)
            in
              (* A dynamic collection itself and its members are not locale
                 instances: bypass detection so they never carry provenance.  The
-                constructors ARE the answer (DYNAMIC_MEMBER_NAMING_PLAN.md §2.2):
+                constructors ARE the answer (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.2):
                 a member is Member by construction, the collection entity is
                 Theorem_Collection by construction.  No fact-space query -- a
                 name-space lookup answered this structural question only until
@@ -909,7 +909,7 @@ fun build_entries (context : Context.generic)
       | Universal_Key.Named_Case_Split_Rule _ => registry_constituents uk name
       | _ => []
     (* The entity positions of the whole batch in one go: one absolutize round
-       trip, one walk per source file (ENTITY_POSITION_PLAN.md §5.1). *)
+       trip, one walk per source file (archive/plans/ENTITY_POSITION_PLAN.md §5.1). *)
     val (entity_positions, position_report) = Entity_Position.of_positions (map #3 raw)
   in
     ((raw ~~ (provss ~~ prim_provenance)) ~~ entity_positions |> map
@@ -921,7 +921,7 @@ fun build_entries (context : Context.generic)
                    (case prov of SOME (t, l, _) => (t, l) | NONE => (NONE, NONE))
             else mk_prompt_hint (entity, pos)
           (* The record's name and its from_collection field provably come from
-             ONE match, so they can never disagree (DYNAMIC_MEMBER_NAMING_PLAN.md
+             ONE match, so they can never disagree (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md
              §2.2).  Hand-concatenation, NOT Thm_Name.print: the printer would
              produce the identical string, but routing the invented pair through
              the theorem-name printer would re-dress it as the very thing it is
@@ -933,7 +933,7 @@ fun build_entries (context : Context.generic)
             | Member (c, i) => (c ^ "(" ^ string_of_int i ^ ")", SOME c)
         in
           (entity, disp_name, mk_prop_str (entity, pos),
-           (* NONE = no entity position (ENTITY_POSITION_PLAN.md §10).  Python's
+           (* NONE = no entity position (archive/plans/ENTITY_POSITION_PLAN.md §10).  Python's
               Entry derives its line_number from this, and still speaks -1 for
               "no source line" -- its prompt guard (line_number > 0) and the old
               999999999 that slipped past it are CHECK_OUTDATE_PLAN §5's
@@ -1095,7 +1095,7 @@ fun classify_rule_entries (is_infra_induct_thm : string * thm -> bool)
    (named_theorems + raw add_thms_dynamic collections such as
    derivative_eq_intros) as cached_thm_entry.  A member whose name hint
    resolves in the GLOBAL fact space carries that name (Fixed) and its real
-   position (DYNAMIC_MEMBER_NAMING_PLAN.md §2.4); otherwise it carries
+   position (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.4); otherwise it carries
    name = Member_of_Dynamic (collection full name) and NO position.  The
    Position.T component of the result is the adopted name's declaration
    position (Position.none where nothing was adopted).  Identity is the
@@ -1484,7 +1484,7 @@ fun enumerate_entries (context : Context.generic) =
        why it degrades rather than fails; the position backfill refuses such a
        theory outright, because its universal keys -- being content-addressed --
        still match perfectly while its positions are systematically the wrong
-       occurrence (ENTITY_POSITION_PLAN.md §8.6).  It is a flag on the result and
+       occurrence (archive/plans/ENTITY_POSITION_PLAN.md §8.6).  It is a flag on the result and
        not a ref because these bodies run as parallel Futures under schedule_dag.
        A theory with no theorem names has no tie-break to get wrong. *)
     val degraded_results = (map (K (0, ~1)) file_match_names, not (null file_match_names))
@@ -1607,7 +1607,7 @@ fun enumerate_entries (context : Context.generic) =
        and no longer matters, which is the point.)  The position passed on is
        derived BY CONSTRUCTOR, never by trusting the stamp site: Fixed -> the
        carried Position.T, Member_of_Dynamic -> Position.none (§1 of
-       DYNAMIC_MEMBER_NAMING_PLAN.md declares the absence correct), so a future
+       archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md declares the absence correct), so a future
        edit of the stamp site cannot silently attach a declaration site to an
        invented name. *)
     val member_entries =
@@ -1715,7 +1715,7 @@ fun enumerate_entries (context : Context.generic) =
     (* coll(i) is rendered inside build_entries (from the Member constructor,
        which sets from_collection in the same match); no post-pass. *)
     val (entries, position_report) = build_entries context all_entries_with_pos
-    (* The line assertion (ENTITY_POSITION_PLAN.md §5.2) is a self-check on the
+    (* The line assertion (archive/plans/ENTITY_POSITION_PLAN.md §5.2) is a self-check on the
        byte-column walk, not a drift detector: it must be zero.  Say so here too,
        not only on the backfill path, so a bug shows up on the collection path. *)
     val _ =
@@ -1882,7 +1882,7 @@ fun dry_run' (context : Context.generic) : int =
 (* Theories that are never interpreted: `base_theories`, the kernel and code-generator
    base every HOL theory sits on. They are still TRAVERSED THROUGH -- see collect_cone.
 
-   Infrastructure MARKING never excludes (INFRA_FILTER_REWORK_PLAN.md step 5, D7):
+   Infrastructure MARKING never excludes (archive/plans/INFRA_FILTER_REWORK_PLAN.md step 5, D7):
    excluding a marked theory hid its proof METHODS -- `cooper`, `mir`, `dlo` -- and
    marking gates the ENTITY judgement instead (D17).  Three of these four ARE marked;
    excluding them loses no method (not even `code_simp`) because all four are Main
@@ -2015,7 +2015,7 @@ fun interpret_cone (driver : string) (force : bool) (cone : theory list) : usage
       (schedule_dag "Semantic_Store.interpret" body cone) (zero_usage, zero_usage)
   end
 
-(* --- the position backfill (ENTITY_POSITION_PLAN.md §8) --- *)
+(* --- the position backfill (archive/plans/ENTITY_POSITION_PLAN.md §8) --- *)
 
 type backfill_report =
   {theories: int, skipped: int, refused: int, hit_shortfall: int,
@@ -2088,7 +2088,7 @@ fun backfill_theory (thy : theory) : backfill_report =
       if tie_break_degraded then
         (warning ("backfill_positions: refusing " ^ theory_longname ^
                   " -- check_theorem_name_in_file degraded, so the source-order " ^
-                  "tie-break picked the wrong occurrence (ENTITY_POSITION_PLAN.md §8.6)");
+                  "tie-break picked the wrong occurrence (archive/plans/ENTITY_POSITION_PLAN.md §8.6)");
          report (0, 1, 0, 0, 0))
       else if line_mismatch > 0 then
         (warning ("backfill_positions: refusing " ^ theory_longname ^ " -- " ^
@@ -2114,7 +2114,7 @@ fun backfill_theory (thy : theory) : backfill_report =
               (warning ("backfill_positions: " ^ theory_longname ^ " is finished but " ^
                         "NONE of its " ^ string_of_int (length entries) ^ " enumerated " ^
                         "entities has a record -- the recomputed keys do not match the " ^
-                        "collected ones (ENTITY_POSITION_PLAN.md §8.5)");
+                        "collected ones (archive/plans/ENTITY_POSITION_PLAN.md §8.5)");
                1)
             else 0
           val _ = writeln (String.concat
@@ -2155,7 +2155,7 @@ fun backfill_cone (roots : theory list) : backfill_report =
       else error ("backfill_positions stopped: " ^ string_of_int (#refused total) ^
                   " theories refused, " ^ string_of_int (#line_mismatch total) ^
                   " line mismatches, " ^ string_of_int (#hit_shortfall total) ^
-                  " with no hits at all (ENTITY_POSITION_PLAN.md §8.5) -- " ^
+                  " with no hits at all (archive/plans/ENTITY_POSITION_PLAN.md §8.5) -- " ^
                   string_of_backfill_report total)
     val _ = report_constituents_totals ()
   in total end

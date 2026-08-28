@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Give dynamic-collection-member records their real fact name and position
-(ENTITY_POSITION_PLAN.md §10 rule 1; the investigation is recorded there).
+(archive/plans/ENTITY_POSITION_PLAN.md §10 rule 1; the investigation is recorded there).
 
 THE PROBLEM
 -----------
@@ -57,7 +57,7 @@ dump.  Whether those theorems have a real name at all cannot be settled from our
 data -- it needs `Thm.get_name_hint` per member, in Isabelle.  They keep
 `coll(i)` and `None`.
 
-One-off; delete when the follow-up decisions in ENTITY_POSITION_PLAN.md are made.
+One-off; delete when the follow-up decisions in archive/plans/ENTITY_POSITION_PLAN.md are made.
 """
 
 import argparse
@@ -258,7 +258,7 @@ def main() -> None:
                 vals[F_POS] = tgt["pos"]
                 # A renamed record carries a real name now, so its
                 # from_collection must be cleared in the SAME put
-                # (DYNAMIC_MEMBER_NAMING_PLAN.md §3: the one pass that renames
+                # (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §3: the one pass that renames
                 # must not leave the invented-name flag standing).
                 vals[F_FROM_COLLECTION] = None
                 st.put(key, pack_fields(vals))

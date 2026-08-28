@@ -2,7 +2,7 @@
     Author:     Qiyuan Xu
 
 Entity positions -- (portable symbolic file path, line, byte column) for the
-place an Isabelle entity is declared.  See ENTITY_POSITION_PLAN.md §5.
+place an Isabelle entity is declared.  See archive/plans/ENTITY_POSITION_PLAN.md §5.
 *)
 
 signature ENTITY_POSITION = sig

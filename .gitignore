@@ -28,3 +28,6 @@ Isabelle_Semantic_Embedding/_vecgather*.so
 Isabelle_Semantic_Embedding/_vecgather*.pyd
 
 *.proof-store.lock
+
+# Archived measurement data (TSV/JSON dumps from the infra-filter and padding runs).
+archive/data/

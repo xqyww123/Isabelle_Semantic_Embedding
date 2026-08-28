@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 r"""Give every entity record its `from_collection` field, once
-(DYNAMIC_MEMBER_NAMING_PLAN.md §3; the criterion is §2.2's).
+(archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §3; the criterion is §2.2's).
 
 WHAT IS WRITTEN
 ---------------

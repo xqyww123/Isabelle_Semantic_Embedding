@@ -23,7 +23,7 @@ from .semantics import (
     _clean_wip,
     # RPC handlers register as an import side effect of @isabelle_remote_procedure,
     # so a handler missing from this list never registers and ML fails at CALL time
-    # with an unknown-procedure error (ENTITY_POSITION_PLAN.md §15.6(e)).
+    # with an unknown-procedure error (archive/plans/ENTITY_POSITION_PLAN.md §15.6(e)).
     _backfill_positions,
 )
 from . import semantics

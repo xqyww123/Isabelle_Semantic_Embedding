@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Manage the Isabelle semantic interpretation database.
 
-The database is LAYERED (SEMANTIC_DB_LAYERED_PLAN.md): a read-only system DB
+The database is LAYERED (archive/plans/SEMANTIC_DB_LAYERED_PLAN.md): a read-only system DB
 (the `isabelle-semantic-data` conda package, or a copy installed by `pull`)
 under a writable user DB; deletions are tombstones in the user layer.
 
@@ -1205,7 +1205,7 @@ async def stream_app_messages(c, sink=None) -> bool:
     `sink`, if given, receives every decoded message as well.  The position
     backfill keeps the stream on disk: its per-theory lines are the only way to
     attribute leftover records to theories afterwards, since a record cannot name
-    the theory that produced it (ENTITY_POSITION_PLAN.md §8.4)."""
+    the theory that produced it (archive/plans/ENTITY_POSITION_PLAN.md §8.4)."""
     def _emit(text: str, err: bool = False) -> None:
         print(text, file=sys.stderr if err else sys.stdout, flush=True)
         if sink is not None:

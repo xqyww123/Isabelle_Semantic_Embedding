@@ -242,7 +242,7 @@ class Entry(NamedTuple):
     name: str            # fully qualified name (Unicode)
     prop_str: str        # printed proposition / type signature (Unicode); stored as expr
     # where the entity is declared, as (portable symbolic file path, line, byte
-    # column); None when it has none (ENTITY_POSITION_PLAN.md §10).  Stored in the
+    # column); None when it has none (archive/plans/ENTITY_POSITION_PLAN.md §10).  Stored in the
     # semantic DB record; `line_number` below reads its line.
     position: "tuple[str, int, int] | None"
     universal_key: universal_key
@@ -258,7 +258,7 @@ class Entry(NamedTuple):
     theory_constituents: "list[tuple[str, bytes]] | None" = None
     # full name of the dynamic collection the entry's name was invented from;
     # None when the name was adopted from the producer
-    # (DYNAMIC_MEMBER_NAMING_PLAN.md §2.2).  Stored in the semantic DB record.
+    # (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.2).  Stored in the semantic DB record.
     from_collection: "str | None" = None
     # --- incremental invalidation (CHECK_OUTDATE_PLAN.md §3.2, step 9) ---
     # 16-byte semantic digest of the entity's own content; None for
@@ -398,7 +398,7 @@ class InterpretationTask:
             version=version, interpreted_at=interpreted_at,
             position=entry.position,
             # a fresh record would otherwise DROP the field on every
-            # re-interpretation of a member (DYNAMIC_MEMBER_NAMING_PLAN.md §3)
+            # re-interpretation of a member (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §3)
             from_collection=entry.from_collection)
 
     def historical_cost(self) -> tuple[int, int, int, int, float]:
