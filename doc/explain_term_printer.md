@@ -160,7 +160,7 @@ Following the existing pattern in `semantics.py`:
 Filter out infrastructure constants using the session-based approach from `infra_filter.ML`:
 - `Long_Name.qualifier (Context.theory_long_name thy)` extracts session name
 - Constants from Pure, HOL, Main sessions are filtered
-- `Infra_Filter.gen_infra_filters` provides `is_infra_const` for fine-grained filtering
+- `Infra_Filter.gen_infra_filters` provides `is_uninterpreted_const` for fine-grained filtering
 
 ### Tool name
 Recommended: **`explain_term`**

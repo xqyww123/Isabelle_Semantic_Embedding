@@ -56,7 +56,7 @@ let
         val cs = filter (String.isPrefix pfx) all_const_names
     in if null cs then NONE else SOME (T, cs) end) uncovered
 
-  val {is_infra_const, ...} = Infra_Filter.gen_infra_filters context
+  val {is_uninterpreted_const, ...} = Infra_Filter.gen_infra_filters context
   val const_space = Consts.space_of consts
 
   val _ = writeln ("=== Types without ctr_sugar/bnf/record but with constants ("
@@ -66,7 +66,7 @@ let
     map (fn c =>
       let val concealed = Name_Space.is_concealed const_space c
           val hidden = Long_Name.is_hidden (Name_Space.intern const_space c)
-          val infra = is_infra_const c
+          val infra = is_uninterpreted_const c
           val flags = String.concat [
             if concealed then "C" else " ",
             if hidden then "H" else " ",
@@ -128,7 +128,7 @@ primcorec zeroes :: "nat stream" where
 ML \<open>
 let
   val context = Context.Proof \<^context>
-  val {is_infra_const, is_infra_thm, ...} = Infra_Filter.gen_infra_filters context
+  val {is_uninterpreted_const, is_infra_thm, ...} = Infra_Filter.gen_infra_filters context
   val facts = Proof_Context.facts_of \<^context>
   val all_facts = Facts.dest_static false [] facts
   val my_facts = filter (fn (name, _) => String.isPrefix "Infra_Test." name) all_facts
@@ -180,7 +180,7 @@ quotient_type my_rat = "int \<times> int" / partial: my_ratrel
 ML \<open>
 let
   val context = Context.Proof \<^context>
-  val {is_infra_const, ...} = Infra_Filter.gen_infra_filters context
+  val {is_uninterpreted_const, ...} = Infra_Filter.gen_infra_filters context
   val consts = Proof_Context.consts_of \<^context>
   val all_const_names = #constants (Consts.dest consts) |> map fst
   val my_consts = sort string_ord (filter (fn n =>
@@ -195,7 +195,7 @@ let
     orelse String.isPrefix "Infra_Test.rep_rat" n) all_const_names)
   val _ = writeln "=== Constants (quotient_type) ==="
   val _ = map (fn name =>
-    writeln (String.concat ["  ", if is_infra_const name then "  " else "* ", name])) my_consts
+    writeln (String.concat ["  ", if is_uninterpreted_const name then "  " else "* ", name])) my_consts
 in () end
 \<close>
 

@@ -1298,10 +1298,10 @@ fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_
         "Extended_Nat.enat",
         "Extended_Real.ereal.ereal",
         "Extended_Nonnegative_Real.ennreal"]
-      val {is_infra_const, is_infra_thm, is_infra_induct_thm,
+      val {is_uninterpreted_const, is_infra_thm, is_infra_induct_thm,
            is_infra_type, is_infra_class, is_infra_locale,
            is_infra_dynamic_fact, is_infra_method,
-           is_declared_infra_thm, has_infra_decls, ...} =
+           is_declared_infra_thm, ...} =
         Infra_Filter.gen_infra_filters init_context
       val {entries = cached_entries0, intro = cached_intro0, elim = cached_elim0,
            induct = cached_induct0, case_ = cached_case0, facts = cached_facts} =
@@ -1310,17 +1310,19 @@ fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_
          CACHED pass (context.ML make_thm_like_callback) does NOT re-apply the infra
          filter — it trusts entries were filtered at build time — so a declaration made
          after a fact was cached would otherwise still surface.  is_declared_infra_thm
-         adds exactly the decl-driven drops (name match + const-mention cascade).  Gated
-         on has_infra_decls, so without any `declare` this is a no-op and runs are
-         byte-identical.  The delta/dynamic-member lists below are recomputed live this
-         run through is_infra_thm/is_infra_induct_thm, which already see declarations. *)
+         adds exactly the decl-driven drops (name match + cascade of declared infra
+         constants) and is NONE when no declaration can fire, so without any `declare`
+         this is a no-op and runs are byte-identical.  The delta/dynamic-member lists
+         below are recomputed live this run through is_infra_thm/is_infra_induct_thm,
+         which already see declarations. *)
       fun fact_base_name (Context_Callbacks.Fixed (nm, _)) = nm
         | fact_base_name (Context_Callbacks.Member_of_Dynamic coll) = coll
       fun drop_declared es =
-        if has_infra_decls
-        then filter (fn (e : Context_Callbacks.cached_thm_entry) =>
-               not (is_declared_infra_thm (fact_base_name (#name e), #thm e))) es
-        else es
+        (case is_declared_infra_thm of
+           SOME declared =>
+             filter (fn (e : Context_Callbacks.cached_thm_entry) =>
+               not (declared (fact_base_name (#name e), #thm e))) es
+         | NONE => es)
       val cached_entries = drop_declared cached_entries0
       val cached_intro = drop_declared cached_intro0
       val cached_elim = drop_declared cached_elim0
@@ -1400,7 +1402,7 @@ fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_
       val case_static   = cached_case   @ delta_case
       fun rule_cache static mems = SOME (static @ dedup_against static mems, current_facts)
   in {
-    constants = Context_Callbacks.make_constants_callback (SOME (not o is_infra_const)) ctxt_unpack,
+    constants = Context_Callbacks.make_constants_callback (SOME (not o is_uninterpreted_const)) ctxt_unpack,
     theorems = Context_Callbacks.make_theorems_callback (SOME (not o is_infra_thm)) thm_cache ctxt_unpack,
     types = Context_Callbacks.make_types_callback (SOME (not o is_infra_type)) ctxt_unpack,
     classes = Context_Callbacks.make_classes_callback (SOME (not o is_infra_class)) ctxt_unpack,
@@ -1454,13 +1456,13 @@ fun enumerate_entries (context : Context.generic) =
     val thy_name = Context.theory_long_name thy
     val thy_file_path = Theory_Structure.get_theory_file_path thy
     (* 2. Extract constants and theorems, filtering infrastructure *)
-    val {is_infra_const, is_infra_thm, is_infra_induct_thm, is_infra_type, is_infra_class,
+    val {is_uninterpreted_const, is_infra_thm, is_infra_induct_thm, is_infra_type, is_infra_class,
          is_infra_locale, is_infra_dynamic_fact, is_infra_method, ...} =
       Infra_Filter.gen_infra_filters context
 
     val const_entries = Theory_Structure.get_constants_with_positions context
       |> map_filter (fn (name, pos) =>
-          if is_infra_const name then NONE
+          if is_uninterpreted_const name then NONE
           else let val entity = Universal_Key.Constant name
                in SOME (entity, name, pos,
                     Universal_Key.key_of NONE context entity) end)

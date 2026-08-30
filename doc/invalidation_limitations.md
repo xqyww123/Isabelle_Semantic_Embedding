@@ -224,7 +224,9 @@ ML error: Value or constructor (get_methods) has not been declared in structure 
 `deps` 边的目标若在库中没有记录——Main 实测 28% 的 dep 目标是被 Infra_Filter
 排除的基础设施实体（`BNF_Def.Grp`、`HOL.equal_class` 等）——则递归 eff 求值对
 这条边取 **0**（CHECK_OUTDATE_PLAN §4.4 的显式设计决定）：infra 实体永远不被
-解释，也就永远没有 version 可供抬升，这条边对失效**永远沉默**。
+解释，也就永远没有 version 可供抬升，这条边对失效**永远沉默**。被判定为
+uninterpreted 的常量（`[[uninterpreted_constant …]]` 或 `Performant_Isabelle_HOL.SSymb`
+的 theory 标记）同样没有记录，指向它们的边同属此类。
 
 **后果**：改动一个 infra 实体的定义不会经 version 走廊失效它的依赖者。接受理由
 与缺陷 1/2 相同——本机制检测英文解释是否过时，不算逻辑闭包；infra 实体的语义

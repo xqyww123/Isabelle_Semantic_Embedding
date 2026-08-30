@@ -24,11 +24,11 @@ val main_thy = Thy_Info.get_theory "Main";
 fun entities_of thy =
   let
     val context = Context.Theory thy
-    val {is_infra_const, is_infra_thm, ...} = Infra_Filter.gen_infra_filters context
+    val {is_uninterpreted_const, is_infra_thm, ...} = Infra_Filter.gen_infra_filters context
     val consts =
       Theory_Structure.get_constants_with_positions context
       |> map_filter (fn (n, _) =>
-           if is_infra_const n then NONE else SOME (Universal_Key.Constant n))
+           if is_uninterpreted_const n then NONE else SOME (Universal_Key.Constant n))
     val thms =
       Theory_Structure.get_theorems_with_positions context
       |> filter (fn (name, _, _, thm, _) => not (is_infra_thm (name, thm)))

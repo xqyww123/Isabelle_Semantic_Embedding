@@ -85,7 +85,7 @@ fun extract_nontrivial_constants (ctxt : Proof.context) (checked_term : term)
     val thy = Proof_Context.theory_of ctxt
     val context = Context.Proof ctxt
     val const_space = Consts.space_of (Proof_Context.consts_of ctxt)
-    val {is_infra_const, ...} = Infra_Filter.gen_infra_filters context
+    val {is_uninterpreted_const, ...} = Infra_Filter.gen_infra_filters context
 
     val main_thy_ancestors =
       let val main_thy = Thy_Info.get_theory "Main"
@@ -103,7 +103,7 @@ fun extract_nontrivial_constants (ctxt : Proof.context) (checked_term : term)
     val consts = Term.fold_aterms (fn Const(name, _) =>
         (fn acc =>
           if Strhashtab.defined seen name then acc
-          else if is_infra_const name then acc
+          else if is_uninterpreted_const name then acc
           else if is_base_const name then acc
           else
             let val _ = Strhashtab.update seen (name, ())

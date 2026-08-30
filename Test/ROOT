@@ -11,8 +11,11 @@
        isabelle build -d . -d Test Semantic_Embedding_Test *)
 
 session Semantic_Embedding_Test = Semantic_Embedding +
+  sessions
+    Performant_Isabelle_HOL
   theories
     Infra_Decl_Test
+    SSymb_Infra_Test
     Interpretation_Driver_Config_Test
     Command_At_Position_Test
     Entity_Position_Test

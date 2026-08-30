@@ -187,11 +187,14 @@ The bundled [template](Isabelle_Semantic_Embedding/embedding_config_template.yam
 Some entities are internal infrastructure: they are not meant to be used outside their own formalization, and therefore should not surface in search results. Built-in heuristics already exclude most of them (hidden names, datatype/record internals, …); to mark more by hand:
 
 ```isabelle
-declare [[infra_constant Foo.bar]]      (* a constant; cascades to theorems mentioning it *)
-declare [[infra_type Foo.t]]            (* a type *)
-declare some_lemma[infra_thm]           (* a theorem *)
-declare [[infra_constant del Foo.bar]]  (* del undoes any of the above *)
+declare [[infra_constant Foo.bar]]          (* a constant; cascades to theorems mentioning it *)
+declare [[uninterpreted_constant Foo.bar]]  (* a constant; theorems mentioning it are unaffected *)
+declare [[infra_type Foo.t]]                (* a type *)
+declare some_lemma[infra_thm]               (* a theorem *)
+declare [[infra_constant del Foo.bar]]      (* del undoes any of the above *)
 ```
+
+`infra_constant` = `uninterpreted_constant` plus the cascade to theorems mentioning the constant. Use `uninterpreted_constant` for a constant that has nothing to interpret but appears in ordinary theorems (a numeral-like encoding, say). A constant has one verdict: a later declaration replaces an earlier one, and `del` on either attribute clears it.
 
 ### 7.3 Reranker
 

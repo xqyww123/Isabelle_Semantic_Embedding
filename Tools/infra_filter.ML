@@ -1,12 +1,18 @@
 signature INFRA_FILTER = sig
   val smart_size_of_term : term -> int
-  (* True if the theory is marked as infrastructure: a member of the enumerated
-     set of theory long names (infra_theory_long_names below).  Whole-theory
+  (*The judgement on a constant.  The string names the rule that decided, for
+    diagnostics.  Uninterpreted and Infra both deny the constant a record and an
+    interpretation; only Infra cascades, i.e. makes every theorem mentioning the
+    constant infrastructure.*)
+  datatype const_verdict = Kept | Uninterpreted of string | Infra of string
+  val why_of_verdict : const_verdict -> string option
+  (* True if the theory is marked, with either verdict: a member of the
+     enumerated table of theory long names (marked_theories below).  Whole-theory
      predicate for callers that want to exclude a theory outright (e.g. the
      AoA-learning target scope), complementing the per-entity filters. *)
-  val is_infra_theory : theory -> bool
+  val is_marked_theory : theory -> bool
   val gen_infra_filters : Context.generic ->
-    {is_infra_const: string -> bool,
+    {is_uninterpreted_const: string -> bool,
      is_infra_thm: string * thm -> bool,
      is_infra_induct_thm: string * thm -> bool,
      is_infra_type: string -> bool,
@@ -14,31 +20,47 @@ signature INFRA_FILTER = sig
      is_infra_locale: string -> bool,
      is_infra_dynamic_fact: string -> bool,
      is_infra_method: string -> bool,
-     is_declared_infra_thm: string * thm -> bool,
-     (* Which rule rejected this entity, or NONE if it was kept.  `is_infra_*`
-        is `is_some` of these, so there is one disjunction, not two that must
-        be kept in agreement.  A cascade rejection reads "const:<name>" -- ask
+     (* The declaration-driven theorem drops only (see the definition); NONE
+        when no declaration can make it fire, so callers gate on its presence. *)
+     is_declared_infra_thm: (string * thm -> bool) option,
+     (* Which rule decided.  `is_uninterpreted_const` and the cascade are the two
+        projections of the constant verdict; `is_infra_thm` is `is_some` of the
+        theorem rule.  A cascade rejection reads "const:<name>" -- ask
         `infra_const_rule` again to learn why that constant is infrastructure. *)
-     infra_const_rule: string -> typ option -> string option,
-     infra_thm_rule: string * thm -> string option,
-     has_infra_decls: bool}
+     infra_const_rule: string -> const_verdict,
+     infra_thm_rule: string * thm -> string option}
 end
 
 structure Infra_Filter : INFRA_FILTER = struct
 
 val smart_size_of_term = smart_size_of_term (* from Performant_Isabelle_ML *)
 
-(* Theories whose own entities are infrastructure: no records, not retrievable,
-   and their constants cascade (any theorem whose statement mentions one is
-   dropped too, via is_infra_thm).  The marking is an ENUMERATED set of theory
-   LONG names:
+datatype const_verdict = Kept | Uninterpreted of string | Infra of string
+
+fun why_of_verdict Kept = NONE
+  | why_of_verdict (Uninterpreted why) = SOME why
+  | why_of_verdict (Infra why) = SOME why
+
+fun name_of_verdict Kept = "kept"
+  | name_of_verdict (Uninterpreted _) = "uninterpreted"
+  | name_of_verdict (Infra _) = "infrastructure"
+
+(* Theories whose own entities get no record and are not retrievable, whatever
+   their kind.  The table's value is the verdict on the theory's CONSTANTS:
+   Infra makes them cascade (any theorem whose statement mentions one is
+   dropped too, via is_infra_thm); Uninterpreted leaves downstream theorems
+   untouched -- and, since the marking is consulted before the built-in rules,
+   it also switches off any cascade those rules would have imposed on the
+   theory's hidden or lifting-generated constants (SSymb's Abs_symbol moved from
+   Infra "hidden" to Uninterpreted; nothing outside SSymb mentions it).
+   The marking is an ENUMERATED table of theory LONG names:
    - long names, because a base name is not an identity — the AFP has its own
      `Cooper` and `Approximation`, both ordinary mathematics;
    - enumeration rather than "session default plus exceptions", because a
      theory added upstream then defaults to ordinary mathematics: machinery
      shows up as visible store noise, which is repairable, whereas a session
      default deletes mathematics silently (the Algebra_Aux incident).
-   Composition (40 names):
+   Composition (41 names).  Infra (40):
    - 15 marked HOL-Decision_Procs theories — reflected-syntax machinery behind
      decision procedures.  The session's ordinary-mathematics theories
      (Algebra_Aux, Polynomial_List, DP_Library, Approximation,
@@ -52,8 +74,9 @@ val smart_size_of_term = smart_size_of_term (* from Performant_Isabelle_ML *)
    - `Minilang.Minilang`: internal proof-language plumbing (TAG/GOAL/PROTECT/
      ISO_* constants + their _def lemmas); `hide_const (open)` only hides the
      short names, the fully-qualified names still leak.
-   - `HOL.Code_Evaluation`: evaluation-oracle plumbing. *)
-val infra_theory_long_names = Symtab.make_set [
+   - `HOL.Code_Evaluation`: evaluation-oracle plumbing.
+   Uninterpreted (1): see uninterpreted_theories below. *)
+val infra_theories = [
   (* HOL-Decision_Procs, marked (15) *)
   "HOL-Decision_Procs.Commutative_Ring",
   "HOL-Decision_Procs.Commutative_Ring_Complete",
@@ -98,33 +121,57 @@ val infra_theory_long_names = Symtab.make_set [
   "Minilang.Minilang",
   "HOL.Code_Evaluation"]
 
-fun is_infra_theory thy =
-  Symtab.defined infra_theory_long_names (Context.theory_long_name thy)
+(* `Performant_Isabelle_HOL.SSymb`: runtime symbols.  Its constants (the digits
+   Z, A..F, mk_symbol) are process-local numerals with nothing to interpret, and
+   its own lemmas are statements about those numerals; but a downstream theorem
+   mentioning a symbol (phi-system's aggregate lemmas over named fields) is
+   ordinary mathematics and must not be dropped. *)
+val uninterpreted_theories = ["Performant_Isabelle_HOL.SSymb"]
 
-(* User-declared infrastructure entities (via `declare [[infra_constant c ...]]`,
-   `declare [[infra_type T ...]]`, `declare some_lemma[infra_thm]`), consulted by
-   `gen_infra_filters` below.  Constants and types are name sets (single global entities).
+val marked_theories =
+  Symtab.make
+    (map (rpair (Infra "infra_theory")) infra_theories @
+     map (rpair (Uninterpreted "uninterpreted_theory")) uninterpreted_theories)
+
+fun is_marked_theory thy =
+  Symtab.defined marked_theories (Context.theory_long_name thy)
+
+(* User-declared entities (via `declare [[infra_constant c ...]]`,
+   `declare [[uninterpreted_constant c ...]]`, `declare [[infra_type T ...]]`,
+   `declare some_lemma[infra_thm]`), consulted by `gen_infra_filters` below.
+   Constants map to their declared verdict (never Kept: no attribute produces it);
+   types are a name set.  A later declaration of the same constant replaces the
+   earlier one, as `simp`/`simp del` do; on theory merge a conflict keeps the
+   first parent's verdict and warns.
    Theorems are stored as the *thm itself* in an `iNet` discrimination net keyed by
    proposition (NOT by name): a fact attribute receives the morphism-transformed thm at
    each locale interpretation, so storing the thm records the per-interpretation EXPORTED
    theorem `I.foo` — which a name (the stale `local.foo` hint, never re-stamped by the
    morphism) cannot.  Matching is by proposition (`Thm.eq_thm_prop`), exactly as Isabelle's
-   own `named_theorems`.  A declared infra constant behaves identically to a built-in infra
-   constant (e.g. `Minilang.*`): filtered AND cascading to every theorem whose statement
-   mentions it (via `is_internal_constant` feeding `is_infra_thm`). *)
+   own `named_theorems`.  A constant declared `infra_constant` behaves identically to a
+   built-in infra constant (e.g. `Minilang.*`): filtered AND cascading to every theorem
+   whose statement mentions it (via `cascades_const` feeding `is_infra_thm`). *)
+fun merge_verdict name (v1, v2) =
+  if v1 = v2 then raise Symtab.SAME
+  else (warning ("Constant " ^ quote name ^ " is declared " ^ name_of_verdict v1 ^
+                 " in one parent theory and " ^ name_of_verdict v2 ^
+                 " in another; keeping " ^ name_of_verdict v1 ^ ", from the first parent");
+        v1)
+
 structure Infra_Decl = Generic_Data (
-  type T = Symtab.set * thm iNet.net * Symtab.set   (* consts, thms, types *)
+  type T = const_verdict Symtab.table * thm iNet.net * Symtab.set   (* consts, thms, types *)
   val empty = (Symtab.empty, iNet.empty, Symtab.empty)
   fun merge ((c1,t1,y1),(c2,t2,y2)) =
-    (Symtab.merge (K true) (c1,c2),
+    (Symtab.join merge_verdict (c1,c2),
      iNet.merge Thm.eq_thm_prop (t1,t2),
      Symtab.merge (K true) (y1,y2))
 )
 
-(* `infra_constant`/`infra_type` are no-fact declarations (`declare [[infra_constant
-   c ...]]`): constants/types cannot carry attributes, and `Args.const`/`Args.type_name`
-   resolve the GLOBAL entity at parse time, closing over the interned name — immune to
-   locale morphism replay.  `infra_thm`, by contrast, is an ordinary fact attribute
+(* `infra_constant`/`uninterpreted_constant`/`infra_type` are no-fact declarations
+   (`declare [[infra_constant c ...]]`): constants/types cannot carry attributes, and
+   `Args.const`/`Args.type_name` resolve the GLOBAL entity at parse time, closing over
+   the interned name — immune to locale morphism replay.  `infra_thm`, by contrast, is
+   an ordinary fact attribute
    (`declare some_lemma[infra_thm]`): the locale morphism transforms the *thm* (not its
    name tag), so storing the thm itself records the per-interpretation exported theorem and
    is locale-safe.  The declaration is always honoured; since matching is by proposition we
@@ -150,12 +197,21 @@ fun is_trivial_prop t =
    rather than add — mirroring `simp`/`simp del`. *)
 val del_flag = Scan.lift (Scan.optional (Args.del >> K true) false)
 
+(* One parser for both constant attributes; `del` clears the verdict whichever
+   attribute set it. *)
+fun const_decl_attr verdict =
+  (del_flag -- Scan.repeat1 (Args.const {proper = true, strict = false})) >>
+    (fn (del, ns) => infra_decl_attr (fn (c,t,y) =>
+       (fold (if del then Symtab.delete_safe else fn n => Symtab.update (n, verdict)) ns c,
+        t, y)))
+
 val _ = Theory.setup (
-  Attrib.setup \<^binding>\<open>infra_constant\<close>
-    ((del_flag -- Scan.repeat1 (Args.const {proper = true, strict = false})) >>
-      (fn (del, ns) => infra_decl_attr (fn (c,t,y) =>
-         (fold (if del then Symtab.remove_set else Symtab.insert_set) ns c, t, y))))
-    "declare (or, with `del`, undeclare) constants as semantic-retrieval infrastructure" #>
+  Attrib.setup \<^binding>\<open>infra_constant\<close> (const_decl_attr (Infra "declared"))
+    "declare (or, with `del`, undeclare) constants as semantic-retrieval infrastructure: \
+    \no record, and every theorem mentioning one is infrastructure too" #>
+  Attrib.setup \<^binding>\<open>uninterpreted_constant\<close> (const_decl_attr (Uninterpreted "declared"))
+    "declare (or, with `del`, undeclare) constants as not worth a semantic record; \
+    \theorems mentioning them are unaffected" #>
   Attrib.setup \<^binding>\<open>infra_type\<close>
     ((del_flag -- Scan.repeat1 (Args.type_name {proper = true, strict = false})) >>
       (fn (del, ns) => infra_decl_attr (fn (c,t,y) =>
@@ -181,24 +237,14 @@ val _ = Theory.setup (
        end)))
     "declare (or, with `del`, undeclare) a theorem as semantic-retrieval infrastructure")
 
-fun gen_infra_filters (context : Context.generic)
-    : {is_infra_const: string -> bool,
-       is_infra_thm: string * thm -> bool,
-       is_infra_induct_thm: string * thm -> bool,
-       is_infra_type: string -> bool, is_infra_class: string -> bool,
-       is_infra_locale: string -> bool,
-       is_infra_dynamic_fact: string -> bool, is_infra_method: string -> bool,
-       is_declared_infra_thm: string * thm -> bool,
-       infra_const_rule: string -> typ option -> string option,
-       infra_thm_rule: string * thm -> string option,
-       has_infra_decls: bool} =
+fun gen_infra_filters (context : Context.generic) =
   let
-    (* User-declared infra entities (see `Infra_Decl` above). *)
+    (* User-declared entities (see `Infra_Decl` above). *)
     val (decl_consts, decl_thms, decl_types) = Infra_Decl.get context
     val has_thm_decls = not (iNet.is_empty decl_thms)
-    val has_infra_decls =
-      not (Symtab.is_empty decl_consts) orelse has_thm_decls
-      orelse not (Symtab.is_empty decl_types)
+    fun is_declared_infra_const name =
+      (case Symtab.lookup decl_consts name of SOME (Infra _) => true | _ => false)
+    val has_infra_const_decls = Symtab.exists (fn (_, Infra _) => true | _ => false) decl_consts
     (* membership by proposition: structural candidates from the net, then exact aconv.
        Short-circuits to zero work (no full_prop_of / match) when nothing is declared. *)
     fun decl_infra_thm thm =
@@ -218,10 +264,11 @@ fun gen_infra_filters (context : Context.generic)
        entry rather than the spelling of the name: instantiation-generated
        names are qualified by type, not by declaring theory (e.g.
        Set.typerep_set_inst.typerep_set is declared in HOL.List). *)
-    fun is_from_infra_space space name =
+    fun theory_marking_of space name =
       (case try (Name_Space.theory_name {long = true} space) name of
-         SOME t => Symtab.defined infra_theory_long_names t
-       | NONE => false)
+         SOME t => Symtab.lookup marked_theories t
+       | NONE => NONE)
+    fun is_from_marked_theory space name = is_some (theory_marking_of space name)
     val all_type_names = Name_Space.get_names type_space
     val type_names = all_type_names
       |> filter (fn name =>
@@ -394,7 +441,7 @@ fun gen_infra_filters (context : Context.generic)
        constant itself.  These are name tests, not theory identities: rel_fun,
        bi_unique &c. are cited by thousands of transfer_rule lemmas yet are
        plumbing — kept rejected by design (ruled 08-24).  Theory-identity
-       marking lives in infra_theory_long_names instead. *)
+       marking lives in marked_theories instead. *)
     val internal_prefixes = ["Lifting.", "BNF_Def.", "Transfer.",
           "HOL.equal", "ATP.", "Code_Evaluation."]
 
@@ -446,18 +493,16 @@ fun gen_infra_filters (context : Context.generic)
             | go ((why, f) :: rest) = if f () then SOME why else go rest
       in go tests end
 
-    val infra_const_cache : string option Strhashtab.table = Strhashtab.empty 4096
-    (* The typ option argument is no longer consulted: every type-dependent rule
-       reads the declared type via Consts.the_constraint itself, so the
-       name-keyed cache cannot diverge across call sites that pass different
-       types.  The argument stays for the callers' signature. *)
-    fun infra_const_rule name (_ : typ option) =
+    val infra_const_cache : const_verdict Strhashtab.table = Strhashtab.empty 4096
+    (* Keyed by name only: every type-dependent rule reads the declared type via
+       Consts.the_constraint itself. *)
+    fun infra_const_rule name =
       case Strhashtab.lookup infra_const_cache name of
         SOME result => result
       | NONE =>
           let val result =
             (* explicit declaration takes precedence over `preserved_set` *)
-            if Symtab.defined decl_consts name then SOME "declared"
+            case Symtab.lookup decl_consts name of SOME verdict => verdict | NONE =>
             (* The theory marking beats the veto too (owner ruling 2026-08-25,
                superseding the 08-24 ordering ruling): in a marked theory only
                proof METHODS deserve records, so its datatype machinery dies here
@@ -466,9 +511,10 @@ fun gen_infra_filters (context : Context.generic)
                (the floatarith precedent), and the measured cascade delta of this
                hoist is zero -- 254 constants, none mentioned by any of the
                92,217 kept theorems scanned (archive/data/INFRA_FLIP_SET.tsv). *)
-            else if is_from_infra_space const_space name then SOME "infra_theory"
-            else if Strhashtab.defined preserved_set name then NONE
-            else first_rule
+            case theory_marking_of const_space name of SOME verdict => verdict | NONE =>
+            if Strhashtab.defined preserved_set name then Kept
+            else
+            case first_rule
              [("concealed",       fn () => Name_Space.is_concealed const_space name),
               ("hidden",          fn () => is_hidden const_space name),
               ("internal_prefix", fn () => exists (fn pfx => String.isPrefix pfx name) internal_prefixes),
@@ -508,10 +554,13 @@ fun gen_infra_filters (context : Context.generic)
                                         (fn Type (\<^type_name>\<open>Code_Evaluation.term\<close>, _) => true
                                           | _ => false) T
                           | NONE => false))]
+              of SOME why => Infra why | NONE => Kept
               val _ = Strhashtab.update infra_const_cache (name, result)
           in result end
-    fun is_infra_const' name typ_opt = is_some (infra_const_rule name typ_opt)
-    fun is_infra_const name = is_infra_const' name NONE
+    (* The two projections of the verdict: no record / no interpretation, and
+       the cascade. *)
+    fun is_uninterpreted_const name = (case infra_const_rule name of Kept => false | _ => true)
+    fun cascades_const (name, _ : typ) = (case infra_const_rule name of Infra _ => true | _ => false)
 
     (* --- ADT infrastructure theorem names --- *)
 
@@ -568,14 +617,13 @@ fun gen_infra_filters (context : Context.generic)
       | is_internal_class (Const(\<^const_name>\<open>Pure.conjunction\<close>, _) $ A $ B) =
           is_internal_class A orelse is_internal_class B
       | is_internal_class _ = false
-    fun is_internal_constant (name, T) = is_infra_const' name (SOME T)
 
-    (* The first infrastructure constant a proposition mentions.  Term.exists_Const
+    (* The first cascading constant a proposition mentions.  Term.exists_Const
        answers whether, not which, and the cascade bucket needs which. *)
-    fun first_internal_const thm =
+    fun first_cascading_const thm =
       Term.fold_aterms
         (fn Const c => (fn acc => if is_some acc then acc
-                                  else if is_internal_constant c then SOME (fst c) else NONE)
+                                  else if cascades_const c then SOME (fst c) else NONE)
           | _ => I)
         (Thm.prop_of thm) NONE
 
@@ -589,12 +637,13 @@ fun gen_infra_filters (context : Context.generic)
                  by name, so it is useless to surface. Facts.extern marks such
                  names with a "??." prefix (the exact string the agent would see). *)
               ("shadowed",  fn () => String.isPrefix "??." (Facts.extern ctxt facts full_name)),
-              ("infra_theory",    fn () => is_from_infra_space fact_space full_name),
+              (* the bucket name covers both markings; kept for the archived measurements *)
+              ("infra_theory",    fn () => is_from_marked_theory fact_space full_name),
               ("adt_infra",       fn () => is_ADT_infra_thm full_name),
               ("inductive_infra", fn () => is_inductive_infra_thm full_name)] of
         SOME why => SOME why
       | NONE =>
-          (case first_internal_const thm of
+          (case first_cascading_const thm of
              SOME c => SOME ("const:" ^ c)
            | NONE =>
                first_rule
@@ -677,34 +726,35 @@ fun gen_infra_filters (context : Context.generic)
       orelse String.isPrefix "??." (Facts.extern ctxt facts name)
 
     (* Exactly the decl-driven drops `is_infra_thm` adds — thm membership (by proposition)
-       + const-mention cascade — and nothing else.  Used by the caller
+       + the cascade of DECLARED infra constants — and nothing else.  Used by the caller
        (make_entity_callbacks) to drop declared-infra entries from the persistent thm/rule
-       caches, which the live KNN CACHED pass does not re-filter.  (The name arg is unused
-       now that membership is by proposition; kept for the caller's signature.) *)
-    fun is_declared_infra_thm (_, thm) =
-      decl_infra_thm thm
-      orelse (not (Symtab.is_empty decl_consts)
-              andalso Term.exists_Const
-                        (fn (n,_) => Symtab.defined decl_consts n) (Thm.prop_of thm))
+       caches, which the live KNN CACHED pass does not re-filter.  NONE when no
+       declaration can make it fire, so the caller's gate is this option.  (The name arg
+       is unused now that membership is by proposition; kept for the caller's signature.) *)
+    val is_declared_infra_thm =
+      if has_thm_decls orelse has_infra_const_decls
+      then SOME (fn (_, thm) =>
+             decl_infra_thm thm
+             orelse Term.exists_Const (is_declared_infra_const o fst) (Thm.prop_of thm))
+      else NONE
   in
-    {is_infra_const = is_infra_const, is_infra_thm = is_infra_thm,
+    {is_uninterpreted_const = is_uninterpreted_const, is_infra_thm = is_infra_thm,
      is_infra_induct_thm = is_infra_induct_thm,
      is_infra_type = fn name => Symtab.defined decl_types name
                                 orelse Name_Space.is_concealed type_space name
                                 orelse is_hidden type_space name
-                                orelse is_from_infra_space type_space name,
+                                orelse is_from_marked_theory type_space name,
      is_infra_class = fn name => Name_Space.is_concealed class_space name
                                  orelse is_hidden class_space name
-                                 orelse is_from_infra_space class_space name,
+                                 orelse is_from_marked_theory class_space name,
      is_infra_locale = fn name => Name_Space.is_concealed locale_space name
                                   orelse is_hidden locale_space name
-                                  orelse is_from_infra_space locale_space name,
+                                  orelse is_from_marked_theory locale_space name,
      is_infra_dynamic_fact = is_infra_dynamic_fact,
      is_infra_method = is_infra_method,
      is_declared_infra_thm = is_declared_infra_thm,
      infra_const_rule = infra_const_rule,
-     infra_thm_rule = infra_thm_rule,
-     has_infra_decls = has_infra_decls}
+     infra_thm_rule = infra_thm_rule}
   end
 
 end
