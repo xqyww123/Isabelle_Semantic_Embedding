@@ -577,8 +577,13 @@ fun command_spans_of_file file_path : (string * int * int) list =
     catch exn =>
       (warning ("PIDE_State.command_spans_of_file: " ^ Runtime.exn_message exn); [])\<close>;
 
+(* Only .thy files have Isar command spans.  Entities registered from ML files
+   (Method.setup with \<^binding> in an ML_file) carry a position in the .ML file;
+   cutting that with Outer_Syntax fails on the theory header and would emit one
+   warning per entity, so such files are answered NONE without a parse. *)
 fun command_at_position_wip file off =
-  List.find (fn (_, s, e) => off >= s andalso off < e) (command_spans_of_file file);
+  if not (String.isSuffix ".thy" file) then NONE
+  else List.find (fn (_, s, e) => off >= s andalso off < e) (command_spans_of_file file);
 
 (* Re-cut a degenerate whole-file `command_at_position` result.
 

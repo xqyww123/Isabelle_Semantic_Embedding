@@ -2169,7 +2169,15 @@ fun backfill_cone (roots : theory list) : backfill_report =
    §8); the name survives because interpret_with_parallel's "same set ... by
    construction" comment leans on it. *)
 fun plan_interpretation (force : bool) (roots : theory list) : theory list =
-  filter_out (skip_interpreted force) (collect_cone roots)
+  let
+    val cone = collect_cone roots
+    val n = length cone
+    (* One is_interpreted RPC per cone theory, sequentially: worth announcing. *)
+    val _ = writeln (String.concat [
+      "[Semantic_Embedding] Checking which of the ", string_of_int n,
+      (if n = 1 then " theory" else " theories"),
+      " in the cone are already interpreted..."])
+  in filter_out (skip_interpreted force) cone end
 
 (* Mode 4 / dry run -- see the signature comment.  Level 2 reuses schedule_dag for
    parallelism only: dry bodies neither mark nor skip (level 1 already picked the work
@@ -2181,6 +2189,12 @@ fun plan_interpretation (force : bool) (roots : theory list) : theory list =
 fun dry_run (force : bool) (roots : Context.generic list) : string list * int =
   let
     val work = plan_interpretation force (map Context.theory_of roots)
+    val m = length work
+    val _ =
+      if m = 0 then ()
+      else writeln (String.concat [
+        "[Semantic_Embedding] Enumerating and cache-filtering entities of ",
+        string_of_int m, (if m = 1 then " theory..." else " theories...")])
     val proofs = filter (fn Context.Proof _ => true | _ => false) roots
     (* Theory channel: enumerate once per theory, count via the RPC, and KEEP
        the enumerated uks.  One dry_run is ONE metering (the quote must equal

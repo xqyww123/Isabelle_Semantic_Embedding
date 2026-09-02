@@ -64,6 +64,14 @@ fun run (force : bool) names state =
       if null names then [Toplevel.theory_of state]
       else map (resolve_root ctxt) names
 
+    (* Say so at once: the scan below (plan + enumerate + cache filter over the whole
+       cone) runs for minutes on a large cone, and its first output is its result. *)
+    val _ = writeln (String.concat [
+      "[Semantic_Embedding] Scanning the ancestor cone of ",
+      commas (map Context.theory_long_name roots),
+      " for entities that still need interpretation. ",
+      "This can take a few minutes on a large cone."])
+
     (* Frontend three-way, probed at ENTRY -- before the RPC cold start, so
        batch forms fail in milliseconds and deterministically (the fuse must
        not be green while everything is cached and red after an upstream
@@ -77,9 +85,7 @@ fun run (force : bool) names state =
                 \only under an interactive frontend."
       | _ => ())
 
-    (* Connecting may cold-start the Python RPC host (RPC.ML:421 -> launch_and_retry ->
-       launch_RPC_host), which takes 1-40 s.  Say so, or the command looks hung. *)
-    val _ = writeln "Connecting to the semantic DB (this may launch the RPC host)..."
+    val _ = writeln "[Semantic_Embedding] Connecting to the semantic DB"
     val _ = Remote_Procedure_Calling.load ["Isabelle_Semantic_Embedding"]
 
     (* As in semantic_interpretation_app.ML:42 -- without this the Python side cannot

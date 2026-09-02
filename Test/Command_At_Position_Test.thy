@@ -139,6 +139,17 @@ let
   val _ = @{assert} (is_none miss)
   val _ = writeln ("Test 11b - recut_dump_command miss returns NONE, not the whole theory: OK")
 
+  (* ---- Test 12: a non-.thy file is answered NONE without parsing ----
+     Entities registered from ML (Method.setup with \<^binding> in an ML_file)
+     carry a position in the .ML file.  Cutting that with Outer_Syntax fails on
+     the theory header and used to emit one warning per entity; the WIP path now
+     declines non-.thy files up front.  Use a real, readable .ML file so a
+     regression would actually reach the parser (and its warning). *)
+  val ml_file = File.platform_path (Path.explode "~~/src/Pure/General/position.ML")
+  val _ = @{assert} (String.isSuffix ".ML" ml_file)
+  val _ = @{assert} (is_none (PIDE_State.command_at_position_wip ml_file 100))
+  val _ = writeln ("Test 12 - WIP path returns NONE for a .ML file: OK")
+
 in
   writeln "\n=== All PIDE_State.command_at_position tests passed ==="
 end
