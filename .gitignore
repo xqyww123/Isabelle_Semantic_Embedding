@@ -31,3 +31,8 @@ Isabelle_Semantic_Embedding/_vecgather*.pyd
 
 # Archived measurement data (TSV/JSON dumps from the infra-filter and padding runs).
 archive/data/
+
+# one-off jEdit experiments and a probe moved out of Test/ on 2026-09-08; never tracked again
+ai-artifacts/Document_State_Experiment.thy
+ai-artifacts/Eval_Thy_Experiment.thy
+ai-artifacts/Probe_Command_Header_Test.thy

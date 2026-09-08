@@ -118,8 +118,8 @@ Python `msgpack.packb(None)` → msgpack nil (0xc0) → `unpackOption` reads as 
 
 ## Test Files
 
-- `Test/Document_State_Experiment.thy` — jEdit test: live PIDE context_at_position, locale name resolution, heap theory access
-- `Test/Eval_Thy_Experiment.thy` — jEdit test: re-evaluation cache for heap theories, performance measurement
+- `ai-artifacts/Document_State_Experiment.thy` — jEdit test: live PIDE context_at_position, locale name resolution, heap theory access
+- `ai-artifacts/Eval_Thy_Experiment.thy` — jEdit test: re-evaluation cache for heap theories, performance measurement
 - `Test/test_position_context.py` — REPL-based automated test: type-check, heap theory caching, cached lookup speed
 
 ## Key Experimental Findings
