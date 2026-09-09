@@ -1763,6 +1763,7 @@ def mk_query_by_name_tool(
         # Normalize Unicode glyphs the agent may type (e.g. ≤, ∀, subscripts)
         # into Isabelle's ASCII-escape form (\<le>, \<forall>, ...). Syntax.read_term
         # and the name-space only recognize the escape form; raw UTF-8 fails.
+        typed = name
         name = ascii_of_unicode(name)
 
         # Resolve optional context_at position to (file, symbol_offset)
@@ -1772,10 +1773,13 @@ def mk_query_by_name_tool(
             return f"{ctxt_note}\n\n{s}" if ctxt_note else s
 
         try:
-            if working_names and name in working_names:
+            # `working_names` carries the glyph spelling the agent was shown
+            # (Entry.name); `name` is already the escape form, so compare in
+            # the list's spelling -- per call, the list grows with enrolment.
+            if working_names and pretty_unicode(name) in working_names:
                 log.debug("Entity name %r is in working_names; cannot query entities assigned for interpretation.", name)
                 return _mk_ret(
-                    f"Cannot query \"{name}\" — it is or will be your task to interpret it from the source.",
+                    f"Cannot query \"{typed}\" — it is or will be your task to interpret it from the source.",
                     is_error=True,
                 )
             sem, uk = await query_by_name_raw(connection, tag, name, with_pretty=with_pretty, ctxt=ctxt)

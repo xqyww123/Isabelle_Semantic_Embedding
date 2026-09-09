@@ -11,8 +11,6 @@ Shared fixture and wire helpers come from test_incremental_criteria.py.
 import random
 from typing import NamedTuple
 
-import msgpack
-
 from eff_reference import eff_entity
 from test_incremental_criteria import (isolated_db, _uk, _entry, _put,  # noqa: F401
                                        _dry, DG_A, DG_B)
@@ -118,14 +116,13 @@ def _random_store(rng, n=18):
 
 def _epsilon() -> int:
     from Isabelle_Semantic_Embedding.semantics import Semantic_DB
-    raw = Semantic_DB._get_raw(Semantic_DB.COUNTER_KEY)
-    return msgpack.unpackb(raw) if raw else 1
+    return Semantic_DB.counter_snapshot()
 
 
 def _expected_stale(store, keys, epsilon):
-    """Production's phase-3 verdict per key, computed with the reference: an
+    """The scan's staleness verdict per key, computed with the reference: an
     entry with no record is uncached; otherwise stale iff eff*(E), with E's
-    own version read as ε when it is None or 0 (phase 1), exceeds its
+    own version read as ε when it is None or 0, exceeds its
     interpreted_at.  Digest and deps match the record, so no other criterion
     fires."""
     by_key = {_uk(k): r._replace(deps=tuple(_uk(d) for d in r.deps))

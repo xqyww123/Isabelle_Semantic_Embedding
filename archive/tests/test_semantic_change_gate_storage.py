@@ -2,8 +2,9 @@
 (ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md §6, §10): the 15th record field, the
 one entry point `gate_write` (with its two puts), the raw-put grant it shares
 with `backfill_field`, the read-only `counter_snapshot` -- and, over the same
-isolated store, the step-3 gate of semantic_interpretation.py (`_gate` /
-`_write`), the only way an interpretation reaches the store.
+isolated store, the gate of semantic_interpretation.py (`_gate` / `_write`,
+as it stands before §13 step 5 adds the judge), the only way an
+interpretation reaches the store.
 
 Isolation follows test_layered_db.py: fresh SEMANTIC_DB_DIR per test, every
 singleton environment closed around it.
@@ -322,11 +323,11 @@ def test_counter_snapshot_reads_one_on_an_empty_store_and_writes_nothing(cache):
     assert S.Semantic_DB.counter_snapshot() == v
 
 
-# --- the step-3 gate over the store (semantic_interpretation._gate) ---------
+# --- the gate over the store (semantic_interpretation._gate) ----------------
 #
 # `interpret_file`'s gate is driven directly: an `InterpretationTask` over two
-# entries with the scan's (version, interpreted_at) pair set by hand, its
-# entries answered, `asyncio.run(_run_gate(task, i))`.  No task group: `_gate` is
+# entries whose `rec_cache` says the store holds neither, its entries
+# answered, `asyncio.run(_run_gate(task, i))`.  No task group: `_gate` is
 # the coroutine `start_gate` would create.
 
 import asyncio
@@ -347,10 +348,12 @@ _UNTRACKED = Entry(kind=int(EntityKind.CONSTANT), name="Foo.p", prop_str="p :: i
 
 
 def _gate_task(answers: list[str]) -> InterpretationTask:
-    """Both entries answered (state _GATING, as `on_answer` leaves them), the
-    tracked one with the scan pair (7, 3), the untracked one with none."""
+    """Both entries answered (state _GATING, as `on_answer` leaves them) over
+    a store that holds neither: the scan's `rec_cache` says so."""
     task = InterpretationTask(None, "/tmp/Foo.thy", "Foo", WIP_THY + b"\x00" * 16,
-                              [_TRACKED, _UNTRACKED], inv_fields=[(7, 3), (None, None)])
+                              [_TRACKED, _UNTRACKED],
+                              rec_cache={_TRACKED.universal_key: None,
+                                         _UNTRACKED.universal_key: None})
     for i, text in enumerate(answers):
         task.enqueue(i)
         task.results[i] = text
@@ -363,20 +366,43 @@ def _gate_fields(rec: Record) -> tuple:
             rec.baseline_interpretation)
 
 
-def test_the_gate_writes_the_answer_with_the_scan_pair_in_one_record(cache):
+def test_the_gate_writes_the_answer_as_a_first_write_in_one_record(cache):
+    """§3 row 1 (the only row until step 5 judges): version ε, the wire
+    digest and deps, baseline := the text, interpreted_at = eff* over
+    rec_cache; an untracked entry keeps every gate field None."""
     task = _gate_task(["the c", "the p"])
     for i in range(2):
         asyncio.run(_run_gate(task, i))
     c, p = S.Semantic_DB[_uk("c")], S.Semantic_DB[_uk("p")]
+    eps = S.Semantic_DB.counter_snapshot()
     assert (c.interpretation, c.expr, c.position, c.name) \
         == ("the c", "c :: nat", ("$AFP/Foo/Bar.thy", 42, 7), "Foo.c")
-    assert _gate_fields(c) == (b"\x02" * 16, [b"\x03" * 17, b"\x04" * 17], 7, 3, None), \
-        "the wire digest and deps, the scan's pair, no baseline (step 3)"
+    assert _gate_fields(c) == (b"\x02" * 16, [b"\x03" * 17, b"\x04" * 17], eps, eps, "the c")
     assert p.interpretation == "the p"
     assert _gate_fields(p) == (None, None, None, None, None), \
         "an untracked entry keeps every gate field None"
     assert task.state == [_DONE, _DONE]
     assert task.n_interpreted() == 2
+    assert task.rec_cache[_uk("c")] == c and task.rec_cache[_uk("p")] == p, \
+        "written back from the transaction: rec_cache == store"
+
+
+def test_the_gate_takes_a_snapshot_over_the_current_records(cache):
+    """interpreted_at = eff*(E) over rec_cache at the write: a stale
+    dependency's number passes through (no wall), a fresh one's own version
+    is the wall."""
+    dep = _uk("dep")
+    S.Semantic_DB[dep] = _full_record(name="Foo.dep", deps=[], version=9, interpreted_at=9)
+    upstream = _uk("up")
+    S.Semantic_DB[upstream] = _full_record(name="Foo.up", deps=[], version=20, interpreted_at=20)
+    S.Semantic_DB[dep] = _full_record(name="Foo.dep", deps=[upstream], version=9, interpreted_at=9)
+    e = _TRACKED._replace(deps=[dep])
+    task = InterpretationTask(None, "/tmp/Foo.thy", "Foo", WIP_THY + b"\x00" * 16, [e],
+                              rec_cache={e.universal_key: None})
+    task.enqueue(0); task.results[0] = "the c"; task.state[0] = _GATING
+    asyncio.run(_run_gate(task, 0))
+    assert S.Semantic_DB[_uk("c")].interpreted_at == 20, \
+        "dep is stale (eff* 20 > interpreted_at 9): its whole upstream signal passes"
 
 
 def test_a_gate_write_failure_propagates_the_store_s_exception_with_a_note(cache):
@@ -393,10 +419,10 @@ def test_a_gate_write_failure_propagates_the_store_s_exception_with_a_note(cache
 
 
 def test_a_correction_is_a_second_gate_that_rewrites_the_text(cache):
-    """D11: a correction of a written entity re-runs the gate.  In step 3 the
-    gate is the write alone, so the text is rewritten with the SAME scan pair
-    -- the gate fields stand because the same pair was written again, not
-    because a correction skips the gate."""
+    """D11: a correction of a written entity re-runs the gate over the record
+    the first gate wrote.  Until step 5 judges, the second gate is again a
+    first write (§3 row 1): the same ε and snapshot, the baseline moved to
+    the new text -- the over-signalling §15.11 accepts for step 4."""
     task = _gate_task(["the c", "the p"])
     asyncio.run(_run_gate(task, 0))
     first = S.Semantic_DB[_uk("c")]
@@ -407,7 +433,7 @@ def test_a_correction_is_a_second_gate_that_rewrites_the_text(cache):
     asyncio.run(_run_gate(task, 0))
     second = S.Semantic_DB[_uk("c")]
     assert second.interpretation == "corrected text"
-    assert _gate_fields(second) == _gate_fields(first)
+    assert _gate_fields(second) == _gate_fields(first)[:4] + ("corrected text",)
     assert store.contains([_uk("c")]) == [False], "the embedded document changed"
     assert task.state[0] == _DONE and task.n_interpreted() == 1
 
@@ -436,15 +462,16 @@ def scripted_run(cache, tmp_path, monkeypatch):
     monkeypatch.delenv("INTERPRETATION_DRIVER", raising=False)
     log: list = []
 
-    def run(script):
+    def run(script, entries=(_TRACKED, _UNTRACKED)):
         def make(name, *, model, system_prompt, tools, task, on_context_reset):
+            log.append(("make", name))
             return _ScriptedDriver(script=script, log=log, model=model,
                                    system_prompt=system_prompt, tools=tools,
                                    task=task, on_context_reset=on_context_reset)
         monkeypatch.setattr(SI, "make_interpretation_driver", make)
         return asyncio.run(SI.interpret_file(
             _StubConnection(), str(thy), "Foo", WIP_THY + b"\x00" * 16,
-            [_TRACKED, _UNTRACKED]))
+            list(entries)))
     run.log = log
     return run
 
@@ -455,10 +482,11 @@ def test_interpret_file_writes_every_answer_through_its_gate(scripted_run):
     c, p = S.Semantic_DB[_uk("c")], S.Semantic_DB[_uk("p")]
     assert c.interpretation == "description of c0" and p.interpretation == "description of c1"
     eps = S.Semantic_DB.counter_snapshot()
-    assert _gate_fields(c) == (b"\x02" * 16, [b"\x03" * 17, b"\x04" * 17], eps, eps, None), \
-        "a first write takes ε and its eff* snapshot from the scan (step 3)"
+    assert _gate_fields(c) == (b"\x02" * 16, [b"\x03" * 17, b"\x04" * 17], eps, eps,
+                               "description of c0"), \
+        "a first write: ε, its eff* snapshot, the text as baseline (§3 row 1)"
     assert _gate_fields(p) == (None, None, None, None, None)
-    assert [k for k, _ in scripted_run.log] == ["enter", "turn", "exit"]
+    assert [k for k, _ in scripted_run.log] == ["make", "enter", "turn", "exit"]
 
 
 def test_interpret_file_raises_the_store_s_exception_itself_when_a_gate_write_fails(
@@ -474,3 +502,19 @@ def test_interpret_file_raises_the_store_s_exception_itself_when_a_gate_write_fa
     assert e.value.__notes__ == ["while writing the interpretation of Foo.c"]
     assert not isinstance(e.value.__context__, BaseExceptionGroup)
     assert S.Semantic_DB[_uk("c")] is None, "nothing written; the theory is not marked"
+
+
+def test_a_live_run_with_no_seed_still_refreshes_the_statement(scripted_run):
+    """§5.3.2 on the live path, zero seeds (the shape `collect --reinterpret`
+    produces for almost every theory): no driver is built, the stored text is
+    returned, and the changed `prop_str` is written to `expr` while the five
+    gate fields stay byte-identical."""
+    stored = _full_record(name="Foo.c", expr="c :: nat", interpretation="the stored c",
+                          deps=[b"\x03" * 17, b"\x04" * 17], version=1, interpreted_at=1)
+    S.Semantic_DB[_uk("c")] = stored
+    res = scripted_run([], entries=[_TRACKED._replace(prop_str="c :: nat ⇒ nat")])
+    assert res.interpretations == ["the stored c"]
+    assert scripted_run.log == [], "no driver was built: nothing to ask"
+    got = S.Semantic_DB[_uk("c")]
+    assert got.expr == "c :: nat ⇒ nat"
+    assert _gate_fields(got) == _gate_fields(stored)

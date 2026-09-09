@@ -24,8 +24,24 @@ All paths relative to `contrib/Semantic_Embedding/`.
   the arity note, §10 arity clause, §15.2/§15.6 `retry_prompt(chunk)`.
   Acceptance gates measured: each of F4's four mutations and the D11
   `_GATING` mutation fails a test by assertion.
-- Next: §13 step 4 (scan rewrite) — needs the user's go-ahead; no commit
-  unless asked.
+- Step 4 (scan rewrite) implemented 2026-09-09 after the user's "继续";
+  reviewed (`ai-artifacts/review_step4/`: SCOPE.md, working_tree.diff,
+  judge.json — 13 agents, 5 fixes, no user decision): live-path statement
+  refresh made unconditional (one call before the return), the query tool's
+  refusal compares `pretty_unicode(name)` against `enrolled_names`, the
+  "starting agent" log counts `task.enrolled()`, no self edge in
+  `dependents`, three test comments; + tests (zero-seed live refresh,
+  refusal in either spelling, theorem-alike eff* disjunct).  Suite 356
+  passed / 3 env failures.  Derivations ruled sound: RunState / emb_store /
+  make_judge_driver deferred to step 5; `enrolled_names` on AgentTask;
+  `rec_cache` a constructor keyword; every judged entry written as §3 row 1
+  until step 5 (baseline := text); opening lines' wording waits for step 8.
+- Next: §13 step 5 (the gate proper: prefilter, JudgeTask + verdict tool,
+  decisions, propagation, snapshot raise, failure handling, derived
+  permissions, SERVER_NAME move, cli_tools; RunState / current_run_state,
+  emb_store, make_judge_driver; `_propagate` with `_note_on_failure`) —
+  needs the user's go-ahead.  Step 5's test file must carry the enrolment
+  test with a not-enrolled entry NOT in last position (step-4 judge).
 
 The decisions and work list below are kept as the record of what was done.
 

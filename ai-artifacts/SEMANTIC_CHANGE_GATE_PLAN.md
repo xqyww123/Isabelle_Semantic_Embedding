@@ -1,7 +1,11 @@
 # Semantic change gate, shielded invalidation and interpretation lock — implementation plan (rev 5)
 
-Status: **rev 5.3 (2026-09-09); §13 steps 1–3 implemented, step 3 under its
-fix-then-rereview, steps 4–8 pending approval to start.**
+Status: **rev 5.3 (2026-09-09); §13 steps 1–4 implemented, reviewed and
+accepted (step 3: `ai-artifacts/review_step3/`; step 4:
+`ai-artifacts/review_step4/`, judge `judge.json`, five fixes applied — the
+live-path statement refresh unconditional, the query tool's refusal compared
+in one spelling, no self edge in the reverse graph); steps 5–8 pending
+approval to start.**
 Three review rounds (rev 1: 98 agents; rev 2: 23; rev 3: 23) and the user's
 rulings on them are absorbed.  Rev 5.3 records the user's decisions of
 2026-09-08/09 after the step-3 code review: D11 revised (a correction re-runs
@@ -1336,7 +1340,12 @@ Today's phases 1–3 (:930-1130) become:
    the `expr` shortcut and `update_expr` move to the statement refresh (item
    8).  Seeds: uncached ∨ stale.  Non-seeds: `results[i] = rec.interpretation`.
 5. The theory-internal reverse graph: `uk_to_idx = {e.universal_key: i}`;
-   `dependents[j].append(i)` for every `d in e_i.deps` with `j = uk_to_idx.get(d)`.
+   `dependents[j].append(i)` for every `d in e_i.deps` with `j = uk_to_idx.get(d)`
+   and `j != i` — a constant's dep list names its own key
+   (semantic_digest.ML's `deps_of_term (Const ...)`); the self edge carries no
+   signal (the entity's own version is already eff\*'s floor) and following it
+   would make every CHANGED verdict re-write its own record unchanged.  The
+   stored dep list keeps the self dep: it is the imprint §4.3 compares by value.
 6. Dry run: the statement refresh of item 8 over the not-enrolled entries —
    exactly the scan's `cached and not stale` set, where `rec` is provably
    non-None; on this path those are also "the entries this run did not
@@ -1370,7 +1379,9 @@ goes to the reply's `errors` list, exactly today's "Unknown entry", and
 starts no gate, writes nothing, mints nothing); the names
 `mk_query_by_name_tool` (:1191) refuses are `task.enrolled_names`, a list
 `enqueue` appends to and the tool is handed as the same mutable object (its
-membership test re-reads it on every call), so an entity enrolled by a later
+membership test re-reads it on every call, comparing in the list's glyph
+spelling — `pretty_unicode(name)` — because the tool has already rewritten
+the agent's input to the escape form; step-4 review), so an entity enrolled by a later
 CHANGED verdict is refused from that moment on — otherwise the agent could be
 handed the stored text of the very entity it is re-interpreting, echo it, and
 the judge would say "same" on a real change.  The counters of §12 #13–#16

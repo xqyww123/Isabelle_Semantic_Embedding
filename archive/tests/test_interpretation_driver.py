@@ -673,3 +673,33 @@ def test_on_context_reset_reaches_the_desugar_dedup_set():
 
     asyncio.run(go())
     assert all(v is not None for v in task.results)
+
+
+# --- the query tool's refusal list -----------------------------------------
+
+def test_the_query_tool_refuses_an_enrolled_name_in_either_spelling(monkeypatch):
+    """`enrolled_names` holds the glyph spelling the agent was shown; the tool
+    rewrites the agent's input to the escape form before looking it up.  A
+    symbol-bearing enrolled name must be refused whichever spelling the agent
+    types; an unrelated name still reaches the store."""
+    from Isabelle_Semantic_Embedding import semantics as S
+    reached: list = []
+
+    async def raw(connection, tag, name, **kw):
+        reached.append(name)
+        raise LookupError("no such entity")
+    monkeypatch.setattr(S, "query_by_name_raw", raw)
+    task = _make_task(1, batch_size=1)          # enrols T.c0 ... but we need a symbol
+    tool = S.mk_query_by_name_tool(_StubConnection(), ["Foo.f₁"] + task.enrolled_names)
+
+    async def ask(name):
+        return (await tool.handler({"type": "constant", "name": name}))["content"][0]["text"]
+
+    async def go():
+        return await ask("Foo.f₁"), await ask("Foo.f\\<^sub>1"), await ask("Foo.g")
+
+    glyph, escape, other = asyncio.run(go())
+    assert glyph.startswith('Cannot query "Foo.f₁"')
+    assert escape.startswith('Cannot query "Foo.f\\<^sub>1"'), "echoed as typed"
+    assert "no such entity" in other
+    assert reached == ["Foo.g"], "only the unrelated name reached the store"

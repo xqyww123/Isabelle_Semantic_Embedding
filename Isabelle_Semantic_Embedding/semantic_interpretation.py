@@ -359,6 +359,9 @@ class AgentTask:
             self._label_to_idx[key] = i
         self.state: list[int] = [_NOT_ENROLLED] * len(entries)
         self._queue: deque[int] = deque()
+        # The enrolled entries' names, appended by `enqueue`; handed to the
+        # query tool as the same mutable list, so its refusal follows enrolment.
+        self.enrolled_names: list[str] = []
         self.batch: list[int] = []          # indices sent in the turn in flight
         self.gates_running = 0
         self._progress = asyncio.Event()    # set when a gate finishes or enrols
@@ -398,6 +401,7 @@ class AgentTask:
         self.results[idx] = None
         self.state[idx] = _QUEUED
         self._queue.append(idx)
+        self.enrolled_names.append(self.entries[idx].name)
         self._progress.set()
 
     def next_batch(self) -> list[int]:
@@ -546,19 +550,20 @@ class InterpretationTask(AgentTask):
                  theory_longname: str, theory_key: universal_key,
                  entries: list[Entry], driver: str = _DEFAULT_DRIVER,
                  model: str = "", *, unicode_file_path: str = "",
-                 inv_fields: 'list[tuple[int | None, int | None]] | None' = None):
+                 rec_cache: 'dict[bytes, SemanticRecord | None] | None' = None,
+                 dependents: 'list[list[int]] | None' = None):
         super().__init__(connection, file_path, theory_longname, theory_key,
                          entries, driver, model)
         self.unicode_file_path = unicode_file_path or file_path
         self._first_turn_sent = False
-        # Per-entry (version, interpreted_at) computed by the todo-set scan,
-        # 1:1 with `entries`; None for a run that did not scan (all four
-        # incremental fields then stay None on write).  version is the value
-        # phase 1 assigned (a bump, the stored value, or the ε baseline);
-        # interpreted_at is the pre-agent eff snapshot.  The gate stores them
-        # with the answer.  (Plan §15.11: replaced by the gate's own decision
-        # when the scan stops minting.)
-        self.inv_fields = inv_fields
+        # The record per universal key AS CURRENTLY STORED: filled by the
+        # scan, written back from inside every gate transaction, read by every
+        # eff* (plan §15.5, §15.8).  The task carries no pre-run record, so a
+        # second gate on an entity cannot roll a committed version back (§3).
+        self.rec_cache = rec_cache if rec_cache is not None else {}
+        # The theory-internal reverse graph: dependents[j] = the entries whose
+        # deps name entry j (§15.8 item 5); read by the propagation (§5.3.1).
+        self.dependents = dependents or [[] for _ in entries]
         # The task group owning the gate tasks; `interpret_file` sets it.
         self.task_group: asyncio.TaskGroup | None = None
 
@@ -873,6 +878,164 @@ class TransientAgentError(Exception):
     pass
 
 
+# --- the eff* evaluator (plan §4, §15.5) ---
+
+class _EffStar:
+    """eff*(E) = max(version(E), contrib of each direct dependency), where a
+    FRESH dependency contributes only its own version and a stale one its
+    whole eff* (`_contrib`; ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md §4),
+    evaluated by iterative Tarjan DFS with one numeric memo over `rec_cache`
+    ∪ store (parent §4.1).  A missing record contributes 0 (§4.4:
+    infrastructure targets carry no record by design).
+
+    Folding a cycle to a max is lossless for INTRA-SCC signal (SCC members
+    are defined by one command and bump together), but memo finalization must
+    be SCC-wide: a node memoized before its SCC root pops misses contributions
+    reachable only through the back edge (an SCC-mate's external dep), and the
+    poisoned memo then serves every later lookup -- the order-dependent
+    false-fresh of the 2026-07-28 review (R1, blocker; class parameter <->
+    class edges make the shape an everyday one).  So no node writes memo until
+    its SCC root pops; the root assigns the SCC-wide value (max over member
+    versions and the effs of all external successors) to all members.
+
+    The memo is per instance: the scan builds one and shares it across every
+    entry (nothing changes during a scan); a gate builds a FRESH one per
+    call, because a write between two calls changes a record.  `rec_cache`
+    is the caller's dict and is extended in place by every store read, so
+    "rec_cache == store" keeps holding for the keys it has seen."""
+
+    def __init__(self, rec_cache: 'dict[bytes, SemanticRecord | None]'):
+        self.rec_cache = rec_cache
+        self.memo: dict[bytes, int] = {}
+
+    def _rec_of(self, k: bytes) -> 'SemanticRecord | None':
+        if k not in self.rec_cache:
+            self.rec_cache[k] = Semantic_DB[k]
+        return self.rec_cache[k]
+
+    def _contrib(self, d: bytes, e: int) -> int:
+        """What a FINALIZED dependency `d` whose eff is `e` hands upwards.
+
+        A dependency that has absorbed everything upstream of it (eff <=
+        interpreted_at) and whose meaning the semantic change gate judged
+        unchanged (version not bumped) is a wall: the parent sees only
+        version(d), not the upstream number d already dealt with.  A dependency
+        that is itself stale passes its whole upstream signal through, as
+        before.  None reads as 0 (§4.4), so a record with no version or no
+        interpreted_at is never a wall."""
+        r = self._rec_of(d)
+        if r is None:
+            return 0
+        ver, ia = r.version or 0, r.interpreted_at or 0
+        return ver if ver > 0 and ia > 0 and e <= ia else e
+
+    def eff_uk(self, root: bytes) -> int:
+        memo = self.memo
+        if root in memo:
+            return memo[root]
+        r0 = self._rec_of(root)
+        if r0 is None:
+            memo[root] = 0
+            return 0
+        # index/low are per-call (finalized nodes live in memo and are never
+        # re-indexed); scc is the candidate stack -- a node stays on it,
+        # un-memoized, until its SCC root pops.  An SCC always forms a
+        # contiguous DFS subtree under its root, so the val flow at non-root
+        # frame pops accumulates every member's contribution into the root.
+        index: dict[bytes, int] = {}
+        low: dict[bytes, int] = {}
+        val: dict[bytes, int] = {}
+        scc: list[bytes] = []
+        on_scc: set[bytes] = set()
+
+        def _open(k: bytes, r: 'SemanticRecord') -> list:
+            index[k] = low[k] = len(index)
+            val[k] = r.version or 0
+            scc.append(k)
+            on_scc.add(k)
+            return [k, iter(r.deps or [])]
+
+        stack = [_open(root, r0)]
+        while stack:
+            frame = stack[-1]
+            k = frame[0]
+            pushed = False
+            for d in frame[1]:
+                if d in memo:              # finalized in an earlier SCC
+                    c = self._contrib(d, memo[d])
+                    if c > val[k]:
+                        val[k] = c
+                    continue
+                if d in on_scc:            # edge into the candidate region:
+                    if index[d] < low[k]:  # lowlink only -- d's own value
+                        low[k] = index[d]  # reaches the root via tree pops
+                    continue
+                r = self._rec_of(d)
+                if r is None:
+                    memo[d] = 0
+                    continue
+                stack.append(_open(d, r))
+                pushed = True
+                break
+            if not pushed:
+                stack.pop()
+                if low[k] == index[k]:
+                    # SCC root: assign the SCC-wide value to every member,
+                    # then flow it to the parent like any finalized successor
+                    # (the parent pushed this child, so it never saw a memo
+                    # hit for it -- without this flow the whole subtree's
+                    # contribution would be lost).  A finished SCC never
+                    # lowers the parent's lowlink.  The parent is necessarily
+                    # OUTSIDE this SCC -- a parent inside it would have pulled
+                    # low[k] below index[k] -- so this edge, and only this
+                    # edge, takes the wall test; inside an SCC the members are
+                    # defined by one command and bump together, so no wall.
+                    v = val[k]
+                    while True:
+                        m = scc.pop()
+                        on_scc.discard(m)
+                        memo[m] = v
+                        if m == k:
+                            break
+                    if stack:
+                        c = self._contrib(k, v)
+                        if c > val[stack[-1][0]]:
+                            val[stack[-1][0]] = c
+                else:
+                    parent = stack[-1][0]
+                    if low[k] < low[parent]:
+                        low[parent] = low[k]
+                    if val[k] > val[parent]:
+                        val[parent] = val[k]
+        return memo[root]
+
+    def eff_value(self, version: int, deps: 'list[bytes] | None') -> int:
+        """eff* of an entity whose own version is `version` (passed, never
+        read back from a fabricated record) and whose direct deps are `deps`."""
+        best = version
+        for d in deps or []:
+            v = self._contrib(d, self.eff_uk(d))
+            if v > best:
+                best = v
+        return best
+
+
+def _refresh_statements(entries: list[Entry],
+                        rec_cache: 'dict[bytes, SemanticRecord | None]',
+                        not_enrolled: Iterable[int]) -> None:
+    """The statement refresh (plan §5.3.2): for every entry this run did not
+    write, a stored `expr` that differs from the wire `prop_str` is rewritten
+    (and its vector tombstoned).  The truthiness test matters: `mk_prop_str`
+    yields "" for some entries, and a bare inequality would blank a stored
+    `expr` and tombstone its vector.  The one write a dry run makes."""
+    for i in not_enrolled:
+        e = entries[i]
+        rec = rec_cache[e.universal_key]
+        assert rec is not None, "not enrolled means filled from the store"
+        if e.prop_str and rec.expr != e.prop_str:
+            Semantic_DB.update_expr(e.universal_key, e.prop_str)
+
+
 # --- the gate (plan §5.4) ---
 
 @contextlib.contextmanager
@@ -888,27 +1051,48 @@ def _note_on_failure(note: str) -> Generator[None, None, None]:
         raise
 
 
-def _write(task: InterpretationTask, idx: int, text: str) -> None:
+def _write(task: InterpretationTask, idx: int,
+           rec: 'SemanticRecord | None', text: str) -> None:
     """Write one answered entry: `text`, the other wire fields and the gate
-    fields in ONE transaction (plan §5.4 step 5, §6.4).  version and the eff
-    snapshot come from the scan; an untracked entry (persistent theory:
-    version None) keeps every gate field None."""
+    fields in ONE transaction (plan §5.4 step 5, §3, §6.4), over `rec`, the
+    record as stored when this gate read it.
+
+    Two predicates, each keyed on the digest, never on the kind (a persistent
+    constant, or a four-kind entry whose digest is NONE, has a tracked kind
+    and no digest and must NOT be given a baseline): `judged` = the entry has
+    a digest (§3 rows 1-5); `has_gate_fields` = digest or deps (false only for
+    persistent entries and WIP collections / methods, which get None
+    everywhere, D15).  Until the gate judges (§13 step 5) every judged entry
+    is written as a first write, §3 row 1: version ε, baseline := text -- it
+    over-signals, and step 4 must only run against a throw-away store
+    (§15.11)."""
     e = task.entries[idx]
-    version, interpreted_at = (task.inv_fields[idx]
-                               if task.inv_fields is not None else (None, None))
-    tracked = version is not None
+    judged = e.semantic_digest is not None
+    has_gate_fields = judged or bool(e.deps)
     with _note_on_failure(f"while writing the interpretation of {e.name}"), \
          Semantic_DB.gate_write() as w:
-        w.put_interpretation(
+        if not judged:
+            # theorem-alike (deps present): the stored version, else ε; never
+            # a mint (I2).  Persistent, collection, method: None everywhere.
+            version = ((rec.version if rec is not None and rec.version else w.counter_value())
+                       if has_gate_fields else None)
+            baseline, digest = None, None
+        else:
+            version, baseline, digest = w.counter_value(), text, e.semantic_digest
+        deps = (e.deps or []) if has_gate_fields else None
+        # The snapshot after this entity's own version: passed to a FRESH
+        # evaluator over rec_cache, not read back from a fabricated record.
+        ia = (_EffStar(task.rec_cache).eff_value(version, e.deps)  # type: ignore[arg-type]
+              if has_gate_fields else None)
+        written = w.put_interpretation(
             e.universal_key, kind=EntityKind(e.kind), name=e.name,
             expr=e.prop_str, interpretation=text,
             locale_provenance=e.locale_provenance,
             theory_constituents=e.theory_constituents,
             position=e.position, from_collection=e.from_collection,
-            semantic_digest=e.semantic_digest if tracked else None,
-            deps=(e.deps or []) if tracked else None,
-            version=version, interpreted_at=interpreted_at,
-            baseline_interpretation=None)
+            semantic_digest=digest, deps=deps, version=version,
+            interpreted_at=ia, baseline_interpretation=baseline)
+    task.rec_cache[e.universal_key] = written    # "rec_cache == store" for every later eff*
     task.state[idx] = _DONE
 
 
@@ -916,19 +1100,22 @@ async def _gate(task: InterpretationTask, idx: int) -> None:
     """The gate of one answered entry, a task of `interpret_file`'s group.
     Today it is the write alone; the semantic change gate proper (prefilter,
     judge, mint decision, propagation -- plan §5.4) goes in front of the write
-    once the scan stops minting (§13 steps 4-5).
+    in §13 step 5.
 
-    A gate writes only the text it judged: the text is captured at the top of
-    a round and, with no await between the test and the write, a round whose
-    text a correction (D11) replaced meanwhile starts over instead of writing.
-    Every extra round is paid for by one distinct correction, so the loop
-    terminates; with no await in the body (today) it runs exactly once."""
+    A gate writes only the text it judged, over the record it read: both are
+    captured at the top of a round and, with no await between the test and
+    the write, a round whose text a correction (D11) replaced meanwhile
+    starts over instead of writing.  Every extra round is paid for by one
+    distinct correction, so the loop terminates; with no await in the body
+    (today) it runs exactly once."""
+    e = task.entries[idx]
     while True:
+        rec = task.rec_cache[e.universal_key]       # the record as currently stored (§3's R)
         text = task.results[idx]
         assert text is not None
         if task.results[idx] != text:
             continue
-        _write(task, idx, text)
+        _write(task, idx, rec, text)
         break
 
 
@@ -1136,201 +1323,35 @@ async def interpret_file(
     _log.info("interpret_file%s: %s (%s), %d entries",
               " (dry run)" if dry_run else "", theory_longname, file_path, n)
 
-    # --- the todo-set scan (CHECK_OUTDATE_PLAN.md §4/§8) ---
-    # todo = uncached ∪ stale, stale = digest mismatch ∨ eff > interpreted_at.
-    # This scan doubles as the dry run's workload count: the entries it leaves
-    # in `uncached` are exactly the ones an ordinary run sends to the LLM.  The
-    # writes it makes (version bumps, expr refresh) are scan-time writes the
-    # write-back discipline allows on a dry run too (discipline 3).
+    # --- the scan (plan §5.2, §15.8) ---
+    # Nothing minted, no gate field written, no counter put.  Per entry: the
+    # stored record serves (filled into `results`), or the entry is a SEED of
+    # the work queue -- uncached, locally stale (digest changed, never
+    # digested, dep keys moved) or stale under eff* over the store.  A
+    # dependent of a seed is NOT enrolled here: it is enrolled the moment the
+    # seed's verdict is CHANGED (§5.3.1); until then the seed's record, which
+    # still looks fresh, is rightly a wall.
     results: list[str | None] = [None] * n
     recs = Semantic_DB.get_many([e.universal_key for e in entries])
-
-    # Phase 1 -- first-visit digest comparison (§4.1).  A genuinely changed
-    # digest is bumped ON THE SPOT: digest + version + deps in ONE Record put
-    # (discipline 1), the counter increment in the same write transaction
-    # (§3.3).  Which digests changed is a fixed fact of this batch, so the eff
-    # memo built afterwards never goes stale.
-    #
-    # A record that never had a digest (fresh entity, or one interpreted before
-    # digests existed) is NOT stamped here: its stored interpretation was
-    # written for content nobody can reconstruct, so stamping today's digest
-    # onto it would freshly certify possibly-outdated text.  Such an entry goes
-    # to the todo set (digest-None reads as stale, §4.4) and gets digest, deps
-    # and its ε-epoch version together with the fresh interpretation at
-    # the gate's write.  No bump either way: nothing can have depended on a digest
-    # that never existed.
-    version_to_write: dict[int, int] = {}
-    with Semantic_DB._ensure_env().begin(write=True) as txn:
-        epsilon = Semantic_DB.counter_value(txn)
-        for i, (e, rec) in enumerate(zip(entries, recs)):
-            if e.semantic_digest is None:
-                # theorem-alike / untracked: never bumped (invariant I2); the
-                # ε baseline still applies if this entry gets written later.
-                if e.deps:
-                    version_to_write[i] = (rec.version if rec is not None and
-                                           rec.version else epsilon)
-                continue
-            if rec is None or rec.semantic_digest is None:
-                version_to_write[i] = (rec.version if rec is not None and
-                                       rec.version else epsilon)
-                continue
-            if rec.semantic_digest != e.semantic_digest:
-                v = Semantic_DB.counter_next(txn)
-                txn.put(e.universal_key, Semantic_DB._encode(rec._replace(
-                    semantic_digest=e.semantic_digest, deps=e.deps or [],
-                    version=v)))
-                recs[i] = rec = rec._replace(semantic_digest=e.semantic_digest,
-                                             deps=e.deps or [], version=v)
-                version_to_write[i] = v
-            else:
-                version_to_write[i] = rec.version if rec.version else epsilon
-
-    # Phase 2 -- shielded effective version eff*(E) = max(version(E), contrib
-    # of each direct dependency), where a FRESH dependency contributes only its
-    # own version and a stale one its whole eff* (`_contrib` below;
-    # ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md §4), evaluated by iterative
-    # Tarjan DFS with one numeric memo over batch ∪ store (parent §4.1).  A
-    # missing record contributes 0
-    # (§4.4: infrastructure targets carry no record by design).  Folding a
-    # cycle to a max is lossless for INTRA-SCC signal (SCC members are defined
-    # by one command and bump together), but memo finalization must be
-    # SCC-wide: a node memoized before its SCC root pops misses contributions
-    # reachable only through the back edge (an SCC-mate's external dep), and
-    # the poisoned memo then serves every later lookup -- the order-dependent
-    # false-fresh of the 2026-07-28 review (R1, blocker; class parameter <->
-    # class edges make the shape an everyday one).  So no node writes memo
-    # until its SCC root pops; the root assigns the SCC-wide value (max over
-    # member versions and the effs of all external successors) to all members.
-    memo: dict[bytes, int] = {}
     rec_cache: 'dict[bytes, SemanticRecord | None]' = {
         e.universal_key: r for e, r in zip(entries, recs)}
-
-    def _rec_of(k: bytes) -> 'SemanticRecord | None':
-        if k not in rec_cache:
-            rec_cache[k] = Semantic_DB[k]
-        return rec_cache[k]
-
-    def _contrib(d: bytes, e: int) -> int:
-        """What a FINALIZED dependency `d` whose eff is `e` hands upwards.
-
-        A dependency that has absorbed everything upstream of it (eff <=
-        interpreted_at) and whose meaning the semantic change gate judged
-        unchanged (version not bumped) is a wall: the parent sees only
-        version(d), not the upstream number d already dealt with.  A dependency
-        that is itself stale passes its whole upstream signal through, as
-        before.  None reads as 0 (§4.4), so a record with no version or no
-        interpreted_at is never a wall."""
-        r = _rec_of(d)
-        if r is None:
-            return 0
-        ver, ia = r.version or 0, r.interpreted_at or 0
-        return ver if ver > 0 and ia > 0 and e <= ia else e
-
-    def eff_uk(root: bytes) -> int:
-        if root in memo:
-            return memo[root]
-        r0 = _rec_of(root)
-        if r0 is None:
-            memo[root] = 0
-            return 0
-        # index/low are per-call (finalized nodes live in memo and are never
-        # re-indexed); scc is the candidate stack -- a node stays on it,
-        # un-memoized, until its SCC root pops.  An SCC always forms a
-        # contiguous DFS subtree under its root, so the val flow at non-root
-        # frame pops accumulates every member's contribution into the root.
-        index: dict[bytes, int] = {}
-        low: dict[bytes, int] = {}
-        val: dict[bytes, int] = {}
-        scc: list[bytes] = []
-        on_scc: set[bytes] = set()
-
-        def _open(k: bytes, r: 'SemanticRecord') -> list:
-            index[k] = low[k] = len(index)
-            val[k] = r.version or 0
-            scc.append(k)
-            on_scc.add(k)
-            return [k, iter(r.deps or [])]
-
-        stack = [_open(root, r0)]
-        while stack:
-            frame = stack[-1]
-            k = frame[0]
-            pushed = False
-            for d in frame[1]:
-                if d in memo:              # finalized in an earlier SCC
-                    c = _contrib(d, memo[d])
-                    if c > val[k]:
-                        val[k] = c
-                    continue
-                if d in on_scc:            # edge into the candidate region:
-                    if index[d] < low[k]:  # lowlink only -- d's own value
-                        low[k] = index[d]  # reaches the root via tree pops
-                    continue
-                r = _rec_of(d)
-                if r is None:
-                    memo[d] = 0
-                    continue
-                stack.append(_open(d, r))
-                pushed = True
-                break
-            if not pushed:
-                stack.pop()
-                if low[k] == index[k]:
-                    # SCC root: assign the SCC-wide value to every member,
-                    # then flow it to the parent like any finalized successor
-                    # (the parent pushed this child, so it never saw a memo
-                    # hit for it -- without this flow the whole subtree's
-                    # contribution would be lost).  A finished SCC never
-                    # lowers the parent's lowlink.  The parent is necessarily
-                    # OUTSIDE this SCC -- a parent inside it would have pulled
-                    # low[k] below index[k] -- so this edge, and only this
-                    # edge, takes the wall test; inside an SCC the members are
-                    # defined by one command and bump together, so no wall.
-                    v = val[k]
-                    while True:
-                        m = scc.pop()
-                        on_scc.discard(m)
-                        memo[m] = v
-                        if m == k:
-                            break
-                    if stack:
-                        c = _contrib(k, v)
-                        if c > val[stack[-1][0]]:
-                            val[stack[-1][0]] = c
-                else:
-                    parent = stack[-1][0]
-                    if low[k] < low[parent]:
-                        low[parent] = low[k]
-                    if val[k] > val[parent]:
-                        val[parent] = val[k]
-        return memo[root]
-
-    def eff_value(version: int, deps: 'list[bytes] | None') -> int:
-        best = version
-        for d in deps or []:
-            v = _contrib(d, eff_uk(d))
-            if v > best:
-                best = v
-        return best
-
-    # Phase 3 -- fill results with cached AND fresh interpretations; everything
-    # else is the todo set.  A stale entry is treated exactly like an uncached
-    # one: no prefill, no expr shortcut.  For every todo entry the
-    # interpreted_at snapshot is taken NOW, before any agent starts
-    # (discipline 4: a concurrent bump between snapshot and answer must land
-    # ABOVE the stored snapshot, so the entity is re-judged stale next scan
-    # instead of the change being silently absorbed).
-    ia_snapshot: dict[int, int] = {}
+    # ε for a version-less record (§9 "ε epoch"): read, never put -- the gate
+    # takes its own ε from its own transaction.
+    epsilon = Semantic_DB.counter_snapshot()
+    eff = _EffStar(rec_cache)          # one instance: nothing changes during a scan
+    seeds: list[int] = []
     for i, (e, rec) in enumerate(zip(entries, recs)):
-        tracked = e.semantic_digest is not None or bool(e.deps)
+        has_gate_fields = e.semantic_digest is not None or bool(e.deps)
         cached = rec is not None and rec.interpretation is not None
         stale = False
-        if cached and tracked:
+        if cached and has_gate_fields:
             assert rec is not None
             if e.semantic_digest is not None and (
                     rec.semantic_digest is None or
                     rec.semantic_digest != e.semantic_digest):
-                stale = True    # never-digested record: stale by §4.4
+                # Changed -- or a record that never had a digest: its text was
+                # written for content nobody can reconstruct, stale by §4.4.
+                stale = True
             elif rec.deps is not None and set(rec.deps) != set(e.deps or []):
                 # Unified dep criterion (§4.3): every stored edge is compared,
                 # by value, against the target's CURRENT universal key as the
@@ -1339,32 +1360,50 @@ async def interpret_file(
                 # means some target's KEY moved -- typically a WIP<->persistent
                 # flip re-keying the target.  Without this, the version walk
                 # would query the OLD key forever and read silence: the dead
-                # edge.  Re-interpretation stores the current uks (the gate's write
-                # takes deps off the wire entry), which heals the edge.
+                # edge.  Re-interpretation stores the current uks (the gate's
+                # write takes deps off the wire entry), which heals the edge.
                 stale = True
             else:
-                eff_v = eff_value(version_to_write.get(i, rec.version or 0),
-                                  e.deps)
-                stale = eff_v > (rec.interpreted_at or 0)
+                stale = (eff.eff_value(rec.version or epsilon, e.deps)
+                         > (rec.interpreted_at or 0))
         if cached and not stale:
             assert rec is not None
             results[i] = rec.interpretation
-            if e.prop_str and rec.expr != e.prop_str:
-                Semantic_DB.update_expr(e.universal_key, e.prop_str)
-        elif tracked:
-            ia_snapshot[i] = eff_value(version_to_write.get(i, epsilon), e.deps)
+        else:
+            seeds.append(i)
+    not_enrolled = [i for i in range(n) if results[i] is not None]   # filled from the store
 
-    uncached = [i for i, r in enumerate(results) if r is None]
-    n_cached = n - len(uncached)
+    # The theory-internal dependency graph, reversed: dependents[j] lists the
+    # entries whose deps name entry j; a CHANGED verdict on j enrols them
+    # (§5.3.1).  Nothing outside the theory is walked.
+    uk_to_idx = {e.universal_key: i for i, e in enumerate(entries)}
+    dependents: list[list[int]] = [[] for _ in entries]
+    for i, e in enumerate(entries):
+        for d in e.deps or []:
+            j = uk_to_idx.get(d)
+            # A constant's dep list names its own key (semantic_digest.ML's
+            # deps_of_term (Const ...)); the self edge carries no signal --
+            # the entity's own version is already eff*'s floor -- and following
+            # it would make every CHANGED verdict re-write its own record.
+            if j is not None and j != i:
+                dependents[j].append(i)
 
     if dry_run:
-        # Mode 4 returns here: no driver resolution (nothing will run), no cost
-        # write, no report into the user's buffer (the caller aggregates the
-        # per-theory counts and does the talking), and no InterpretationTask is
-        # ever created -- so nothing marks the theory.
-        _log.info("interpret_file (dry run): %s -- %d of %d entries need "
-                  "interpretation", theory_longname, len(uncached), n)
-        return len(uncached)
+        # A LOWER BOUND on the live run's work: this theory's changed /
+        # uncached entities.  Their dependents are not counted -- whether a
+        # change propagates is decided by the semantic change gate after
+        # re-interpretation, which a dry run never runs.  Exact at zero.
+        #
+        # Mode 4 returns here: no driver resolution (nothing will run), no
+        # cost write, no report into the user's buffer (the caller aggregates
+        # the per-theory counts and does the talking), and no
+        # InterpretationTask is ever created -- so nothing marks the theory.
+        # The statement refresh is its only write, so an `expr`-only change
+        # is refreshed even when the cone quotes zero (§5.3.2).
+        _refresh_statements(entries, rec_cache, not_enrolled)
+        _log.info("interpret_file (dry run): %s -- at least %d of %d entries need "
+                  "interpretation", theory_longname, len(seeds), n)
+        return len(seeds)
 
     # Resolve before any LLM work: a misspelt driver name is a configuration
     # error and should say so immediately rather than mid-run.
@@ -1372,40 +1411,44 @@ async def interpret_file(
 
     # Build Unicode pretty-prints for all entries
     pretty_prints = [_pretty_print_entry(e) for e in entries]
+    n_cached = n - len(seeds)
     # Say what is about to happen in words, not internal vocabulary: "entries/cached/to
     # interpret" means nothing to someone watching from a theory buffer.
-    if not uncached:
+    if not seeds:
         await _report(f"{theory_longname}: all {n} entities are already interpreted "
                       f"in the semantic database and up to date, nothing to ask.")
     elif n_cached:
         await _report(f"Interpreting {theory_longname}: found {n} entities to interpret; "
                       f"{n_cached} are already interpreted and up to date, asking the "
-                      f"LLM for the remaining {len(uncached)} (new or outdated).")
+                      f"LLM for the remaining {len(seeds)} (new or outdated).")
     else:
         await _report(f"Interpreting {theory_longname}: found {n} entities to interpret; "
                       f"none are in the semantic database yet, asking the LLM for all {n}.")
     current_cost = CostSummary(0, 0, 0, 0, 0.0)
     cumulative_cost = CostSummary(0, 0, 0, 0, 0.0)
 
-    if uncached:
+    if seeds:
         from .hover import mk_definition_tool, mk_hover_tool
         from .semantics import mk_query_by_name_tool
         from .theory_structure import mk_unicode_file
 
         unicode_file_path = mk_unicode_file(file_path)
 
+        # The task spans ALL of the theory's entries: a dependent that is not
+        # a seed must be enrollable later, so it needs an index, a state and a
+        # result slot.  Non-seeds start _NOT_ENROLLED with their stored text;
+        # seeds are enqueued in wire order.
         with InterpretationTask(
-            connection, file_path, theory_longname, theory_key,
-            entries=[entries[i] for i in uncached],
+            connection, file_path, theory_longname, theory_key, entries,
             driver=driver_name, model=model,
             unicode_file_path=unicode_file_path,
-            inv_fields=[(version_to_write.get(i), ia_snapshot.get(i))
-                        for i in uncached],
+            rec_cache=rec_cache, dependents=dependents,
         ) as task:
-            for i in range(len(task.entries)):
+            for i in not_enrolled:
+                task.results[i] = results[i]
+            for i in seeds:
                 task.enqueue(i)
 
-            working_names = [e.name for e in task.entries]
             # The desugar tool annotates each constant it shows with its English
             # description, and skips a constant it has already annotated in this
             # conversation.  Once the backend compacts the conversation those
@@ -1415,8 +1458,12 @@ async def interpret_file(
             # constant.  It is a bare local reachable from neither `task` nor the
             # tool objects, hence its own channel into the driver.
             seen_constants: set[str] = set()
+            # The names the agent may not look up: every ENROLLED entry's,
+            # read live -- an entity enrolled by a later CHANGED verdict is
+            # refused from that moment on, or the agent could be handed the
+            # stored text of the very entity it is re-interpreting (§15.8).
             query_by_name_tool = mk_query_by_name_tool(
-                connection, working_names, file_path=file_path)
+                connection, task.enrolled_names, file_path=file_path)
             definition_tool = mk_definition_tool(connection, unicode=True)
             hover_tool = mk_hover_tool(connection, unicode=True)
             desugar_tool = mk_desugar_and_explain_tool(
@@ -1437,7 +1484,7 @@ async def interpret_file(
 
             _log.info("interpret_file: starting %s agent on %s with %d entries",
                       driver_name, model or "the backend's default model",
-                      len(task.entries))
+                      task.enrolled())
             # The gates are tasks of this group, so interpret_file returns only
             # after every one of them has joined -- which is what makes every
             # write of this theory visible to the descendants schedule_dag
@@ -1491,11 +1538,7 @@ async def interpret_file(
             await _report(f"{theory_longname}: done -- {task.n_interpreted()} entities "
                           f"interpreted, cost ${current_cost.cost_usd:.4f}.")
 
-            # Remap the task's results (1:1 with `uncached`) to the original
-            # indices; the store was written by the gates.
-            for i, sem in enumerate(task.results):
-                if sem is not None:
-                    results[uncached[i]] = sem
+            results = list(task.results)     # 1:1 with `entries`; the store was written by the gates
     else:
         # All cached — read cumulative cost from DB
         with InterpretationTask(
@@ -1504,6 +1547,11 @@ async def interpret_file(
         ) as task:
             cumulative_cost = CostSummary(*task.historical_cost())
 
+    # The statement refresh (§5.3.2), on every live path -- a theory with no
+    # seed included.  The scan's not-enrolled list is the right one: every
+    # entry that left _NOT_ENROLLED was written by its gate with `expr =
+    # e.prop_str` and put back into rec_cache, so the guard is a no-op for it.
+    _refresh_statements(entries, rec_cache, not_enrolled)
     return InterpretationResult(
         results,
         pretty_prints,

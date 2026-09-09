@@ -109,31 +109,66 @@ def test_dry_run_counts_and_marks_nothing(isolated_db):
         "a dry run must not write the (process id, serial) pair"
 
 
+def _raw_and_counter():
+    from Isabelle_Semantic_Embedding.semantics import Semantic_DB
+    with Semantic_DB._ensure_env().begin() as txn:
+        return (txn.get(_uk("a")), txn.get(Semantic_DB.COUNTER_KEY))
+
+
 def test_fresh_record_leaves_and_digest_mismatch_reenters(isolated_db):
+    """A dry run leaves the record and the counter byte-identical (plan §5.2:
+    the scan mints nothing; the gate re-stamps the digest at the write)."""
     entries = [_entry("a", DG_A, [DEP_X]), _entry("b", DG_B, [_uk("a")])]
     _put("a", "described", DG_A, [DEP_X], 1, 1)
     assert _dry(entries) == 1                    # a is cached AND fresh
-    # corrupt the stored digest: stale again, and phase 1 bumps + restamps
     bad = bytes([DG_A[0] ^ 0xFF]) + DG_A[1:]
     _put("a", "described", bad, [DEP_X], 1, 1)
-    assert _dry(entries) == 2
-    r = _rec("a")
-    assert r.semantic_digest == DG_A, "the scan re-stamps the wire digest"
-    assert r.version is not None and r.version > 1, "a genuine change bumps"
-    v_after = r.version
-    assert _dry(entries) == 2                    # stable (eff > interpreted_at)
-    assert _rec("a").version == v_after, "no second bump on an equal digest"
+    before = _raw_and_counter()
+    assert _dry(entries) == 2                    # a is stale again
+    assert _raw_and_counter() == before, "a dry run writes no digest, no version, no counter"
+    assert _dry(entries) == 2                    # stable
 
 
-def test_eff_propagates_through_the_dep_edge(isolated_db):
+def test_a_changed_dependency_does_not_pull_its_fresh_dependent_in(isolated_db):
+    """D13: only a is a seed.  b's record still looks fresh (eff*(b) = 1 =
+    interpreted_at) and is a wall until a's verdict; b is enrolled by a
+    CHANGED verdict, not by the scan -- the live half of this case is the
+    enrolment test of the step-5 file (plan §10, §15.10)."""
     entries = [_entry("a", DG_A, [DEP_X]), _entry("b", DG_B, [_uk("a")])]
     _put("a", "described", DG_A, [DEP_X], 1, 1)
     _put("b", "described", DG_B, [_uk("a")], 1, 1)
     assert _dry(entries) == 0                    # both fresh
     bad = bytes([DG_A[0] ^ 0xFF]) + DG_A[1:]
     _put("a", "described", bad, [DEP_X], 1, 1)
-    assert _dry(entries) == 2, \
-        "corrupting only a must pull b in through its dep edge (eff)"
+    assert _dry(entries) == 1, "a is the seed; b is wall-shielded until a's verdict"
+
+
+def test_a_dry_run_refreshes_a_changed_statement_and_nothing_else(isolated_db):
+    """§5.3.2 on the dry path: a theory whose only difference is one
+    `prop_str`, beside one uncached entry, quotes 1, and still ends with that
+    `expr` refreshed -- so an expr-only change is not lost when both n == 0
+    guards short-circuit -- while its gate fields stay byte-identical."""
+    from Isabelle_Semantic_Embedding.semantics import Semantic_DB
+    _put("a", "described", DG_A, [DEP_X], 1, 1)
+    Semantic_DB.delete(_uk("b"))
+    entries = [_entry("a", DG_A, [DEP_X])._replace(prop_str="nat ⇒ nat"),
+               _entry("b", DG_B, [_uk("a")])]
+    assert _dry(entries) == 1
+    r = _rec("a")
+    assert r.expr == "nat ⇒ nat" and r.interpretation == "described"
+    assert (r.semantic_digest, r.version, r.interpreted_at) == (DG_A, 1, 1)
+
+
+def test_a_cached_theorem_is_re_listed_when_its_definition_mints(isolated_db):
+    """The `bool(e.deps)` half of the scan's gate-field predicate: a
+    theorem-alike entry (no digest, deps present) takes the eff* test like a
+    tracked one, so a mint above it re-lists it."""
+    _put("up", "t", DG_A, [], 1, 1)
+    _put("thm", "t", None, [_uk("up")], 1, 1)
+    entries = [_entry("thm", None, [_uk("up")])]
+    assert _dry(entries) == 0
+    _put("up", "t", DG_A, [], 5, 5)               # minted above the theorem
+    assert _dry(entries) == 1
 
 
 def test_eff_scc_memo_is_order_independent(isolated_db):
@@ -148,7 +183,7 @@ def test_eff_scc_memo_is_order_independent(isolated_db):
     e_pr = _entry("pr", dg_d, [_uk("r")])
     e_px = _entry("px", dg_d, [_uk("x")])
     for order in ([e_px, e_pr], [e_pr, e_px]):
-        # rebuild the store per order: phase 1 must see identical initial state
+        # rebuild the store per order: both orders must start from identical state
         _put("r", "t", DG_A, [_uk("x")], 1, 1)
         _put("x", "t", DG_B, [_uk("r"), _uk("h")], 1, 1)
         _put("h", "t", dg_c, [], 5, 5)
