@@ -38,7 +38,7 @@ from Isabelle_RPC_Host import Connection
 if TYPE_CHECKING:
     from claude_agent_sdk import SdkMcpTool
 
-    from ..semantic_interpretation import InterpretationTask
+    from ..semantic_interpretation import AgentTask
 
 _log = logging.getLogger(__name__)
 
@@ -77,8 +77,8 @@ def to_call_tool_result(ret: Any) -> types.CallToolResult:
     body as `json.dumps(..., indent=2)` text, and hardcodes `isError` to False.
 
     Both consequences are silent and both damage the run: the answer tool
-    returns the NEXT BATCH of entries in its result, so the model would receive
-    its work wrapped in JSON with the newlines escaped, and an error flagged by
+    returns the batch's still unanswered entries in its result, so the model
+    would receive its work wrapped in JSON with the newlines escaped, and an error flagged by
     `desugar_and_explain` would arrive looking like a success.  The Claude Code
     path is spared only because `create_sdk_mcp_server` does this translation
     internally, where this server cannot reach it -- hence this function.
@@ -97,8 +97,9 @@ def to_call_tool_result(ret: Any) -> types.CallToolResult:
 # --- one MCP server per interpretation session ------------------------------
 
 def build_mcp_server(tools: list["SdkMcpTool[Any]"],
-                     task: "InterpretationTask") -> MCPServer:
-    """An MCP server exposing `tools`, with `task` as their ambient state."""
+                     task: "AgentTask") -> MCPServer:
+    """An MCP server exposing `tools`; `task` supplies the connection their
+    progress reporting needs (the tools themselves close over their task)."""
     by_name = {t.name: t for t in tools}
 
     def bind_context() -> None:
@@ -106,12 +107,10 @@ def build_mcp_server(tools: list["SdkMcpTool[Any]"],
 
         Per request, by necessity: uvicorn runs each ASGI request in a fresh,
         empty `contextvars.Context`, so nothing set outside the request is
-        visible here.  The answer tool reads the task from a contextvar, and
-        every tool's progress reporting reads the connection from another; both
-        would otherwise be missing on this path and only on this path.
+        visible here.  Every tool's progress reporting reads the connection
+        from a contextvar, which would otherwise be missing on this path and
+        only on this path.
         """
-        from ..semantic_interpretation import _local_task
-        _local_task.set(task)
         if task.connection is not None:
             Connection.set_current(task.connection)
 
@@ -253,7 +252,7 @@ class InterpretationMCPServer:
 
     async def register_session(self, session_id: str,
                                tools: list["SdkMcpTool[Any]"],
-                               task: "InterpretationTask") -> str:
+                               task: "AgentTask") -> str:
         """Serve `tools` at a URL of this session's own.  Returns that URL."""
         app = _ManagedMCPApp(build_mcp_server(tools, task))
         await app.start()

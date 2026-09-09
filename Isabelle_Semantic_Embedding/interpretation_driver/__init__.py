@@ -8,7 +8,7 @@ driver only has to implement :meth:`InterpretationDriver.run_turn`.
 
 INVARIANT: this module must NEVER import a concrete driver.  Concrete drivers
 import ``semantic_interpretation`` (for the failure classes and
-``InterpretationTask``) and ``semantic_interpretation`` imports this module, so
+``AgentTask``) and ``semantic_interpretation`` imports this module, so
 an eager ``from . import claude_code`` here would close the cycle at import
 time.  ``make_interpretation_driver`` imports lazily instead, which keeps it
 open -- the same shape as ``make_embedding_provider``
@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from claude_agent_sdk import SdkMcpTool
 
-    from ..semantic_interpretation import InterpretationTask
+    from ..semantic_interpretation import AgentTask
 
 # Working directory handed to every agent backend.  It carries the per-backend
 # skill directories (`.claude/skills/`, and `.codex/skills/` alongside it) that
@@ -106,7 +106,7 @@ def make_interpretation_driver(
     model: str,
     system_prompt: str,
     tools: list["SdkMcpTool[Any]"],
-    task: "InterpretationTask",
+    task: "AgentTask",
     on_context_reset: Callable[[], None],
 ) -> InterpretationDriver:
     cls = resolve_interpretation_driver_class(name)
@@ -158,7 +158,7 @@ class InterpretationDriver(ABC):
 
     def __init__(self, *, model: str, system_prompt: str,
                  tools: list["SdkMcpTool[Any]"],
-                 task: "InterpretationTask",
+                 task: "AgentTask",
                  on_context_reset: Callable[[], None]) -> None:
         # The spec may name only the backend ("Codex"), leaving the model to
         # it.  Same normalisation as interpret_file's, by construction.
@@ -183,14 +183,14 @@ class InterpretationDriver(ABC):
         """Send one user prompt and run it until the model stops.
 
         Must accumulate this turn's usage into ``self.task`` and flush it with
-        ``write_cost()`` (see `accumulate_usage`) -- answers are persisted as
+        ``write_cost()`` (see `accumulate_usage`) -- the gates write answers as
         they arrive, so their cost has to be just as eagerly persisted.  On
         failure it must raise one of ``semantic_interpretation``'s five failure
         classes; anything else falls into ``_run_agent``'s bounded catch-all."""
         raise NotImplementedError
 
 
-def accumulate_usage(task: "InterpretationTask", *,
+def accumulate_usage(task: "AgentTask", *,
                      input_tokens: int = 0,
                      cache_creation_tokens: int = 0,
                      cache_read_tokens: int = 0,

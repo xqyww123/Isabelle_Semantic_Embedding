@@ -5,7 +5,8 @@ import json
 import os
 import re
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from typing import Any, NamedTuple
 
 import lmdb
@@ -164,7 +165,7 @@ _WRITE_BATCH: int = 10_000
 # `unpack_fields`' padding destroys exactly the tuple-length signal
 # migrate_entity_positions._scan and the reached/not-reached audits exist to
 # read -- those keep reading len(msgpack.unpackb(raw)) raw.
-RECORD_FIELD_COUNT = 14   # keep equal to _decode/_encode's field count below
+RECORD_FIELD_COUNT = 15   # keep equal to _decode/_encode's field count below
 F_KIND, F_NAME, F_POSITION, F_FROM_COLLECTION = 0, 1, 12, 13
 
 
@@ -358,6 +359,14 @@ class _Semantic_DB:
         # collapse to the first only after that pass has completed and been
         # verified (that plan's §3).
         from_collection: 'str | None' = None
+        # --- semantic change gate (ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md §6) ---
+        # The interpretation text at this entity's last mint (or first write):
+        # what the gate compares a fresh interpretation against.  A separate
+        # field, not `interpretation`: an answer is persisted before its gate
+        # runs, so the stored interpretation may be ungated text (§6.2).
+        # Tracked kinds of WIP records only; None everywhere else and on every
+        # record written before this field existed (read as CHANGED, §3).
+        baseline_interpretation: 'str | None' = None
 
         @property
         def pretty_print(self) -> str:
@@ -428,18 +437,20 @@ class _Semantic_DB:
 
     @staticmethod
     def _decode(raw: bytes) -> 'Record':
-        """Decode a stored record.  Records with fewer than 14 fields read with the
+        """Decode a stored record.  Records with fewer than 15 fields read with the
         missing trailing fields (locale_provenance, theory_constituents, experience,
         goal_patterns, semantic_digest, deps, version, interpreted_at, position,
-        from_collection) = None.
+        from_collection, baseline_interpretation) = None.
 
         The codec is positional tail-append (8 -> 12 with the incremental
         invalidation fields, CHECK_OUTDATE_PLAN.md §3.1; 12 -> 13 with the entity
         position, archive/plans/ENTITY_POSITION_PLAN.md §4; 13 -> 14 with from_collection,
-        archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.2).  NB code from before the 12-field
+        archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.2; 14 -> 15 with
+        baseline_interpretation, ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md §6.1).
+        NB code from before the 12-field
         codec truncates at [:8] and would DROP the four incremental fields on its
-        next write of the record, and code from before the 13- or 14-field codecs
-        drops `position` / `from_collection` the same way -- do not run a pre-§3.1 or pre-position build
+        next write of the record, and code from before the 13-, 14- or 15-field codecs
+        drops `position` / `from_collection` / `baseline_interpretation` the same way -- do not run a pre-§3.1 or pre-position build
         against a store that has them.
 
         LEGACY (experiences written before goal_patterns became a real field): their
@@ -448,10 +459,10 @@ class _Semantic_DB:
         in the codec, not in every reader.  Once every store is migrated
         (migrate_experience_patterns.py) this branch is dead and can be deleted."""
         vals = list(msgpack.unpackb(raw))
-        vals += [None] * (14 - len(vals))
+        vals += [None] * (15 - len(vals))
         (kind, name, expr, sem, prov_raw, consts_raw, experience, pats_raw,
          digest_raw, deps_raw, version, interpreted_at, position_raw,
-         from_coll_raw) = vals[:14]
+         from_coll_raw, baseline_raw) = vals[:15]
         d = _Semantic_DB._dec
         pats = [d(p) for p in pats_raw] if pats_raw is not None else None
         if pats is None and kind == int(EntityKind.EXPERIENCE) and expr is not None:
@@ -492,7 +503,8 @@ class _Semantic_DB:
                                    bytes(digest_raw) if digest_raw is not None else None,
                                    [bytes(u) for u in deps_raw] if deps_raw is not None else None,
                                    version, interpreted_at, position,
-                                   d(from_coll_raw) if from_coll_raw is not None else None)
+                                   d(from_coll_raw) if from_coll_raw is not None else None,
+                                   d(baseline_raw) if baseline_raw is not None else None)
 
     @staticmethod
     def _encode(record: 'Record') -> bytes:
@@ -515,7 +527,8 @@ class _Semantic_DB:
                               record.version,
                               record.interpreted_at,
                               record.position,
-                              record.from_collection))  # type: ignore[return-value]
+                              record.from_collection,
+                              record.baseline_interpretation))  # type: ignore[return-value]
 
     # --- the global version counter (CHECK_OUTDATE_PLAN.md §3.3) ---
     # One single-byte key, NOT a Record.  Length keeps it apart from everything
@@ -531,17 +544,26 @@ class _Semantic_DB:
 
     COUNTER_KEY = b"\xf0"
 
-    def counter_value(self, txn) -> int:
-        """Current counter value, inside the caller's USER-env transaction.
-
-        A fresh store reads (and, in a write txn, persists) 1: the counter
+    @staticmethod
+    def _unpack_counter(raw: 'bytes | None') -> int:
+        """A fresh store (no counter, or a tombstoned one) reads 1: the counter
         snapshot is the ε-epoch baseline of first-written records (§4.4), and a
         literal 0 is forbidden as a stored version/interpreted_at value."""
+        return 1 if raw is None or is_tombstone(raw) else msgpack.unpackb(raw)
+
+    def counter_value(self, txn) -> int:
+        """Current counter value, inside the caller's USER-env transaction; a
+        write transaction persists the 1 a fresh store reads."""
         raw = txn.get(self.COUNTER_KEY)
         if raw is None or is_tombstone(raw):
             txn.put(self.COUNTER_KEY, msgpack.packb(1))
-            return 1
-        return msgpack.unpackb(raw)
+        return self._unpack_counter(raw)
+
+    def counter_snapshot(self) -> int:
+        """The counter as it stands, from a read transaction: what a scan that
+        writes nothing (a dry run) may read as ε.  User env only (§9 facade)."""
+        with self._ensure_env().begin() as txn:
+            return self._unpack_counter(txn.get(self.COUNTER_KEY))
 
     def counter_next(self, txn) -> int:
         """Increment the counter and return the new value.
@@ -800,6 +822,24 @@ class _Semantic_DB:
             return None if is_tombstone(raw) else bytes(raw)
         return self._system_get(key)
 
+    def _put_fields(self, txn: Any, key: universal_key, fields: dict,
+                    *, create: bool = False) -> 'Record':
+        """Copy-up-then-modify (plan §3.1) of `fields` on `key`'s record, inside
+        the caller's write transaction; returns the record as written.  An
+        absent or tombstoned key becomes a fresh ``Record(**fields)`` under
+        `create`, and raises LookupError otherwise.  Every field-disjoint
+        writer goes through here (SEMANTIC_CHANGE_GATE_PLAN.md §6.4); the
+        caller owns the vector invalidation the fields may require."""
+        raw = self._raw_for_update(txn, key)
+        if raw is not None:
+            rec = self._decode(raw)._replace(**fields)
+        elif create:
+            rec = self.Record(**fields)
+        else:
+            raise LookupError(f"no record to update under key {key.hex()}")
+        txn.put(key, self._encode(rec))
+        return rec
+
     def _status_for_update(self, txn: Any, key: universal_key) -> dict:
         """A theory-status record ready for read-modify-write inside ``txn``:
         copy-up-then-modify, so a system-resident status is continued (its
@@ -875,6 +915,87 @@ class _Semantic_DB:
     _EMBEDDED_DOC_FIELDS = frozenset(
         {"kind", "name", "expr", "interpretation", "goal_patterns"})
 
+    @staticmethod
+    def _check_raw_put_grant(who: str, fields: 'Iterable[str]') -> None:
+        """The raw-put grant's condition (backfill_field): every field is a
+        record field the embedded document is NOT built from."""
+        for field in fields:
+            if field in _Semantic_DB._EMBEDDED_DOC_FIELDS:
+                raise AssertionError(
+                    f"{who}({field!r}): the embedded document is built "
+                    "from this field; writing it without vector invalidation would "
+                    "leave permanently stale vectors.  Use Semantic_DB[key] = rec.")
+            if field not in _Semantic_DB.Record._fields:
+                raise AssertionError(f"{who}: no such record field {field!r}")
+
+    # The fields the semantic change gate writes (ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md
+    # §6.4); their raw-put grant is checked on every gate_write.
+    _GATE_FIELDS = ("semantic_digest", "deps", "version", "interpreted_at",
+                    "baseline_interpretation")
+
+    class Gate_Writer:
+        """One entity's gate writes inside the single transaction `gate_write`
+        opened: the mint and the record put commit together or not at all."""
+        __slots__ = ("_db", "_txn")
+
+        def __init__(self, db: '_Semantic_DB', txn: Any) -> None:
+            self._db, self._txn = db, txn
+
+        def counter_value(self) -> int:
+            """The ε-epoch baseline of a first-written record (CHECK_OUTDATE_PLAN.md §4.4)."""
+            return self._db.counter_value(self._txn)
+
+        def mint(self) -> int:
+            """A new version, minted in THIS transaction (§6.3)."""
+            return self._db.counter_next(self._txn)
+
+        def put_interpretation(self, key: universal_key, *, kind: EntityKind, name: str,
+                               expr: 'str | None', interpretation: str,
+                               locale_provenance: 'Provenance | None',
+                               theory_constituents: 'list[tuple[str, bytes]] | None',
+                               position: 'tuple[str, int, int] | None',
+                               from_collection: 'str | None',
+                               semantic_digest: 'bytes | None', deps: 'list[bytes] | None',
+                               version: 'int | None', interpreted_at: 'int | None',
+                               baseline_interpretation: 'str | None') -> '_Semantic_DB.Record':
+            """The one write of an interpreted entity (plan §5.4 step 5): the
+            text, the other wire fields and the gate fields together.  The
+            text changes, so the vectors are invalidated FIRST (ordering rule
+            1, see __setitem__).  Creates the record when absent and resurrects
+            a tombstoned key.  Returns the record as written."""
+            invalidate_vectors([key])
+            return self._db._put_fields(self._txn, key, dict(
+                kind=kind, name=name, expr=expr, interpretation=interpretation,
+                locale_provenance=locale_provenance,
+                theory_constituents=theory_constituents, position=position,
+                from_collection=from_collection, semantic_digest=semantic_digest,
+                deps=deps, version=version, interpreted_at=interpreted_at,
+                baseline_interpretation=baseline_interpretation), create=True)
+
+        def update_gate_fields(self, key: universal_key, *,
+                               semantic_digest: 'bytes | None', deps: 'list[bytes] | None',
+                               version: 'int | None', interpreted_at: 'int | None',
+                               baseline_interpretation: 'str | None') -> '_Semantic_DB.Record':
+            """Overwrite the gate fields of `key`'s record -- a raw put under
+            the grant above, no vector invalidated -- and return the record as
+            written (the caller's rec_cache must equal the store, §5.4).  The
+            record exists: this is the snapshot raise of an entity already
+            written this run; a missing one raises LookupError."""
+            return self._db._put_fields(self._txn, key, dict(
+                semantic_digest=semantic_digest, deps=deps, version=version,
+                interpreted_at=interpreted_at,
+                baseline_interpretation=baseline_interpretation))
+
+    @contextmanager
+    def gate_write(self) -> 'Iterator[Gate_Writer]':
+        """The semantic change gate's write transaction for one entity
+        (ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md §5.4 step 5, §6.4): the mint
+        and the puts commit together or not at all.  The body is synchronous
+        and must not open a second write transaction on this environment."""
+        self._check_raw_put_grant("gate_write", self._GATE_FIELDS)
+        with self._ensure_env().begin(write=True) as txn:
+            yield self.Gate_Writer(self, txn)
+
     def backfill_field(
             self,
             field: str,
@@ -907,7 +1028,7 @@ class _Semantic_DB:
         exception to the vector-layer self-sufficiency invariant is therefore
         stated as a PER-FIELD condition and ENFORCED here rather than
         documented on a caller: only a field the embedded document is NOT
-        built from may take this path (the assert below).  Grants recorded so
+        built from may take this path (`_check_raw_put_grant`).  Grants recorded so
         far: `position` (archive/plans/ENTITY_POSITION_PLAN.md L6, approved explicitly for
         the entity-position migration); `from_collection`
         (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §4 open item 1, approved explicitly
@@ -918,13 +1039,7 @@ class _Semantic_DB:
         after however long it ran, while holding the store's only write lock
         throughout (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §3).  `_WRITE_BATCH` counts
         keys; see its comment for why it is not snapshot_sync._EXPORT_BATCH."""
-        if field in _Semantic_DB._EMBEDDED_DOC_FIELDS:
-            raise AssertionError(
-                f"backfill_field({field!r}): the embedded document is built "
-                "from this field; writing it without vector invalidation would "
-                "leave permanently stale vectors.  Use Semantic_DB[key] = rec.")
-        if field not in _Semantic_DB.Record._fields:
-            raise AssertionError(f"backfill_field: no such record field {field!r}")
+        self._check_raw_put_grant("backfill_field", (field,))
         hit = missing = 0
         env = self._ensure_env()
         it = iter(entries)
@@ -938,12 +1053,11 @@ class _Semantic_DB:
                     except StopIteration:
                         done = True
                         break
-                    raw = self._raw_for_update(txn, uk)
-                    if raw is None:
+                    try:
+                        self._put_fields(txn, uk, {field: value})
+                    except LookupError:
                         missing += 1
                         continue
-                    rec = self._decode(raw)
-                    txn.put(uk, self._encode(rec._replace(**{field: value})))
                     hit += 1
                     n += 1
         return hit, missing

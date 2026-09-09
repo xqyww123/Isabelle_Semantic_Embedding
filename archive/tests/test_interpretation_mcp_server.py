@@ -20,9 +20,9 @@ from Isabelle_Semantic_Embedding.interpretation_driver.mcp_server import (
     InterpretationMCPServer,
     to_call_tool_result,
 )
-from Isabelle_Semantic_Embedding.semantic_interpretation import _answer_tool
+from Isabelle_Semantic_Embedding.semantic_interpretation import mk_answer_tool
 
-from test_interpretation_driver import _make_task
+from test_interpretation_driver import _make_task, record_gates  # noqa: F401  (autouse fixture)
 
 
 class _FakeTool:
@@ -60,15 +60,19 @@ def _serve(body):
 
 
 def _with_client(tools, task, body):
-    """Register a session, run `body(client_session)` against it, clean up."""
+    """Register a session, run `body(client_session)` against it, clean up.
+    The gates the answer tool starts are tasks of a group owned here, as
+    `interpret_file` owns them."""
     async def run(server):
         session_id = server.allocate_session_id()
         url = await server.register_session(session_id, tools, task)
         try:
-            async with streamable_http_client(url) as (read, write, _):
-                async with ClientSession(read, write) as client:
-                    await client.initialize()
-                    return await body(client)
+            async with asyncio.TaskGroup() as tg:
+                task.task_group = tg
+                async with streamable_http_client(url) as (read, write, _):
+                    async with ClientSession(read, write) as client:
+                        await client.initialize()
+                        return await body(client)
         finally:
             await server.unregister_session(session_id)
 
@@ -78,12 +82,12 @@ def _with_client(tools, task, body):
 def test_a_tool_result_arrives_as_the_handler_wrote_it():
     """No JSON wrapper, no escaped newlines, and the answer is really recorded.
 
-    The answer tool returns the NEXT BATCH of entries in its own result, so a
-    result treated as structured content would reach the model as
+    The answer tool returns the batch's still unanswered entries in its own
+    result, so a result treated as structured content would reach the model as
     `json.dumps(..., indent=2)` -- its work, wrapped in JSON, newlines escaped.
     """
     task = _make_task(4, batch_size=2)
-    task.batch_range = task.batches[0][1]          # as _run_agent leaves it
+    task.next_batch()                              # as _run_agent leaves it
 
     async def answer(client, i, text):
         return await client.call_tool("answer", {"interpretations": [
@@ -93,21 +97,22 @@ def test_a_tool_result_arrives_as_the_handler_wrote_it():
         return (await answer(client, 0, "the zeroth"),
                 await answer(client, 1, "the first"))
 
-    mid_batch, handoff = _with_client([_answer_tool], task, body)
+    mid_batch, handoff = _with_client([mk_answer_tool(task)], task, body)
 
     for result in (mid_batch, handoff):
         assert result.isError is False
         assert len(result.content) == 1
         assert isinstance(result.content[0], TextContent)
-        assert "\n" in result.content[0].text, "real newlines, not \\n in a JSON string"
         assert not result.content[0].text.lstrip().startswith("{"), "not JSON-wrapped"
         assert result.structuredContent is None
+    assert "\n" in mid_batch.content[0].text, "real newlines, not \\n in a JSON string"
+    # The first reply carries the unanswered entry -- the payload a JSON
+    # wrapper would have mangled; the second ends the batch (the loop's next
+    # turn sends the next one).
     assert mid_batch.content[0].text.startswith(
         "Answered 1 translation, remaining 1 in this batch.")
-    # The batch is finished, so the result carries the NEXT one -- the payload
-    # that a JSON wrapper would have mangled.
-    assert handoff.content[0].text.startswith("Good job!")
-    assert "constant T.c2" in handoff.content[0].text
+    assert "constant T.c1" in mid_batch.content[0].text
+    assert handoff.content[0].text.startswith("Batch complete.")
     # The handlers ran against THIS task -- i.e. the ambient state survived the
     # ASGI boundary, which is exactly what uvicorn's empty per-request context
     # would otherwise have lost.
@@ -134,7 +139,7 @@ def test_the_tools_are_listed_under_the_names_the_prompts_use():
     async def body(client):
         return await client.list_tools()
 
-    listing = _with_client([_answer_tool, _FAILING_TOOL], task, body)
+    listing = _with_client([mk_answer_tool(task), _FAILING_TOOL], task, body)
     names = {t.name for t in listing.tools}
     assert names == {"answer", "always_fails"}
     answer = next(t for t in listing.tools if t.name == "answer")
@@ -151,8 +156,8 @@ def test_sessions_never_touch_the_process_signal_handlers():
     async def body(server):
         a = server.allocate_session_id()
         b = server.allocate_session_id()
-        await server.register_session(a, [_answer_tool], task)
-        await server.register_session(b, [_answer_tool], task)
+        await server.register_session(a, [mk_answer_tool(task)], task)
+        await server.register_session(b, [mk_answer_tool(task)], task)
         await server.unregister_session(a)          # out of order, on purpose
         await server.unregister_session(b)
 

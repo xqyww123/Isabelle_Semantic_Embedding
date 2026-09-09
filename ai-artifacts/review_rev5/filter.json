@@ -1,0 +1,374 @@
+{
+ "kept": [
+  {
+   "id": "write-rec-none-deref",
+   "merged_ids": [
+    "correctness-theorem-alike-rec-none-crash",
+    "storage-2",
+    "concurrency-8"
+   ],
+   "title": "§15.5 `_write` dereferences `rec` in the theorem-alike branch, where `rec` is None for every newly added lemma",
+   "plan_sections": "§15.5 `_write` (plan line 923); §3 table row \"theorem-alike (WIP)\" (line 97); D15",
+   "severity": "blocker",
+   "claim": "`version = (rec.version or w.counter_value()) if e.deps else None` evaluates `rec.version` unconditionally when the entry has deps. `rec` is `task.recs[idx]`, the record as stored BEFORE the run (plan line 802: `self.recs = recs or [None]*len(entries)`), and it is None for every entity not yet in the store — which is exactly a newly added lemma/rule (theorem-alike: no digest, deps present, uncached, hence a seed, hence gated). The AttributeError fires inside the open `gate_write` transaction and, per §5.4, becomes a `GateError` that fails the task group and `interpret_file`: the theory is not marked and the run dies. This is the commonest entry shape in a theory being interpreted for the first time.",
+   "evidence": "Plan line 923 and line 802. The code being replaced guards for exactly this: Isabelle_Semantic_Embedding/semantic_interpretation.py:945-947 `if e.deps: version_to_write[i] = (rec.version if rec is not None and rec.version else epsilon)`. `Semantic_DB.get_many` yields None for a key with no record (semantics.py:625-633), so `recs[idx] is None` is routine. The other `rec.` uses in `_gate` are guarded by `rec is not None` at plan line 885; this one is not.",
+   "proposed_fix": "Carry today's spelling over verbatim: `version = (rec.version if rec is not None and rec.version else w.counter_value()) if e.deps else None`. Better, since three of the four branches want \"the stored version, else ε\", bind `stored_version = rec.version if rec is not None else None` once at the top of `_write` and let every branch read that, so no branch can reach a None record again. Add the §10 decision-table case \"theorem-alike entity with no stored record\".",
+   "kind": "correctness"
+  },
+  {
+   "id": "write-ia-clobbers-persistent",
+   "merged_ids": [
+    "correctness-persistent-interpreted-at-overwritten",
+    "storage-1"
+   ],
+   "title": "§15.5 `_write` recomputes `ia` outside the branch, so a persistent-theory entry is stored with `interpreted_at = 0` instead of None",
+   "plan_sections": "§15.5 `_write` (lines 924 vs 934); §3 table last row (line 98); D15; §6.3",
+   "severity": "blocker",
+   "claim": "The untracked branch sets `ia = eff_star(task, e) if e.deps else None` (line 924), and then line 934 executes `ia = eff_star(task, e)` unconditionally for every entry, at the same indentation as the if/elif chain, discarding that None. For a persistent-theory entry (no digest, no deps) `eff_star` reduces to `eff_value(0, None)` = 0, so the record is written with `interpreted_at = 0`. That contradicts §3's last row (\"None (all gate fields None)\"), D15 (\"persistent carry None everywhere\") and §9 (\"What does NOT change: persistent theories\"), and it stores a value the counter contract forbids outright. `_contrib` reads `r.interpreted_at or 0`, so the wrong value is invisible at runtime — it will not surface as a failure, only as a store whose persistent records no longer have the shape every other part of the plan asserts.",
+   "evidence": "Plan lines 923-925 and 934; §3 row at plan line 98; D15 at line 66. The prohibition is written into the store: Isabelle_Semantic_Embedding/semantics.py:547-552 (`counter_value` docstring: \"a literal 0 is forbidden as a stored version/interpreted_at value\") and CHECK_OUTDATE_PLAN.md:273 (\"字面 0 禁止作为存储值\"). Today's writer keeps them None: semantic_interpretation.py:390-398 (`version, interpreted_at = ... (None, None)`, `tracked = version is not None`) and the scan never puts a persistent entry into `ia_snapshot` (:1130-1131 is guarded by `elif tracked`). (concurrency-8 reports this and the None-record deref above as one item.)",
+   "proposed_fix": "Compute `ia` in exactly one place, guarded by the same predicate as `version`: `ia = eff_star(task, e) if (judged or e.deps) else None`, and delete the assignment at line 924. Better still, restructure `_write` so each branch yields the complete 5-tuple (digest, deps, version, ia, baseline) and nothing is patched afterwards — then a branch that means \"all gate fields None\" cannot be half-overwritten by a later line. Add the §10 post-run assertion \"no stored version or interpreted_at is 0\" beside the existing \"≤ counter\" check.",
+   "kind": "correctness"
+  },
+  {
+   "id": "tracked-two-predicates",
+   "merged_ids": [
+    "correctness-tracked-two-predicates",
+    "elegance-1"
+   ],
+   "title": "`tracked` names two different predicates inside §15.5; on the parenthetical's reading a theorem-alike record gets a baseline and loses its stored version",
+   "plan_sections": "§15.5 `_gate` (line 884), `_write` (lines 922, 932, 944-947); §3 row 4 (line 97); §0 glossary; D15",
+   "severity": "blocker",
+   "claim": "`_gate` defines `tracked = e.semantic_digest is not None` (line 884). `_write` uses the same name at lines 922 and 932, and the parenthetical at lines 944-946 says it becomes `e.semantic_digest is not None or bool(e.deps)`. These are not interchangeable: a theorem-alike entry has no digest but non-empty deps. On the digest-only reading the snippet is consistent (line 922's own comment, \"theorem-alike (deps present) or persistent\", requires it). On the parenthetical's reading a theorem-alike entry is `tracked`, skips that branch and falls into `elif verdict is None:` — because `_gate` never sets a verdict for it — so it is written with `version = w.counter_value()` (its stored version discarded, a version rise with no mint) and `baseline_interpretation = text`, which §3 row 4, D15 and the field's own contract forbid for theorem-alike records. One of the two readings silently corrupts the commonest WIP entry kind, and the plan does not say which is meant.",
+   "evidence": "Plan lines 884, 922, 932, 944-946; §3 row at line 97; glossary line 23. The two cited code sites are genuinely different predicates that govern different things: semantic_interpretation.py:392 `tracked = version is not None` decides only which fields are nulled on the write, while :1101 `tracked = e.semantic_digest is not None or bool(e.deps)` is the scan's increment-tracked test. The field contract is at semantics.py:362-369 (baseline: tracked kinds of WIP records only, None everywhere else). `_TRACKED_KINDS` (plan line 722) is introduced \"for §5.4 step 1\" and then read by no code in §15.",
+   "proposed_fix": "Two names, never one: `judged = e.semantic_digest is not None` (the glossary's tracked entity — what §3's rows and the judge need) and `has_gate_fields = e.semantic_digest is not None or bool(e.deps)` (WIP vs persistent, i.e. whether the record carries gate fields at all). Put them on `Entry` so the scan and the gate read one definition. Rewrite `_write`'s branches on `judged`, use `has_gate_fields` only where line 932 stands, and rewrite the parenthetical to say which of the two it means — or use `_TRACKED_KINDS` inside `judged` and drop the constant.",
+   "kind": "inconsistency-with-code"
+  },
+  {
+   "id": "row1-discards-stored-version",
+   "merged_ids": [
+    "correctness-eps-overwrites-stored-version"
+   ],
+   "title": "§3 row 1 raises a never-digested record's stored version to ε with no mint, so its dependents go stale with nothing enrolling them",
+   "plan_sections": "§3 rows (lines 76-83) and table (line 94); §15.5 `_write` (lines 926-927, 941); §5.3.1 (lines 207-231); §14 (lines 700-706)",
+   "severity": "major",
+   "claim": "Row 1 fires when \"R is absent OR R.semantic_digest is None\" and prescribes version := ε for both cases; §15.5 implements it as `elif verdict is None: version, baseline = w.counter_value(), text`, with no mint and (correctly for row 1) no propagation. For a record that already carries a version — the never-digested legacy record of parent §4.4, which is locally stale and therefore a seed — ε read at write time is ≥ the stored version and usually strictly greater, so the entity's version RISES without a mint. §5.3.1's and §14's soundness argument is \"every stale entity is either a seed or enrolled by the mint that made it stale\"; a rise that is not a mint enrols nobody, so theory-internal dependents that the scan proved fresh end the run stale while `interpret_cone` marks the theory anyway. Today's code deliberately preserves the stored version here.",
+   "evidence": "Plan lines 78, 926-927, 941; §14 at lines 700-706. Today: semantic_interpretation.py:949-951 `if rec is None or rec.semantic_digest is None: version_to_write[i] = (rec.version if rec is not None and rec.version else epsilon)` — the stored version is kept. Parent CHECK_OUTDATE_PLAN.md:273 defines ε only for 首写 (first-written) entities and I2 (:236) allows a version change only on a bump/mint. The marking is unconditional: Tools/semantic_store.ML `interpret_cone`'s body does `interpret' driver ...; mark_interpreted thy`, and the WIP skip criterion (semantics.py:860-878) then makes this process skip the theory for the rest of its life. Note that §3's own row 4 already uses the right idiom (\"stored, else ε\"), so row 1 reads as an oversight.",
+   "proposed_fix": "Make row 1 preserve an existing version exactly as the code it replaces does: `version = rec.version if (rec is not None and rec.version) else w.counter_value()`. State the resulting invariant in §5.3.1/§14 — \"within a run a tracked entity's version can only rise through `mint()`, and every `mint()` runs `_propagate`\" — so the soundness argument rests on a property the writer enforces rather than on an assumption.",
+   "kind": "correctness"
+  },
+  {
+   "id": "on-answer-not-enrolled",
+   "merged_ids": [
+    "correctness-unrequested-answer-can-mint",
+    "drivers-3"
+   ],
+   "title": "`on_answer` has no `_NOT_ENROLLED` arm while the task now spans every entry, so today's \"Unknown entry\" guard disappears and an unrequested answer overwrites a stored interpretation, runs a judge and can mint",
+   "plan_sections": "§15.8 step 7 (lines 1052-1061); §15.3 `on_answer` (lines 818-832); §5.4 Corrections/D11; §5.3.1",
+   "severity": "major",
+   "claim": "Today the task holds only the `uncached` sub-list, so an `answer` for any other entity of the theory is rejected as \"Unknown entry\". §15.8 step 7 puts ALL of the theory's entries into the task, with `results` prefilled from the store — which is also the addressing table the answer tool checks. §15.3's `on_answer` branches only on `_DONE` and `_GATING`; an entry in state `_NOT_ENROLLED` falls through to `self.state[idx] = _GATING; self.start_gate(idx)`. So a label the agent emits for an entity this run never sent it — plausible, since the tool description invites resubmitting corrections and neighbouring entity names are visible through the query/hover/definition tools — silently replaces a good stored interpretation with text written for something else, spends a judge session on it, and on CHANGED mints a version and enrols that entity's dependents. That is a mint no seed and no enrolment produced, and it gives §5.2's \"an entity is interpreted at most once per run\" a second entry point.",
+   "evidence": "Plan lines 1053-1058 and 821-831. Today's guard: semantic_interpretation.py:592-593 `if key not in task.results: errors.append(f\"Unknown entry: {key!r}\")`, over a task built at :1173-1179 with `entries=[entries[i] for i in uncached]`. The invitation is in the tool description (:582 \"You may also resubmit an entry to correct a previous answer\") and in the end-of-batch reply (:639 \"If you noticed any mistakes in your earlier translations, correct them now\") — with the full theory addressable, \"earlier translations\" now spans entries this run never sent.",
+   "proposed_fix": "Give `on_answer` an explicit `_NOT_ENROLLED` arm and make it non-minting: reject it back into the tool's existing `errors` list (\"Entry not requested\"), keeping today's semantics for anything the run did not ask for — the agent was never shown the entry's statement. State it in §5.3.1 beside the five states, so \"only a seed or an enrolled entity is ever gated\" is a property of the state machine rather than of what the agent happens to send.",
+   "kind": "correctness"
+  },
+  {
+   "id": "tool-whitelist-feeds-the-hook",
+   "merged_ids": [
+    "drivers-1"
+   ],
+   "title": "The derived tool set must also drive the PreToolUse hook; shrinking `_TOOL_WHITELIST` to the CLI built-ins denies every MCP tool, `answer` included",
+   "plan_sections": "§5.5 \"Judge session\" (lines 350-359); §15.6; §13 step 5",
+   "severity": "blocker",
+   "claim": "§5.5 says `_TOOL_WHITELIST` shrinks to the CLI built-ins, `_permission_control` becomes a closure inside `_options()`, and `allowed_tools` is derived from `self.tools`. It never says what the closure tests against. In the code that one set feeds TWO consumers, and the hook — not `allowed_tools` — is the hard enforcement under `permission_mode=\"default\"`. Implemented literally (whitelist shrunk, hook still testing membership in it), every `mcp__isabelle_semantics__*` call is denied for the interpretation session too, so `answer` never lands and the run dies in the retry loop; the judge's `verdict` is denied the same way. The plan's own goal (\"permissions are derived, never listed\") is only met if one derived set is used in both places.",
+   "evidence": "claude_code.py:61-85 (`_TOOL_WHITELIST` holds the built-ins AND the five `mcp__isabelle_semantics__*` names), :99-111 (`if tool_name not in _TOOL_WHITELIST: return _deny(...)`), :453 (`allowed_tools=list(_TOOL_WHITELIST)`), :465-467 (the hook registered for matcher `*`, `permission_mode=\"default\"` at :451).",
+   "proposed_fix": "State it structurally: one method, e.g. `_allowed_tool_names()` = `{f\"mcp__{SERVER_NAME}__{t.name}\" for t in self.tools} | (_CLI_BUILTINS if self.cli_tools else set())`, evaluated once at the top of `_options()` into a local that BOTH `allowed_tools=sorted(allowed)` and the hook closure read. Rename `_TOOL_WHITELIST` to `_CLI_BUILTINS` so nothing can read it again as \"the whole allowed set\". Then the option and the hook cannot disagree.",
+   "kind": "correctness"
+  },
+  {
+   "id": "taskgroup-wraps-failures",
+   "merged_ids": [
+    "concurrency-2",
+    "tests-3"
+   ],
+   "title": "The gate `TaskGroup` turns every `interpret_file` failure into an `ExceptionGroup`, breaking the one-line user-error contract with ML and the existing `pytest.raises(FatalAgentError)` tests",
+   "plan_sections": "§5.4 Failures (\"it fails the task group and therefore `interpret_file`\"); §15.1 (`interpret_file`: scan, task group, closing line); §15.4; §10 failure bullets",
+   "severity": "major",
+   "claim": "The plan reasons about failures as if the raised exception reached `interpret_file`'s caller unchanged. `asyncio.TaskGroup.__aexit__` wraps EVERY exception that escapes the body or a child in a `BaseExceptionGroup` — including one the body itself raised with no child failing. So `interpret_file` stops raising `FatalAgentError` and starts raising `ExceptionGroup('unhandled errors in a TaskGroup', [FatalAgentError(...)])`. Three consequences the plan does not account for: the ML side's one-line user error is found by substring on the message, so what the user sees changes (and with two sub-exceptions the first marker wins arbitrarily); `except FatalAgentError` stops matching, and the existing suite asserts that bare class through this path; and §10's \"`GateError` fails the run\" test would have to be written against `ExceptionGroup`, i.e. around the defect rather than against a contract.",
+   "evidence": "Measured on this machine (Python 3.12.3): `async with asyncio.TaskGroup(): raise E('[MARK] boom')` → `ExceptionGroup('unhandled errors in a TaskGroup', [E('[MARK] boom')])`. The raise sites that move inside the group are semantic_interpretation.py:1244 (completeness backstop) and `_run_agent`'s re-raises at :837/:849. The ML contract: Tools/semantic_store.ML:1434-1445 (`extract_user_error` matches `USER_ERROR_MARKER` by substring; `interpretation_rpc_error` reports the marked text alone). The tests: archive/tests/test_interpretation_driver.py:230 and :293 `pytest.raises(FatalAgentError)`.",
+   "proposed_fix": "Unwrap at the one place that owns the group so `interpret_file`'s failure contract is unchanged: `try: async with asyncio.TaskGroup() as tg: ... except BaseExceptionGroup as eg:` re-raise the first non-`CancelledError` leaf (flattened) `from eg`, and re-raise `CancelledError` as itself. Say so in §5.4 next to \"fails the task group and therefore `interpret_file`\", and write §10's tests against the unwrapped class.",
+   "kind": "correctness"
+  },
+  {
+   "id": "judge-throttle-unbounded",
+   "merged_ids": [
+    "concurrency-1"
+   ],
+   "title": "`_run_agent`'s throttle arms never raise and never consume budget, so a throttled judge retries forever inside a gate and many judges retry in lockstep every 2 s",
+   "plan_sections": "§5.4 step 3 and Failures (D10); §5.3 Termination; §15.5 `_judge` (lines 913-916); §15.4",
+   "severity": "major",
+   "claim": "§5.4 step 3 runs the judge through the same `_run_agent`, and §15.5's `_judge` catches `except Exception`, resolving anything it catches to CHANGED per D10. But the two most likely failures never reach it: `except ReachLimitError: await asyncio.sleep(1200); return await _run_agent(...)` and `except RateLimitError: await asyncio.sleep(2); return await _run_agent(...)` re-enter with `depth` UNCHANGED, so they neither raise nor consume the recycle budget. A judge that meets a usage cap or a 429 therefore retries without bound while §5.3's termination rule keeps the theory's session, its ML worker thread and (after §8) the interpretation lock alive until `gates_running == 0`. The 2 s arm is a fixed, non-growing interval with no jitter, and the answer tool's array can start up to `_BATCH_SIZE` = 20 gates from one tool call while `schedule_dag` runs theories concurrently at `Multithreading.max_threads ()` — so a single 429 becomes a self-sustaining storm of judge sessions retrying every 2 s, which is not the behaviour the interpretation session's throttle policy was written for.",
+   "evidence": "semantic_interpretation.py:818-827 (both throttle arms re-enter with `depth`, unlike the recycle arms at :841 and :862); §15.5 line 916 (`except Exception`, which a throttle never becomes); §15.4's `if not task.gates_running: break`; semantic_interpretation.py:135 `_BATCH_SIZE = 20` and :577-651 (`_answer_tool` loops over the submitted array, so one call answers many entries); Tools/semantic_store.ML `schedule_dag` (\"the worker pool bounds concurrency at Multithreading.max_threads ()\"), one Future per cone theory.",
+   "proposed_fix": "Make the throttle arms budget-aware through the task rather than globally: give `AgentTask` a `throttle_budget` (interpretation: unbounded, today's behaviour; `JudgeTask`: e.g. one rate-limit retry with backoff and no usage-cap wait) that `_run_agent` consults before sleeping, and let it re-raise `ReachLimitError`/`RateLimitError` past the budget. `_judge` then resolves them like any other failure to CHANGED — conservative, free, and already the defined answer — instead of the theory hanging on a decision whose default is known.",
+   "kind": "concurrency"
+  },
+  {
+   "id": "prefilter-inherits-17min-retry",
+   "merged_ids": [
+    "concurrency-6"
+   ],
+   "title": "The prefilter's `embed` call inherits the corpus retry ladder: a dead embedding endpoint stalls each in-flight gate ~17 minutes and emits one Isabelle warning per attempt per gate",
+   "plan_sections": "§5.4 step 2 (lines 268-281); §15.5 `_prefilter` (lines 906-911); §12 #5",
+   "severity": "major",
+   "claim": "§5.4 and §15.5 read as though a failed embedding call returns quickly and flips `prefilter_disabled`. It does not: `Embedding_Provider.embed` goes through `_embed_cached`, which retries each chunk ten times with `await asyncio.sleep(2 ** attempt)` — 1+2+…+512 s ≈ 17 minutes — before raising, warning to Isabelle on each attempt with an HTTP detail. Gates are unlimited and concurrent, so every gate already in flight when the endpoint dies pays the full ladder independently (only the first to give up sets the flag), `interpret_file` cannot return until they all join, and 20 gates produce ~200 warning lines for one outage. The startup check does not cover this: it only resolves configuration and constructs the provider, and the plan itself says network reachability is first known here.",
+   "evidence": "semantic_embedding.py:351-372 (`for attempt in range(10): ... await asyncio.sleep(2 ** attempt)`, whose own comment names \"the full ~17min of backoff (1+2+...+512s) that precedes the raise\"), :440-452 (`_warn` per failed attempt, Isabelle's warning channel), :456-468 (`embed` → `_embed_cached`). The same figure is already cited as a reason to fail early at semantics.py:2765-2767. Termination: plan §5.3 \"Termination\" and §15.4.",
+   "proposed_fix": "The prefilter is an optional optimisation whose failure answer is already defined (skip it, let the judge decide), so it must not inherit the corpus-embedding retry policy. Either wrap the call in `async with asyncio.timeout(_PREFILTER_TIMEOUT)` (a few seconds) inside `_prefilter`, or give `Embedding_Provider._embed_cached` an explicit `attempts` parameter (default 10, prefilter 1) — the reuse-friendly shape. Set the disable flag on the first failure and have gates re-check it after each await, so gates already waiting bail out instead of each serving their own sentence.",
+   "kind": "concurrency"
+  },
+  {
+   "id": "gate-emb-store-on-server",
+   "merged_ids": [
+    "concurrency-4",
+    "storage-6",
+    "elegance-3",
+    "ml-side-6"
+   ],
+   "title": "`connection.server.gate_emb_store` is process-global per-run state that re-invents the existing per-connection vector-store registry and outlives the connection it is bound to",
+   "plan_sections": "§15.8 \"Ordering of the startup check's result\" (lines 1066-1072); §5.4 step 2; §5.6; D5",
+   "severity": "major",
+   "claim": "The startup-check RPC parks the resolved `Semantic_Vector_Store` on `connection.server.gate_emb_store` and every theory's `interpret_file` reads it back. `Server` is the host process's single object, shared by every connection, so this is a process-global holding per-run, per-user-context state, and the plan gives it no reset: \"a missing attribute means not checked\" only covers the FIRST run in the host's life. A later run whose startup check failed inherits the previous run's provider — resolved from another process's `Semantic_Embedding.embedding_model`, which directly contradicts D5, and a wrong-model prefilter is not a safe default since it is the backstop D2 relies on. The object also carries `connection=<the startup check's connection>`, which `call_command` hands straight back to the pool and which a failed heartbeat closes together with the whole pool. All of this re-invents a registry that already exists and is already per-connection, and §5.6's own callback change puts the config lookup on the very connection `interpret_file` runs on.",
+   "evidence": "Plan lines 1066-1072. One Server per host, handed to every connection: ../Isabelle_RPC/Isabelle_RPC_Host/rpc.py:73-79 (`Connection.__init__(..., server)`), :279-282 (`handle_client` builds one Connection per client against that one server). The existing registry: semantics.py:2792-2814 (`_conn_semantic_vector_store`, cached per connection, installed as `Connection.semantic_vector_store`) constructing `Semantic_Vector_Store(emb_provider=provider, connection=self)` at :2810; the package states the rule at semantics.py:125-133 (\"Cached per CONNECTION, not module-level: one RPC host serves a whole fleet of Isabelle processes\"). Connection lifetime: ../Isabelle_RPC/Tools/RPC.ML:867-878 (a failed heartbeat closes every pooled connection) and :883-895 (`call_command` releases the connection back to the pool).",
+   "proposed_fix": "Drop `server.gate_emb_store`. §5.6 already adds `Config.make_config_lookup_callback` to `send_for_interpretation`'s callback list, so `interpret_file` resolves its own store on ITS OWN connection: `try: emb_store = await connection.semantic_vector_store() except Exception: emb_store = None`, cached by the existing per-connection registry. That is per-run and per-context by construction — D5 holds with nothing to remember — and the startup check keeps exactly one job: resolving the configuration early and printing §12 #4 once. If a once-per-run report must gate the theories, pass a boolean, not an object. (Note the prefilter only ever uses `store.emb_provider`.)",
+   "kind": "storage"
+  },
+  {
+   "id": "d14-durability-vs-completeness",
+   "merged_ids": [
+    "concurrency-7",
+    "storage-5"
+   ],
+   "title": "D14 retires \"answered means durable\" while the completeness invariant that licenses `mark_interpreted` still tests `results`, and the per-item write-failure feedback path to the agent disappears",
+   "plan_sections": "§15.3 `on_answer` (lines 818-832); §5.3.1 (lines 207-211); §5.4 step 5 / D14; §5.4 Failures",
+   "severity": "major",
+   "claim": "Today the answer tool persists first and marks second, with a comment recording why: marking first once left memory claiming an answer that was not on disk, and the entry was never re-asked in that run. `interpret_file`'s final check tests `results`, and on the strength of it `interpret_cone` marks the theory. Under D14 `on_answer` fills `results[key]` in memory and the store write moves into the gate, so the check no longer proves what its own comment says it proves — yet §5.3.1 states the invariant is \"unchanged\". It is unchanged in form only, and the gap is reachable: `start_gate` calls `TaskGroup.create_task`, which raises `RuntimeError` when the group is aborting or exiting (e.g. a sibling gate just raised `GateError`, or a late correction turn is still running after the loop broke); the tool handler swallows that into the agent's `errors` list and the entry is left marked answered, in `_GATING`, with nothing written, nobody waiting for it, and `gates_running` incremented but never decremented. Second, the per-item write failure that comment was written for can no longer be reported back and re-asked: it now surfaces as a `GateError` that discards the whole theory's paid-for answers.",
+   "evidence": "semantic_interpretation.py:602-624 (\"PERSIST FIRST, MARK IN MEMORY SECOND … This way 'answered' means 'durable'\", plus the per-item `except Exception` that leaves the entry unanswered and returns the reason to the agent) and :1228-1245 (\"COMPLETENESS INVARIANT … interpret_cone marks a theory interpreted as soon as interpret' RETURNS\", tested as `answered < len(task.entries)`); Tools/semantic_store.ML `interpret_cone` body (`interpret'` then `mark_interpreted thy`). Plan line 827 (`self.results[key] = text  # in memory only (D14)`) and 831.",
+   "proposed_fix": "Make the state, not the text, the certificate. (a) In `on_answer`, create the gate task FIRST and only then set `state[idx] = _GATING`, bump `gates_running` and store `results[key]`, so a refused task leaves the entry cleanly unanswered and re-askable. (b) Change the final invariant to \"every entry is `_DONE` or `_NOT_ENROLLED`\" and re-word the comment at :602-608 and :1228-1240 to say that `_DONE` is what licenses `mark_interpreted` — otherwise the file carries a comment asserting the opposite of what the code does. (c) Keep one-bad-item feedback where the agent can still act on it by validating the text (the existing surrogate strip plus a `msgpack.packb` round trip) in `on_answer`, and state in §5.4 that any other step-5 failure discards the theory's LLM work.",
+   "kind": "correctness"
+  },
+  {
+   "id": "statement-refresh-lost-at-zero",
+   "merged_ids": [
+    "ml-side-1",
+    "tests-4"
+   ],
+   "title": "Moving the statement refresh past the dry-run return makes an `expr`-only change unrefreshable whenever the cone quotes zero",
+   "plan_sections": "§5.3.2 (lines 253-256); §15.8 item 8 (lines 1063-1064); §6.3; §5.2; §10 \"statement refresh\"",
+   "severity": "major",
+   "claim": "Today the `expr` refresh runs inside the scan, before the dry-run early return, so every dry run keeps the stored statement — and, through `update_expr`'s vector invalidation, the vector — current. The plan makes the scan write nothing and moves the refresh after the LLM loop. For a theory whose only difference is a changed printed statement (no digest change, no dep change, nothing stale) the seed set is empty; if that is true across the cone, the total quote is 0, both `n == 0` guards short-circuit, no live run is ever started, and `update_expr` is never called. The stored `expr` stays stale indefinitely and the embedding keeps describing text the entity no longer has. Persistent-theory entries are hit hardest: carrying no digest and no deps, the refresh is their only update path. §10's \"statement refresh\" test drives a live run and would not catch it.",
+   "evidence": "Today's placement: semantic_interpretation.py:1128-1129 (`if e.prop_str and rec.expr != e.prop_str: Semantic_DB.update_expr(...)`), inside the phase-3 loop, reached before the dry-run return at :1136-1143. The short-circuits: semantics.py:1844-1845 `if n == 0: return` in `update_interpretations`, and Tools/interpret_command.ML:122 `if n = 0 then (writeln \"[Semantic_Embedding] Nothing to interpret.\"; embed_phase ())`. A theory already marked in this process is skipped by `skip_interpreted` even when some other theory pulls the cone into a live run.",
+   "proposed_fix": "Keep the statement refresh in the scan on both the dry and the live path — it writes no gate field, mints nothing and is idempotent — and record it in §6.3/§11 as the one explicit, narrow exception to \"the scan and a dry run write nothing\", which is exactly how parent discipline 3 already treats it. If it must move out of the dry path, then §15.8 step 6 has to run it for the non-seed entries before `return len(seeds)`. Add to §10: a theory whose only change is `prop_str` — dry run 0 — still ends with `expr` refreshed and the vector invalidated.",
+   "kind": "correctness"
+  },
+  {
+   "id": "intermediate-step4-destroys-signal",
+   "merged_ids": [
+    "tests-1"
+   ],
+   "title": "§15.11's intermediate states are not green, and the post-step-4 tree permanently destroys invalidation signal in whatever store it is run against",
+   "plan_sections": "§13 steps 3-5; §15.11 (lines 1109-1116); §15.8 item 2",
+   "severity": "blocker",
+   "claim": "§15.11 presents each intermediate as shippable-green. After step 3 `write_answer` is replaced by `on_answer` and `inv_fields` is dropped, but the gate that would supply version/interpreted_at only arrives in step 5 — so there is no channel from the (still unchanged) scan to the write, and §15.11's own description of that state (\"every answer is written at once with the scan's fields\") is unimplementable. After step 4 the scan no longer mints while the gate that mints instead does not exist yet; §15.11 says the consequence is that dependents are \"re-interpreted only on the next run\". That is wrong in the dangerous direction: the entity is re-interpreted and its record rewritten with the NEW digest and an unraised version, so on the next run the digest matches, the version never rose, eff* never rises, and its dependents are never re-interpreted at all. The signal is not deferred, it is destroyed — silently, in the developer's real `~/.cache/Isabelle_Semantic_Embedding` store.",
+   "evidence": "Today the mint and the write are one mechanism split across the two steps: semantic_interpretation.py:939-962 (`v = Semantic_DB.counter_next(txn)` at :954 and the put at :955-957) reaching the write only through `version_to_write` → `inv_fields` (:1177-1178) → `write_answer` (:381-402, `version, interpreted_at = self.inv_fields[task_idx]` at :390, `tracked = version is not None` at :392, which with version None also blanks `semantic_digest` and `deps`). Plan §13 steps 3-5 and §15.8 item 2.",
+   "proposed_fix": "Either merge §13 steps 4 and 5 into one step — the scan's mint and the gate's mint are one mechanism, and the write path must never be without exactly one of them — or keep `inv_fields`/`write_answer` alive through steps 3 and 4 and delete them in step 5, saying so in step 3. Whichever is chosen, correct §15.11's claim that dependents are merely deferred, and state that the intermediate tree must not be run against a store anyone cares about.",
+   "kind": "correctness"
+  },
+  {
+   "id": "epsilon-vs-zero-for-versionless-record",
+   "merged_ids": [
+    "tests-5"
+   ],
+   "title": "§15.8 items 2 and 4 disagree on the ε reading for a version-less record; the code it spells out (`rec.version or 0`) makes such records permanently fresh and fails the existing eff* cross-check",
+   "plan_sections": "§15.8 items 2 and 4 (lines 1042-1048); §10 \"eff*: … None/ε/missing cases\"; §15.10",
+   "severity": "major",
+   "claim": "Item 2 says the scan \"keeps computing, per entry, … the ε reading for a version-less record\" and, in the same sentence, that \"the scan needs no counter at all\"; item 4 settles it in code as `_EffStar.eff_value(rec.version or 0, e.deps)`. Reading a stored version of None/0 as 0 rather than as ε changes verdicts: a record with a matching digest but no version gets eff* driven by 0, so `eff* > interpreted_at` can be false where today it is true, and the entity is never re-interpreted and never acquires a version. That is a behaviour change nobody decided, it is not on §10's list, and it breaks a live test whose reference implementation encodes the ε rule explicitly — a test the plan's §15.10 mapping does not mention at all.",
+   "evidence": "Today: semantic_interpretation.py:940 `epsilon = Semantic_DB.counter_value(txn)`, assigned as the entity's own version at :946-951 and :962 and consumed at :1122 and :1131. The reference: archive/tests/test_eff_star.py:129 `own = r.version or epsilon` inside `_expected_stale`, driven over `_random_store`'s `version=rng.choice([None, 0, rng.randint(1,9)])` (:113) by `test_production_scan_agrees_with_the_reference_on_random_stores` (:143-163) over 150 seeds — roughly two thirds of generated records are version None/0, so the test fails immediately under `rec.version or 0`.",
+   "proposed_fix": "Decide in one sentence and make items 2 and 4 agree. If ε stays (the conservative reading, matching D10), the scan keeps one read-only `counter_value` and item 4 becomes `eff_value(rec.version or epsilon, e.deps)`; test_eff_star.py needs no change. If 0 is intended, §15.10 must list test_eff_star.py as a file to update and §10 must gain a bullet stating that a digest-carrying record with no version is now treated as fresh.",
+   "kind": "inconsistency-with-code"
+  },
+  {
+   "id": "user-visible-counters-rebased",
+   "merged_ids": [
+    "user-facing-1",
+    "user-facing-2"
+   ],
+   "title": "Building the task over ALL entries silently rebases four existing user-visible lines whose counts §12 does not cover",
+   "plan_sections": "§15.8 item 7 (lines 1052-1061); §12 (#7 only); §5.2; §9",
+   "severity": "major",
+   "claim": "`task.entries` and `task.results` are the denominators of lines the user reads, and the seed set is the numerator of a line the user reads before the run starts. §15.8 item 7 widens the task to every entry and calls the change costless (\"the larger `results` dict costs nothing noticeable\"): true for storage, false for the texts. (a) The per-answer progress line prints `total_answered of len(task.results)`; with non-seeds prefilled it jumps to e.g. \"Foo: 230 of 244 done.\" on the very first answer of a 14-entity run, and the only fine-grained sign of life during a long theory stops meaning anything. (b) The stalled-retry warning prints \"<k> of len(task.entries) entities still have no interpretation\". (c) The give-up failure text prints \"left <k> of <total> entities uninterpreted\" with total = len(task.entries). (d) The three per-theory opening lines quote an exact count of what will be asked, which under D13 is now the seed count while the run may interpret many more — the same lower-bound problem §5.2 solves for the dry run with \"at least n\", in lines §12 does not list.",
+   "evidence": "semantic_interpretation.py:627-635 (the progress line and its comment, \"The only fine-grained sign of life during a long theory\"), :795-801 (retry warning, `len(task.entries)`), :733-739 with :1241-1245 (`_msg_unanswered(..., total=len(task.entries))`), :1153-1162 (the three opening lines, e.g. \"asking the LLM for the remaining {len(uncached)} (new or outdated)\"); the 1:1 results/_keys/entries construction at :334-347. Plan lines 1050-1061 and §12's list, which carries only the closing line (#7).",
+   "proposed_fix": "Add an explicit work denominator to `AgentTask` — entries whose state is not `_NOT_ENROLLED`, which grows as gates enrol — with a numerator of `_DONE` entries, and route (a)-(c) through it. Because the total can grow mid-run the wording must say so, and the opening lines (d) need the \"at least\" discipline §5.2 already approves; all four are user-visible, so they belong in §12 for approval alongside #7 rather than being left to the implementer.",
+   "kind": "inconsistency-with-code"
+  },
+  {
+   "id": "judgetask-bends-the-queue-machinery",
+   "merged_ids": [
+    "elegance-2"
+   ],
+   "title": "`JudgeTask` forges six pieces of queue state to satisfy machinery it does not need, and delivers its normal \"no verdict\" outcome as a `FatalAgentError` through a blanket `except Exception` that also swallows real bugs as CHANGED",
+   "plan_sections": "§5.5 (lines 314-346); §15.2; §15.4; §15.5 (lines 913-916); §15.6 (lines 982-1006)",
+   "severity": "major",
+   "claim": "The judge needs exactly two things from the interpretation runner: the recycle ladder and per-turn cost accumulation. The plan gets them by making the judge a full `AgentTask` and then forging the state the queue loop expects: `self.enqueue(0)` in the constructor, `judge.results[key] = args[\"why\"]` written \"so the retry loop sees the entry answered\", `judge.state[0] = _DONE` set by hand, an `on_answer` stub that is never called, a `retry_report` returning `\"\"` to suppress a line the judge must not print, and a new `max_stalled_retries` attribute whose only purpose is to make a ten-round stall counter mean one round. Worse for correctness: the normal outcome \"the judge said nothing\" is delivered as the `FatalAgentError` that `_retry_unanswered` raises on give-up, and `_judge` catches it with `except Exception` — so a genuine bug anywhere in the judge path (a TypeError building the pair prompt, a KeyError in the verdict tool) is silently reinterpreted as an UNCHANGED-denying CHANGED verdict, which is precisely the failure D10 says must never be hidden.",
+   "evidence": "Plan lines 989, 992, 993, 995, 998-1001, 1004-1006 and 913-916. Code: semantic_interpretation.py:747-862 (`_run_agent`: the recycle ladder is the only part the judge needs; the queue/retry body is the part it does not), :784-792 (the stall give-up raises `FatalAgentError`), :162 (`_MAX_STALLED_RETRIES`). The drivers touch a task only for `model`, `api_retry_errors` and `accumulate_usage` (interpretation_driver/__init__.py:161-173, :193-220).",
+   "proposed_fix": "Split `_run_agent` into the part that is genuinely shared and the part that is not: `_with_recycle(make_driver, task, body, depth=0)` keeps `async with make_driver() as driver:` plus the five exception handlers verbatim and calls `await body(driver)`. §15.4's queue loop becomes that body for `InterpretationTask`; the judge's body is three lines (run the pair prompt; if `judge.verdict is None`, ask once more; return). `AgentTask` then holds only what the drivers consume, and the queue, five states, `results`, `_keys`, `format_entries`, the three retry strings and `max_stalled_retries` stay in `InterpretationTask` where they mean something. \"No verdict\" becomes `judge.verdict is None` — a value, not an exception — and `_judge` can narrow its `except` to the classes that really are failures.",
+   "kind": "elegance"
+  },
+  {
+   "id": "put-interpretation-shape",
+   "merged_ids": [
+    "storage-4",
+    "elegance-4"
+   ],
+   "title": "Putting `put_interpretation` inside `Gate_Writer` turns the class's enforced raw-put grant into a decorative one, and its 13-keyword signature restates the Record shape a fourth time for a copy-up that preserves nothing",
+   "plan_sections": "§6.4 (lines 422-447); §15.7 (lines 1024-1034); §15.5 (lines 935-938)",
+   "severity": "minor",
+   "claim": "`Gate_Writer` exists as \"raw puts under the grant: no vector is invalidated\", and `gate_write()` enforces that once per transaction by asserting that its field set is disjoint from `_EMBEDDED_DOC_FIELDS`. Step 3 adds to that same class a put that writes `kind`, `name`, `expr` and `interpretation` — four embedded-document fields — and that invalidates vectors itself. After the change the class-level assertion describes only one of the two puts, so a field added to `put_interpretation` later is checked by nothing, and two live tests pin an invariant the class no longer has. Separately, the 13-keyword signature supplies all Record fields except `experience` and `goal_patterns`, which are None for every kind this pipeline writes (EXPERIENCE is excluded from interpretation), so the prescribed `_raw_for_update` → `_decode` → `_replace` round trip preserves nothing while making the parameter list the fourth place the record's shape must be kept in step.",
+   "evidence": "semantics.py:936-938 (class docstring), :970-977 (`gate_write` calls `_check_raw_put_grant(\"gate_write\", self._GATE_FIELDS)`), :915-933 (`_EMBEDDED_DOC_FIELDS`, `_check_raw_put_grant`, `_GATE_FIELDS`); the tests that pin it: archive/tests/test_semantic_change_gate_storage.py:252-262 (`test_gate_write_does_not_invalidate_vectors`) and :264-276 (`test_the_raw_put_grant_is_checked_for_the_gate_writer`). `__setitem__` (semantics.py:703-723) is already \"invalidate the vectors, then put the record\" and differs only in owning its transaction; today's call site already builds the whole `SemanticRecord` literal (semantic_interpretation.py:393-402); EXPERIENCE is excluded at :125-133.",
+   "proposed_fix": "Put the decision in the shared helper so it cannot be got wrong: `_put_fields(txn, key, fields)` computes `touched = fields.keys() & _EMBEDDED_DOC_FIELDS` and either invalidates first or checks the grant. Move the grant check off `gate_write()` (where it would now guard the wrong thing) onto `update_gate_fields`, and drop \"no vector is invalidated\" from the class docstring. Then give the gate writer a record-shaped put — `Gate_Writer.put(key, rec) -> Record` — and re-express `Semantic_DB.__setitem__` through it, so one body carries the vectors-first rule for both writers; the call site keeps today's `SemanticRecord(...)` literal with the gate fields filled in. Keep the two existing tests and add one asserting that `put_interpretation` DOES tombstone the vector.",
+   "kind": "elegance"
+  },
+  {
+   "id": "provisional-rec-cache-write",
+   "merged_ids": [
+    "elegance-5",
+    "storage-3"
+   ],
+   "title": "`_write` fabricates a provisional `rec_cache` record before the commit and repairs it afterwards, though `eff_value` already takes the version as an argument",
+   "plan_sections": "§5.4 step 5 (lines 288-293); §15.5 (lines 933-939, 965-971)",
+   "severity": "minor",
+   "claim": "§5.4 step 5 states the invariant \"on commit the record is put back into `rec_cache` (so 'rec_cache == store' holds for every later eff*)\", and §15.5 then breaks it deliberately: it writes a fabricated record — the new version paired with the PRE-RUN `interpreted_at`, a combination that exists nowhere else and that `_contrib`'s wall test reads — into the shared cache before the transaction, and overwrites it with the written record afterwards. The invariant thus depends on two paired assignments straddling a fallible write, and the plan never says which reading of the fabricated pair is intended when E is reachable from its own dependencies. The fabrication exists only because `eff_star(task, e)` is specified to read E's own version out of the cache, even though the function it is an extraction of takes the version as a parameter.",
+   "evidence": "Plan lines 288-293 and 933-939; plan lines 965-971 (`eff_star(task, e)` is \"today's `eff_value(version, deps)` closure (:1083)\"). Code: semantic_interpretation.py:1084-1090 (`def eff_value(version, deps)` — the version is an argument, not a cache read) and :989-1003 (`_contrib` reads `r.version` and `r.interpreted_at` of whatever `rec_cache` holds).",
+   "proposed_fix": "Keep the extracted entry point at today's signature — `eff_value(version, deps)` — and call `ia = task.eff.eff_value(version, e.deps)` with the just-minted version passed in. No record is fabricated, `rec_cache[key]` is assigned exactly once from the committed write, and \"rec_cache == store\" becomes true by shape rather than by paired assignments. If the cyclic case must see the new version, say so in one line and express it as an explicit `{key: version}` override consulted by `_rec_of`/`_contrib` — an override is scoped to the call and cannot survive a failed write.",
+   "kind": "storage"
+  },
+  {
+   "id": "doc-list-omits-load-bearing-statements",
+   "merged_ids": [
+    "user-facing-3",
+    "user-facing-5",
+    "ml-side-4",
+    "user-facing-6"
+   ],
+   "title": "§11's documentation list omits statements this plan makes false, including parent invariant I4 and the stated rationale for the dry run's proof-channel de-duplication",
+   "plan_sections": "§11 (lines 612-634); §13 step 8 (lines 691-692); §5.2 (the approved dry-run comment); §5.3.1",
+   "severity": "minor",
+   "claim": "§11 rewrites parent §4.1, §4.2 I2/I3, §8 disciplines 3-4, §8 metering, §14's equality and \"glossary\", and one ML dry-run comment. Several further load-bearing statements go false and are named nowhere. (a) Parent invariant I4 says interpreted_at is updated only on re-interpretation; §5.3.1's snapshot raise writes a new interpreted_at for an already-written entity with no re-interpretation and no mint. (b) Parent §4.1's \"first visit bumps ⟹ the memo is never invalidated\" is the premise §15.5 replaces with a memo rebuilt per call. (c) The retired \"quote = actual work\" equality is asserted at three further ML sites, and §13 step 8's instruction (\"find the sites by searching for the dry run's `n`\") does not find two of them; one of the three is the JUSTIFICATION for the proof channel's de-duplication, so the code keeps a rationale that no longer holds. (d) Parent §3.1 names `write_answer` as one of only two construction points for the incremental fields, and §8's pipeline block and §14's dry-run row describe the scan-time bump the plan removes.",
+   "evidence": "CHECK_OUTDATE_PLAN.md:238 (I4: \"查而不修；interpreted_at 只在重解释时更新\"), :203 and :210-212 (bump at scan; \"首访即 bump ⟹ memo 永不作废\"), :107 (write_answer as a construction point), :367-372 (the §8 pipeline block, \"LLM → write_answer 逐条落盘\"), :39 (glossary dry-run row, \"全系统唯一的工作量计量实现\"), :729-731 (§14: \"扫描 bump 已落库；随后的模式 3 待办集含 bump 实体\"). The three unnamed ML sites: Tools/semantic_store.ML:39-48 (the exported `dry_run` comment), :1866-1872 (`dry_run_payload`), :2199-2207 (\"One dry_run is ONE metering (the quote must equal the live work …)\" as the reason for the proof-channel subtraction below it); and Tools/interpret_command.ML:94-98 (\"the confirmation below quotes exactly the work a 'Yes' buys\"), which sits forty lines above the text §12 #8 now renders as \"At least <n>\".",
+   "proposed_fix": "Name each anchor in §11 with its replacement: I4 becomes \"interpreted_at is written at the entity's own write and raised when a dependency mints later in the same run (§5.3.1), never at query time\"; §4.1's bump-and-memo corollary becomes \"mints happen only at a gate verdict; the eff* memo is valid only between mints\"; the four ML comments get the approved lower-bound wording, and semantic_store.ML:2199-2207's de-duplication is restated on a premise that survives (no uk may be counted twice within one quote); §3.1's construction point becomes `Gate_Writer.put_interpretation`.",
+   "kind": "inconsistency-with-code"
+  },
+  {
+   "id": "test-mapping-not-implementable",
+   "merged_ids": [
+    "tests-2",
+    "tests-6",
+    "drivers-7"
+   ],
+   "title": "§15.10's test mapping is wrong about the suite as it is: it omits the file that pins the scan step 4 removes, and claims scenarios keep assertions whose only hook is the deleted `write_answer`",
+   "plan_sections": "§15.10 (lines 1087-1105); §13 steps 3-4; §10",
+   "severity": "major",
+   "claim": "(a) `archive/tests/test_incremental_criteria.py` is not in the mapping, yet it is the file that pins the current scan, and three of its assertions go false at step 4: that the scan re-stamps the wire digest, that a genuine change bumps, and that corrupting A alone pulls its dependent B in through the dep edge. The last one is now INTENDED to be false under D13 (only A is a seed), so the file cannot merely be \"kept green\" — it has to be rewritten, and the implementer otherwise meets three red tests with nothing saying which are regressions and which are the design. (b) §15.10 says the driver-suite scenarios \"keep their assertions\", but they rest on `_RecordingTask` overriding `write_answer` — the method §13 step 3 deletes — and the failed-write scenario monkeypatches `task.write_answer`; under D14 there is no write on that path at all. (c) Those tests call `_run_agent` directly with no `interpret_file` around them, so `on_answer`'s `start_gate` has no task group; and `test_interpretation_mcp_server.py` imports the module-level `_answer_tool` object that `mk_answer_tool` removes, which §15.10 does not mention.",
+   "evidence": "test_incremental_criteria.py:121 (\"the scan re-stamps the wire digest\"), :122 (\"a genuine change bumps\"), :124-125, and :129-135 (\"corrupting only a must pull b in through its dep edge (eff)\") — all resting on semantic_interpretation.py:953-960. test_interpretation_driver.py:48-49 (`_RecordingTask.write_answer`), :71-77 (`_make_task`), :126-140 (`_run` calls `_run_agent` with no task group), :180-203 (the failed-write scenario patching `task.write_answer` and asserting the entry stays unanswered); test_interpretation_mcp_server.py:23 (`from ... import _answer_tool`), :25 (`from test_interpretation_driver import _make_task`), :86 (`task.batch_range = task.batches[0][1]`), :96/:137/:154-155.",
+   "proposed_fix": "Add test_incremental_criteria.py to §15.10 with the concrete edits: the re-stamp/bump assertions become \"the scan writes nothing\" (the record is byte-identical after a dry run), and the dep-edge test becomes §10's enrolment test (dry run returns 1, B interpreted only after A's CHANGED verdict) — in the same commit as step 4, so the suite is never red for a reason nobody wrote down. And say what replaces the deleted writer in the harness: `_RecordingTask` overrides `start_gate(idx)` to record `(idx, results[key])`, mark `_DONE` and leave `gates_running` at 0 (no LMDB, no task group needed); \"a failed write is not counted\" becomes \"a gate whose write raises fails the run with `GateError`\" in the new gate test file; both modules build their tool with `mk_answer_tool(task)`.",
+   "kind": "tests"
+  },
+  {
+   "id": "lock-connection-lifecycle",
+   "merged_ids": [
+    "concurrency-5",
+    "ml-side-5"
+   ],
+   "title": "The interpretation lock is released only when the peer notices EOF, so ML's return does not mean the lock is free — and the busy path throws away a healthy pooled connection",
+   "plan_sections": "§8.1 (lines 466-491); §8.2 (the snippet and its finaliser); D8",
+   "severity": "minor",
+   "claim": "(a) §8.2's finaliser ends by closing the lock connection, and §8.1 makes the release a side effect of `Connection.close()` on the Python side. Closing the ML streams is not synchronised with the peer's reaction: the release happens only after the host's loop schedules the reader task's EOF, `read()` returns the sentinel, `handle_client` unwinds to its `finally` and calls `close()`. The ML command returns before any of that, so a run that has visibly finished can still hold the lock, and because D8 is try-once-never-wait the next `run_semantic_interpretation` fails hard with §12 #2 for no real reason. The window is not always sub-millisecond — this host's loop regularly blocks in synchronous work — and back-to-back runs are a normal shape. §8.1 analyses only the opposite direction. (b) The same finaliser closes the connection on the `NONE` arm, where no lock was ever taken: that destroys a live, heartbeat-good pooled connection on the frequent contended path (`by aoa`, `_auto_embed`), forcing a fresh `make_connection ()` once the pool empties.",
+   "evidence": "../Isabelle_RPC/Isabelle_RPC_Host/rpc.py:110-123 (the reader task turns EOF into the `read()` sentinel), :279-282 and :369-377 (`finally: … connection.close()` — the only place the lock could be released), :226-233 (`close()` just closes the writer). ../Isabelle_RPC/Tools/RPC.ML:334-338 (`close_connection` returns as soon as the ML streams are closed), :867-878 (`get_connection`), :883-895 (`call_command`, whose own finaliser makes exactly the distinction §8.2's does not: `if !normal then release_connection conn else close_connection conn`).",
+   "proposed_fix": "(a) Make the release synchronous with respect to ML and keep `on_close` as the crash backstop: add `Semantic_Store.release_interpretation_lock` (releases and clears the FileLock on the connection, idempotent), have the finaliser call it and await the reply, and then hand the connection back with `release_connection` instead of throwing it away. `on_close` stays registered, so a killed ML process still frees the lock. (b) Record the acquire outcome and branch the finaliser on it exactly as `call_command` does: release on the not-acquired arm, close when acquired or when the outcome is unknown.",
+   "kind": "concurrency"
+  },
+  {
+   "id": "degradation-is-invisible",
+   "merged_ids": [
+    "correctness-prefilter-disable-scope",
+    "user-facing-7",
+    "drivers-4"
+   ],
+   "title": "The two approved user-visible degradation lines are specified onto the host-log channel and scoped per theory, and a systematically failing judge degrades every gate to CHANGED with no user-visible trace at all",
+   "plan_sections": "§5.4 step 2 and Failures (lines 268-302); §5.6 (lines 382-392); §15.3 (line 806); §15.5 (lines 906-916); §12 #4, #5 and its footer",
+   "severity": "major",
+   "claim": "Three related gaps in how the gate reports that it is running degraded. (a) §12 approves #4 and #5 as user-visible, but §15 specifies them as \"log, print text §12 #5 once\" — and in this module `print`/`_log.*` reaches only $ISABELLE_HOME_USER/log/RPC_*, which neither frontend shows; `_report` is the established route that logs AND forwards to Isabelle. Followed literally, the one line telling the user the prefilter is off never reaches them. (b) §5.4 and §12 #5 scope the embedding failure to the run, but §15.3/§15.5 implement it as `task.prefilter_disabled`, an attribute of the per-theory `InterpretationTask`, while theories run concurrently under `schedule_dag` — so a dead endpoint is retried and re-announced once per theory, up to the size of the cone. (c) A judge backend that fails systematically (it cannot be constructed, or every session is denied its `verdict` tool) resolves every gate to CHANGED, host-log only: the whole feature silently reverts to today's full propagation while the run reports success and pays a judge session per entity.",
+   "evidence": "Plan lines 296-302, 386-392, 806, 908-916; §12 lines 644-647 (\"once per run\") and 664-665 (\"Host-log only … judge session failed\"). Code: semantic_interpretation.py:656-678 (`_report`, whose docstring records exactly this failure — \"a run could stall, retry, or fail for a reason plainly visible in the log while Isabelle showed nothing\") versus :622 and :839 (`_log.warning`, host log only); one task per theory (plan §5.1) against Tools/semantic_store.ML `schedule_dag`, one Future per cone theory; the judge's construction failures are `FatalAgentError` raised before any turn (deep_seek.py:136-140, :166-176; codex.py:214-217; claude_code.py:479-486), which §15.5 catches with `except Exception`.",
+   "proposed_fix": "Name the two channels in §5.4/§5.6/§15.5: #4 and #5 go through `_report(..., warn=True)`, the judge's per-session no-verdict and failure lines through `_log.warning` only. Put the once-per-run flag where the resolved provider lives (see the `gate_emb_store` finding — one run-scoped object, cleared on failure) so \"skipped for the rest of the run\" and \"printed once per run\" are the same fact regardless of cone size. And distinguish a per-session judge failure from an unusable judge backend: the FIRST failure raised before a judge's first turn sets a run flag and prints one user-visible line in the shape of #5 (wording needs the owner's approval), the verdict still CHANGED as D10 requires.",
+   "kind": "correctness"
+  }
+ ],
+ "dropped": [
+  {
+   "id": "correctness-effstar-memo-shared-across-mints",
+   "reason": "Shape preference for a requirement the plan already states in the very sentence complained about: §15.5 line 966 says the memo is 'rebuilt per call' and explains why (a mint invalidates it). No code claim is wrong, and the author's own analysis concedes the failure direction is conservative. Restating a stated requirement as a finding is nitpicking."
+  },
+  {
+   "id": "concurrency-3-unbounded-judge-sessions",
+   "reason": "Re-litigation of D12 ('there is no limit on how many judge sessions run at once') with no simplicity gain — a process-wide semaphore adds machinery rather than removing it, which is the only ground the review permits for touching a settled decision. The verified scale figure (_BATCH_SIZE = 20 per answer call x max_threads concurrent theories, semantic_interpretation.py:135 and semantic_store.ML's schedule_dag) is preserved inside the kept judge-throttle finding, where it bears on the 429 storm."
+  },
+  {
+   "id": "elegance-6",
+   "reason": "Duplicate of concurrency-3, same re-litigation of D12."
+  },
+  {
+   "id": "drivers-2",
+   "reason": "Duplicate of concurrency-3 with Codex-specific numbers; same re-litigation of D12."
+  },
+  {
+   "id": "storage-7",
+   "reason": "Nitpick. §10 already scopes the assertion to 'store and counter' (which are byte-identical after an abort — verified against archive/tests/test_semantic_change_gate_storage.py:224-238), and the residual vector tombstone is benign and self-healing by the rationale already written at semantics.py:713-719. Nothing in the implementation goes wrong."
+  },
+  {
+   "id": "ml-side-2",
+   "reason": "Its premise — that the embedding configuration is resolved only by the startup check whose object is parked on the server — is exactly the shape the kept gate_emb_store finding rejects. Once interpret_file resolves its own store on its own connection (the reuse the plan's own §5.6 enables), the Config.lookup callback threading is load-bearing, not dead. Keeping both would give the implementer contradictory instructions."
+  },
+  {
+   "id": "ml-side-3",
+   "reason": "Re-litigation of D7, which explicitly settles that the seed count 'serves the two existing n = 0 guards and the 400 threshold'. The finding itself asks for no behaviour change, only documentation of a consequence the user already decided."
+  },
+  {
+   "id": "user-facing-4",
+   "reason": "Duplicate of ml-side-3; same settled decision (D7), same documentation-only ask."
+  },
+  {
+   "id": "drivers-5",
+   "reason": "Half nitpick, half already recorded. §5.5 states the cli_tools semantics clearly and adding the keyword to make_interpretation_driver / InterpretationDriver.__init__ is mechanical plumbing; and the plan already records the Codex deviation ('its read-only sandbox still lets the judge read files (recorded deviation)'), which is precisely what the finding says is unrecorded."
+  },
+  {
+   "id": "drivers-6",
+   "reason": "Editorial nitpick: §5.5's stale mention of batch_range against §15.1/§15.2/§15.4's batch list. §15 is declared the blueprint the implementer follows, and there `batch: list[int]` is unambiguous; nothing would be built wrong."
+  },
+  {
+   "id": "elegance-7",
+   "reason": "Style preference. The load-bearing part of its claim is also false: `_keys` is 1:1 with entries in order (semantic_interpretation.py:334-347), so §15.8's 'a direct read of task.results in entry order' is perfectly implementable with the dict."
+  },
+  {
+   "id": "elegance-8",
+   "reason": "Micro-refactor preference (drop the task parameter from build_mcp_server/register_session because only task.connection is read). Nothing is wrong, unsafe or inconsistent; it just prefers a narrower signature."
+  },
+  {
+   "id": "tests-7",
+   "reason": "Advice on how to write one of §10's tests, not a defect in the design. §10 is a test list, and 'make the fake judge block on an Event' is exactly the kind of detail a test author settles."
+  },
+  {
+   "id": "tests-8",
+   "reason": "Test-hygiene nitpick about a fixture's scope in an instruction that is one line of §15.10. Verified that no conftest.py exists and that two other modules import _make_task, but the consequence is a fixable test-suite annoyance, not a defect in the implementation being planned."
+  },
+  {
+   "id": "user-facing-8",
+   "reason": "Nitpick: which README section number gets the one-sentence note. No implementation consequence."
+  }
+ ]
+}

@@ -1,0 +1,213 @@
+{
+  "kept": [
+    {
+      "id": "F1",
+      "title": "`_unwrap_gate_failures` erases the GateError's chained cause with `raise ... from None`",
+      "kind": "bug",
+      "severity": "major",
+      "file": "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Isabelle_Semantic_Embedding/semantic_interpretation.py",
+      "line": 936,
+      "claim": "`_write` chains the real store failure onto the GateError (`raise GateError(...) from exc`, :903) precisely so the operator learns why the write failed; `_unwrap_gate_failures` then re-raises that same object with `raise failures[0] from None`, and `from None` does not merely suppress the group's context — it OVERWRITES `__cause__` with None. Concrete failure: the store hits its map_size while gating `Foo.bar`; what rpc.py forwards to Isabelle, and what the host log shows, is a traceback whose entire content is `GateError: could not write the interpretation of Foo.bar` — `MDB_MAP_FULL` appears nowhere, and neither does a plain coding error inside `put_interpretation`, which `_write`'s broad `except Exception` also wraps. The one failure class this whole task-group machinery exists to surface is the one that arrives undiagnosable. Plan §5.4/§15.1 say the failure is re-raised as GateError *chained*; after this line it is not. `from None` is also not needed for its purpose: `__cause__` already wins over `__context__` in traceback rendering, so setting `__suppress_context__` alone drops the group's gutter and keeps ML's one-line user-error contract intact.",
+      "evidence": "semantic_interpretation.py:903 `raise GateError(f\"could not write the interpretation of {e.name}\") from exc`; :936 `raise failures[0] from None`. Verified on this machine's CPython 3.12:\n  cause before: OSError(28, 'no space')\n  cause after : None  suppress: True\nThe existing test pins only the mechanism that erases it (test_interpretation_driver.py:278 `assert e.value.__suppress_context__`, on a GateError built with no cause), so the loss is invisible to the suite. `_log.error(..., exc_info=extra)` at :933-935 covers only `failures[1:]`, so the reason is not in the log either.",
+      "suggested_fix": "    first = failures[0]\n    first.__suppress_context__ = True   # drop the group, keep the chained cause\n    raise first\n(equivalently `raise failures[0] from failures[0].__cause__`). Checked: the ExceptionGroup gutter still never appears, `__suppress_context__` stays True so the existing assertion holds, and the store error comes back as the direct cause. Log `failures[0]` too, and add an assertion that a GateError raised `from` a store error still carries `__cause__` after the unwrap.",
+      "merged_from": [
+        "concurrency: `_unwrap_gate_failures` throws away the GateError's chained cause",
+        "elegance: `_unwrap_gate_failures` erases the GateError's cause with `raise ... from None`",
+        "failure-semantics: `_unwrap_gate_failures` deletes the GateError's chained cause"
+      ]
+    },
+    {
+      "id": "F2",
+      "title": "The `answer` tool lost its per-item write-failure isolation, and the D11 correction is now a database write nothing guards",
+      "kind": "bug",
+      "severity": "major",
+      "file": "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Isabelle_Semantic_Embedding/semantic_interpretation.py",
+      "line": 749,
+      "claim": "`task.on_answer(idx, trans)` is called bare inside the loop over `args[\"interpretations\"]`, where the old handler wrapped the per-item write and continued. `on_answer` can raise on two paths: the D11 branch (state == _DONE, :579-586) performs a synchronous LMDB write through `Semantic_DB.update_interpretation` (map-full, OSError, a msgpack failure), and `start_gate` raises RuntimeError when the gate task group is already aborting. Concrete failure: the agent — invited by the tool description (\"You may also resubmit an entry to correct a previous answer\") and by the new batch-complete reply (\"correct them now\") — sends one call with a correction for `T.c3` plus nine fresh answers; the correction's write raises, the exception escapes the handler, and the nine fresh answers are never recorded, no gate is started for them, and `errors`/the progress report are discarded. The SDK turns the escape into one opaque isError, so the agent is not told which items survived; the nine stay `_SENT` and cost a whole extra retry turn, and on a persistent store fault the batch never progresses and `_retry_unanswered` kills the theory — where the old shape reported exactly one bad entry. Second consequence, distinct from the batching one: this correction is the only database write of the run that is NOT a `_gate` task, so its failure never reaches the task group, never becomes a GateError, and `interpret_file` still returns success and the theory is still marked interpreted with the correction silently lost — against D10 (\"nothing hides a failure\"). D14 retires the persist-first half of the deleted guard (nothing is written before the gate); it says nothing about abandoning the rest of the array, and §10/§15.10 list no successor for the isolation property.",
+      "evidence": "Current handler (semantic_interpretation.py:740-751): `idx = task._label_to_idx.get(key)` … `trans = re.sub(...)` … `task.on_answer(idx, trans)` — unguarded, inside `for item in args[\"interpretations\"]`.\nDeleted guard (working_tree.diff, old :620-631): `try: task.write_answer(...) except Exception as e: errors.append(f\"Failed to store {key!r}: {type(e).__name__}: {e}\"); _log.warning(...); continue`, with the comment \"One bad item, not a bad batch: an exception on item 3 of 10 used to abandon items 4-10, which were fine\" and \"the MCP SDK turns a handler exception into an isError result for the agent and nothing reaches Isabelle\".\nThe fallible branch, :579-586: `if self.state[idx] == _DONE: Semantic_DB.update_interpretation(...)` — a write transaction.\nNeither caller catches: mcp_server._call_tool (:126-133) awaits `tool.handler(arguments)` with no try.\nThe test that pinned the property (`test_an_answer_that_cannot_be_written_is_not_counted_as_answered`) was deleted with the guard rather than re-scoped.",
+      "suggested_fix": "Restore the three-line guard around the one call that can now fail:\n            try:\n                task.on_answer(idx, trans)\n            except Exception as e:\n                errors.append(f\"Failed to store {key!r}: {type(e).__name__}: {e}\")\n                _log.warning(\"answer: failed to store %s\", key, exc_info=True)\n                continue\nThe entry then stays as it was and the remaining items of the same call are still processed; D14 and D11 are untouched. Better still for the correction path: route it through the same failure channel as every other write (wrap as GateError and hand it to the group) so a lost correction fails the run instead of vanishing. Re-scope the deleted test (a stubbed `update_interpretation` raising on the middle item of a three-item call).",
+      "merged_from": [
+        "plan-conformance: The answer tool lost its per-item write-failure isolation",
+        "storage-and-tests: The answer tool lost its per-item failure isolation",
+        "failure-semantics: The answer tool lost its per-item error isolation",
+        "concurrency: The D11 correction is the one database write outside the gate task group, and its failure is swallowed"
+      ]
+    },
+    {
+      "id": "F3",
+      "title": "`_run_agent`'s catch-all recycle arm can swallow the gate task group's abort, leaving the run to drain the queue and then hang",
+      "kind": "bug",
+      "severity": "major",
+      "file": "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Isabelle_Semantic_Embedding/semantic_interpretation.py",
+      "line": 1039,
+      "claim": "When a gate raises GateError, `asyncio.TaskGroup` aborts by cancelling the body task, i.e. `_run_agent`. That works only as long as the cancellation reaches `_run_agent` AS a CancelledError. If a driver's teardown replaces it with an ordinary exception, the `except Exception` arm at :1039 catches it, sleeps 2 s and recycles; the group never cancels the body a second time (`_parent_cancel_requested` is already True), so the doomed run drains the rest of the queue with real, paid agent turns and finally parks in `wait_for_progress()` forever — `interpret_file` never returns and the Isabelle RPC call never completes, blocking the ML thread for the whole cone. This is not a bare hypothetical for the Codex backend: `interpretation_driver/codex.py:334-342` flushes the turn cost in a `finally`, and `_record_turn_cost` -> `write_cost()` is a synchronous LMDB write — so the very fault that most plausibly fails a gate write (a full map, a broken store) is the fault that will raise out of that `finally` while the CancelledError is unwinding and replace it. I downgrade the challenger's \"blocker\" to major: it needs that second fault (or another raising teardown) to trigger, so it does not fire on a clean run — but when it does, the outcome is a permanent hang rather than an error.",
+      "evidence": "semantic_interpretation.py:1039-1051 — `except Exception:` … `recycles += 1` … `await asyncio.sleep(2)`; nothing in either recycle arm asks whether this task is being cancelled.\ninterpretation_driver/codex.py:334-342 — `finally: # In a finally because the answers are already in LMDB by now … self._record_turn_cost(before)` (a synchronous LMDB write on every turn exit, including a cancelled one).\nMeasured by the challenger with the real `_run_agent`, real `mk_answer_tool` and a real `asyncio.TaskGroup` (20 entries, _BATCH_SIZE 2, entry 1's gate raises GateError, run_turn's teardown converting the injected CancelledError into RuntimeError): 18 further turns were run after the gate failed, then \"last turn at t+2.18s; returned at t+10.01s (external timeout was 10.0s) -> stalled for 7.83s with gates_running=18\".",
+      "suggested_fix": "Refuse to swallow an in-flight cancellation of this task. `Task.cancelling()` is still non-zero after a CancelledError has been delivered and swallowed (only `TaskGroup.__aexit__` calls `uncancel()`), so a two-line guard at the top of the `except PoisonedSessionError` and `except Exception` arms covers every source of an abort and needs nothing from the drivers:\n            if (t := asyncio.current_task()) is not None and t.cancelling():\n                raise      # the gate task group is tearing this session down",
+      "merged_from": []
+    },
+    {
+      "id": "F4",
+      "title": "`start_gate` increments `gates_running` before `create_task`, so a raising `create_task` leaks the loop's only termination counter",
+      "kind": "bug",
+      "severity": "minor",
+      "file": "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Isabelle_Semantic_Embedding/semantic_interpretation.py",
+      "line": 570,
+      "claim": "`gates_running` is the only reason `_run_agent` may leave `wait_for_progress()` (:995), and the only thing that ever decrements it is `_gate`'s `finally`. `start_gate` increments first and then creates the task, so if `create_task` raises the counter is incremented for a gate that will never exist and never finish, and the entry is left in `_GATING` — a state §5.3.1 only allows while a gate runs. `create_task` raises for a real reason: `asyncio.TaskGroup.create_task` raises `RuntimeError(\"TaskGroup ... is shutting down\")` once any child has failed (verified in CPython 3.12 taskgroups.py), and the exception surfaces inside the `answer` tool handler, where the SDK converts it to an isError and nothing reaches `_run_agent` — the leak is silent. I downgrade the challenger's \"major\": on its own the leak is harmless, because the same abort that made `create_task` raise also cancels `_run_agent`; it becomes a permanent hang only in combination with F3. It is still the wrong shape — an invariant that has to be remembered rather than one that cannot be violated. I reject the companion suggestion to delete the counter and derive it as `_GATING in self.state`: that is not the same fact, because a gate whose `_write` raised leaves the entry in `_GATING` while no gate is running, so the derived predicate would never let the loop terminate on that path.",
+      "evidence": "semantic_interpretation.py:568-571\n    def start_gate(self, idx: int) -> None:\n        assert self.task_group is not None, \"interpret_file owns the gate task group\"\n        self.gate_started()\n        self.task_group.create_task(_gate(self, idx))\n:439-444 `gate_started` / `gate_finished`; :995 `if not task.gates_running: break`.\nChallenger's measured run: `RuntimeError: TaskGroup <TaskGroup errors=1 cancelling> is shutting down` raised at `on_answer -> start_gate`, final `gates_running=18` with no gate task alive and `state` left `[_DONE, _GATING, _GATING, ...]`.",
+      "suggested_fix": "Keep the increment before `create_task` (the loop must not be able to break between the answer and the gate's first step) and compensate on the failure edge, so the counter and the task are inseparable:\n        self.gate_started()\n        try:\n            self.task_group.create_task(_gate(self, idx))\n        except BaseException:\n            self.gate_finished()\n            raise",
+      "merged_from": [
+        "elegance: `gates_running` is a hand-maintained second copy of `state[i] == _GATING`"
+      ]
+    },
+    {
+      "id": "F5",
+      "title": "`max_stalled_retries` was not lifted onto `AgentTask`, the one item of §5.5's field list left behind",
+      "kind": "plan-deviation",
+      "severity": "minor",
+      "file": "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Isabelle_Semantic_Embedding/semantic_interpretation.py",
+      "line": 960,
+      "claim": "Plan §5.5 lists what the `AgentTask` base owns: \"… `api_retry_errors`, driver/model, `max_stalled_retries`, three task-supplied strings …\" (verified verbatim in the plan). The retry budget stayed the module constant `_MAX_STALLED_RETRIES`, read directly by the now-shared `_retry_unanswered` (:960) and by `InterpretationTask.retry_report` (:654). The whole point of lifting the retry loop out of `_run_agent` in step 3 is that it becomes task-parameterised, and this is the one numeric parameter that did not follow: §5.4 step 3 gives the judge session a budget of exactly one round, so a `JudgeTask` driven through this same loop in step 5 would get ten rounds — ten extra paid judge turns per no-verdict session against D3's measured cost — and its retry line would read \"attempt i of 10\". Step 5 then has to re-open `_retry_unanswered` again, which step 3 exists to avoid.",
+      "evidence": "semantic_interpretation.py:955-963 (`_retry_unanswered`, shared by both task kinds): `if stall >= _MAX_STALLED_RETRIES:`; :651-654 (`InterpretationTask.retry_report`): `f\"(attempt {attempt} of {_MAX_STALLED_RETRIES}).\"`. Plan §5.5 field list and §5.4 step 3 (\"ask once more; still no verdict => CHANGED\").",
+      "suggested_fix": "Add `max_stalled_retries: int = _MAX_STALLED_RETRIES` as an `AgentTask` class attribute (the plan's name), have `_retry_unanswered` test `stall >= task.max_stalled_retries` and `retry_report` interpolate `self.max_stalled_retries`. `JudgeTask` then sets it to 1 in step 5 with no edit to the loop.",
+      "merged_from": []
+    },
+    {
+      "id": "F6",
+      "title": "`_gate` and `_write` — the entire production write path step 3 introduces — are never executed by any test",
+      "kind": "test-gap",
+      "severity": "major",
+      "file": "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Isabelle_Semantic_Embedding/semantic_interpretation.py",
+      "line": 879,
+      "claim": "§15.11's acceptance for step 3 is \"every answer is written at once with that pair (no gate yet)\", and `_write` is the code that does it — yet nothing runs it. `_RecordingTask.start_gate` and `_FailingGateTask.start_gate` both override the only entry point, so the gate path is stubbed out in every test that builds a task, and the one test that calls `interpret_file` (test_interpretation_driver.py:339) fails on an unknown driver before any work. `test_semantic_change_gate_storage.py` covers `Gate_Writer.put_interpretation` with hand-built records — the layer below; the argument-building layer that replaced `write_answer` has nothing. So swapping the two components of `version, interpreted_at = task.inv_fields[idx]`, or dropping the `tracked = version is not None` guard so an untracked persistent entry gets a digest and deps written, ships green while every WIP record written by a real run carries wrong gate fields, which the next scan reads as a freshness signal — the class of silent corruption the step-1/2 storage tests exist to prevent, one layer up.",
+      "evidence": "I verified this myself: with `SI._write` and `SI._gate` both replaced by functions that raise AssertionError (pytest plugin, `pytest_configure`), the full suite gives `3 failed, 346 passed, 13 deselected` — byte-identical to the baseline in SCOPE.md, i.e. neither function is entered anywhere.\nUntested body, semantic_interpretation.py:883-904: `version, interpreted_at = (task.inv_fields[idx] if task.inv_fields is not None else (None, None))`; `semantic_digest=e.semantic_digest if tracked else None, deps=(e.deps or []) if tracked else None, version=version, interpreted_at=interpreted_at, baseline_interpretation=None`.\nHarness override: archive/tests/test_interpretation_driver.py:52-54.",
+      "suggested_fix": "Add one test beside the storage tests (reusing their isolated-store `cache` fixture, which already sets SEMANTIC_DB_DIR) that builds an `InterpretationTask` with `inv_fields=[(7, 3), (None, None)]`, sets `results` for both entries, runs `asyncio.run(_gate(task, i))` for each, and asserts the stored records: entry 0 has `version == 7`, `interpreted_at == 3`, the wire digest and deps, `baseline_interpretation is None`; entry 1 has all five gate fields None; `task.n_interpreted == 2` and both states `_DONE`. A second case where `gate_write` raises asserts a GateError naming the entity and still carrying the cause (see F1).",
+      "merged_from": [
+        "storage-and-tests: `_gate`/`_write` is never executed by any test"
+      ]
+    },
+    {
+      "id": "F7",
+      "title": "No test ever completes a successful gate after the queue empties: removing `_progress.set()` hangs production and leaves the suite green",
+      "kind": "test-gap",
+      "severity": "major",
+      "file": "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/archive/tests/test_interpretation_driver.py",
+      "line": 52,
+      "claim": "The termination arm added in step 3 (`if not task.gates_running: break` / `await task.wait_for_progress()` / the wake-up in `gate_finished`) is the load-bearing new control flow — plan §5.3 \"the session is kept open while gates run\", the property that makes `interpret_file` return only after every write is visible to descendants — and its failure mode is a permanent hang of the coroutine, blocking the ML thread for the whole cone. `_RecordingTask.start_gate` records and marks `_DONE` synchronously and never calls `gate_started`/`gate_finished`, so in every ordinary test `gates_running` is 0 at the check. The one test that does start a real gate task (`_FailingGateTask`) enters the wait — but its gate FAILS, so the group's abort cancels the wait, and the arm's correctness is never actually depended on. Correction to the challenger's wording: the arm is entered, but nothing detects it being wrong.",
+      "evidence": "I ran the mutation myself: with `AgentTask.gate_finished` replaced by a version that only decrements (no `self._progress.set()`), `pytest archive/tests/test_interpretation_driver.py archive/tests/test_interpretation_mcp_server.py -q` gives `28 passed`. In production that mutation hangs forever: after the last batch `next_batch()` returns [], `gates_running > 0`, the loop awaits `_progress.wait()` and nothing ever sets it. In the gate-failure test the hang is masked because the failing gate aborts the group and the CancelledError unwinds the wait.\nA second mutation the challenger measured — `wait_for_progress` replaced by a coroutine that raises — also leaves the suite green, because `_run_agent`'s `except Exception` recycle arm swallows it (see F3).",
+      "suggested_fix": "Give the fake a gate that behaves like one: `_RecordingTask.start_gate` calls `self.gate_started()` and creates a real task in `self.task_group` that records the write, sets `_DONE`, and calls `gate_finished()` in a `finally` (the shape `_FailingGateTask` already uses at :243), with the tests running under an `asyncio.TaskGroup` the way `interpret_file` does. Then add one test where the last batch's gate finishes only after the queue is empty (the gate awaits an `asyncio.Event` the test sets), asserting the loop waited and then returned — both mutations die on that test.",
+      "merged_from": []
+    },
+    {
+      "id": "F8",
+      "title": "The D11 correction paths are untested, and the harness's seam now sits above the correction write, so the first such test writes into the developer's real semantic database",
+      "kind": "test-gap",
+      "severity": "minor",
+      "file": "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Isabelle_Semantic_Embedding/semantic_interpretation.py",
+      "line": 573,
+      "claim": "`on_answer` gained two branches that are pure step-3 novelty: a re-submission for a `_DONE` entry writes through `Semantic_DB.update_interpretation` (text only, gate fields untouched), and a re-submission for a `_GATING` entry replaces `results[key]` so the running gate writes the newer text. Neither is tested, and the `_GATING` one is structurally untestable with the current fake: `_RecordingTask.start_gate` sets `_DONE` in the same call in which `on_answer` set `_GATING`, so no test in that module can ever observe an entry in `_GATING`. Worse, the seam moved: `_RecordingTask` used to override `write_answer`, the single write of the old design, so the module's promise (\"no CLI, no LLM and no LMDB\") held on every path; now `start_gate` is overridden but the correction path bypasses it, and neither this module nor `archive/tests/conftest.py` isolates `SEMANTIC_DB_DIR`. A regression in the correction branch (a wrong keyword, or calling `put_interpretation` instead) would silently overwrite the gate fields of a corrected entity — the invariant §6.4 exists to protect — and §15.10 schedules the corrections test for step 5, i.e. the hazard is armed exactly where the next step steps.",
+      "evidence": "archive/tests/test_interpretation_driver.py:52-54 (`start_gate` records and sets `_DONE`); semantic_interpretation.py:579-591 (the two correction branches); archive/tests/conftest.py contains only the `_BATCH_SIZE` fixture; `grep -n SEMANTIC_DB_DIR archive/tests/*.py` shows the isolating fixtures only in test_semantic_change_gate_storage.py, test_incremental_criteria.py and test_migrate_from_collection.py — not in the three modules that share `_make_task`.\nChallenger's probe with the shipped harness unchanged (SEMANTIC_DB_DIR pointed at a scratch dir): a second `answer` call for the same entry took the `_DONE` branch and left `Record(kind=EntityKind.CONSTANT, name='T.c0', … interpretation='corrected text', …)` in the store. Without SEMANTIC_DB_DIR set — how these three modules run — that write lands in ~/.cache/Isabelle_Semantic_Embedding.",
+      "suggested_fix": "Put the seam where every write goes through it again: give `InterpretationTask` one overridable persistence call for the correction path (mirroring `start_gate`) that `_RecordingTask` overrides too — or at minimum add an autouse fixture pointing `SEMANTIC_DB_DIR` at `tmp_path` for the modules that build a task without a store. Then add the two step-3 tests: a correction while `_GATING` (the gate's single write carries the second text) and a correction after `_DONE` (interpretation rewritten, version/interpreted_at/semantic_digest untouched, `n_interpreted` unchanged).",
+      "merged_from": [
+        "failure-semantics: The driver harness's recording seam sits below the D11 correction path"
+      ]
+    },
+    {
+      "id": "F9",
+      "title": "PROPOSAL: give `AgentTask` a `batch_size` attribute instead of the module global the tests mutate and a directory-wide fixture restores",
+      "kind": "proposal",
+      "severity": "minor",
+      "file": "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/archive/tests/conftest.py",
+      "line": 10,
+      "claim": "Batching moved from `interpret_file` (which read `_BATCH_SIZE` once, locally) onto the task in `AgentTask.next_batch` (:410), but the size stayed a module global, so the task now owns everything about a session except the one number that decides how much it sends. The price is visible in this step: `_make_task` mutates another module's global (`SI._BATCH_SIZE = batch_size`, test_interpretation_driver.py:79) as a side effect of building a task, and a new `archive/tests/conftest.py` autouse fixture must save and restore that global around EVERY test in the directory — 349 of them, including the ~340 that never touch interpretation — purely to contain the leak. Because three modules share `_make_task`, no test can run two tasks with different batch sizes, and any test that builds a second task after `_make_task` silently inherits the first one's size. This is raised as a PROPOSAL, not a bug, because plan §15.10 prescribes exactly this shape (\"`_make_task(n, batch_size)` … sets `SI._BATCH_SIZE` for the test (restored by an autouse fixture)\") — but §5.5 already establishes the better shape for the same kind of parameter (`max_stalled_retries` as a task field, see F5), and the judge task of step 5 wants a batch of one entry.",
+      "evidence": "semantic_interpretation.py:405-414 `while self._queue and len(batch) < _BATCH_SIZE:`; archive/tests/test_interpretation_driver.py:76-83 `SI._BATCH_SIZE = batch_size` inside `_make_task`; archive/tests/conftest.py — the whole file is the workaround (`@pytest.fixture(autouse=True) def _restore_batch_size(): saved = SI._BATCH_SIZE; yield; SI._BATCH_SIZE = saved`), unscoped, at the directory root, and it imports semantic_interpretation (claude_agent_sdk, lmdb, websockets) into every collection.",
+      "suggested_fix": "Give `AgentTask` a class attribute `batch_size: int = _BATCH_SIZE` and have `next_batch` read `self.batch_size`. `_make_task` then sets `task.batch_size = batch_size` (or passes it to the constructor), `archive/tests/conftest.py` is deleted, and per-task batch sizing is there for `JudgeTask` in step 5. Needs the user's agreement, since it changes §15.10's prescribed test shape.",
+      "merged_from": [
+        "elegance: The test helper mutates a module constant, paid for by a directory-wide autouse fixture"
+      ]
+    },
+    {
+      "id": "F10",
+      "title": "`results` + `_keys` is label indirection nothing reads by label any more, and the completeness backstop now guards a different structure than the one it returns",
+      "kind": "inelegance",
+      "severity": "minor",
+      "file": "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Isabelle_Semantic_Embedding/semantic_interpretation.py",
+      "line": 348,
+      "claim": "After step 3 there is not a single production read of `self.results` by label: I grepped the package and every access is literally `self.results[self._keys[idx]]` (:400, :578/:586/:588, :885, :1459), because the tool now resolves labels through `_label_to_idx` (:738). So a dict keyed by a name plus a list that undoes that keying sit beside two structures (`entries`, `state`) that are already index-aligned, and the cost is an invariant nobody can enforce: the comment at :302 asks every future reader to keep \"`results[key] is None` iff _QUEUED or _SENT\" true across a label-keyed dict and an index-keyed list. That split is what let the completeness backstop drift from the payload: plan §15.4 specifies TWO final checks — \"every `results` non-None, else FatalAgentError\" AND the state clause asserted \"so the certificate is structural rather than remembered\" — and the implementation kept only the state clause (`missing = task.unanswered()` at :1435 and the assert at :1439 both read `state`), while the loop at :1458-1461 builds the returned `interpretations` out of `task.results`. The two are equivalent today only by the hand-maintained comment, and the assert half vanishes entirely under `python -O`. I downgrade the challengers' \"major\" on both halves: the code is correct as written, and no failure follows today.",
+      "evidence": "`grep -rn '\\.results\\b|_keys\\b' Isabelle_Semantic_Embedding/` — every production read is subscripted with `self._keys[idx]` / `task._keys[idx]`; the only label-keyed reads left are in tests. `_keys` exists only to invert `_label_to_idx` (:361 `self._keys = list(self.results.keys())`).\n:1435-1440 the state-only backstop; :1458-1461 `for i, key in enumerate(task._keys): sem = task.results[key]` — the payload. Today's code (diff :1173-1177) computed `answered` from `task.results.values()`, i.e. checked the list it was about to return.\nPlan §15.4: \"the completeness invariant's final check in `interpret_file` keeps its shape (every `results` non-None, else `FatalAgentError`) … The final check also asserts that state clause\".",
+      "suggested_fix": "Replace both structures with one index-parallel list on `AgentTask`: `self.answers: list[str | None] = [None] * len(entries)`; keep `_label_to_idx` and the duplicate-label raise (it needs a seen-set, not a dict of answers); delete `_keys`. `_write` becomes `text = task.answers[idx]`; the remap becomes `for i, sem in enumerate(task.answers)`; and the completeness check becomes `missing = [i for i, s in enumerate(task.answers) if s is None]`, which is simultaneously the payload check §15.4 asks for and the state check, in one non-assert line. §15.6's `JudgeTask.on_answer` then reads `self.answers[0] = text`.",
+      "merged_from": [
+        "elegance: The completeness backstop no longer inspects `results`, the structure it protects"
+      ]
+    },
+    {
+      "id": "F11",
+      "title": "PROPOSAL: `_unwrap_gate_failures`' cancellation filter and empty-group branch are unreachable from the only production caller, and the test pins a group production never produces",
+      "kind": "proposal",
+      "severity": "minor",
+      "file": "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Isabelle_Semantic_Embedding/semantic_interpretation.py",
+      "line": 1414,
+      "claim": "Two verified facts make the CancelledError filter dead code for the caller at :1414. First, `BaseExceptionGroup(...)` downgrades to `ExceptionGroup` only when every leaf derives from `Exception`, and `asyncio.CancelledError` does not — so a group carrying a CancelledError leaf is a BaseExceptionGroup and is NOT caught by `except ExceptionGroup`; it escapes unwrapped, gutter and all, into ML's one-line user-error contract, the very outcome `_unwrap_gate_failures` exists to prevent. Second, `asyncio.TaskGroup._on_task_done` starts with `if task.cancelled(): return`, so a cancelled child never contributes to `_errors` at all — the group the caller does catch can never contain a CancelledError leaf, `failures` is never smaller than `leaves(eg)`, and `if not failures: raise eg` is unreachable. Derivation 7 (annotating the parameter `BaseExceptionGroup` \"so the CancelledError-leaf filter the plan asks for is testable\") therefore buys testability of two branches production cannot enter, and `test_unwrapping_takes_the_first_failure_and_ignores_cancellations` hands the function a group `interpret_file` would never hand it. This is a proposal because closing the hole means relaxing the plan's literal `except ExceptionGroup`, which encodes D10.",
+      "evidence": "Verified on this machine: `type(BaseExceptionGroup('x', [asyncio.CancelledError()]))` is `BaseExceptionGroup`, `isinstance(..., ExceptionGroup)` is False. `inspect.getsource(asyncio.taskgroups.TaskGroup._on_task_done)` shows `if task.cancelled(): return` before `self._errors.append(exc)`.\nsemantic_interpretation.py:1414 `except ExceptionGroup as eg:`; :930-932 the filter and `if not failures: raise eg`; archive/tests/test_interpretation_driver.py:282-296 constructs `BaseExceptionGroup(\"run\", [CancelledError(), ...])` by hand.",
+      "suggested_fix": "Either (a) relax the catch to `except BaseExceptionGroup` and move D10's intent inside `_unwrap_gate_failures` — re-raise the group untouched when any leaf is a BaseException other than CancelledError (SystemExit/KeyboardInterrupt), otherwise drop the cancellations and re-raise the first failure — which keeps D10's guarantee, makes both branches live and makes the existing test test the production path; or (b) keep D10 literally and delete the filter, the empty-group branch and that test rather than pinning dead code. Step 5's gate does await (prefilter, judge session), so genuinely cancelled children become possible there and option (a) is the one that will be needed.",
+      "merged_from": []
+    }
+  ],
+  "rejected": [
+    {
+      "title": "storage-and-tests: The eight wire fields of an `Entry` are spelled out twice, so a new field will silently be dropped on the correction path",
+      "reason": "Nitpick with fabricated evidence. The claimed 'scar comment' (\"a fresh record would otherwise DROP the field on every re-interpretation of a member\") does not exist anywhere in Isabelle_Semantic_Embedding/ — I grepped. What is left is two call sites passing the same eight keyword arguments, one of which (on_answer) the plan's §15.3 pseudocode spells out verbatim, and a failure that is entirely prospective ('when the next record field is added'). Passing the same eight kwargs twice is not 'reinventing the wheel'."
+    },
+    {
+      "title": "storage-and-tests: `_put_fields` signals \"no such record\" with a broad builtin exception that its only such caller immediately converts back into a count",
+      "reason": "The concrete failure is disproven. The claim is that a KeyError/IndexError arising inside `_decode`/`_encode` would be miscounted as 'record absent' — but nothing in `_decode` raises a LookupError: `prov_raw.get(k, ...)` cannot raise, and the arity failures it names (`pfile, pline, pcol = position_raw`, `[(d(n), bytes(h)) for n, h in consts_raw]`, `EntityKind(kind)`) all raise ValueError, which passes straight through the `except LookupError`. Strip the disproven part and what remains is exception-versus-sentinel taste on a five-line helper."
+    },
+    {
+      "title": "concurrency: `_unwrap_gate_failures` throws away the GateError's chained cause, so the user is told a write failed but never why",
+      "reason": "Duplicate — merged into F1, whose evidence and fix are the same. Its measured MDB_MAP_FULL traceback is preserved there."
+    },
+    {
+      "title": "elegance: `_unwrap_gate_failures` erases the GateError's cause with `raise ... from None`",
+      "reason": "Duplicate — merged into F1."
+    },
+    {
+      "title": "failure-semantics: `_unwrap_gate_failures` deletes the GateError's chained cause, so a failed gate write reaches the user (and the log) with no reason at all",
+      "reason": "Duplicate — merged into F1; its extra observation that `_log.error(exc_info=extra)` covers only failures[1:] is carried over."
+    },
+    {
+      "title": "plan-conformance: The answer tool lost its per-item write-failure isolation",
+      "reason": "Duplicate — merged into F2 (kept as the primary formulation)."
+    },
+    {
+      "title": "storage-and-tests: The answer tool lost its per-item failure isolation: one failing correction now discards the rest of the same submission",
+      "reason": "Duplicate — merged into F2."
+    },
+    {
+      "title": "failure-semantics: The answer tool lost its per-item error isolation, so one failing correction throws away every answer after it in the same call",
+      "reason": "Duplicate — merged into F2; its concrete ten-item scenario is preserved there."
+    },
+    {
+      "title": "concurrency: The D11 correction is the one database write outside the gate task group, and its failure is swallowed",
+      "reason": "Same line, same fix region as F2 — merged into it as the second consequence (a lost correction never reaches the task group, so the run still reports success)."
+    },
+    {
+      "title": "elegance: `gates_running` is a hand-maintained second copy of `state[i] == _GATING`",
+      "reason": "Duplicate of F4's defect, and its central claim is wrong: the two are NOT the same fact — a gate whose `_write` raised leaves the entry at `_GATING` with no gate running, so the proposed derived predicate `_GATING in self.state` would make the loop unable to terminate on the failure path. Merged into F4 with that correction."
+    },
+    {
+      "title": "elegance: The test helper mutates a module constant, paid for by a directory-wide autouse fixture",
+      "reason": "Duplicate — merged into F9."
+    },
+    {
+      "title": "storage-and-tests: `_gate`/`_write` -- the entire production write path step 3 introduces -- is never executed by any test",
+      "reason": "Duplicate — merged into F6, whose mutation evidence I re-ran and confirmed myself."
+    },
+    {
+      "title": "elegance: The completeness backstop no longer inspects `results`, the structure it protects",
+      "reason": "Merged into F10: same root cause (the label-keyed dict versus the index-keyed state list) and the same fix collapses both checks into one line. Severity corrected from major to minor — the two checks are equivalent under the invariant documented at :302, so no failure follows today."
+    },
+    {
+      "title": "failure-semantics: The driver harness's recording seam sits below the D11 correction path, so a re-submitted answer in these tests writes into the developer's real semantic database",
+      "reason": "Duplicate — merged into F8, whose probe output (a record left in the store by the second answer call) is preserved."
+    }
+  ]
+}

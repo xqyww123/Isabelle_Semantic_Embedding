@@ -1,0 +1,474 @@
+runs: Sim_Measure_A1(A), Sim_Measure_A2(A), Sim_Measure_A3(A), Sim_Measure_A4(A), Sim_Measure_A5(A), Sim_Measure_B(B), Sim_Measure_B1b(B), Sim_Measure_B1c(B), Sim_Measure_B2(B2), Sim_Measure_B2b(B2), Sim_Measure_B3(B3), Sim_Measure_B4(B4)
+embedding models: ['Qwen/Qwen3-Embedding-8B']
+text forms: ['interp', 'doc', 'interp_noparen', 'interp_first', 'interp_first_noparen']
+entities: 85, pairs: 4165
+
+==============================================================================
+A. POPULATION SUMMARIES, production embedding, interpretation text
+==============================================================================
+  nochange    n=1190  min=0.7342 p10=0.8973 med=0.9569 p90=0.9847 max=1.0000 mean=0.9480
+  change      n=1085  min=0.5709 p10=0.8228 med=0.9320 p90=0.9780 max=1.0000 mean=0.9137
+  control     n=1015  min=0.6755 p10=0.8897 med=0.9461 p90=0.9783 max=0.9975 mean=0.9386
+  downstream  n=875   min=0.7231 p10=0.8551 med=0.9301 p90=0.9834 max=1.0000 mean=0.9231
+
+==============================================================================
+B. CANDIDATE RULE 1 -- GLOBAL THRESHOLD, every model x every form
+==============================================================================
+
+--- Qwen/Qwen3-Embedding-8B|interp
+    no-change n=1190  min=0.7342 p10=0.8973 med=0.9569 p90=0.9847 max=1.0000 mean=0.9480
+    change    n=1085  min=0.5709 p10=0.8228 med=0.9320 p90=0.9780 max=1.0000 mean=0.9137
+  similarity cut | no-change called 'changed' | real change called 'unchanged' | savings
+          0.9990 |                     99.7% |                         0.1% |   0.3%
+          0.9950 |                     98.2% |                         0.2% |   1.8%
+          0.9900 |                     95.5% |                         1.0% |   4.5%
+          0.9850 |                     90.3% |                         3.3% |   9.7%
+          0.9800 |                     82.9% |                         7.8% |  17.1%
+          0.9750 |                     74.8% |                        12.4% |  25.2%
+          0.9700 |                     67.9% |                        18.2% |  32.1%
+          0.9600 |                     54.5% |                        28.3% |  45.5%
+          0.9500 |                     42.7% |                        37.7% |  57.3%
+          0.9400 |                     33.2% |                        44.1% |  66.8%
+          0.9300 |                     25.0% |                        52.1% |  75.0%
+          0.9200 |                     19.6% |                        58.0% |  80.4%
+          0.9100 |                     15.0% |                        61.6% |  85.0%
+          0.9000 |                     10.8% |                        66.5% |  89.2%
+          0.8800 |                      5.3% |                        75.2% |  94.7%
+          0.8500 |                      1.5% |                        83.1% |  98.5%
+          0.8000 |                      0.3% |                        93.4% |  99.7%
+          0.7500 |                      0.2% |                        98.5% |  99.8%
+  operating points for Qwen/Qwen3-Embedding-8B|interp:
+    miss <= 1%: best cut 0.9950 suppresses 1.8% of useless propagations (misses 0.2% of real changes)
+    miss <= 5%: best cut 0.9850 suppresses 9.7% of useless propagations (misses 3.3% of real changes)
+    miss <= 10%: best cut 0.9800 suppresses 17.1% of useless propagations (misses 7.8% of real changes)
+    miss <= 20%: best cut 0.9700 suppresses 32.1% of useless propagations (misses 18.2% of real changes)
+    equal-error-ish: cut 0.9500, 42.7% of no-change called changed, 37.7% of real changes called unchanged
+
+--- Qwen/Qwen3-Embedding-8B|doc
+    no-change n=1190  min=0.8242 p10=0.9364 med=0.9724 p90=0.9905 max=0.9989 mean=0.9671
+    change    n=1085  min=0.6943 p10=0.8676 med=0.9472 p90=0.9804 max=0.9940 mean=0.9319
+  similarity cut | no-change called 'changed' | real change called 'unchanged' | savings
+          0.9990 |                    100.0% |                         0.0% |   0.0%
+          0.9950 |                     96.7% |                         0.0% |   3.3%
+          0.9900 |                     89.2% |                         0.9% |  10.8%
+          0.9850 |                     77.6% |                         4.5% |  22.4%
+          0.9800 |                     67.6% |                        10.9% |  32.4%
+          0.9750 |                     56.4% |                        17.0% |  43.6%
+          0.9700 |                     45.3% |                        24.4% |  54.7%
+          0.9600 |                     29.2% |                        36.2% |  70.8%
+          0.9500 |                     19.7% |                        46.5% |  80.3%
+          0.9400 |                     11.8% |                        55.6% |  88.2%
+          0.9300 |                      6.6% |                        62.4% |  93.4%
+          0.9200 |                      3.9% |                        68.1% |  96.1%
+          0.9100 |                      2.1% |                        72.5% |  97.9%
+          0.9000 |                      1.3% |                        77.1% |  98.7%
+          0.8800 |                      0.4% |                        86.4% |  99.6%
+          0.8500 |                      0.2% |                        93.4% |  99.8%
+          0.8000 |                      0.0% |                        97.3% | 100.0%
+          0.7500 |                      0.0% |                        99.6% | 100.0%
+  operating points for Qwen/Qwen3-Embedding-8B|doc:
+    miss <= 1%: best cut 0.9900 suppresses 10.8% of useless propagations (misses 0.9% of real changes)
+    miss <= 5%: best cut 0.9850 suppresses 22.4% of useless propagations (misses 4.5% of real changes)
+    miss <= 10%: best cut 0.9850 suppresses 22.4% of useless propagations (misses 4.5% of real changes)
+    miss <= 20%: best cut 0.9750 suppresses 43.6% of useless propagations (misses 17.0% of real changes)
+    equal-error-ish: cut 0.9600, 29.2% of no-change called changed, 36.2% of real changes called unchanged
+
+--- Qwen/Qwen3-Embedding-8B|interp_noparen
+    no-change n=1190  min=0.7485 p10=0.8808 med=0.9528 p90=0.9835 max=1.0000 mean=0.9417
+    change    n=1085  min=0.5591 p10=0.8228 med=0.9280 p90=0.9742 max=1.0000 mean=0.9100
+  similarity cut | no-change called 'changed' | real change called 'unchanged' | savings
+          0.9990 |                     99.7% |                         0.1% |   0.3%
+          0.9950 |                     98.4% |                         0.5% |   1.6%
+          0.9900 |                     95.9% |                         0.9% |   4.1%
+          0.9850 |                     91.4% |                         2.8% |   8.6%
+          0.9800 |                     86.1% |                         5.4% |  13.9%
+          0.9750 |                     77.6% |                         9.2% |  22.4%
+          0.9700 |                     71.5% |                        13.6% |  28.5%
+          0.9600 |                     58.4% |                        23.5% |  41.6%
+          0.9500 |                     47.1% |                        32.2% |  52.9%
+          0.9400 |                     37.5% |                        38.9% |  62.5%
+          0.9300 |                     29.6% |                        47.6% |  70.4%
+          0.9200 |                     24.5% |                        55.0% |  75.5%
+          0.9100 |                     19.4% |                        60.5% |  80.6%
+          0.9000 |                     15.0% |                        65.7% |  85.0%
+          0.8800 |                      9.9% |                        74.7% |  90.1%
+          0.8500 |                      4.1% |                        83.9% |  95.9%
+          0.8000 |                      0.6% |                        93.5% |  99.4%
+          0.7500 |                      0.1% |                        97.8% |  99.9%
+  operating points for Qwen/Qwen3-Embedding-8B|interp_noparen:
+    miss <= 1%: best cut 0.9900 suppresses 4.1% of useless propagations (misses 0.9% of real changes)
+    miss <= 5%: best cut 0.9850 suppresses 8.6% of useless propagations (misses 2.8% of real changes)
+    miss <= 10%: best cut 0.9750 suppresses 22.4% of useless propagations (misses 9.2% of real changes)
+    miss <= 20%: best cut 0.9700 suppresses 28.5% of useless propagations (misses 13.6% of real changes)
+    equal-error-ish: cut 0.9400, 37.5% of no-change called changed, 38.9% of real changes called unchanged
+
+--- Qwen/Qwen3-Embedding-8B|interp_first
+    no-change n=1190  min=0.5780 p10=0.8352 med=0.9392 p90=0.9901 max=1.0000 mean=0.9237
+    change    n=1085  min=0.5780 p10=0.8011 med=0.9157 p90=0.9925 max=1.0000 mean=0.9029
+  similarity cut | no-change called 'changed' | real change called 'unchanged' | savings
+          0.9990 |                     96.1% |                         7.3% |   3.9%
+          0.9950 |                     92.8% |                         8.7% |   7.2%
+          0.9900 |                     89.9% |                        10.6% |  10.1%
+          0.9850 |                     85.7% |                        13.6% |  14.3%
+          0.9800 |                     82.0% |                        15.6% |  18.0%
+          0.9750 |                     76.4% |                        17.5% |  23.6%
+          0.9700 |                     72.5% |                        19.7% |  27.5%
+          0.9600 |                     65.4% |                        22.9% |  34.6%
+          0.9500 |                     59.7% |                        27.7% |  40.3%
+          0.9400 |                     50.3% |                        34.5% |  49.7%
+          0.9300 |                     44.1% |                        40.2% |  55.9%
+          0.9200 |                     37.2% |                        45.9% |  62.8%
+          0.9100 |                     32.0% |                        53.7% |  68.0%
+          0.9000 |                     26.5% |                        58.7% |  73.5%
+          0.8800 |                     19.1% |                        68.9% |  80.9%
+          0.8500 |                     12.2% |                        78.2% |  87.8%
+          0.8000 |                      6.2% |                        90.2% |  93.8%
+          0.7500 |                      2.2% |                        96.8% |  97.8%
+  operating points for Qwen/Qwen3-Embedding-8B|interp_first:
+    miss <= 1%: unreachable at any cut in the sweep
+    miss <= 5%: unreachable at any cut in the sweep
+    miss <= 10%: best cut 0.9950 suppresses 7.2% of useless propagations (misses 8.7% of real changes)
+    miss <= 20%: best cut 0.9700 suppresses 27.5% of useless propagations (misses 19.7% of real changes)
+    equal-error-ish: cut 0.9300, 44.1% of no-change called changed, 40.2% of real changes called unchanged
+
+--- Qwen/Qwen3-Embedding-8B|interp_first_noparen
+    no-change n=1190  min=0.4422 p10=0.8220 med=0.9356 p90=0.9909 max=1.0000 mean=0.9179
+    change    n=1085  min=0.4422 p10=0.7992 med=0.9132 p90=0.9972 max=1.0000 mean=0.8977
+  similarity cut | no-change called 'changed' | real change called 'unchanged' | savings
+          0.9990 |                     95.4% |                         9.2% |   4.6%
+          0.9950 |                     92.7% |                        11.2% |   7.3%
+          0.9900 |                     89.6% |                        12.7% |  10.4%
+          0.9850 |                     85.6% |                        14.8% |  14.4%
+          0.9800 |                     82.2% |                        15.8% |  17.8%
+          0.9750 |                     78.1% |                        17.3% |  21.9%
+          0.9700 |                     74.3% |                        18.9% |  25.7%
+          0.9600 |                     67.4% |                        21.6% |  32.6%
+          0.9500 |                     62.2% |                        24.9% |  37.8%
+          0.9400 |                     53.4% |                        30.7% |  46.6%
+          0.9300 |                     46.2% |                        37.4% |  53.8%
+          0.9200 |                     39.8% |                        45.0% |  60.2%
+          0.9100 |                     34.3% |                        52.0% |  65.7%
+          0.9000 |                     29.2% |                        57.9% |  70.8%
+          0.8800 |                     22.0% |                        66.9% |  78.0%
+          0.8500 |                     14.8% |                        78.1% |  85.2%
+          0.8000 |                      6.9% |                        89.7% |  93.1%
+          0.7500 |                      2.9% |                        95.3% |  97.1%
+  operating points for Qwen/Qwen3-Embedding-8B|interp_first_noparen:
+    miss <= 1%: unreachable at any cut in the sweep
+    miss <= 5%: unreachable at any cut in the sweep
+    miss <= 10%: best cut 0.9990 suppresses 4.6% of useless propagations (misses 9.2% of real changes)
+    miss <= 20%: best cut 0.9700 suppresses 25.7% of useless propagations (misses 18.9% of real changes)
+    equal-error-ish: cut 0.9200, 39.8% of no-change called changed, 45.0% of real changes called unchanged
+
+  RANKING by equal-error rate (lower is better):
+    0.362  Qwen/Qwen3-Embedding-8B|doc  (cut 0.9600, fp 29.2%, fn 36.2%)
+    0.389  Qwen/Qwen3-Embedding-8B|interp_noparen  (cut 0.9400, fp 37.5%, fn 38.9%)
+    0.427  Qwen/Qwen3-Embedding-8B|interp  (cut 0.9500, fp 42.7%, fn 37.7%)
+    0.441  Qwen/Qwen3-Embedding-8B|interp_first  (cut 0.9300, fp 44.1%, fn 40.2%)
+    0.450  Qwen/Qwen3-Embedding-8B|interp_first_noparen  (cut 0.9200, fp 39.8%, fn 45.0%)
+
+  RANKING by AUC -- the probability that a randomly chosen real
+  change scores LOWER than a randomly chosen no-change pair.
+  0.5 = the score carries no information; 1.0 = perfect separation.
+    AUC 0.6631  Qwen/Qwen3-Embedding-8B|interp
+    AUC 0.7452  Qwen/Qwen3-Embedding-8B|doc
+    AUC 0.6596  Qwen/Qwen3-Embedding-8B|interp_noparen
+    AUC 0.5902  Qwen/Qwen3-Embedding-8B|interp_first
+    AUC 0.5818  Qwen/Qwen3-Embedding-8B|interp_first_noparen
+
+==============================================================================
+C. CANDIDATE RULE 2a -- ORACLE PER-ENTITY RELATIVE RULE
+   changed iff sim(old,new) < (that entity's own minimum no-change
+   similarity) - margin.  Needs several stored samples of the OLD
+   text, which production does not have: an upper bound only.
+==============================================================================
+
+--- Qwen/Qwen3-Embedding-8B|interp
+          margin | no-change called 'changed' | real change called 'unchanged' | savings
+         -0.0200 |                     44.9% |                        25.3% |  55.1%
+         -0.0100 |                     27.6% |                        35.0% |  72.4%
+         -0.0050 |                     17.4% |                        40.7% |  82.6%
+          0.0000 |                      9.9% |                        47.1% |  90.1%
+          0.0050 |                      4.8% |                        51.2% |  95.2%
+          0.0100 |                      2.8% |                        54.0% |  97.2%
+          0.0200 |                      1.3% |                        59.2% |  98.7%
+          0.0300 |                      0.8% |                        62.2% |  99.2%
+          0.0500 |                      0.2% |                        71.8% |  99.8%
+          0.0800 |                      0.0% |                        84.9% | 100.0%
+          0.1200 |                      0.0% |                        93.8% | 100.0%
+  operating points for Qwen/Qwen3-Embedding-8B|interp (oracle relative):
+    miss <= 1%: unreachable at any cut in the sweep
+    miss <= 5%: unreachable at any cut in the sweep
+    miss <= 10%: unreachable at any cut in the sweep
+    miss <= 20%: unreachable at any cut in the sweep
+    equal-error-ish: cut -0.0100, 27.6% of no-change called changed, 35.0% of real changes called unchanged
+
+==============================================================================
+D. CANDIDATE RULE 2b -- REALISTIC RESAMPLING RULE
+   One stored old text; re-interpret the current source k times;
+   compare old-vs-new against new-vs-new for the same entity.
+==============================================================================
+
+--- k=2  Qwen/Qwen3-Embedding-8B|interp  statistic=mean  (no-change instances 2550, change instances 620)
+          margin | no-change called 'changed' | real change called 'unchanged' | savings
+         -0.0200 |                     80.3% |                        11.1% |  19.7%
+         -0.0100 |                     66.0% |                        16.6% |  34.0%
+         -0.0050 |                     56.2% |                        21.0% |  43.8%
+          0.0000 |                     45.7% |                        28.7% |  54.3%
+          0.0050 |                     36.6% |                        37.1% |  63.4%
+          0.0100 |                     29.2% |                        41.6% |  70.8%
+          0.0200 |                     17.6% |                        52.7% |  82.4%
+          0.0300 |                     12.6% |                        58.1% |  87.4%
+          0.0500 |                      5.7% |                        67.1% |  94.3%
+          0.0800 |                      2.1% |                        78.1% |  97.9%
+          0.1200 |                      0.5% |                        88.7% |  99.5%
+  operating points for k=2 mean Qwen/Qwen3-Embedding-8B|interp:
+    miss <= 1%: unreachable at any cut in the sweep
+    miss <= 5%: unreachable at any cut in the sweep
+    miss <= 10%: unreachable at any cut in the sweep
+    miss <= 20%: best cut -0.0100 suppresses 34.0% of useless propagations (misses 16.6% of real changes)
+    equal-error-ish: cut 0.0050, 36.6% of no-change called changed, 37.1% of real changes called unchanged
+
+--- k=2  Qwen/Qwen3-Embedding-8B|interp  statistic=minmax  (no-change instances 2550, change instances 620)
+          margin | no-change called 'changed' | real change called 'unchanged' | savings
+         -0.0200 |                     66.0% |                        18.2% |  34.0%
+         -0.0100 |                     50.7% |                        25.3% |  49.3%
+         -0.0050 |                     40.9% |                        32.7% |  59.1%
+          0.0000 |                     33.3% |                        40.3% |  66.7%
+          0.0050 |                     26.7% |                        46.3% |  73.3%
+          0.0100 |                     20.5% |                        50.5% |  79.5%
+          0.0200 |                     13.1% |                        57.9% |  86.9%
+          0.0300 |                      9.1% |                        62.7% |  90.9%
+          0.0500 |                      4.3% |                        70.5% |  95.7%
+          0.0800 |                      1.4% |                        81.5% |  98.6%
+          0.1200 |                      0.2% |                        89.7% |  99.8%
+  operating points for k=2 minmax Qwen/Qwen3-Embedding-8B|interp:
+    miss <= 1%: unreachable at any cut in the sweep
+    miss <= 5%: unreachable at any cut in the sweep
+    miss <= 10%: unreachable at any cut in the sweep
+    miss <= 20%: best cut -0.0200 suppresses 34.0% of useless propagations (misses 18.2% of real changes)
+    equal-error-ish: cut 0.0000, 33.3% of no-change called changed, 40.3% of real changes called unchanged
+
+--- k=2  Qwen/Qwen3-Embedding-8B|doc  statistic=mean  (no-change instances 2550, change instances 620)
+          margin | no-change called 'changed' | real change called 'unchanged' | savings
+         -0.0200 |                     88.5% |                         2.4% |  11.5%
+         -0.0100 |                     74.3% |                        10.8% |  25.7%
+         -0.0050 |                     60.9% |                        15.5% |  39.1%
+          0.0000 |                     44.7% |                        21.0% |  55.3%
+          0.0050 |                     31.4% |                        28.7% |  68.6%
+          0.0100 |                     23.3% |                        36.3% |  76.7%
+          0.0200 |                     11.9% |                        52.6% |  88.1%
+          0.0300 |                      7.0% |                        61.3% |  93.0%
+          0.0500 |                      2.3% |                        70.6% |  97.7%
+          0.0800 |                      0.2% |                        81.5% |  99.8%
+          0.1200 |                      0.0% |                        94.8% | 100.0%
+  operating points for k=2 mean Qwen/Qwen3-Embedding-8B|doc:
+    miss <= 1%: unreachable at any cut in the sweep
+    miss <= 5%: best cut -0.0200 suppresses 11.5% of useless propagations (misses 2.4% of real changes)
+    miss <= 10%: best cut -0.0200 suppresses 11.5% of useless propagations (misses 2.4% of real changes)
+    miss <= 20%: best cut -0.0050 suppresses 39.1% of useless propagations (misses 15.5% of real changes)
+    equal-error-ish: cut 0.0050, 31.4% of no-change called changed, 28.7% of real changes called unchanged
+
+--- k=2  Qwen/Qwen3-Embedding-8B|doc  statistic=minmax  (no-change instances 2550, change instances 620)
+          margin | no-change called 'changed' | real change called 'unchanged' | savings
+         -0.0200 |                     76.1% |                        11.1% |  23.9%
+         -0.0100 |                     57.8% |                        18.1% |  42.2%
+         -0.0050 |                     46.0% |                        21.6% |  54.0%
+          0.0000 |                     33.3% |                        30.2% |  66.7%
+          0.0050 |                     23.6% |                        39.0% |  76.4%
+          0.0100 |                     17.1% |                        46.1% |  82.9%
+          0.0200 |                      8.9% |                        58.1% |  91.1%
+          0.0300 |                      4.9% |                        64.8% |  95.1%
+          0.0500 |                      1.6% |                        73.1% |  98.4%
+          0.0800 |                      0.2% |                        83.7% |  99.8%
+          0.1200 |                      0.0% |                        95.6% | 100.0%
+  operating points for k=2 minmax Qwen/Qwen3-Embedding-8B|doc:
+    miss <= 1%: unreachable at any cut in the sweep
+    miss <= 5%: unreachable at any cut in the sweep
+    miss <= 10%: unreachable at any cut in the sweep
+    miss <= 20%: best cut -0.0100 suppresses 42.2% of useless propagations (misses 18.1% of real changes)
+    equal-error-ish: cut 0.0000, 33.3% of no-change called changed, 30.2% of real changes called unchanged
+
+--- k=3  Qwen/Qwen3-Embedding-8B|interp  statistic=mean  (no-change instances 1700, change instances 155)
+          margin | no-change called 'changed' | real change called 'unchanged' | savings
+         -0.0200 |                     86.0% |                        14.8% |  14.0%
+         -0.0100 |                     69.4% |                        23.2% |  30.6%
+         -0.0050 |                     58.0% |                        27.1% |  42.0%
+          0.0000 |                     41.6% |                        35.5% |  58.4%
+          0.0050 |                     30.5% |                        43.9% |  69.5%
+          0.0100 |                     23.2% |                        49.0% |  76.8%
+          0.0200 |                     14.1% |                        57.4% |  85.9%
+          0.0300 |                      9.8% |                        63.2% |  90.2%
+          0.0500 |                      3.4% |                        71.0% |  96.6%
+          0.0800 |                      1.4% |                        79.4% |  98.6%
+          0.1200 |                      0.4% |                        88.4% |  99.6%
+  operating points for k=3 mean Qwen/Qwen3-Embedding-8B|interp:
+    miss <= 1%: unreachable at any cut in the sweep
+    miss <= 5%: unreachable at any cut in the sweep
+    miss <= 10%: unreachable at any cut in the sweep
+    miss <= 20%: best cut -0.0200 suppresses 14.0% of useless propagations (misses 14.8% of real changes)
+    equal-error-ish: cut 0.0000, 41.6% of no-change called changed, 35.5% of real changes called unchanged
+
+--- k=3  Qwen/Qwen3-Embedding-8B|interp  statistic=minmax  (no-change instances 1700, change instances 155)
+          margin | no-change called 'changed' | real change called 'unchanged' | savings
+         -0.0200 |                     40.0% |                        32.9% |  60.0%
+         -0.0100 |                     23.2% |                        41.3% |  76.8%
+         -0.0050 |                     16.9% |                        51.0% |  83.1%
+          0.0000 |                     12.3% |                        59.4% |  87.7%
+          0.0050 |                      9.7% |                        64.5% |  90.3%
+          0.0100 |                      7.4% |                        66.5% |  92.6%
+          0.0200 |                      4.4% |                        69.0% |  95.6%
+          0.0300 |                      2.6% |                        71.6% |  97.4%
+          0.0500 |                      1.4% |                        76.8% |  98.6%
+          0.0800 |                      0.8% |                        85.2% |  99.2%
+          0.1200 |                      0.1% |                        91.0% |  99.9%
+  operating points for k=3 minmax Qwen/Qwen3-Embedding-8B|interp:
+    miss <= 1%: unreachable at any cut in the sweep
+    miss <= 5%: unreachable at any cut in the sweep
+    miss <= 10%: unreachable at any cut in the sweep
+    miss <= 20%: unreachable at any cut in the sweep
+    equal-error-ish: cut -0.0200, 40.0% of no-change called changed, 32.9% of real changes called unchanged
+
+--- k=3  Qwen/Qwen3-Embedding-8B|doc  statistic=mean  (no-change instances 1700, change instances 155)
+          margin | no-change called 'changed' | real change called 'unchanged' | savings
+         -0.0200 |                     94.1% |                         0.0% |   5.9%
+         -0.0100 |                     79.9% |                         7.1% |  20.1%
+         -0.0050 |                     64.1% |                        18.1% |  35.9%
+          0.0000 |                     41.2% |                        25.2% |  58.8%
+          0.0050 |                     25.8% |                        36.1% |  74.2%
+          0.0100 |                     16.7% |                        43.9% |  83.3%
+          0.0200 |                      8.1% |                        59.4% |  91.9%
+          0.0300 |                      4.5% |                        66.5% |  95.5%
+          0.0500 |                      1.1% |                        72.9% |  98.9%
+          0.0800 |                      0.2% |                        82.6% |  99.8%
+          0.1200 |                      0.0% |                        94.8% | 100.0%
+  operating points for k=3 mean Qwen/Qwen3-Embedding-8B|doc:
+    miss <= 1%: best cut -0.0200 suppresses 5.9% of useless propagations (misses 0.0% of real changes)
+    miss <= 5%: best cut -0.0200 suppresses 5.9% of useless propagations (misses 0.0% of real changes)
+    miss <= 10%: best cut -0.0100 suppresses 20.1% of useless propagations (misses 7.1% of real changes)
+    miss <= 20%: best cut -0.0050 suppresses 35.9% of useless propagations (misses 18.1% of real changes)
+    equal-error-ish: cut 0.0050, 25.8% of no-change called changed, 36.1% of real changes called unchanged
+
+--- k=3  Qwen/Qwen3-Embedding-8B|doc  statistic=minmax  (no-change instances 1700, change instances 155)
+          margin | no-change called 'changed' | real change called 'unchanged' | savings
+         -0.0200 |                     52.5% |                        25.8% |  47.5%
+         -0.0100 |                     30.8% |                        32.9% |  69.2%
+         -0.0050 |                     20.5% |                        41.3% |  79.5%
+          0.0000 |                     12.9% |                        52.3% |  87.1%
+          0.0050 |                      9.0% |                        58.1% |  91.0%
+          0.0100 |                      6.6% |                        64.5% |  93.4%
+          0.0200 |                      3.2% |                        69.7% |  96.8%
+          0.0300 |                      1.5% |                        72.9% |  98.5%
+          0.0500 |                      0.4% |                        76.8% |  99.6%
+          0.0800 |                      0.0% |                        86.5% | 100.0%
+          0.1200 |                      0.0% |                        98.1% | 100.0%
+  operating points for k=3 minmax Qwen/Qwen3-Embedding-8B|doc:
+    miss <= 1%: unreachable at any cut in the sweep
+    miss <= 5%: unreachable at any cut in the sweep
+    miss <= 10%: unreachable at any cut in the sweep
+    miss <= 20%: unreachable at any cut in the sweep
+    equal-error-ish: cut -0.0100, 30.8% of no-change called changed, 32.9% of real changes called unchanged
+
+==============================================================================
+E. CANDIDATE RULE 5a -- PER-RUN-PAIR NORMALISATION
+   One run may simply be terser than another, moving every entity's
+   similarity together.  Judge an entity against the MEDIAN
+   similarity of all entities compared between the same two runs.
+   Production-realisable: re-interpreting a theory yields many
+   entities to calibrate on.
+==============================================================================
+
+--- Qwen/Qwen3-Embedding-8B|interp  (score = similarity minus this run pair's median)
+    no-change n=1190  min=-0.2237 p10=-0.0576 med=0.0000 p90=0.0277 max=0.0513 mean=-0.0086
+    change    n=1085  min=-0.3621 p10=-0.1129 med=-0.0048 p90=0.0392 max=0.0736 mean=-0.0234
+      offset cut | no-change called 'changed' | real change called 'unchanged' | savings
+          0.0200 |                     78.1% |                        28.5% |  21.9%
+          0.0100 |                     63.3% |                        39.6% |  36.7%
+          0.0000 |                     49.3% |                        47.3% |  50.7%
+         -0.0100 |                     38.7% |                        53.8% |  61.3%
+         -0.0200 |                     30.5% |                        58.8% |  69.5%
+         -0.0300 |                     23.0% |                        64.2% |  77.0%
+         -0.0500 |                     13.3% |                        72.4% |  86.7%
+         -0.0800 |                      4.9% |                        81.8% |  95.1%
+         -0.1200 |                      0.7% |                        91.2% |  99.3%
+         -0.1800 |                      0.2% |                        98.1% |  99.8%
+  operating points for Qwen/Qwen3-Embedding-8B|interp (run-pair normalised):
+    miss <= 1%: unreachable at any cut in the sweep
+    miss <= 5%: unreachable at any cut in the sweep
+    miss <= 10%: unreachable at any cut in the sweep
+    miss <= 20%: unreachable at any cut in the sweep
+    equal-error-ish: cut 0.0000, 49.3% of no-change called changed, 47.3% of real changes called unchanged
+
+--- Qwen/Qwen3-Embedding-8B|doc  (score = similarity minus this run pair's median)
+    no-change n=1190  min=-0.1477 p10=-0.0338 med=0.0000 p90=0.0182 max=0.0323 mean=-0.0047
+    change    n=1085  min=-0.2592 p10=-0.0907 med=-0.0128 p90=0.0208 max=0.0428 mean=-0.0268
+      offset cut | no-change called 'changed' | real change called 'unchanged' | savings
+          0.0200 |                     93.6% |                        10.7% |   6.4%
+          0.0100 |                     71.8% |                        23.2% |  28.2%
+          0.0000 |                     49.4% |                        38.7% |  50.6%
+         -0.0100 |                     32.0% |                        48.0% |  68.0%
+         -0.0200 |                     21.6% |                        55.7% |  78.4%
+         -0.0300 |                     12.5% |                        63.3% |  87.5%
+         -0.0500 |                      3.6% |                        73.2% |  96.4%
+         -0.0800 |                      0.8% |                        86.6% |  99.2%
+         -0.1200 |                      0.2% |                        94.6% |  99.8%
+         -0.1800 |                      0.0% |                        98.7% | 100.0%
+  operating points for Qwen/Qwen3-Embedding-8B|doc (run-pair normalised):
+    miss <= 1%: unreachable at any cut in the sweep
+    miss <= 5%: unreachable at any cut in the sweep
+    miss <= 10%: unreachable at any cut in the sweep
+    miss <= 20%: best cut 0.0200 suppresses 6.4% of useless propagations (misses 10.7% of real changes)
+    equal-error-ish: cut -0.0100, 32.0% of no-change called changed, 48.0% of real changes called unchanged
+
+==============================================================================
+F. CANDIDATE RULE 5b -- NON-EMBEDDING COMPARATORS
+   No LLM, no embedding: compare the formal content directly.
+
+   IMPORTANT -- what this experiment can and cannot measure.
+   `Semantic_Digest` and the universal key's statement hash both
+   incorporate the FULLY QUALIFIED name of every constant involved,
+   and in this experiment the qualifier is the theory name, which
+   differs between every run by construction.  Both therefore differ
+   for every pair here, including pairs of byte-identical sources --
+   an artifact of running each variant as its own theory, not a
+   property of the mechanism.  In production an edit happens inside
+   ONE theory, the qualified names do not move, and the digest
+   changes exactly when the alpha-canonical formal content changes.
+   The measurable, name-independent stand-in is the printed
+   statement `expr`, which carries no theory qualifier.
+==============================================================================
+
+  cross-run digest equality check (should be 0 if it were name-independent):
+    identical-source pairs whose digest/key hash agrees: 0/1190 -> the digest is name-dependent, as expected
+
+--- printed statement (expr) differs
+    no-change called 'changed':      0/1190 = 0.0%
+    real change called 'unchanged':  420/1085 = 38.7%
+    savings (propagations suppressed): 100.0%
+
+  how often the printed statement moves, per grade -- i.e. how much
+  of the invalidation a statement-level comparator already avoids:
+    a-cosmetic       75/130 = 58% of the edited root's own entities change their printed statement
+    b-numeric        75/140 = 54% of the edited root's own entities change their printed statement
+    c-condition      105/220 = 48% of the edited root's own entities change their printed statement
+    d-negation       150/260 = 58% of the edited root's own entities change their printed statement
+    e-overhaul       120/160 = 75% of the edited root's own entities change their printed statement
+    f-locale         140/175 = 80% of the edited root's own entities change their printed statement
+
+==============================================================================
+G. DOWNSTREAM AND CONTROL, production embedding
+==============================================================================
+  control       unchanged-root     n=1015  min=0.6755 p10=0.8897 med=0.9461 p90=0.9783 max=0.9975 mean=0.9386
+  definitional  a-cosmetic         n=130   min=0.7556 p10=0.8811 med=0.9501 p90=0.9791 max=0.9914 mean=0.9384
+  definitional  b-numeric          n=140   min=0.7008 p10=0.8814 med=0.9356 p90=0.9774 max=1.0000 mean=0.9274
+  definitional  c-condition        n=220   min=0.6621 p10=0.8973 med=0.9537 p90=0.9785 max=0.9889 mean=0.9424
+  definitional  d-negation         n=260   min=0.6565 p10=0.8970 med=0.9576 p90=0.9843 max=0.9956 mean=0.9447
+  definitional  e-overhaul         n=160   min=0.5709 p10=0.7557 med=0.8697 p90=0.9573 max=0.9745 mean=0.8564
+  definitional  f-locale           n=175   min=0.7762 p10=0.7994 med=0.8505 p90=0.9077 max=0.9541 mean=0.8546
+  downstream    a-cosmetic         n=155   min=0.8626 p10=0.8981 med=0.9470 p90=0.9872 max=0.9969 mean=0.9460
+  downstream    b-numeric          n=140   min=0.7431 p10=0.8792 med=0.9467 p90=0.9902 max=1.0000 mean=0.9413
+  downstream    c-condition        n=150   min=0.7374 p10=0.8847 med=0.9368 p90=0.9797 max=0.9966 mean=0.9361
+  downstream    d-negation         n=145   min=0.7231 p10=0.8599 med=0.9234 p90=0.9815 max=1.0000 mean=0.9190
+  downstream    e-overhaul         n=145   min=0.7374 p10=0.8615 med=0.9353 p90=0.9845 max=0.9969 mean=0.9310
+  downstream    f-locale           n=140   min=0.7745 p10=0.8203 med=0.8633 p90=0.8996 max=0.9447 mean=0.8618
+

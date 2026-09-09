@@ -1,0 +1,196 @@
+judge model: gpt-5.6-sol
+tokens: {'input': 28763, 'output': 4794}
+judgements: 850
+
+==============================================================================
+H1. CONFUSION MATRIX
+==============================================================================
+  no-change pairs (truth: same)                  n=510   same=508   different=2     unparsable=0   -> 'different' rate 0.4%
+  control pairs, root not edited (truth: same)   n=116   same=115   different=1     unparsable=0   -> 'different' rate 0.9%
+  definitional pairs of an edited root (truth: different) n=124   same=36    different=88    unparsable=0   -> 'different' rate 71.0%
+  downstream pairs (no ground truth)             n=100   same=91    different=9     unparsable=0   -> 'different' rate 9.0%
+
+  no-change called 'changed'      : 3/626 = 0.5%
+  real change called 'unchanged'  : 36/124 = 29.0%
+  savings (propagations suppressed): 99.5%
+
+==============================================================================
+H1b. THE SAME MATRIX WITH A CORRECTED GROUND TRUTH
+     Grade (a) is a COSMETIC edit -- reordered equations, renamed
+     bound variables -- so the entity's meaning genuinely did not
+     change and its English genuinely does not need updating.  A
+     gate that stops propagation there is RIGHT, not wrong.  The
+     matrix above counts those as misses because it labels by 'was
+     the root command edited'; here they count as truth 'same'.
+==============================================================================
+  no-change (incl. cosmetic) called 'changed': 3/642 = 0.5%
+  meaning-changing edit called 'unchanged'   : 20/108 = 18.5%
+  savings (propagations suppressed)          : 99.5%
+
+==============================================================================
+H1c. STRICTEST GROUND TRUTH: only entities that UNAMBIGUOUSLY
+     changed meaning.  Editing a root command regenerates facts
+     that do not depend on the edited part -- the termination
+     predicate `galmuth_dom` holds for every list whether the
+     function sums the even or the odd entries, and `narquil.cases`
+     splits a `quilm` value the same way whether the threshold is 5
+     or 6.  Counting those as 'must be detected' penalises a
+     comparator for being right.  Here the population is: grade b-f,
+     and either the entity's own printed statement changed, or the
+     entity IS the edited constant/locale (whose printed statement
+     is only its type signature).
+==============================================================================
+  unambiguous meaning change called 'unchanged': 1/87 = 1.1%
+  everything else called 'changed'             : 5/663 = 0.8%
+  savings (propagations suppressed)            : 99.2%
+  (the 'everything else' population folds in the 37 regenerated facts
+   whose meaning does not depend on the edited part, plus every cosmetic edit)
+
+  the misses, one line each:
+    galmuth                constant           e-overhaul   Sim_Measure_A4 vs Sim_Measure_B4  cos=0.611
+
+  the false alarms, one line each:
+    galmuth_dom            constant           None         Sim_Measure_A2 vs Sim_Measure_A5  cos=0.9706
+      why: Description 2 additionally asserts that `galmuth_dom` holds for every list of natural numbers, whereas Description 1 only characterizes it as the termination-domain predi
+    tirneb_at_zero         lemma              None         Sim_Measure_B2 vs Sim_Measure_B2b  cos=0.8957
+      why: Although both state `tirneb 0 = 1`, Description 2 additionally claims that `tirneb x = 3 * x + 4`, which is different and inconsistent mathematical content.
+    vondel                 constant           unchanged-root Sim_Measure_A4 vs Sim_Measure_B4  cos=0.6755
+      why: Description 2 specifies only the predicate's name and type and does not assert the defining condition m * m < n given in Description 1.
+    galmuth_dom            constant           c-condition  Sim_Measure_A2 vs Sim_Measure_B2  cos=0.9566
+      why: Description 2 additionally asserts that `galmuth_dom` holds for every list because recursion is always on shorter lists, whereas Description 1 only identifies it as the t
+    galmuth_dom            constant           e-overhaul   Sim_Measure_A4 vs Sim_Measure_B4  cos=0.9292
+      why: Description 1 additionally claims that galmuth recurses structurally and that galmuth_dom holds for every list, whereas Description 2 only characterizes the generated dom
+
+==============================================================================
+H1d. THE RECOMMENDED RULE, swept: propagate if the judge says
+     'different' OR the cosine similarity is below a cut.  Strict
+     ground truth of H1c.  The embedding is a backstop only: the
+     judge's one miss is a pair whose paragraphs are 0.61 similar,
+     which any loose cut catches.
+==============================================================================
+       cut |   no-change called changed |   real change called unchanged | savings
+      0.00 | 5/663 =          0.8% | 1/87 =              1.1% |  99.2%
+      0.50 | 5/663 =          0.8% | 1/87 =              1.1% |  99.2%
+      0.60 | 5/663 =          0.8% | 1/87 =              1.1% |  99.2%
+      0.65 | 5/663 =          0.8% | 0/87 =              0.0% |  99.2%
+      0.70 | 5/663 =          0.8% | 0/87 =              0.0% |  99.2%
+      0.75 | 6/663 =          0.9% | 0/87 =              0.0% |  99.1%
+      0.80 | 9/663 =          1.4% | 0/87 =              0.0% |  98.6%
+      0.85 | 21/663 =          3.2% | 0/87 =              0.0% |  96.8%
+      0.90 | 89/663 =         13.4% | 0/87 =              0.0% |  86.6%
+
+==============================================================================
+H2. DEFINITIONAL PAIRS BY GRADE (truth: different)
+==============================================================================
+  grade a-cosmetic                               n=16    same=16    different=0     unparsable=0   -> 'different' rate 0.0%
+  grade b-numeric                                n=22    same=6     different=16    unparsable=0   -> 'different' rate 72.7%
+  grade c-condition                              n=24    same=6     different=18    unparsable=0   -> 'different' rate 75.0%
+  grade d-negation                               n=24    same=7     different=17    unparsable=0   -> 'different' rate 70.8%
+  grade e-overhaul                               n=18    same=1     different=17    unparsable=0   -> 'different' rate 94.4%
+  grade f-locale                                 n=20    same=0     different=20    unparsable=0   -> 'different' rate 100.0%
+
+==============================================================================
+H3. NO-CHANGE PAIRS BY WHICH RUNS (truth: same)
+==============================================================================
+  Sim_Measure_A1 vs Sim_Measure_A2               n=85    same=85    different=0     unparsable=0   -> 'different' rate 0.0%
+  Sim_Measure_A1 vs Sim_Measure_A4               n=85    same=85    different=0     unparsable=0   -> 'different' rate 0.0%
+  Sim_Measure_A2 vs Sim_Measure_A5               n=85    same=84    different=1     unparsable=0   -> 'different' rate 1.2%
+  Sim_Measure_A3 vs Sim_Measure_A4               n=85    same=85    different=0     unparsable=0   -> 'different' rate 0.0%
+  Sim_Measure_B vs Sim_Measure_B1b               n=85    same=85    different=0     unparsable=0   -> 'different' rate 0.0%
+  Sim_Measure_B2 vs Sim_Measure_B2b              n=85    same=84    different=1     unparsable=0   -> 'different' rate 1.2%
+
+==============================================================================
+H4. DOWNSTREAM PAIRS: judge verdict vs whether the OLD paragraph
+    quotes the changed part of the upstream definition
+==============================================================================
+  old paragraph quotes the definition     judge: same   judge: different
+  True                                             49                  9
+  False                                            42                  0
+
+  by grade:
+  grade               quotes+same  quotes+diff  noquote+same  noquote+diff
+  a-cosmetic                    8            0             9             0
+  b-numeric                     6            0            10             0
+  c-condition                  10            1             6             0
+  d-negation                   10            0             7             0
+  e-overhaul                    7            0            10             0
+  f-locale                      8            8             0             0
+
+==============================================================================
+H6. COMBINED RULE: propagate if the judge says 'different' OR the
+    cosine similarity is below a cut.  The embedding is used only to
+    catch what the judge lets through, so it can only add false
+    alarms; the sweep says how many, for how many misses saved.
+    Evaluated on the judged pairs only, with the corrected ground
+    truth of H1b.
+==============================================================================
+       cut |   no-change called changed |   real change called unchanged | savings
+      0.00 | 3/642 =          0.5% | 20/108 =             18.5% |  99.5%
+      0.75 | 4/642 =          0.6% | 19/108 =             17.6% |  99.4%
+      0.80 | 7/642 =          1.1% | 19/108 =             17.6% |  98.9%
+      0.85 | 19/642 =          3.0% | 19/108 =             17.6% |  97.0%
+      0.88 | 46/642 =          7.2% | 19/108 =             17.6% |  92.8%
+      0.90 | 86/642 =         13.4% | 18/108 =             16.7% |  86.6%
+      0.92 | 147/642 =         22.9% | 18/108 =             16.7% |  77.1%
+      0.95 | 304/642 =         47.4% | 14/108 =             13.0% |  52.6%
+      0.97 | 458/642 =         71.3% | 8/108 =              7.4% |  28.7%
+
+==============================================================================
+H5. WHERE THE JUDGE AND THE EMBEDDING DISAGREE (10 examples each way)
+==============================================================================
+
+-- real change the judge called SAME: 36
+   galmuth [constant] Sim_Measure_A1 vs Sim_Measure_B grade=a-cosmetic cos=0.9472
+     why: Both descriptions define galmuth as a function from lists of natural numbers to a natural number that returns the sum of exactly the even elements, with the empty list yielding zero.
+     1: A recursively defined function named `galmuth` that takes a list of natural numbers and returns a single natural number. It computes the sum of all the even-valued elements of the list: it starts from zero for the empty 
+     2: A function named `galmuth` that takes a list of natural numbers and returns a single natural number. It sums up those elements of the list that are even; that is, it adds together every entry that leaves remainder zero w
+   galmuth [constant] Sim_Measure_A4 vs Sim_Measure_B4 grade=e-overhaul cos=0.611
+     why: Both describe the same list-recursive natural-number function `galmuth`, with the second merely omitting the specific recursion equations that characterize it as summing the even entries.
+     1: A function taking a list of natural numbers and returning a single natural number. It sums up those entries of the list that are even (divisible by two), ignoring the odd entries; the empty list yields zero.
+     2: A function named `galmuth` that takes a list of natural numbers and returns a single natural number. It is defined by recursion over the list, computing one number from the sequence of elements; its recursion equations a
+   galmuth.elims [elimination rule] Sim_Measure_A1 vs Sim_Measure_B grade=a-cosmetic cos=0.9038
+     why: Both descriptions state the same elimination rule, differing only in case order and in expressing the non-even branch as odd rather than as the negation of evenness.
+     1: A case-analysis (elimination) rule for reasoning about a value produced by `galmuth`. Given the assumption that `galmuth x = y` for some list `x` and result `y`, and given a goal `P` to prove, it lets you split into two 
+     2: The elimination rule for an equation of the form `galmuth x = y`. Given that `galmuth x` equals some value `y`, one may conclude a goal `P` by considering the two ways this equation can arise: either the list `x` is non-
+   galmuth.elims [lemma] Sim_Measure_A1 vs Sim_Measure_B grade=a-cosmetic cos=0.9038
+     why: Both descriptions state the same elimination rule for galmuth, differing only in case order and in phrasing the non-even branch as odd.
+     1: A case-analysis (elimination) rule for reasoning about a value produced by `galmuth`. Given the assumption that `galmuth x = y` for some list `x` and result `y`, and given a goal `P` to prove, it lets you split into two 
+     2: The elimination rule for an equation of the form `galmuth x = y`. Given that `galmuth x` equals some value `y`, one may conclude a goal `P` by considering the two ways this equation can arise: either the list `x` is non-
+   galmuth_dom [constant] Sim_Measure_A1 vs Sim_Measure_B grade=a-cosmetic cos=0.9679
+     why: Both describe `galmuth_dom` as the automatically generated termination/domain predicate for `galmuth` and state that it holds for every natural-number list because the recursion is structural on the l
+     1: An auto-generated domain predicate for the recursive function `galmuth`, which takes a list of natural numbers and returns a boolean. It holds of a given list exactly when the recursive definition of `galmuth` is well-de
+     2: An internal domain predicate, automatically generated for the recursive function `galmuth`, which takes a list of natural numbers and returns a truth value indicating whether `galmuth` is defined (its recursion terminate
+   galmuth_dom [constant] Sim_Measure_A3 vs Sim_Measure_B3 grade=d-negation cos=0.9786
+     why: Both descriptions identify `galmuth_dom` as the termination/domain predicate for `galmuth` on natural-number lists and state that it holds for every list.
+     1: An automatically generated domain predicate for the recursive function `galmuth`. It takes a list of natural numbers and returns a Boolean, indicating whether the recursive computation of `galmuth` on that list is well-d
+     2: An automatically generated domain predicate for the recursive function `galmuth`. It takes a list of natural numbers and returns a truth value indicating whether `galmuth` is defined on that list (whether the recursion t
+   kolvar [constant] Sim_Measure_A2 vs Sim_Measure_B2 grade=a-cosmetic cos=0.9806
+     why: Both descriptions define `kolvar` as the natural-number function mapping two inputs to their product plus one; only the parameter names differ.
+     1: A function named `kolvar` that takes two natural numbers and returns a natural number. Given inputs `m` and `n`, it produces the value `m * n + 1`, that is, the product of the two numbers plus one.
+     2: A function named `kolvar` that takes two natural numbers and returns a natural number. Given inputs `a` and `b`, it produces the value `a * b + 1`, that is, the product of the two numbers plus one.
+   kolvar_def [lemma] Sim_Measure_A2 vs Sim_Measure_B2 grade=a-cosmetic cos=0.9498
+     why: Both descriptions state that for any two natural numbers, kolvar applied to them equals their product plus one, differing only in variable names.
+     1: The defining equation of the function `kolvar`: for any two natural numbers `m` and `n`, `kolvar m n` equals `m * n + 1`, i.e. the product of `m` and `n` with one added.
+     2: The defining equation of the function `kolvar`: for any natural numbers `a` and `b`, the value `kolvar a b` equals `a * b + 1`, i.e. multiplying `a` by `b` and then adding one.
+   narquil [constant] Sim_Measure_A4 vs Sim_Measure_B4 grade=a-cosmetic cos=0.7556
+     why: Both describe `narquil` as a recursively defined natural-number-valued function on `quilm` trees, with the first description supplying the recursion’s specific leaf-counting behavior.
+     1: A function taking a `quilm` tree (a finite binary tree with natural-number leaves) and returning a natural number. It counts the number of leaves whose stored value is less than five: a leaf `Brint n` contributes one if 
+     2: A function named `narquil` that takes a `quilm` tree value and returns a natural number. It is defined by recursion over the tree structure; its recursion equations are stated separately.
+   narquil.cases [lemma] Sim_Measure_A1 vs Sim_Measure_B grade=c-condition cos=0.9543
+     why: Both descriptions state the same exhaustive case-analysis principle for a quilm value x, with cases x = Brint n and x = Glaive s t, requiring P in each case.
+     1: The case-analysis rule underlying the definition of `narquil`: to prove a goal `P` about an arbitrary `quilm` value `x`, it suffices to prove `P` in the case where `x` is a leaf `Brint n` for some natural number `n`, and
+     2: The case-analysis rule for a `quilm` value underlying the function `narquil`. To prove a goal `P`, it suffices to consider two exhaustive cases for the value `x`: either `x` is a leaf `Brint n` for some natural number `n
+
+-- no-change the judge called DIFFERENT: 3
+   galmuth_dom [constant] Sim_Measure_A2 vs Sim_Measure_A5 grade=None cos=0.9706
+     why: Description 2 additionally asserts that `galmuth_dom` holds for every list of natural numbers, whereas Description 1 only characterizes it as the termination-domain predicate without claiming universa
+     1: An auxiliary predicate `galmuth_dom` that takes a list of natural numbers and returns a boolean. It is the domain-condition predicate automatically generated for the recursive function `galmuth`, holding of exactly those
+     2: An auxiliary domain predicate, taking a list of natural numbers and returning a boolean, generated automatically for the recursive function `galmuth`. It marks the inputs on which the recursive definition of `galmuth` is
+   tirneb_at_zero [lemma] Sim_Measure_B2 vs Sim_Measure_B2b grade=None cos=0.8957
+     why: Although both state `tirneb 0 = 1`, Description 2 additionally claims that `tirneb x = 3 * x + 4`, which is different and inconsistent mathematical content.
+     1: The function `tirneb` applied to zero yields one; that is, `tirneb 0 = 1`.
+     2: The function `tirneb` (which maps an integer `x` to `3 * x + 4`) applied to zero equals one: `tirneb 0 = 1`. (Note this states the value at zero is one, even though the general formula three times zero plus four would gi
+   vondel [constant] Sim_Measure_A4 vs Sim_Measure_B4 grade=unchanged-root cos=0.6755
+     why: Description 2 specifies only the predicate's name and type and does not assert the defining condition m * m < n given in Description 1.
+     1: A two-argument predicate on natural numbers (returning true or false). Applied to natural numbers `m` and `n`, it holds exactly when the square of `m` is strictly less than `n`, that is when `m * m < n`.
+     2: A predicate named `vondel` that takes two natural numbers and returns a Boolean (true or false). It denotes a binary relation between two non-negative integers whose defining condition is given separately.

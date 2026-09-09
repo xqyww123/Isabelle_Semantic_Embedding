@@ -1,0 +1,240 @@
+embedding: Qwen/Qwen3-Embedding-8B @ https://api.fireworks.ai/inference/v1 dim=4096 normalize=True
+entities paired across all three runs: 85
+
+
+=== 1. NOISE FLOOR: A1 vs A2, independently interpreted entities ===
+  all            n=85   min=0.7342 p10=0.9169 p25=0.9345 med=0.9579 p75=0.9748 p90=0.9834 max=0.9925 mean=0.9505
+  case-split rule        n=2    min=0.9670 p10=0.9670 p25=0.9670 med=0.9670 p75=0.9799 p90=0.9799 max=0.9799 mean=0.9734
+  constant               n=14   min=0.8932 p10=0.9211 p25=0.9443 med=0.9490 p75=0.9662 p90=0.9834 max=0.9861 mean=0.9524
+  elimination rule       n=2    min=0.9336 p10=0.9336 p25=0.9336 med=0.9336 p75=0.9551 p90=0.9551 max=0.9551 mean=0.9444
+  induction rule         n=2    min=0.9745 p10=0.9745 p25=0.9745 med=0.9745 p75=0.9864 p90=0.9864 max=0.9864 mean=0.9804
+  introduction rule      n=3    min=0.9748 p10=0.9748 p25=0.9748 med=0.9801 p75=0.9907 p90=0.9907 max=0.9907 mean=0.9819
+  lemma                  n=60   min=0.7342 p10=0.9137 p25=0.9331 med=0.9568 p75=0.9734 p90=0.9828 max=0.9925 mean=0.9473
+  locale                 n=1    min=0.9597 p10=0.9597 p25=0.9597 med=0.9597 p75=0.9597 p90=0.9597 max=0.9597 mean=0.9597
+  type                   n=1    min=0.9185 p10=0.9185 p25=0.9185 med=0.9185 p75=0.9185 p90=0.9185 max=0.9185 mean=0.9185
+
+=== 2. DEFINITIONAL ENTITIES OF A ROOT MODIFIED IN B ===
+entity                      kind                root      grade                  A1~A2    A1~B    A2~B  expr=
+galmuth                     constant            galmuth   a-cosmetic            0.9490  0.9472  0.9817      Y
+galmuth.elims               elimination rule    galmuth   a-cosmetic            0.9551  0.9038  0.8857      N
+galmuth.elims               lemma               galmuth   a-cosmetic            0.9551  0.9038  0.8857      N
+galmuth_dom                 constant            galmuth   a-cosmetic            0.9548  0.9679  0.9315      Y
+kolvar                      constant            kolvar    b-numeric             0.9834  0.9289  0.9278      Y
+kolvar_def                  lemma               kolvar    b-numeric             0.9784  0.9834  0.9568      N
+narquil                     constant            narquil   c-condition           0.9455  0.9205  0.9617      Y
+narquil.cases               lemma               narquil   c-condition           0.9770  0.9543  0.9609      Y
+narquil.elims               elimination rule    narquil   c-condition           0.9336  0.9009  0.8819      N
+narquil.elims               lemma               narquil   c-condition           0.9336  0.9009  0.8819      N
+narquil.induct              lemma               narquil   c-condition           0.9360  0.9585  0.9353      Y
+narquil.simps(1)            lemma               narquil   c-condition           0.9865  0.9778  0.9788      N
+narquil.simps(2)            lemma               narquil   c-condition           0.9925  0.9266  0.9178      Y
+narquil_dom                 constant            narquil   c-condition           0.8932  0.9632  0.9192      Y
+plerx                       constant            plerx     d-negation            0.9590  0.9185  0.8695      Y
+plerx.cases                 case-split rule     plerx     d-negation            0.9799  0.9800  0.9730      N
+plerx.cases                 lemma               plerx     d-negation            0.9680  0.9738  0.9730      N
+plerx.induct                lemma               plerx     d-negation            0.9833  0.9817  0.9878      N
+plerx.inducts               induction rule      plerx     d-negation            0.9864  0.9798  0.9843      N
+plerx.intros(1)             introduction rule   plerx     d-negation            0.9907  0.9089  0.9092      N
+plerx.intros(1)             lemma               plerx     d-negation            0.9621  0.9121  0.9092      N
+plerx.intros(2)             introduction rule   plerx     d-negation            0.9801  0.9761  0.9850      Y
+plerx.intros(2)             lemma               plerx     d-negation            0.9690  0.9705  0.9850      Y
+plerx.simps                 lemma               plerx     d-negation            0.9463  0.9576  0.9495      N
+tirneb                      constant            tirneb    e-overhaul            0.9662  0.7771  0.7862      Y
+tirneb_def                  lemma               tirneb    e-overhaul            0.9855  0.8572  0.8238      N
+dremnok                     constant            dremnok   f-locale-assumes      0.9359  0.8201  0.7894      Y
+dremnok                     locale              dremnok   f-locale-assumes      0.9597  0.8548  0.8634      N
+dremnok.intro               introduction rule   dremnok   f-locale-assumes      0.9748  0.8622  0.8841      N
+dremnok.intro               lemma               dremnok   f-locale-assumes      0.9364  0.8800  0.8841      N
+dremnok_def                 lemma               dremnok   f-locale-assumes      0.9625  0.8422  0.8734      N
+
+=== 3. HAND-WRITTEN LEMMAS, STATEMENT UNCHANGED IN B (downstream) ===
+entity                      kind                root      grade                  A1~A2    A1~B    A2~B  expr=
+galmuth_append              lemma               galmuth   a-cosmetic            0.9412  0.9431  0.9759      Y
+galmuth_le_sum              lemma               galmuth   a-cosmetic            0.9682  0.9242  0.8969      Y
+galmuth_nil                 lemma               galmuth   a-cosmetic            0.9534  0.9885  0.9567      Y
+galmuth_rev                 lemma               galmuth   a-cosmetic            0.9598  0.9197  0.9015      Y
+galmuth_singleton           lemma               galmuth   a-cosmetic            0.9453  0.9544  0.9753      Y
+kolvar_commute              lemma               kolvar    b-numeric             0.9827  0.9755  0.9621      Y
+kolvar_mono_left            lemma               kolvar    b-numeric             0.9794  0.9931  0.9794      Y
+kolvar_positive             lemma               kolvar    b-numeric             0.9794  0.9824  0.9975      Y
+kolvar_zero_right           lemma               kolvar    b-numeric             0.9203  0.9259  0.9914      Y
+narquil_glaive_assoc        lemma               narquil   c-condition           0.9579  0.9248  0.9368      Y
+narquil_glaive_commute      lemma               narquil   c-condition           0.9491  0.9351  0.8762      Y
+narquil_large               lemma               narquil   c-condition           0.9204  0.9187  0.9575      Y
+narquil_small               lemma               narquil   c-condition           0.9202  0.9377  0.9466      Y
+plerx_add                   lemma               plerx     d-negation            0.8978  0.8978  1.0000      Y
+plerx_double                lemma               plerx     d-negation            0.9276  0.8862  0.8947      Y
+plerx_not_one               lemma               plerx     d-negation            0.7342  0.7547  0.9588      Y
+plerx_two                   lemma               plerx     d-negation            0.8830  0.9039  0.9289      Y
+tirneb_at_zero              lemma               tirneb    e-overhaul            0.9137  0.9078  0.9457      Y
+tirneb_injective            lemma               tirneb    e-overhaul            0.9742  0.9926  0.9764      Y
+tirneb_mono                 lemma               tirneb    e-overhaul            0.9834  0.9951  0.9831      Y
+tirneb_step                 lemma               tirneb    e-overhaul            0.9843  0.9504  0.9462      Y
+dremnok.swap_inner          lemma               dremnok   f-locale-assumes      0.9807  0.8410  0.8567      Y
+dremnok.swap_outer          lemma               dremnok   f-locale-assumes      0.9775  0.8467  0.8558      Y
+dremnok.swap_pair           lemma               dremnok   f-locale-assumes      0.8967  0.9002  0.8670      Y
+dremnok.swap_triple         lemma               dremnok   f-locale-assumes      0.9271  0.7745  0.8251      Y
+
+=== 3b. DEFINITIONAL ENTITIES OF AN UNCHANGED ROOT (control) ===
+entity                      kind                root      grade                  A1~A2    A1~B    A2~B  expr=
+quilm                       type                quilm     unchanged-datatype    0.9185  0.9417  0.9408      Y
+quilm.Brint                 constant            quilm     unchanged-datatype    0.9486  0.9868  0.9650      Y
+quilm.Glaive                constant            quilm     unchanged-datatype    0.9645  0.9717  0.9655      Y
+quilm.case(1)               lemma               quilm     unchanged-datatype    0.9204  0.9372  0.9626      Y
+quilm.case(2)               lemma               quilm     unchanged-datatype    0.9236  0.8951  0.9164      Y
+quilm.case_cong             lemma               quilm     unchanged-datatype    0.9647  0.9758  0.9714      Y
+quilm.case_cong_weak        lemma               quilm     unchanged-datatype    0.9359  0.9557  0.9243      Y
+quilm.case_distrib          lemma               quilm     unchanged-datatype    0.9331  0.9311  0.9380      Y
+quilm.case_quilm            constant            quilm     unchanged-datatype    0.9820  0.9724  0.9815      Y
+quilm.distinct(1)           lemma               quilm     unchanged-datatype    0.9729  0.9783  0.9511      Y
+quilm.distinct(2)           lemma               quilm     unchanged-datatype    0.9440  0.9121  0.8997      Y
+quilm.exhaust               case-split rule     quilm     unchanged-datatype    0.9670  0.9532  0.9636      Y
+quilm.exhaust               lemma               quilm     unchanged-datatype    0.9448  0.9453  0.9636      Y
+quilm.induct                induction rule      quilm     unchanged-datatype    0.9745  0.9576  0.9659      Y
+quilm.induct                lemma               quilm     unchanged-datatype    0.9696  0.9505  0.9659      Y
+quilm.inject(1)             lemma               quilm     unchanged-datatype    0.9828  0.9671  0.9564      Y
+quilm.inject(2)             lemma               quilm     unchanged-datatype    0.9734  0.8450  0.8457      Y
+quilm.nchotomy              lemma               quilm     unchanged-datatype    0.9671  0.9224  0.9079      Y
+quilm.rec(1)                lemma               quilm     unchanged-datatype    0.9609  0.9674  0.9325      Y
+quilm.rec(2)                lemma               quilm     unchanged-datatype    0.9348  0.9343  0.8844      Y
+quilm.rec_quilm             constant            quilm     unchanged-datatype    0.9211  0.9547  0.9408      Y
+quilm.size(1)               lemma               quilm     unchanged-datatype    0.9345  0.9482  0.9573      Y
+quilm.size(2)               lemma               quilm     unchanged-datatype    0.9568  0.8697  0.8876      Y
+quilm.size(3)               lemma               quilm     unchanged-datatype    0.9116  0.8766  0.9538      Y
+quilm.size(4)               lemma               quilm     unchanged-datatype    0.9169  0.8187  0.8914      Y
+quilm.size_quilm            constant            quilm     unchanged-datatype    0.9443  0.9507  0.9763      Y
+quilm.split                 lemma               quilm     unchanged-datatype    0.9606  0.9594  0.9374      Y
+quilm.split_asm             lemma               quilm     unchanged-datatype    0.8998  0.9432  0.9003      Y
+vondel                      constant            vondel    control               0.9861  0.9557  0.9528      Y
+
+=== 4. DOWNSTREAM SUMMARY PER ROOT (hand-written lemmas only) ===
+root      grade                  n  A1~A2 (noise)             A1~B (downstream)         
+galmuth   a-cosmetic             5  n=5 min=0.9412 med=0.9534 min=0.9197 med=0.9431
+kolvar    b-numeric              4  n=4 min=0.9203 med=0.9794 min=0.9259 med=0.9824
+narquil   c-condition            4  n=4 min=0.9202 med=0.9348 min=0.9187 med=0.9351
+plerx     d-negation             4  n=4 min=0.7342 med=0.8904 min=0.7547 med=0.8978
+tirneb    e-overhaul             4  n=4 min=0.9137 med=0.9788 min=0.9078 med=0.9926
+dremnok   f-locale-assumes       4  n=4 min=0.8967 med=0.9523 min=0.7745 med=0.8467
+
+=== 5. SEPARATION TEST ===
+noise (A1~A2, all): min=0.7342 p10=0.9169 med=0.9579
+real change (A1~B, expr differs): max=0.9834 p90=0.9798 med=0.9266
+a threshold cleanly separating them exists: NO
+  threshold sim>=0.99:  83/85 noise pairs called 'changed';  0/31 real changes called 'unchanged'
+  threshold sim>=0.98:  70/85 noise pairs called 'changed';  3/31 real changes called 'unchanged'
+  threshold sim>=0.97:  59/85 noise pairs called 'changed';  8/31 real changes called 'unchanged'
+  threshold sim>=0.96:  46/85 noise pairs called 'changed'; 10/31 real changes called 'unchanged'
+  threshold sim>=0.95:  37/85 noise pairs called 'changed'; 13/31 real changes called 'unchanged'
+  threshold sim>=0.94:  27/85 noise pairs called 'changed'; 14/31 real changes called 'unchanged'
+  threshold sim>=0.92:  10/85 noise pairs called 'changed'; 17/31 real changes called 'unchanged'
+  threshold sim>=0.90:   6/85 noise pairs called 'changed'; 24/31 real changes called 'unchanged'
+  threshold sim>=0.85:   1/85 noise pairs called 'changed'; 28/31 real changes called 'unchanged'
+
+=== 6. WASTED DOWNSTREAM RE-INTERPRETATION ===
+hand-written lemmas of a CHANGED root: n=25; 25 (100%) at or above the noise minimum 0.7342; 16 (64%) at or above the noise p10 0.9169; 13 (52%) at or above THAT ENTITY's own A1-vs-A2 noise similarity
+definitional entities of an UNCHANGED root: n=29; 29 (100%) at or above the noise minimum 0.7342; 23 (79%) at or above the noise p10 0.9169; 13 (45%) at or above THAT ENTITY's own A1-vs-A2 noise similarity
+
+=== 6b. PAIRED TEST: (A1~B) minus (A1~A2) for the SAME entity ===
+A value near zero means the B run's text differs from the A1 run's text no more than
+two independent runs of the SAME source differ.
+  hand-written lemmas of a CHANGED root         n=25   min=-0.1526 p10=-0.1308 p25=-0.0339 med=0.0000 p75=0.0117 p90=0.0205 max=0.0352 mean=-0.0193
+  definitional entities of a CHANGED root       n=31   min=-0.1891 p10=-0.1158 p25=-0.0564 med=-0.0327 p75=-0.0015 p90=0.0113 max=0.0700 mean=-0.0397
+  definitional entities of an UNCHANGED root    n=29   min=-0.1284 p10=-0.0447 p25=-0.0285 med=-0.0012 p75=0.0111 p90=0.0233 max=0.0433 mean=-0.0116
+
+=== 7a. FIVE LOWEST-SIMILARITY NOISE PAIRS (A1 vs A2) ===
+--- plerx_not_one [lemma]  sim=0.7342
+    expr : ¬ plerx 1
+    A1   : The inductive predicate `plerx` (which holds exactly of the even natural numbers) does not hold of one: `plerx 1` is false, i.e. `¬ plerx 1` (one is odd).
+    A2   : The number one does not satisfy the predicate `plerx`: `plerx 1` is false.
+--- plerx_two [lemma]  sim=0.8830
+    expr : plerx 2
+    A1   : The predicate `plerx` holds of the number two, i.e. `plerx 2` is true (two is even).
+    A2   : The number two satisfies the predicate `plerx`: `plerx 2` holds.
+--- narquil_dom [constant]  sim=0.8932
+    expr : quilm ⇒ bool
+    A1   : An auto-generated domain predicate for the recursive function `narquil`, which takes a `quilm` tree and returns a boolean. It holds of a given `quilm` value exactly when the recursive definition of `narquil` is well-defined (terminates) on that value. Because `narquil` recurses on strictly smaller subtrees, this predicate is true for every `quilm`.
+    A2   : The domain-condition predicate automatically generated for the recursive function `narquil`. It takes a `quilm` value and returns a boolean, holding of exactly those inputs for which the recursion defining `narquil` is well-defined (terminates).
+--- dremnok.swap_pair [lemma]  sim=0.8967
+    expr : dremnok ?zug ⟹ ?zug ?x ?y = ?zug ?y ?x
+    A1   : Assuming the binary operation `zug` is commutative (`dremnok zug` holds), the operation commutes: `zug x y` equals `zug y x` for all `x` and `y`. This restates the commutativity assumption of the locale for an arbitrary operation known to satisfy `dremnok`.
+    A2   : Assuming the binary operation `zug` is commutative (`dremnok zug` holds), its two arguments may be exchanged: `zug x y` equals `zug y x`.
+--- plerx_add [lemma]  sim=0.8978
+    expr : ⟦plerx ?m; plerx ?n⟧ ⟹ plerx (?m + ?n)
+    A1   : The predicate `plerx` is closed under addition: if `plerx m` and `plerx n` both hold for natural numbers `m` and `n`, then `plerx (m + n)` holds (the sum of two even numbers is even).
+    A2   : The predicate `plerx` is closed under addition: if `plerx m` and `plerx n` both hold, then `plerx (m + n)` holds.
+
+=== 7b. FIVE HIGHEST-SIMILARITY REAL-CHANGE PAIRS (A1 vs B, expr differs) ===
+--- kolvar_def [lemma] grade=b-numeric sim=0.9834 (noise for this entity 0.9784)
+    expr A1: kolvar ?m ?n = ?m * ?n + 1
+    expr B : kolvar ?m ?n = ?m * ?n + 2
+    A1     : The defining equation of the function `kolvar`: for any two natural numbers `m` and `n`, the value `kolvar m n` equals the product of `m` and `n` plus one, i.e. `m * n + 1`.
+    B      : The defining equation of the function `kolvar`: for any two natural numbers `m` and `n`, the value `kolvar m n` equals the product of `m` and `n` plus two, that is `m * n + 2`.
+--- plerx.induct [lemma] grade=d-negation sim=0.9817 (noise for this entity 0.9833)
+    expr A1: ⟦plerx ?x; ?P 0; ⋀n. ⟦plerx n; ?P n⟧ ⟹ ?P (n + 2)⟧ ⟹ ?P ?x
+    expr B : ⟦plerx ?x; ?P 1; ⋀n. ⟦plerx n; ?P n⟧ ⟹ ?P (n + 2)⟧ ⟹ ?P ?x
+    A1     : The rule induction principle for the inductive predicate `plerx`. To prove that a property `P` holds of every natural number `x` satisfying `plerx x`, it suffices to prove `P 0` (the base case), and to prove `P (n + 2)` for every `n` for which `plerx n` holds and `P n` is already known (the step case). Given these, `P x` holds whenever `plerx x` holds.
+    B      : The rule induction principle for the inductive predicate `plerx`. To prove that a property `P` holds for every `x` satisfying `plerx x`, it suffices to prove: `P` holds for `1`; and for every `n`, if `plerx n` holds and `P` holds for `n`, then `P` holds for `n + 2`.
+--- plerx.cases [case-split rule] grade=d-negation sim=0.9800 (noise for this entity 0.9799)
+    expr A1: ⟦plerx ?a; ?a = 0 ⟹ ?P; ⋀n. ⟦?a = n + 2; plerx n⟧ ⟹ ?P⟧ ⟹ ?P
+    expr B : ⟦plerx ?a; ?a = 1 ⟹ ?P; ⋀n. ⟦?a = n + 2; plerx n⟧ ⟹ ?P⟧ ⟹ ?P
+    A1     : The case-analysis rule for the inductive predicate `plerx`. Given that `plerx a` holds for some natural number `a`, and a goal `P` to prove, one may split into two cases matching the two ways `plerx` can be established: either `a` is zero, or `a` has the form `n + 2` for some natural number `n` with `plerx n` holding. If `P` follows in each case, then `P` holds.
+    B      : The case-analysis rule for the inductive predicate `plerx`. If `plerx a` holds, then to prove a goal `P` it suffices to handle the two ways `plerx a` could have been established: either `a` equals `1`, or `a` equals `n + 2` for some natural number `n` with `plerx n` holding. If `P` follows in both cases, then `P` holds.
+--- plerx.inducts [induction rule] grade=d-negation sim=0.9798 (noise for this entity 0.9864)
+    expr A1: ⟦plerx ?x; ?P 0; ⋀n. ⟦plerx n; ?P n⟧ ⟹ ?P (n + 2)⟧ ⟹ ?P ?x
+    expr B : ⟦plerx ?x; ?P 1; ⋀n. ⟦plerx n; ?P n⟧ ⟹ ?P (n + 2)⟧ ⟹ ?P ?x
+    A1     : The rule induction principle for the inductive predicate `plerx` (the same statement as its induction rule). To prove that a property `P` holds of every natural number `x` satisfying `plerx x`, it suffices to prove `P 0`, and to prove `P (n + 2)` for every `n` such that `plerx n` holds and `P n` is already known. Given these, `P x` holds whenever `plerx x` holds.
+    B      : The rule induction principle for the inductive predicate `plerx`. To prove that a property `P` holds for every `x` satisfying `plerx x`, it suffices to prove: `P` holds for `1`; and for every `n`, if `plerx n` holds and `P` holds for `n`, then `P` holds for `n + 2`.
+--- narquil.simps(1) [lemma] grade=c-condition sim=0.9778 (noise for this entity 0.9865)
+    expr A1: narquil (Brint ?n) = (if ?n < 5 then 1 else 0)
+    expr B : narquil (Brint ?n) = (if ?n ≤ 5 then 1 else 0)
+    A1     : The defining equation of `narquil` on a leaf: `narquil (Brint n)` equals one if the stored natural number `n` is less than five, and zero otherwise.
+    B      : The defining equation of `narquil` on a leaf: for a leaf `Brint n` carrying a natural number `n`, `narquil (Brint n)` equals one if `n` is less than or equal to five, and zero otherwise.
+
+=== 7c. FIVE HIGHEST-SIMILARITY DOWNSTREAM PAIRS OF A CHANGED ROOT ===
+--- tirneb_mono [lemma] grade=e-overhaul sim=0.9951 (noise for this entity 0.9834)
+    expr   : ?x ≤ ?y ⟹ tirneb ?x ≤ tirneb ?y
+    A1     : The function `tirneb` is monotonic (non-decreasing): for integers `x` and `y`, if `x` is less than or equal to `y`, then `tirneb x` is less than or equal to `tirneb y`.
+    B      : The function `tirneb` is monotone (non-decreasing): for integers `x` and `y`, if `x` is less than or equal to `y`, then `tirneb x` is less than or equal to `tirneb y`.
+--- kolvar_mono_left [lemma] grade=b-numeric sim=0.9931 (noise for this entity 0.9794)
+    expr   : ?m ≤ ?p ⟹ kolvar ?m ?n ≤ kolvar ?p ?n
+    A1     : The function `kolvar` is monotonic (non-decreasing) in its first argument: for natural numbers `m`, `p`, and `n`, if `m` is less than or equal to `p`, then `kolvar m n` is less than or equal to `kolvar p n`.
+    B      : The function `kolvar` is monotone (non-decreasing) in its first argument: for natural numbers `m`, `p` and `n`, if `m` is less than or equal to `p`, then `kolvar m n` is less than or equal to `kolvar p n`.
+--- tirneb_injective [lemma] grade=e-overhaul sim=0.9926 (noise for this entity 0.9742)
+    expr   : tirneb ?x = tirneb ?y ⟹ ?x = ?y
+    A1     : The function `tirneb` is injective (one-to-one): for integers `x` and `y`, whenever `tirneb x` equals `tirneb y`, the arguments themselves must be equal, i.e. `x = y`.
+    B      : The function `tirneb` is injective (one-to-one): for integers `x` and `y`, if `tirneb x` equals `tirneb y`, then `x` and `y` must be equal.
+--- galmuth_nil [lemma] grade=a-cosmetic sim=0.9885 (noise for this entity 0.9534)
+    expr   : galmuth [] = 0
+    A1     : Applying the function `galmuth` to the empty list yields zero; that is, `galmuth [] = 0`.
+    B      : The function `galmuth` applied to the empty list yields zero: `galmuth []` equals `0`.
+--- kolvar_positive [lemma] grade=b-numeric sim=0.9824 (noise for this entity 0.9794)
+    expr   : 0 < kolvar ?m ?n
+    A1     : The function `kolvar` always returns a strictly positive natural number: for any natural numbers `m` and `n`, the value `kolvar m n` is greater than zero.
+    B      : The function `kolvar` always yields a strictly positive result: for any natural numbers `m` and `n`, the value `kolvar m n` is greater than zero.
+
+=== 7d. FIVE LOWEST-SIMILARITY DOWNSTREAM PAIRS OF A CHANGED ROOT ===
+--- plerx_not_one [lemma] grade=d-negation sim=0.7547 (noise for this entity 0.7342)
+    expr   : ¬ plerx 1
+    A1     : The inductive predicate `plerx` (which holds exactly of the even natural numbers) does not hold of one: `plerx 1` is false, i.e. `¬ plerx 1` (one is odd).
+    B      : The predicate `plerx` does not hold for the number `1`; that is, `plerx 1` is false.
+--- dremnok.swap_triple [lemma] grade=f-locale-assumes sim=0.7745 (noise for this entity 0.9271)
+    expr   : dremnok ?zug ⟹ ?zug (?zug ?x ?y) ?z = ?zug ?z (?zug ?x ?y)
+    A1     : Assuming the binary operation `zug` is commutative (`dremnok zug` holds), an outer application commutes with its compound left argument: `zug (zug x y) z` equals `zug z (zug x y)` for all `x`, `y`, and `z`.
+    B      : A consequence within the `dremnok` locale: assuming `dremnok zug` (so `zug` is associative), the combined value `zug x y` can be moved from the left operand to the right operand, that is `zug (zug x y) z` equals `zug z (zug x y)`.
+--- dremnok.swap_inner [lemma] grade=f-locale-assumes sim=0.8410 (noise for this entity 0.9807)
+    expr   : dremnok ?zug ⟹ ?zug ?x (?zug ?y ?z) = ?zug ?x (?zug ?z ?y)
+    A1     : Assuming the binary operation `zug` is commutative (`dremnok zug` holds), swapping the two arguments of a nested inner application on the right does not change the result: `zug x (zug y z)` equals `zug x (zug z y)` for all `x`, `y`, and `z`.
+    B      : A consequence within the `dremnok` locale: assuming `dremnok zug` (so `zug` is associative), the two inner operands can be swapped, that is `zug x (zug y z)` equals `zug x (zug z y)`.
+--- dremnok.swap_outer [lemma] grade=f-locale-assumes sim=0.8467 (noise for this entity 0.9775)
+    expr   : dremnok ?zug ⟹ ?zug (?zug ?x ?y) ?z = ?zug (?zug ?y ?x) ?z
+    A1     : Assuming the binary operation `zug` is commutative (`dremnok zug` holds), swapping the two arguments of an inner application does not change the result of an outer application: `zug (zug x y) z` equals `zug (zug y x) z` for all `x`, `y`, and `z`.
+    B      : A consequence within the `dremnok` locale: assuming `dremnok zug` (so `zug` is associative), the two outer operands can be swapped, that is `zug (zug x y) z` equals `zug (zug y x) z`.
+--- plerx_double [lemma] grade=d-negation sim=0.8862 (noise for this entity 0.9276)
+    expr   : plerx (2 * ?n)
+    A1     : The inductive predicate `plerx` holds of every doubled natural number: for any natural number `n`, `plerx (2 * n)` is true (twice any number is even).
+    B      : The predicate `plerx` holds for every even number: for any natural number `n`, `plerx (2 * n)` holds.
+
+=== 8. SAME QUANTITIES ON THE PRODUCTION DOCUMENT TEXT (pretty_print + interpretation) ===
+  noise A1~A2  n=85   min=0.8326 p10=0.9451 p25=0.9634 med=0.9756 p75=0.9852 p90=0.9915 max=0.9965 mean=0.9711
+  real  A1~B   n=31   min=0.8437 p10=0.8859 p25=0.9362 med=0.9543 p75=0.9756 p90=0.9818 max=0.9898 mean=0.9445
+  downstr A1~B n=25   min=0.8185 p10=0.9062 p25=0.9273 med=0.9624 p75=0.9801 p90=0.9943 max=0.9962 mean=0.9520

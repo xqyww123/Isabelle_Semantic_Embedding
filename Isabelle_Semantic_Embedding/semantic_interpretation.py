@@ -1,24 +1,27 @@
 """Semantic interpretation of Isabelle entities, driven by an LLM agent.
 
-Driver-agnostic core: the batching, the missing-entry retry loop, the failure
-classes and the completeness invariant live here; which agent backend actually
-runs a prompt is the `interpretation_driver` subpackage's business.
+Driver-agnostic core: the work queue and its batches, the missing-entry retry
+loop, the per-entity gate, the failure classes and the completeness invariant
+live here; which agent backend actually runs a prompt is the
+`interpretation_driver` subpackage's business.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextvars
+import contextlib
 import logging
 import os
+import random
 import re
-from collections.abc import Callable, Iterable
-from typing import Any, NamedTuple
+from collections import deque
+from collections.abc import Callable, Generator, Iterable
+from typing import Any, NamedTuple, Self
 
 from Isabelle_RPC_Host import Connection, isabelle_remote_procedure
 from Isabelle_RPC_Host.universal_key import EntityKind, is_WIP, universal_key
 from Isabelle_RPC_Host.unicode import pretty_unicode
-from claude_agent_sdk import tool
+from claude_agent_sdk import SdkMcpTool, tool
 
 from .base import ToolCall_ret, mk_ret as _mk_ret
 from .desugar import mk_desugar_and_explain_tool
@@ -81,7 +84,7 @@ def _resolve_driver_and_model(from_isabelle: str):
             f"{', '.join(available_interpretation_drivers())}.")
     return driver_name, driver_cls, driver_cls.canonical_model(model)
 
-# --- Context-local state ---
+# --- Entity kinds and the agent's addressing labels ---
 
 _KIND_CONSTANT = 1
 _KIND_THEOREM = 2
@@ -223,7 +226,7 @@ def _label(e: Entry) -> str:
     This is the ONLY handle the agent has to address an entry (it echoes
     ``{type, name}`` back through the ``answer`` tool).  It must be IDENTICAL
     everywhere it is formed — the prompt the agent reads (`format_entries` /
-    `_pretty_print_entry`), the `results` key, and the answer-routing map — so
+    `_pretty_print_entry`) and the answer-routing map `_label_to_idx` — so
     the label the agent echoes round-trips to the right entry.  Use `.get(...,
     "unknown")` (not `[...]`) so the key matches what `format_entries` shows."""
     return f"{_KIND_PROMPT_LABELS.get(e.kind, 'unknown')} {e.name}"
@@ -296,24 +299,38 @@ class InterpretationResult(NamedTuple):
     cumulative_cost: CostSummary        # total cost including historical
 
 
-class InterpretationTask:
+# The entity states of one interpretation run (plan §5.3.1), 1:1 with the
+# task's entries.  `results[idx] is None` iff _QUEUED or _SENT.
+_NOT_ENROLLED, _QUEUED, _SENT, _GATING, _DONE = range(5)
+
+# Theory-status keys of the cost accumulators, in the order of the
+# `(input, cache_creation, cache_read, output, cost)` tuples used throughout.
+_COST_KEYS = (b"input_tokens", b"cache_creation_tokens", b"cache_read_tokens",
+              b"output_tokens", b"cost_usd")
+
+
+class AgentTask:
+    """The state of one agent session: the entries it may be asked about, the
+    answers, the batch in flight and the cost accumulators.  `_run_agent`, the
+    drivers and the MCP server all take "the task" through this base; the
+    interpretation task adds the theory's work queue and the entity states,
+    the judge task (plan §15.6) holds one entity and records a verdict."""
+
+    #: prefix of the extra theory-status keys `write_cost` folds this task's
+    #: cost into beside the unprefixed totals (b"judge_" on a judge task, §15.9)
+    cost_prefix: bytes = b""
+    #: entries per turn; fixed when the task is built (tests set it per task)
+    batch_size: int = _BATCH_SIZE
+
     def __init__(self, connection: Connection, file_path: str,
                  theory_longname: str, theory_key: universal_key,
                  entries: list[Entry], driver: str = _DEFAULT_DRIVER,
-                 model: str = "",
-                 inv_fields: 'list[tuple[int | None, int | None]] | None' = None):
+                 model: str = ""):
         self.connection = connection
         self.file_path = file_path
         self.theory_longname = theory_longname
         self.theory_key = theory_key
         self.entries = entries
-        # Per-entry (version, interpreted_at) computed by the todo-set scan,
-        # 1:1 with `entries`; None for a run that did not scan (all four
-        # incremental fields then stay None on write).  version is the value
-        # phase 1 assigned (a bump, the stored value, or the ε baseline);
-        # interpreted_at is the pre-agent eff snapshot (write-back
-        # discipline 4).  write_answer stores them with the answer.
-        self.inv_fields = inv_fields
         # Which backend and model produced these interpretations.  write_cost
         # records them, so a theory's provenance stays readable after the config
         # that chose them has changed.  `model` may start empty when the backend
@@ -322,38 +339,34 @@ class InterpretationTask:
         # response stream before the first cost flush.
         self.driver = driver
         self.model = model
-        # results / _keys / _label_to_idx are strictly 1:1 with `entries`, in
-        # order.  Because the agent addresses an entry only by its label (see
-        # `_label` and `_answer_tool`), two entries sharing a label are mutually
-        # un-addressable; a label-keyed dict comprehension would SILENTLY
-        # collapse them, desyncing _keys vs entries and mis-routing write_answer
-        # (the "name != content" LMDB corruption).  Build it with a loop that
-        # RAISES on the first duplicate instead — the ML side
-        # (Semantic_Store, (entity-kind, name) assert) guarantees uniqueness, so
-        # this only ever fires on a genuine regression.
-        self.results: dict[str, str | None] = {}
+        # results / state are index-aligned with `entries`; the agent addresses
+        # an entry only by its label (see `_label` and `mk_answer_tool`), routed
+        # through _label_to_idx.  Two entries sharing a label would be mutually
+        # un-addressable, so the map RAISES on the first duplicate -- the ML
+        # side (Semantic_Store, (entity-kind, name) assert) guarantees
+        # uniqueness, so this only ever fires on a genuine regression.
+        self.results: list[str | None] = [None] * len(entries)
         self._label_to_idx: dict[str, int] = {}
         for i, e in enumerate(entries):
             key = _label(e)
-            if key in self.results:
+            if key in self._label_to_idx:
                 j = self._label_to_idx[key]
                 raise ValueError(
                     f"duplicate interpretation label {key!r} at entries {j} and {i} "
                     f"(uks {bytes(entries[j].universal_key).hex()} and "
                     f"{bytes(e.universal_key).hex()}); (kind,name) labels must be "
                     f"unique to be addressable by the agent")
-            self.results[key] = None
             self._label_to_idx[key] = i
-        self._keys = list(self.results.keys())
-        self.batches: list[tuple[str, range]] = []
-        self.current_batch: int = 0
-        self.batch_range: range = range(0)
+        self.state: list[int] = [_NOT_ENROLLED] * len(entries)
+        self._queue: deque[int] = deque()
+        self.batch: list[int] = []          # indices sent in the turn in flight
+        self.gates_running = 0
+        self._progress = asyncio.Event()    # set when a gate finishes or enrols
         # `total_*` is the pending delta not yet flushed to LMDB; write_cost()
         # accumulates it into the theory record and resets it to 0.  Cost is
-        # flushed per agent turn (see the drivers' _record_turn_cost), mirroring how answers
-        # are written per-answer (write_answer) — so an interrupt (the parallel
-        # scheduler's by-design hard-crash) cannot drop cost for answers that
-        # are already cached.
+        # flushed per agent turn (see the drivers' _record_turn_cost) -- so an
+        # interrupt (the parallel scheduler's by-design hard-crash) cannot drop
+        # the cost of the turns already run.
         self.total_input_tokens = 0
         self.total_cache_creation_tokens = 0
         self.total_cache_read_tokens = 0
@@ -372,34 +385,94 @@ class InterpretationTask:
         # that of a dead network; this trail is the only thing that tells them apart.
         self.api_retry_errors: list[tuple[Any, Any]] = []
 
-    def __enter__(self) -> InterpretationTask:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:
         pass
 
-    def write_answer(self, task_idx: int, sem: str) -> None:
-        """Write a single answer to the LMDB store.
+    # --- the work queue (plan §5.3) ---
 
-        The incremental fields ride the SAME put as the interpretation
-        (write-back discipline 1: digest, deps and version must never land in
-        separate writes): digest and deps come off the wire entry, version and
-        the pre-agent eff snapshot (discipline 4) from the scan.  An untracked
-        entry (persistent theory: version None) keeps all four fields None."""
-        entry = self.entries[task_idx]
-        version, interpreted_at = (self.inv_fields[task_idx]
-                                   if self.inv_fields is not None else (None, None))
-        tracked = version is not None
-        Semantic_DB[entry.universal_key] = SemanticRecord(
-            EntityKind(entry.kind), entry.name, entry.prop_str, sem,
-            entry.locale_provenance, entry.theory_constituents,
-            semantic_digest=entry.semantic_digest if tracked else None,
-            deps=(entry.deps or []) if tracked else None,
-            version=version, interpreted_at=interpreted_at,
-            position=entry.position,
-            # a fresh record would otherwise DROP the field on every
-            # re-interpretation of a member (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §3)
-            from_collection=entry.from_collection)
+    def enqueue(self, idx: int) -> None:
+        """Enrol an entry: it will be sent in a later batch."""
+        self.results[idx] = None
+        self.state[idx] = _QUEUED
+        self._queue.append(idx)
+        self._progress.set()
+
+    def next_batch(self) -> list[int]:
+        """The indices to send next: what the turn in flight left unanswered
+        (non-empty only after a recycle), then the queue's head, up to
+        `batch_size` in all -- marked sent and remembered as the batch in flight."""
+        batch = self.unanswered_in_batch()
+        while self._queue and len(batch) < self.batch_size:
+            i = self._queue.popleft()
+            if self.state[i] == _QUEUED:        # else answered ahead of its turn
+                self.state[i] = _SENT
+                batch.append(i)
+        self.batch = batch
+        return batch
+
+    def unanswered_in_batch(self) -> list[int]:
+        return [i for i in self.batch if self.state[i] == _SENT]
+
+    def unanswered(self) -> list[int]:
+        """The enrolled entries still without an answer, run-wide (m of §12)."""
+        return [i for i, s in enumerate(self.state) if s in (_QUEUED, _SENT)]
+
+    def enrolled(self) -> int:
+        """N of §12: the entries enrolled so far (grows, never shrinks)."""
+        return sum(1 for s in self.state if s != _NOT_ENROLLED)
+
+    def answered(self) -> int:
+        """k of §12: the entries answered so far, gate running or done."""
+        return sum(1 for s in self.state if s in (_GATING, _DONE))
+
+    def n_interpreted(self) -> int:
+        """A of §12 #7: the entities this run wrote -- counted once however
+        many gates each needed (a correction re-runs the gate, D11)."""
+        return sum(1 for s in self.state if s == _DONE)
+
+    async def wait_for_progress(self) -> None:
+        """Sleep until a gate finishes or enrols an entry.  A set that lands
+        before the wait is not lost: the event stays set until cleared here."""
+        await self._progress.wait()
+        self._progress.clear()
+
+    def gate_started(self) -> None:
+        self.gates_running += 1
+
+    def gate_finished(self) -> None:
+        self.gates_running -= 1
+        self._progress.set()
+
+    def session_started(self) -> None:
+        """Called by `_run_agent` when a fresh driver session opens (the first
+        one and every recycle)."""
+
+    # --- supplied by the subclasses ---
+
+    def format_entries(self, indices: Iterable[int]) -> str:
+        raise NotImplementedError
+
+    def build_prompt(self, indices: list[int]) -> str:
+        raise NotImplementedError
+
+    def on_answer(self, idx: int, text: str) -> None:
+        raise NotImplementedError
+
+    def retry_report(self, n_missing: int, attempt: int) -> str:
+        """The warning line shown before a retry turn; "" for none."""
+        raise NotImplementedError
+
+    def retry_prompt(self, chunk: list[int]) -> str:
+        raise NotImplementedError
+
+    def unanswered_failure(self, missing_names: list[str]) -> str:
+        """The message of the FatalAgentError raised when retries give up."""
+        raise NotImplementedError
+
+    # --- cost ---
 
     def historical_cost(self) -> tuple[int, int, int, int, float]:
         """Read cumulative cost from LMDB (without modifying it).  A layered
@@ -408,11 +481,7 @@ class InterpretationTask:
         if not raw:
             return (0, 0, 0, 0, 0.0)
         prev = unpack_thy_status(raw)
-        return (prev.get(b"input_tokens", 0),
-                prev.get(b"cache_creation_tokens", 0),
-                prev.get(b"cache_read_tokens", 0),
-                prev.get(b"output_tokens", 0),
-                prev.get(b"cost_usd", 0.0))
+        return tuple(prev.get(k, 0) for k in _COST_KEYS)  # type: ignore[return-value]
 
     def write_cost(self) -> tuple[int, int, int, int, float]:
         """Accumulate cost into the LMDB store. Returns updated cumulative totals.
@@ -421,8 +490,15 @@ class InterpretationTask:
         is read through the layers (user first, tombstone = start fresh, then
         system), the updated one lands in the user env with every untouched
         field carried forward -- so system-layer cost/tokens accumulate onward
-        and ``finished`` is never defaulted to False over a layered True."""
+        and ``finished`` is never defaulted to False over a layered True.
+
+        The delta goes into the unprefixed keys (the theory's totals) and, when
+        `cost_prefix` is set, into the prefixed keys as well, so a judge's cost
+        is a breakdown of the totals rather than a second sum (§15.9)."""
         import msgpack
+        delta = (self.total_input_tokens, self.total_cache_creation_tokens,
+                 self.total_cache_read_tokens, self.total_output_tokens,
+                 self.total_cost_usd)
         env = Semantic_DB._ensure_env()
         with env.begin(write=True) as txn:
             raw = txn.get(self.theory_key)
@@ -431,18 +507,13 @@ class InterpretationTask:
             elif raw is None:
                 raw = Semantic_DB._system_get(self.theory_key)   # copy-up
             prev = unpack_thy_status(raw) if raw else {}
-            total = (prev.get(b"input_tokens", 0) + self.total_input_tokens,
-                     prev.get(b"cache_creation_tokens", 0) + self.total_cache_creation_tokens,
-                     prev.get(b"cache_read_tokens", 0) + self.total_cache_read_tokens,
-                     prev.get(b"output_tokens", 0) + self.total_output_tokens,
-                     prev.get(b"cost_usd", 0.0) + self.total_cost_usd)
+            total = tuple(prev.get(k, 0) + d for k, d in zip(_COST_KEYS, delta))
             data = dict(prev)      # preserve every field this write does not touch
+            data.update(zip(_COST_KEYS, total))
+            if self.cost_prefix:
+                data.update({self.cost_prefix + k: prev.get(self.cost_prefix + k, 0) + d
+                             for k, d in zip(_COST_KEYS, delta)})
             data.update({
-                b"input_tokens": total[0],
-                b"cache_creation_tokens": total[1],
-                b"cache_read_tokens": total[2],
-                b"output_tokens": total[3],
-                b"cost_usd": total[4],
                 b"model": self.model,
                 # New field; readers use .get, so older records (no b"driver")
                 # need no migration -- they all predate any driver but ClaudeCode.
@@ -464,14 +535,68 @@ class InterpretationTask:
         self.total_cache_read_tokens = 0
         self.total_output_tokens = 0
         self.total_cost_usd = 0.0
-        return total
+        return total  # type: ignore[return-value]
 
-    def advance_batch(self) -> str | None:
-        self.current_batch += 1
-        if self.current_batch >= len(self.batches):
-            return None
-        prompt, self.batch_range = self.batches[self.current_batch]
-        return prompt
+
+class InterpretationTask(AgentTask):
+    """One theory's interpretation run: the work queue over its entries, the
+    entity states, and the gate started by each answer (plan §5.3-§5.5)."""
+
+    def __init__(self, connection: Connection, file_path: str,
+                 theory_longname: str, theory_key: universal_key,
+                 entries: list[Entry], driver: str = _DEFAULT_DRIVER,
+                 model: str = "", *, unicode_file_path: str = "",
+                 inv_fields: 'list[tuple[int | None, int | None]] | None' = None):
+        super().__init__(connection, file_path, theory_longname, theory_key,
+                         entries, driver, model)
+        self.unicode_file_path = unicode_file_path or file_path
+        self._first_turn_sent = False
+        # Per-entry (version, interpreted_at) computed by the todo-set scan,
+        # 1:1 with `entries`; None for a run that did not scan (all four
+        # incremental fields then stay None on write).  version is the value
+        # phase 1 assigned (a bump, the stored value, or the ε baseline);
+        # interpreted_at is the pre-agent eff snapshot.  The gate stores them
+        # with the answer.  (Plan §15.11: replaced by the gate's own decision
+        # when the scan stops minting.)
+        self.inv_fields = inv_fields
+        # The task group owning the gate tasks; `interpret_file` sets it.
+        self.task_group: asyncio.TaskGroup | None = None
+
+    def session_started(self) -> None:
+        # Every fresh session must be told to load the skills: the first
+        # prompt it sees takes the first-turn form.
+        self._first_turn_sent = False
+
+    def start_gate(self, idx: int) -> None:
+        """Run the entry's gate as a task of the group, the `gates_running`
+        count paired to the task itself: incremented before `create_task` (the
+        loop must never see zero gates between an answer and its gate's first
+        step), decremented by the task's done callback whatever its terminal
+        state, compensated if the group refuses the task."""
+        assert self.task_group is not None, "interpret_file owns the gate task group"
+        coro = _gate(self, idx)
+        self.gate_started()
+        try:
+            t = self.task_group.create_task(coro)
+        except BaseException:               # an aborting group; or a cancellation delivered here
+            self.gate_finished()
+            coro.close()
+            raise
+        t.add_done_callback(lambda _t: self.gate_finished())
+
+    def on_answer(self, idx: int, text: str) -> None:
+        """Record an answer in memory and start its gate (plan §5.3, D14).  A
+        re-submission of an entry (a correction, D11) is an answer like any
+        other: it re-runs the gate, whose verdict depends on the text; one that
+        changes nothing does nothing, and a gate already running picks the new
+        text up itself (see `_gate`)."""
+        old, self.results[idx] = self.results[idx], text
+        if text == old:
+            return
+        if self.state[idx] == _GATING:
+            return
+        self.state[idx] = _GATING           # from _QUEUED / _SENT, or from _DONE (a correction)
+        self.start_gate(idx)
 
     @staticmethod
     def _collapse_provenance(prompt_extra: str,
@@ -514,26 +639,44 @@ class InterpretationTask:
             lines.append(line)
         return "\n".join(lines)
 
-    def build_prompt(self, file_path: str, theory_longname: str, indices: range | None = None) -> str:
-        if indices is None:
-            indices = range(len(self.entries))
+    def build_prompt(self, indices: list[int]) -> str:
         entries_text = self.format_entries(indices)
-
-        if indices.start != 0:
+        if self._first_turn_sent:
             return (
-                f'Continue with the following entities from Isabelle theory "{theory_longname}" (location: {file_path}).\n\n'
+                f'Continue with the following entities from Isabelle theory "{self.theory_longname}" (location: {self.unicode_file_path}).\n\n'
                 f"Entries:\n{entries_text}\n\n"
                 f"Submit translations via `mcp__isabelle_semantics__answer`."
             )
-
+        self._first_turn_sent = True
         return (
             f"Load the skills `isabelle-intro-elim-rules`, `isabelle-datatype`, and `isabelle-record`.\n"
-            f'Informalize the following entities from Isabelle theory "{theory_longname}" (location: {file_path}).\n\n'
+            f'Informalize the following entities from Isabelle theory "{self.theory_longname}" (location: {self.unicode_file_path}).\n\n'
             f"Entries:\n{entries_text}\n\n"
             f"Submit translations via `mcp__isabelle_semantics__answer`."
         )
 
-_local_task: contextvars.ContextVar[InterpretationTask] = contextvars.ContextVar('_local_task')
+    def retry_report(self, n_missing: int, attempt: int) -> str:
+        return (f"{self.theory_longname}: {n_missing} of {self.enrolled()} entities "
+                f"still have no interpretation; asking the LLM again "
+                f"(attempt {attempt} of {_MAX_STALLED_RETRIES}).")
+
+    def retry_prompt(self, chunk: list[int]) -> str:
+        # Re-send the full entry text (line, kind, name, proposition) via
+        # format_entries, NOT bare names: after context compaction the original
+        # batch prompts are gone, and for facts generated by locale
+        # interpretations the proposition is unrecoverable from the source file
+        # -- a names-only list forces the agent to answer from memory, inviting
+        # mispaired translations.
+        return (
+            f"You still have {len(chunk)} unanswered entries from theory "
+            f'"{self.theory_longname}" (location: {self.file_path}):\n'
+            f"{self.format_entries(chunk)}\n\n"
+            f"Submit their translations via the `mcp__isabelle_semantics__answer` tool. "
+            f"Each translation must describe the formal statement shown above next to that exact name."
+        )
+
+    def unanswered_failure(self, missing_names: list[str]) -> str:
+        return _msg_unanswered(self.theory_longname, missing_names, self.enrolled())
 
 
 _log = logging.getLogger(__name__)
@@ -574,81 +717,67 @@ _answer_schema = {
 }
 
 
-@tool(
-    "answer",
-    "Submit English translations for one or more of the listed entries. "
-    "Each translation should be a concise plain-English description of what the entity defines or asserts. "
-    "You may also resubmit an entry to correct a previous answer. "
-    "To see the remaining unanswered entries in the current batch, call this tool with an empty list [].",
-    input_schema=_answer_schema,
-)
-async def _answer_tool(args: dict[str, Any]) -> ToolCall_ret:
-    task = _local_task.get()
-    interpretations = args["interpretations"]
-    errors = []
-    count = 0
-    for item in interpretations:
-        key = f"{item['type']} {item['name']}"
-        if key not in task.results:
-            errors.append(f"Unknown entry: {key!r}")
-            continue
-        # Strip lone UTF-16 surrogates the model occasionally emits mid math-
-        # alphanumeric glyph (e.g. a bare U+D835 with no low half).  They crash
-        # msgpack's strict-UTF-8 packb in write_answer (semantics.py) — so the
-        # answer would be silently lost on exactly the entry that glitched — and,
-        # left in the conversation, make every subsequent API request fail with
-        # 400 "no low surrogate in string", wedging the whole file.
-        trans = re.sub(r"[\ud800-\udfff]", "", item["translation"])
-        # PERSIST FIRST, MARK IN MEMORY SECOND.  `task.results` is what decides
-        # batch_remaining, which entries the next batch asks for, and which count
-        # as unanswered at the end.  Marking first meant a failed write left memory
-        # claiming an answer that was not on disk, and the entry was never re-asked
-        # in that run — silently, because the MCP SDK turns a handler exception into
-        # an isError result for the agent and nothing reaches Isabelle.  This way
-        # "answered" means "durable".
-        #
-        # Address by the precomputed label->entry-index map (O(1), and indexes
-        # the FULL `entries` list correctly).  The old `_keys.index(key)` indexed
-        # the deduped key list against the full entries list — the misalignment
-        # that wrote translations onto neighbouring entries' universal_keys.
-        try:
-            task.write_answer(task._label_to_idx[key], trans)
-        except Exception as e:
-            # One bad item, not a bad batch: an exception on item 3 of 10 used to
-            # abandon items 4-10, which were fine.  The entry stays unanswered in
-            # `task.results`, so it is asked for again, and the reason travels back
-            # to the agent in the `errors` list this handler already returns.
-            errors.append(f"Failed to store {key!r}: {type(e).__name__}: {e}")
-            _log.warning("answer: failed to store %s", key, exc_info=True)
-            continue
-        task.results[key] = trans
-        _log.info("answer: %s = %s", key, trans)
-        count += 1
-    batch_remaining = sum(1 for i in task.batch_range if task.results[task._keys[i]] is None)
-    cs = "" if count == 1 else "s"
-    total_answered = sum(1 for v in task.results.values() if v is not None)
-    _log.info("answer: submitted %d, batch_remaining %d, %d/%d done",
-               count, batch_remaining, total_answered, len(task.results))
-    # The only fine-grained sign of life during a long theory.  Always name the theory:
-    # several run concurrently, so an unqualified "20 of 244" would be unattributable.
-    await _report(f"{task.theory_longname}: "
-                  f"{total_answered} of {len(task.results)} done.")
-    if batch_remaining == 0:
-        next_prompt = task.advance_batch()
-        if next_prompt is None:
-            msg = "All done! If you noticed any mistakes in your earlier translations, correct them now using `mcp__isabelle_semantics__answer`. Otherwise, stop immediately without any further output."
+def mk_answer_tool(task: InterpretationTask) -> SdkMcpTool[Any]:
+    """The `answer` tool of one interpretation task.  A closure over the task
+    (not an ambient variable): the interpretation session and the concurrent
+    judge sessions each carry their own tools, so an answer can never be
+    routed to another task."""
+
+    @tool(
+        "answer",
+        "Submit English translations for one or more of the listed entries. "
+        "Each translation should be a concise plain-English description of what the entity defines or asserts. "
+        "You may also resubmit an entry to correct a previous answer. "
+        "To see the remaining unanswered entries in the current batch, call this tool with an empty list [].",
+        input_schema=_answer_schema,
+    )
+    async def answer(args: dict[str, Any]) -> ToolCall_ret:
+        errors = []
+        count = 0
+        for item in args["interpretations"]:
+            key = f"{item['type']} {item['name']}"
+            # Address by the label->entry-index map: it indexes the FULL
+            # `entries` list (a lookup through a deduplicated label list once
+            # wrote translations onto neighbouring entries' universal_keys).
+            # An entry this run did not ask for is refused (plan §15.8): it
+            # starts no gate.
+            idx = task._label_to_idx.get(key)
+            if idx is None or task.state[idx] == _NOT_ENROLLED:
+                errors.append(f"Unknown entry: {key!r}")
+                continue
+            # Strip lone UTF-16 surrogates the model occasionally emits mid math-
+            # alphanumeric glyph (e.g. a bare U+D835 with no low half).  They
+            # crash msgpack's strict-UTF-8 packb at the write -- so the answer
+            # would be lost on exactly the entry that glitched -- and, left in
+            # the conversation, make every subsequent API request fail with 400
+            # "no low surrogate in string", wedging the whole file.
+            trans = re.sub(r"[\ud800-\udfff]", "", item["translation"])
+            task.on_answer(idx, trans)
+            _log.info("answer: %s = %s", key, trans)
+            count += 1
+        remaining = task.unanswered_in_batch()
+        cs = "" if count == 1 else "s"
+        _log.info("answer: submitted %d, batch_remaining %d, %d/%d done",
+                  count, len(remaining), task.answered(), task.enrolled())
+        # The only fine-grained sign of life during a long theory.  Always name
+        # the theory: several run concurrently, so an unqualified "20 of 244"
+        # would be unattributable.
+        await _report(f"{task.theory_longname}: "
+                      f"{task.answered()} of {task.enrolled()} done.")
+        if not remaining:
+            msg = ("Batch complete. If you noticed any mistakes in your translations, "
+                   "correct them now using `mcp__isabelle_semantics__answer`. "
+                   "Otherwise, stop immediately without any further output.")
         else:
-            msg = f"Good job! You can resubmit corrections later using the `mcp__isabelle_semantics__answer` tool if needed.\n\n{next_prompt}"
-    else:
-        remaining_indices = [i for i in task.batch_range if task.results[task._keys[i]] is None]
-        remaining_text = task.format_entries(remaining_indices)
-        msg = (f"Answered {count} translation{cs}, remaining {batch_remaining} in this batch.\n\n"
-               f"Unanswered entries:\n{remaining_text}\n"
-               f"In file: {task.file_path}\n\n"
-               f"Submit translations via `mcp__isabelle_semantics__answer`.")
-    if errors:
-        msg += "\nErrors:\n" + "\n".join(errors)
-    return _mk_ret(msg)
+            msg = (f"Answered {count} translation{cs}, remaining {len(remaining)} in this batch.\n\n"
+                   f"Unanswered entries:\n{task.format_entries(remaining)}\n"
+                   f"In file: {task.file_path}\n\n"
+                   f"Submit translations via `mcp__isabelle_semantics__answer`.")
+        if errors:
+            msg += "\nErrors:\n" + "\n".join(errors)
+        return _mk_ret(msg)
+
+    return answer
 
 
 # --- Agent runner ---
@@ -744,122 +873,217 @@ class TransientAgentError(Exception):
     pass
 
 
+# --- the gate (plan §5.4) ---
+
+@contextlib.contextmanager
+def _note_on_failure(note: str) -> Generator[None, None, None]:
+    """Let a store write's own exception propagate, saying which entity it was
+    writing (plan §5.4 failures).  No wrapper class: nothing matches a gate
+    failure by class, and the traceback is the lead.  `Exception` only, so a
+    cancellation passes untouched."""
+    try:
+        yield
+    except Exception as exc:
+        exc.add_note(note)
+        raise
+
+
+def _write(task: InterpretationTask, idx: int, text: str) -> None:
+    """Write one answered entry: `text`, the other wire fields and the gate
+    fields in ONE transaction (plan §5.4 step 5, §6.4).  version and the eff
+    snapshot come from the scan; an untracked entry (persistent theory:
+    version None) keeps every gate field None."""
+    e = task.entries[idx]
+    version, interpreted_at = (task.inv_fields[idx]
+                               if task.inv_fields is not None else (None, None))
+    tracked = version is not None
+    with _note_on_failure(f"while writing the interpretation of {e.name}"), \
+         Semantic_DB.gate_write() as w:
+        w.put_interpretation(
+            e.universal_key, kind=EntityKind(e.kind), name=e.name,
+            expr=e.prop_str, interpretation=text,
+            locale_provenance=e.locale_provenance,
+            theory_constituents=e.theory_constituents,
+            position=e.position, from_collection=e.from_collection,
+            semantic_digest=e.semantic_digest if tracked else None,
+            deps=(e.deps or []) if tracked else None,
+            version=version, interpreted_at=interpreted_at,
+            baseline_interpretation=None)
+    task.state[idx] = _DONE
+
+
+async def _gate(task: InterpretationTask, idx: int) -> None:
+    """The gate of one answered entry, a task of `interpret_file`'s group.
+    Today it is the write alone; the semantic change gate proper (prefilter,
+    judge, mint decision, propagation -- plan §5.4) goes in front of the write
+    once the scan stops minting (§13 steps 4-5).
+
+    A gate writes only the text it judged: the text is captured at the top of
+    a round and, with no await between the test and the write, a round whose
+    text a correction (D11) replaced meanwhile starts over instead of writing.
+    Every extra round is paid for by one distinct correction, so the loop
+    terminates; with no await in the body (today) it runs exactly once."""
+    while True:
+        text = task.results[idx]
+        assert text is not None
+        if task.results[idx] != text:
+            continue
+        _write(task, idx, text)
+        break
+
+
+def _first_failure(eg: BaseExceptionGroup) -> BaseException:
+    """The ONE exception `interpret_file` raises for what the gate task group
+    collected (plan §5.4 failures): the first leaf, with the others logged.
+    A group would reach the user with its gutter, and ML's one-line
+    user-error contract (`USER_ERROR_MARKER`, extract_user_error) needs the
+    bare exception.  Cancellations are not failures; a group of nothing else
+    is returned as it is.  Returned, not raised: raising inside the caller's
+    `except` block would overwrite the leaf's own `__context__` with the
+    group."""
+    def leaves(exc: BaseException) -> list[BaseException]:
+        if isinstance(exc, BaseExceptionGroup):
+            return [leaf for sub in exc.exceptions for leaf in leaves(sub)]
+        return [exc]
+
+    failures = [x for x in leaves(eg) if not isinstance(x, asyncio.CancelledError)]
+    if not failures:
+        return eg
+    for extra in failures[1:]:
+        _log.error("interpret_file: a further failure in the same run",
+                   exc_info=extra)
+    return failures[0]
+
+
+# --- the queue loop (plan §5.3, §15.4) ---
+
+async def _retry_unanswered(driver: InterpretationDriver, task: AgentTask) -> None:
+    """Ask again for the entries of the batch in flight the agent left
+    unanswered, until none is left or the loop stalls.
+
+    Stopping RAISES rather than leaving the entries None: an entry with no
+    interpretation is a failure, and swallowing it here is what used to let a
+    whole cone be marked interpreted with nothing in it.  See the completeness
+    invariant on interpret_file."""
+    prev_missing: int | None = None
+    stall = 0
+    while True:
+        chunk = task.unanswered_in_batch()
+        if not chunk:
+            return
+        # Stop if the retry loop makes no progress: a chunk the agent cannot
+        # (or will not) answer — refusal, an undetected request error — must
+        # not spin forever.
+        if prev_missing is not None and len(chunk) >= prev_missing:
+            stall += 1
+            if stall >= _MAX_STALLED_RETRIES:
+                missing_names = [task.entries[i].name for i in task.unanswered()]
+                _log.error("agent: %d entries unanswered after %d stalled "
+                           "retry rounds: %s", len(missing_names), stall, missing_names)
+                raise FatalAgentError(task.unanswered_failure(missing_names))
+        else:
+            stall = 0
+        prev_missing = len(chunk)
+        line = task.retry_report(len(task.unanswered()), stall + 1)
+        if line:
+            await _report(line, warn=True)
+        await driver.run_turn(task.retry_prompt(chunk))
+
+
+def _stop_if_cancelled() -> None:
+    """Called first in every recovering arm of `_run_agent`: a cancellation
+    that a driver's teardown replaced with an ordinary exception (a cost
+    flush on the broken store, the transport's __aexit__) must not be
+    recycled -- the gate task group is tearing this session down, and a
+    recycled session would have every gate refused and park for ever.  A bare
+    `raise` re-raises the exception the calling arm is handling."""
+    t = asyncio.current_task()
+    if t is not None and t.cancelling():
+        raise
+
+
 async def _run_agent(make_driver: Callable[[], InterpretationDriver],
-                     depth: int = 0) -> None:
-    """Drive one agent session to completion: batch 0, then retries until every
-    entry is answered.
+                     task: AgentTask) -> None:
+    """Drive agent sessions over `task`'s queue until it is empty and every
+    gate has finished (plan §5.3): one turn per batch, the batch's unanswered
+    entries retried, the session kept open while a gate may still enrol.
 
     `make_driver` builds a FRESH driver per attempt — every recycle path below
-    re-enters through it, which is what discards a poisoned conversation."""
-    task = _local_task.get()
-    first_prompt, task.batch_range = task.batches[0]
-    try:
-        async with make_driver() as driver:
-            _log.info("agent: starting batch 0 (%d–%d)",
-                    task.batch_range.start, task.batch_range.stop - 1)
-            await driver.run_turn(first_prompt)
-            # Retry any globally missing entries.  Re-send the full entry text
-            # (line, kind, name, proposition) via format_entries, NOT bare names:
-            # after context compaction the original batch prompts are gone, and
-            # for facts generated by locale interpretations the proposition is
-            # unrecoverable from the source file — a names-only list forces the
-            # agent to answer from memory, inviting mispaired translations.
-            # Retries go in _BATCH_SIZE chunks: a pathological run can leave
-            # hundreds of entries unanswered, and a single message carrying all
-            # their propositions + provenance hints would dwarf the normal
-            # batch prompts and immediately re-trigger compaction.
-            prev_missing: int | None = None
-            stall = 0
-            while True:
-                missing_idx = [i for i, k in enumerate(task._keys)
-                               if task.results[k] is None]
-                if not missing_idx:
-                    break
-                # Stop if the retry loop makes no progress: a chunk the agent cannot
-                # (or will not) answer — refusal, an undetected request error — must
-                # not spin forever.  Stopping RAISES rather than leaving the entries
-                # None: an entry with no interpretation is a failure, and swallowing
-                # it here is what used to let a whole cone be marked interpreted with
-                # nothing in it.  See the completeness invariant on interpret_file.
-                if prev_missing is not None and len(missing_idx) >= prev_missing:
-                    stall += 1
-                    if stall >= _MAX_STALLED_RETRIES:
-                        missing_names = [task.entries[i].name for i in missing_idx]
-                        _log.error("agent: %d entries unanswered after %d stalled "
-                                   "retry rounds: %s", len(missing_idx),
-                                   stall, missing_names)
-                        raise FatalAgentError(_msg_unanswered(
-                            task.theory_longname, missing_names, len(task.entries)))
-                else:
-                    stall = 0
-                prev_missing = len(missing_idx)
-                chunk = missing_idx[:_BATCH_SIZE]
-                await _report(
-                    f"{task.theory_longname}: {len(missing_idx)} of "
-                    f"{len(task.entries)} entities still have no interpretation; "
-                    f"asking the LLM again (attempt {stall + 1} of {_MAX_STALLED_RETRIES}).",
-                    warn=True)
-                missing_text = task.format_entries(chunk)
-                header = (
-                    f"You still have {len(missing_idx)} unanswered entries from theory "
-                    f'"{task.theory_longname}" (location: {task.file_path})'
-                    + (f"; here are the first {len(chunk)}"
-                       if len(missing_idx) > len(chunk) else "")
-                )
-                await driver.run_turn(
-                    f"{header}:\n"
-                    f"{missing_text}\n\n"
-                    f"Submit their translations via the `mcp__isabelle_semantics__answer` tool. "
-                    f"Each translation must describe the formal statement shown above next to that exact name."
-                )
-        _log.info("total usage: input=%d cache_write=%d cache_read=%d output=%d tokens, cost=$%.4f",
-                task.total_input_tokens, task.total_cache_creation_tokens,
-                task.total_cache_read_tokens, task.total_output_tokens, task.total_cost_usd)
-    except ReachLimitError:
-        # Throttled, legitimate retry — does not consume the recycle budget.
-        _log.info("agent: reached usage limit, waiting 20min to retry")
-        await asyncio.sleep(1200)
-        return await _run_agent(make_driver, depth)
-    except RateLimitError:
-        # Throttled, legitimate retry — does not consume the recycle budget.
-        _log.info("agent: API rate limit, waiting 2s to retry")
-        await asyncio.sleep(2)
-        return await _run_agent(make_driver, depth)
-    except PoisonedSessionError:
-        # The conversation is irrecoverably rejected by the API (e.g. a lone
-        # surrogate pinned in the transcript).  Recycle with a FRESH driver
-        # (it starts a new session, so the bad history is dropped) and continue
-        # with the still-missing entries — answers already written persist in
-        # `task.results`, so we do not redo them.
-        if depth >= _MAX_AGENT_RECYCLES:
-            # Do NOT return here: returning would hand back a task with unanswered
-            # entries and no error, which interpret_file would report as success.
-            raise FatalAgentError(None,
-                f"poisoned session (API 400) persisted after {depth} client recycles")
-        _log.warning("agent: poisoned session (API 400); recycling client "
-                     "(recycle %d/%d)", depth + 1, _MAX_AGENT_RECYCLES)
-        return await _run_agent(make_driver, depth + 1)
-    except FatalAgentError:
-        # Authentication, billing, a malformed request, unanswered entries, or an
-        # unrecognised agent error.  Recycling cannot change any of these outcomes;
-        # it would only burn 8 x 2 s and bury the cause under the last failure.
-        # A driver raises this itself for its own deterministic failures (e.g. a
-        # missing Claude Code CLI), which is why no driver-specific exception
-        # reaches this level.
-        raise
-    except Exception:
-        # An unexpected transport/SDK failure can escape a driver's run_turn with
-        # no preceding error message, bypassing the loops above and killing the
-        # whole file.  Recycle a bounded number of times, then re-raise so
-        # genuine bugs still surface.  TransientAgentError lands here too.
-        if depth >= _MAX_AGENT_RECYCLES:
-            _log.exception("agent: unexpected failure persisted after %d "
-                           "recycles; re-raising", depth)
+    re-enters through it, which is what discards a poisoned conversation; the
+    task's queue and states survive, so a recycle continues where the session
+    stopped (its unanswered entries lead the next batch).  The two throttle
+    arms never give up and never consume the recycle budget; their sleeps are
+    jittered so concurrent sessions do not retry in lockstep."""
+    recycles = 0        # consumed by the two hard-failure arms only
+    throttled = 0       # consecutive rate-limit hits; reset by a completed turn
+    while True:
+        try:
+            async with make_driver() as driver:
+                task.session_started()
+                while True:
+                    batch = task.next_batch()
+                    if not batch:
+                        if not task.gates_running:
+                            break
+                        await task.wait_for_progress()
+                        continue
+                    _log.info("agent: sending %d entries (%d gates running)",
+                              len(batch), task.gates_running)
+                    await driver.run_turn(task.build_prompt(batch))
+                    throttled = 0
+                    await _retry_unanswered(driver, task)
+            _log.info("total usage: input=%d cache_write=%d cache_read=%d output=%d tokens, cost=$%.4f",
+                      task.run_input_tokens, task.run_cache_creation_tokens,
+                      task.run_cache_read_tokens, task.run_output_tokens, task.run_cost_usd)
+            return
+        except ReachLimitError:
+            _stop_if_cancelled()
+            delay = 1200 + random.uniform(-60, 60)
+            _log.info("agent: reached usage limit, waiting %.0fs to retry", delay)
+            await asyncio.sleep(delay)
+        except RateLimitError:
+            _stop_if_cancelled()
+            delay = min(2 * 2 ** throttled, 60) * random.uniform(0.5, 1.5)
+            throttled += 1
+            _log.info("agent: API rate limit, waiting %.1fs to retry", delay)
+            await asyncio.sleep(delay)
+        except PoisonedSessionError:
+            # The conversation is irrecoverably rejected by the API (e.g. a lone
+            # surrogate pinned in the transcript).  Recycle with a FRESH driver
+            # (it starts a new session, so the bad history is dropped) and
+            # continue with the still-unanswered entries.
+            _stop_if_cancelled()
+            if recycles >= _MAX_AGENT_RECYCLES:
+                # Do NOT return here: returning would hand back a task with
+                # unanswered entries and no error, which interpret_file would
+                # report as success.
+                raise FatalAgentError(None,
+                    f"poisoned session (API 400) persisted after {recycles} client recycles")
+            recycles += 1
+            _log.warning("agent: poisoned session (API 400); recycling client "
+                         "(recycle %d/%d)", recycles, _MAX_AGENT_RECYCLES)
+        except FatalAgentError:
+            # Authentication, billing, a malformed request, unanswered entries, or an
+            # unrecognised agent error.  Recycling cannot change any of these outcomes;
+            # it would only burn 8 x 2 s and bury the cause under the last failure.
+            # A driver raises this itself for its own deterministic failures (e.g. a
+            # missing Claude Code CLI), which is why no driver-specific exception
+            # reaches this level.
             raise
-        _log.exception("agent: unexpected failure; recycling client "
-                       "(recycle %d/%d)", depth + 1, _MAX_AGENT_RECYCLES)
-        await asyncio.sleep(2)
-        return await _run_agent(make_driver, depth + 1)
+        except Exception:
+            # An unexpected transport/SDK failure can escape a driver's run_turn with
+            # no preceding error message, bypassing the loops above and killing the
+            # whole file.  Recycle a bounded number of times, then re-raise so
+            # genuine bugs still surface.  TransientAgentError lands here too.
+            _stop_if_cancelled()
+            if recycles >= _MAX_AGENT_RECYCLES:
+                _log.exception("agent: unexpected failure persisted after %d "
+                               "recycles; re-raising", recycles)
+                raise
+            recycles += 1
+            _log.exception("agent: unexpected failure; recycling client "
+                           "(recycle %d/%d)", recycles, _MAX_AGENT_RECYCLES)
+            await asyncio.sleep(2)
 
 
 # --- Public API ---
@@ -933,7 +1157,7 @@ async def interpret_file(
     # onto it would freshly certify possibly-outdated text.  Such an entry goes
     # to the todo set (digest-None reads as stale, §4.4) and gets digest, deps
     # and its ε-epoch version together with the fresh interpretation at
-    # write_answer.  No bump either way: nothing can have depended on a digest
+    # the gate's write.  No bump either way: nothing can have depended on a digest
     # that never existed.
     version_to_write: dict[int, int] = {}
     with Semantic_DB._ensure_env().begin(write=True) as txn:
@@ -961,9 +1185,12 @@ async def interpret_file(
             else:
                 version_to_write[i] = rec.version if rec.version else epsilon
 
-    # Phase 2 -- effective version: eff(E) = max version over E's dependency
-    # closure (E itself included), evaluated by iterative Tarjan DFS with one
-    # numeric memo over batch ∪ store (§4.1).  A missing record contributes 0
+    # Phase 2 -- shielded effective version eff*(E) = max(version(E), contrib
+    # of each direct dependency), where a FRESH dependency contributes only its
+    # own version and a stale one its whole eff* (`_contrib` below;
+    # ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md §4), evaluated by iterative
+    # Tarjan DFS with one numeric memo over batch ∪ store (parent §4.1).  A
+    # missing record contributes 0
     # (§4.4: infrastructure targets carry no record by design).  Folding a
     # cycle to a max is lossless for INTRA-SCC signal (SCC members are defined
     # by one command and bump together), but memo finalization must be
@@ -982,6 +1209,22 @@ async def interpret_file(
         if k not in rec_cache:
             rec_cache[k] = Semantic_DB[k]
         return rec_cache[k]
+
+    def _contrib(d: bytes, e: int) -> int:
+        """What a FINALIZED dependency `d` whose eff is `e` hands upwards.
+
+        A dependency that has absorbed everything upstream of it (eff <=
+        interpreted_at) and whose meaning the semantic change gate judged
+        unchanged (version not bumped) is a wall: the parent sees only
+        version(d), not the upstream number d already dealt with.  A dependency
+        that is itself stale passes its whole upstream signal through, as
+        before.  None reads as 0 (§4.4), so a record with no version or no
+        interpreted_at is never a wall."""
+        r = _rec_of(d)
+        if r is None:
+            return 0
+        ver, ia = r.version or 0, r.interpreted_at or 0
+        return ver if ver > 0 and ia > 0 and e <= ia else e
 
     def eff_uk(root: bytes) -> int:
         if root in memo:
@@ -1015,8 +1258,9 @@ async def interpret_file(
             pushed = False
             for d in frame[1]:
                 if d in memo:              # finalized in an earlier SCC
-                    if memo[d] > val[k]:
-                        val[k] = memo[d]
+                    c = _contrib(d, memo[d])
+                    if c > val[k]:
+                        val[k] = c
                     continue
                 if d in on_scc:            # edge into the candidate region:
                     if index[d] < low[k]:  # lowlink only -- d's own value
@@ -1037,7 +1281,11 @@ async def interpret_file(
                     # (the parent pushed this child, so it never saw a memo
                     # hit for it -- without this flow the whole subtree's
                     # contribution would be lost).  A finished SCC never
-                    # lowers the parent's lowlink.
+                    # lowers the parent's lowlink.  The parent is necessarily
+                    # OUTSIDE this SCC -- a parent inside it would have pulled
+                    # low[k] below index[k] -- so this edge, and only this
+                    # edge, takes the wall test; inside an SCC the members are
+                    # defined by one command and bump together, so no wall.
                     v = val[k]
                     while True:
                         m = scc.pop()
@@ -1045,8 +1293,10 @@ async def interpret_file(
                         memo[m] = v
                         if m == k:
                             break
-                    if stack and v > val[stack[-1][0]]:
-                        val[stack[-1][0]] = v
+                    if stack:
+                        c = _contrib(k, v)
+                        if c > val[stack[-1][0]]:
+                            val[stack[-1][0]] = c
                 else:
                     parent = stack[-1][0]
                     if low[k] < low[parent]:
@@ -1058,7 +1308,7 @@ async def interpret_file(
     def eff_value(version: int, deps: 'list[bytes] | None') -> int:
         best = version
         for d in deps or []:
-            v = eff_uk(d)
+            v = _contrib(d, eff_uk(d))
             if v > best:
                 best = v
         return best
@@ -1089,7 +1339,7 @@ async def interpret_file(
                 # means some target's KEY moved -- typically a WIP<->persistent
                 # flip re-keying the target.  Without this, the version walk
                 # would query the OLD key forever and read silence: the dead
-                # edge.  Re-interpretation stores the current uks (write_answer
+                # edge.  Re-interpretation stores the current uks (the gate's write
                 # takes deps off the wire entry), which heals the edge.
                 stale = True
             else:
@@ -1148,19 +1398,12 @@ async def interpret_file(
             connection, file_path, theory_longname, theory_key,
             entries=[entries[i] for i in uncached],
             driver=driver_name, model=model,
+            unicode_file_path=unicode_file_path,
             inv_fields=[(version_to_write.get(i), ia_snapshot.get(i))
                         for i in uncached],
         ) as task:
-            _local_task.set(task)
-
-            m = len(task.entries)
-
-            for start in range(0, m, _BATCH_SIZE):
-                batch_range = range(start, min(start + _BATCH_SIZE, m))
-                task.batches.append((
-                    task.build_prompt(unicode_file_path, theory_longname, batch_range),
-                    batch_range,
-                ))
+            for i in range(len(task.entries)):
+                task.enqueue(i)
 
             working_names = [e.name for e in task.entries]
             # The desugar tool annotates each constant it shows with its English
@@ -1180,7 +1423,7 @@ async def interpret_file(
                 connection, file_path=file_path, seen_constants=seen_constants,
                 dedup=driver_cls.REPORTS_CONTEXT_RESET)
             tools = [query_by_name_tool, definition_tool, hover_tool,
-                     desugar_tool, _answer_tool]
+                     desugar_tool, mk_answer_tool(task)]
 
             def make_driver() -> InterpretationDriver:
                 return make_interpretation_driver(
@@ -1192,13 +1435,26 @@ async def interpret_file(
                     on_context_reset=seen_constants.clear,
                 )
 
-            _log.info("interpret_file: starting %s agent on %s with %d batches",
+            _log.info("interpret_file: starting %s agent on %s with %d entries",
                       driver_name, model or "the backend's default model",
-                      len(task.batches))
-            await _run_agent(make_driver)
-            answered = sum(1 for v in task.results.values() if v is not None)
+                      len(task.entries))
+            # The gates are tasks of this group, so interpret_file returns only
+            # after every one of them has joined -- which is what makes every
+            # write of this theory visible to the descendants schedule_dag
+            # starts afterwards (plan §5.3 termination).  A failure is raised
+            # OUTSIDE the except block, so the leaf keeps its own __context__
+            # instead of the group (plan §5.4 failures).
+            failure: BaseException | None = None
+            try:
+                async with asyncio.TaskGroup() as tg:
+                    task.task_group = tg
+                    await _run_agent(make_driver, task)
+            except ExceptionGroup as eg:
+                failure = _first_failure(eg)
+            if failure is not None:
+                raise failure
             _log.info("interpret_file: agent finished, %d/%d interpreted",
-                       answered, len(task.entries))
+                      task.n_interpreted(), task.enrolled())
             # COMPLETENESS INVARIANT: interpret_file either gives every entry an
             # interpretation or raises; the returned `interpretations` never
             # contains None.  Isabelle relies on this -- Semantic_Store.interpret'
@@ -1207,16 +1463,21 @@ async def interpret_file(
             # get back, the theory would be recorded as done with entities missing,
             # and only `force` could ever redo it.
             #
-            # The retry loop above already raises when it stalls; this is the
-            # backstop that keeps the invariant true no matter how the loop is
-            # later restructured.  ANYONE RELAXING THIS must also revisit
-            # semantic_store.ML's `val (_, _, current, cumulative)` and
-            # interpret_cone's unconditional mark_interpreted.
-            if answered < len(task.entries):
-                missing_names = [e.name for e, k in zip(task.entries, task._keys)
-                                 if task.results[k] is None]
-                raise FatalAgentError(_msg_unanswered(
-                    theory_longname, missing_names, len(task.entries)))
+            # The retry loop already raises when it stalls; this is the backstop
+            # that keeps the invariant true no matter how the loop is later
+            # restructured.  "Answered" is not "durable" (D14): the certificate
+            # that licenses mark_interpreted is that every gate joined without
+            # raising (the group above) AND every entry is written or was in
+            # the store to begin with -- the state clause asserted here.
+            # ANYONE RELAXING THIS must also revisit semantic_store.ML's
+            # `val (_, _, current, cumulative)` and interpret_cone's
+            # unconditional mark_interpreted.
+            missing = [i for i, sem in enumerate(task.results) if sem is None]
+            if missing:
+                raise FatalAgentError(task.unanswered_failure(
+                    [task.entries[i].name for i in missing]))
+            assert all(s in (_DONE, _NOT_ENROLLED) for s in task.state), \
+                "every gate joined, yet an answered entry was not written"
             # Cost is flushed per turn by the driver, so this is normally
             # a no-op flush; it still returns the up-to-date cumulative totals.
             cum = task.write_cost()
@@ -1227,15 +1488,12 @@ async def interpret_file(
                 task.run_cache_read_tokens, task.run_output_tokens,
                 task.run_cost_usd)
             cumulative_cost = CostSummary(*cum)
-            await _report(f"{theory_longname}: done -- {answered} entities interpreted, "
-                          f"cost ${current_cost.cost_usd:.4f}.")
+            await _report(f"{theory_longname}: done -- {task.n_interpreted()} entities "
+                          f"interpreted, cost ${current_cost.cost_usd:.4f}.")
 
-            # Remap agent results to original indices (cache already written
-            # incrementally). Iterate _keys by position — it is 1:1 with
-            # task.entries and with `uncached` — instead of relying on
-            # results.values() insertion order.
-            for i, key in enumerate(task._keys):
-                sem = task.results[key]
+            # Remap the task's results (1:1 with `uncached`) to the original
+            # indices; the store was written by the gates.
+            for i, sem in enumerate(task.results):
                 if sem is not None:
                     results[uncached[i]] = sem
     else:
