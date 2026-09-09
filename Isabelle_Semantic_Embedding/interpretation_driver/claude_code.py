@@ -1,7 +1,7 @@
 """The Claude Code interpretation driver (the original, and still the default).
 
-Everything Claude-Code-specific lives here: the tool whitelist and its
-PreToolUse hook, the PreCompact hook that resets the desugar tool's dedup set,
+Everything Claude-Code-specific lives here: the tool permissions (derived
+from the tools a driver serves) and their PreToolUse hook, the PreCompact hook that resets the desugar tool's dedup set,
 the message-stream classifier that turns an SDK message into one of
 ``semantic_interpretation``'s failure classes, and the usage accounting.
 """
@@ -42,6 +42,7 @@ from ..semantic_interpretation import (
 )
 from . import (
     AGENT_DIR,
+    SERVER_NAME,
     InterpretationDriver,
     accumulate_usage,
     register_interpretation_driver,
@@ -58,7 +59,12 @@ _UNEXPECTED_BILLING_WARNED: set[str] = set()
 
 # --- Permission control ---
 
-_TOOL_WHITELIST = {
+#: The CLI's own tools an agent with `cli_tools` may use.  The interpretation
+#: tools are NOT listed: the allowed set is derived in `_options` from the
+#: tools the driver actually serves (`mcp__<SERVER_NAME>__<name>`), so a
+#: judge session -- one `verdict` tool, no built-ins -- cannot inherit the
+#: interpretation agent's reach.
+_CLI_BUILTINS = {
     "Read",
     "Grep",
     "Glob",
@@ -77,11 +83,6 @@ _TOOL_WHITELIST = {
     "ExitPlanMode",
     "MCPSearch",
     "ToolSearch",
-    "mcp__isabelle_semantics__query",
-    "mcp__isabelle_semantics__definition",
-    "mcp__isabelle_semantics__hover",
-    "mcp__isabelle_semantics__answer",
-    "mcp__isabelle_semantics__desugar_and_explain",
 }
 
 
@@ -94,21 +95,6 @@ def _deny(reason: str) -> HookJSONOutput:
             "permissionDecisionReason": reason,
         },
     }
-
-
-async def _permission_control(
-    hook_input: HookInput, tool_use_id: str | None, context: HookContext
-) -> HookJSONOutput:
-    pre = cast(PreToolUseHookInput, hook_input)
-    tool_name = pre["tool_name"]
-    tool_input = pre.get("tool_input") or {}
-
-    if tool_name not in _TOOL_WHITELIST:
-        _log.warning("tool denied: %s %s", tool_name, tool_input)
-        return _deny(f"Tool {tool_name!r} is not allowed.")
-
-    _log.info("tool allowed: %s %s", tool_name, tool_input)
-    return {}
 
 
 # --- Message helpers (pure: no driver state) ---
@@ -434,7 +420,25 @@ class ClaudeCodeDriver(InterpretationDriver):
     # --- SDK session ---
 
     def _options(self) -> ClaudeAgentOptions:
-        mcp = create_sdk_mcp_server("isabelle_semantics", tools=self.tools)
+        mcp = create_sdk_mcp_server(SERVER_NAME, tools=self.tools)
+        # ONE allowed set feeds both `allowed_tools` (which only suppresses
+        # prompts) and the PreToolUse hook (the enforcement), so the two
+        # cannot disagree.
+        allowed = {f"mcp__{SERVER_NAME}__{t.name}" for t in self.tools}
+        if self.cli_tools:
+            allowed |= _CLI_BUILTINS
+
+        async def _permission_control(
+            hook_input: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            pre = cast(PreToolUseHookInput, hook_input)
+            tool_name = pre["tool_name"]
+            tool_input = pre.get("tool_input") or {}
+            if tool_name not in allowed:
+                _log.warning("tool denied: %s %s", tool_name, tool_input)
+                return _deny(f"Tool {tool_name!r} is not allowed.")
+            _log.info("tool allowed: %s %s", tool_name, tool_input)
+            return {}
 
         async def _on_compact(
             hook_input: HookInput,
@@ -450,8 +454,8 @@ class ClaudeCodeDriver(InterpretationDriver):
             cwd=str(AGENT_DIR),
             setting_sources=["project"],
             permission_mode="default",
-            allowed_tools=list(_TOOL_WHITELIST),
-            mcp_servers={"isabelle_semantics": mcp},
+            allowed_tools=sorted(allowed),
+            mcp_servers={SERVER_NAME: mcp},
             thinking=ThinkingConfigAdaptive(type="adaptive"),
             effort="high",
             # The answer tool hands the next batch of entries back in its

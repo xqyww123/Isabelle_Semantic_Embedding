@@ -45,12 +45,13 @@ from ..semantic_interpretation import (
 )
 from . import (
     AGENT_DIR,
+    SERVER_NAME,
     InterpretationDriver,
     accumulate_usage,
     register_interpretation_driver,
 )
 from .config import MissingPricing, pricing_of
-from .mcp_server import SERVER_NAME, InterpretationMCPServer
+from .mcp_server import InterpretationMCPServer
 
 _log = logging.getLogger(__name__)
 

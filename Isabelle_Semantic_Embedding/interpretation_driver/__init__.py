@@ -38,6 +38,13 @@ if TYPE_CHECKING:
 # the interpretation prompt asks the agent to load.
 AGENT_DIR = Path(__file__).resolve().parent.parent / "Agent_Interpretation_Dir"
 
+#: The MCP server name, and hence the flat tool names the model sees
+#: (`mcp__isabelle_semantics__answer`).  One string for every backend: the
+#: system prompt, the batch prompts and the answer tool's own replies address
+#: the tools by those names, and the Claude Code driver derives its permission
+#: set from them (`mcp__<SERVER_NAME>__<tool>` for each tool it serves).
+SERVER_NAME = "isabelle_semantics"
+
 DRIVERS: dict[str, type["InterpretationDriver"]] = {}
 
 
@@ -108,6 +115,7 @@ def make_interpretation_driver(
     tools: list["SdkMcpTool[Any]"],
     task: "AgentTask",
     on_context_reset: Callable[[], None],
+    cli_tools: bool = True,
 ) -> InterpretationDriver:
     cls = resolve_interpretation_driver_class(name)
     if cls is None:
@@ -115,7 +123,7 @@ def make_interpretation_driver(
             f"unknown interpretation driver {name!r}; "
             f"known drivers: {available_interpretation_drivers()}")
     return cls(model=model, system_prompt=system_prompt, tools=tools,
-               task=task, on_context_reset=on_context_reset)
+               task=task, on_context_reset=on_context_reset, cli_tools=cli_tools)
 
 
 class InterpretationDriver(ABC):
@@ -159,13 +167,18 @@ class InterpretationDriver(ABC):
     def __init__(self, *, model: str, system_prompt: str,
                  tools: list["SdkMcpTool[Any]"],
                  task: "AgentTask",
-                 on_context_reset: Callable[[], None]) -> None:
+                 on_context_reset: Callable[[], None],
+                 cli_tools: bool = True) -> None:
         # The spec may name only the backend ("Codex"), leaving the model to
         # it.  Same normalisation as interpret_file's, by construction.
         self.model = self.canonical_model(model)
         self.system_prompt = system_prompt
         self.tools = tools
         self.task = task
+        # Whether the agent may use the backend's own built-in tools (reading
+        # files, shell, web) besides `tools`: the interpretation agent may,
+        # the judge -- one pair of texts, one `verdict` tool -- may not.
+        self.cli_tools = cli_tools
         # Called just BEFORE the backend compacts the conversation.  It is the
         # fifth channel because what it resets -- the desugar tool's
         # already-annotated-constant set -- is a bare local of `interpret_file`,

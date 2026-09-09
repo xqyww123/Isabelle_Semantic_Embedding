@@ -10,14 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import enum
 import logging
+import math
 import os
 import random
 import re
 from collections import deque
 from collections.abc import Callable, Generator, Iterable
-from typing import Any, NamedTuple, Self
+from typing import TYPE_CHECKING, Any, NamedTuple, Self
 
+import numpy as np
 from Isabelle_RPC_Host import Connection, isabelle_remote_procedure
 from Isabelle_RPC_Host.universal_key import EntityKind, is_WIP, universal_key
 from Isabelle_RPC_Host.unicode import pretty_unicode
@@ -25,13 +28,18 @@ from claude_agent_sdk import SdkMcpTool, tool
 
 from .base import ToolCall_ret, mk_ret as _mk_ret
 from .desugar import mk_desugar_and_explain_tool
+from .document_text import entity_document_text
 from .interpretation_driver import (
     InterpretationDriver,
     available_interpretation_drivers,
     make_interpretation_driver,
     resolve_interpretation_driver_class,
 )
+from .semantic_embedding import _embed_tracing_gated
 from .semantics import Provenance, Semantic_DB, SemanticRecord, unpack_thy_status
+
+if TYPE_CHECKING:
+    from .semantics import Semantic_Vector_Store
 
 # --- Module-level configuration ---
 
@@ -164,6 +172,18 @@ _MAX_AGENT_RECYCLES = 8
 # See the completeness invariant on `interpret_file`.
 _MAX_STALLED_RETRIES = 10
 
+# The semantic change gate's prefilter (plan §5.4 step 2, §7): a cosine on the
+# two embedding-document texts below this is CHANGED without a judge; the
+# constant was measured on the document text (0 misses / 24 tracked pairs).
+_GATE_SIMILARITY = 0.90
+# The prefilter's one `embed` call is bounded: `embed` otherwise inherits the
+# corpus embedding's retry ladder (about 17 minutes), the right policy for a
+# corpus pass and the wrong one for a gate whose failure answer D2 fixes.
+_PREFILTER_TIMEOUT_S = 60
+# At most this many judge sessions at once, process-wide (D12).  Gates still
+# start the instant an answer arrives; only the session waits for a permit.
+_JUDGE_SESSIONS = asyncio.Semaphore(40)
+
 # Standing instructions for the interpretation agent.  These are batch- and
 # file-independent, so they live in the system prompt rather than the per-batch
 # user messages: the system prompt is re-sent verbatim on every request and is
@@ -218,6 +238,20 @@ When you encounter an entity whose meaning is unclear, use `mcp__isabelle_semant
 However, you cannot query entries you have been asked to translate — do it yourself.
 
 Submit all translations via `mcp__isabelle_semantics__answer`."""
+
+# Standing instructions for the judge session of the semantic change gate
+# (plan §5.4 step 3, §15.6): one entity, two descriptions, one verdict.
+_JUDGE_SYSTEM_PROMPT = """\
+You compare two English descriptions of one Isabelle entity (a constant, type, \
+typeclass or locale) and report whether they describe the same mathematical meaning.
+
+Wording, order and level of detail do not matter. A change in what is asserted or \
+defined does: a different definition, a different domain, an added or dropped \
+condition or argument, a different result.
+
+Report exactly one verdict through `mcp__isabelle_semantics__verdict` \
+(same=true when the two descriptions mean the same, same=false otherwise, \
+with a one-sentence reason), then stop."""
 
 
 def _label(e: Entry) -> str:
@@ -290,6 +324,12 @@ class CostSummary(NamedTuple):
     output_tokens: int
     cost_usd: float
 
+    def plus(self, other: 'CostSummary') -> 'CostSummary':
+        return CostSummary(*(a + b for a, b in zip(self, other)))  # type: ignore[arg-type]
+
+
+_NO_COST = CostSummary(0, 0, 0, 0, 0.0)
+
 
 class InterpretationResult(NamedTuple):
     """Result of interpreting a theory file."""
@@ -302,6 +342,35 @@ class InterpretationResult(NamedTuple):
 # The entity states of one interpretation run (plan §5.3.1), 1:1 with the
 # task's entries.  `results[idx] is None` iff _QUEUED or _SENT.
 _NOT_ENROLLED, _QUEUED, _SENT, _GATING, _DONE = range(5)
+
+
+class RunState:
+    """State scoped to one interpretation run (plan §15.8 "Run-scoped
+    state"): one holder of the interpretation lock (§8, §13 step 7) once the
+    lock lands; until then, one `interpret_file`."""
+
+    def __init__(self) -> None:
+        # The prefilter is skipped for the rest of the run: set by the startup
+        # check when the embedding service is unconfigured, and by the first
+        # failed embedding call (§5.4 failures).
+        self.prefilter_disabled = False
+
+    def claim_prefilter_disable(self) -> bool:
+        """Disable the prefilter for the rest of the run, and say whether THIS
+        caller disabled it -- so §12 #5 is announced once even by the gates
+        that were all inside the failing call when the service went down.
+        One synchronous step: the read and the flip cannot be separated."""
+        first, self.prefilter_disabled = not self.prefilter_disabled, True
+        return first
+
+
+def current_run_state() -> RunState:
+    """The run's `RunState`.  No run holds the lock before §13 step 7, so
+    this is a fresh one per call and the scope degrades to the one
+    `interpret_file` that resolves it at its top -- never a module-level
+    singleton that would outlive the run."""
+    return RunState()
+
 
 # Theory-status keys of the cost accumulators, in the order of the
 # `(input, cache_creation, cache_read, output, cost)` tuples used throughout.
@@ -321,6 +390,10 @@ class AgentTask:
     cost_prefix: bytes = b""
     #: entries per turn; fixed when the task is built (tests set it per task)
     batch_size: int = _BATCH_SIZE
+    #: stalled retry rounds `_retry_unanswered` allows before it gives up: on
+    #: the interpretation task "raise after this many", on the judge "ask
+    #: once more, then CHANGED" (plan §15.6)
+    max_stalled_retries: int = _MAX_STALLED_RETRIES
 
     def __init__(self, connection: Connection, file_path: str,
                  theory_longname: str, theory_key: universal_key,
@@ -478,6 +551,12 @@ class AgentTask:
 
     # --- cost ---
 
+    def run_cost(self) -> CostSummary:
+        """The cost of THIS invocation so far (the `run_*` accumulators)."""
+        return CostSummary(self.run_input_tokens, self.run_cache_creation_tokens,
+                           self.run_cache_read_tokens, self.run_output_tokens,
+                           self.run_cost_usd)
+
     def historical_cost(self) -> tuple[int, int, int, int, float]:
         """Read cumulative cost from LMDB (without modifying it).  A layered
         read: a system-resident status counts, a tombstoned one reads as zero."""
@@ -551,11 +630,21 @@ class InterpretationTask(AgentTask):
                  entries: list[Entry], driver: str = _DEFAULT_DRIVER,
                  model: str = "", *, unicode_file_path: str = "",
                  rec_cache: 'dict[bytes, SemanticRecord | None] | None' = None,
-                 dependents: 'list[list[int]] | None' = None):
+                 dependents: 'list[list[int]] | None' = None,
+                 emb_store: 'Semantic_Vector_Store | None' = None,
+                 run_state: RunState | None = None,
+                 make_judge_driver: 'Callable[[JudgeTask], InterpretationDriver] | None' = None):
         super().__init__(connection, file_path, theory_longname, theory_key,
                          entries, driver, model)
         self.unicode_file_path = unicode_file_path or file_path
         self._first_turn_sent = False
+        # The gate's collaborators (plan §15.3): the vector store whose
+        # provider embeds the prefilter's two texts (None: no prefilter for
+        # this theory), the run's state, and the judge session factory.
+        self.emb_store = emb_store
+        self.run_state = run_state if run_state is not None else RunState()
+        self.make_judge_driver = make_judge_driver
+        self.judge_cost = _NO_COST          # the finished judge sessions' cost (§15.9)
         # The record per universal key AS CURRENTLY STORED: filled by the
         # scan, written back from inside every gate transaction, read by every
         # eff* (plan §15.5, §15.8).  The task carries no pre-run record, so a
@@ -684,6 +773,49 @@ class InterpretationTask(AgentTask):
         return _msg_unanswered(self.theory_longname, missing_names, self.enrolled())
 
 
+class JudgeTask(AgentTask):
+    """One judge session of the semantic change gate (plan §15.6): the one
+    entity whose baseline and fresh descriptions it compares, and the
+    verdict it reports through the `verdict` tool.  No queue beyond its one
+    entry, no database writer: the gate that built it writes."""
+
+    cost_prefix = b"judge_"
+    max_stalled_retries = 1             # ask once more, then CHANGED (§5.4 step 3)
+
+    def __init__(self, parent: InterpretationTask, idx: int, baseline: str, fresh: str):
+        super().__init__(parent.connection, parent.file_path, parent.theory_longname,
+                         parent.theory_key, [parent.entries[idx]], parent.driver,
+                         parent.model)
+        self.baseline, self.fresh = baseline, fresh
+        self.verdict: bool | None = None    # True: "same"; None: no verdict given
+        self.enqueue(0)
+
+    def format_entries(self, indices: Iterable[int]) -> str:
+        return "\n".join(_label(self.entries[i]) for i in indices)
+
+    def build_prompt(self, indices: list[int]) -> str:
+        return (f"Entity: {_label(self.entries[0])}\n\n"
+                f"Description 1:\n{self.baseline}\n\n"
+                f"Description 2:\n{self.fresh}\n\n"
+                f"Do they describe the same meaning? "
+                f"Answer with the `mcp__isabelle_semantics__verdict` tool.")
+
+    def on_answer(self, idx: int, text: str) -> None:
+        self.results[idx] = text            # the verdict's `why`
+        self.state[idx] = _DONE
+
+    def retry_report(self, n_missing: int, attempt: int) -> str:
+        return ""                           # host log only (D10)
+
+    def retry_prompt(self, chunk: list[int]) -> str:
+        return ("You have not reported a verdict. Call "
+                "`mcp__isabelle_semantics__verdict` now with same=true or "
+                "same=false, then stop.")
+
+    def unanswered_failure(self, missing_names: list[str]) -> str:
+        return f"judge gave no verdict for {missing_names[0]}"
+
+
 _log = logging.getLogger(__name__)
 
 
@@ -783,6 +915,44 @@ def mk_answer_tool(task: InterpretationTask) -> SdkMcpTool[Any]:
         return _mk_ret(msg)
 
     return answer
+
+
+# --- MCP Tool: verdict ---
+
+_verdict_schema = {
+    "type": "object",
+    "properties": {
+        "same": {
+            "type": "boolean",
+            "description": "true when the two descriptions describe the same meaning, false otherwise.",
+        },
+        "why": {
+            "type": "string",
+            "description": "One sentence: what is the same, or what differs.",
+        },
+    },
+    "required": ["same", "why"],
+}
+
+
+def mk_verdict_tool(judge: JudgeTask) -> SdkMcpTool[Any]:
+    """The `verdict` tool of one judge session (plan §15.6): records the
+    verdict on its task and writes nothing.  A closure like `mk_answer_tool`,
+    for the same reason: many judge sessions run at once."""
+
+    @tool(
+        "verdict",
+        "Report whether Description 1 and Description 2 describe the same meaning.",
+        input_schema=_verdict_schema,
+    )
+    async def verdict(args: dict[str, Any]) -> ToolCall_ret:
+        judge.verdict = bool(args["same"])
+        judge.on_answer(0, str(args["why"]))     # answered, for the retry loop
+        _log.info("verdict: %s same=%s: %s", _label(judge.entries[0]),
+                  judge.verdict, args["why"])
+        return _mk_ret("Verdict received. Stop now.")
+
+    return verdict
 
 
 # --- Agent runner ---
@@ -1051,21 +1221,92 @@ def _note_on_failure(note: str) -> Generator[None, None, None]:
         raise
 
 
-def _write(task: InterpretationTask, idx: int,
-           rec: 'SemanticRecord | None', text: str) -> None:
+class _Verdict(enum.Enum):
+    """The gate's verdict on a judged entry whose record carries a digest
+    (plan §3 rows 2-5): CHANGED mints, UNCHANGED keeps the stored version."""
+    CHANGED = enum.auto()
+    UNCHANGED = enum.auto()
+
+
+def _cosine(u: np.ndarray, v: np.ndarray) -> float | None:
+    """dot(u, v) / (‖u‖ ‖v‖) by hand: provider normalisation is a per-model
+    config entry defaulting False.  None when it cannot be computed -- a zero
+    norm or a non-finite value -- because a bare `sim < 0.90` would let NaN
+    through in the wrong direction (§5.4 step 2)."""
+    nu, nv = float(np.linalg.norm(u)), float(np.linalg.norm(v))
+    if not (nu > 0.0 and nv > 0.0):
+        return None
+    sim = float(np.dot(u, v)) / (nu * nv)
+    return sim if math.isfinite(sim) else None
+
+
+async def _prefilter(task: InterpretationTask, e: Entry,
+                     baseline: str, fresh: str) -> float | None:
+    """The prefilter (§5.4 step 2): the cosine of the two embedding-document
+    texts -- the baseline and the fresh interpretation, each under the
+    entity's current statement, rendered by the ONE document-text authority
+    -- or None when it is skipped or could not be computed.  A failed call
+    disables it for the rest of the run; the caller that flips the flag is
+    the one that reports it (§12 #5), so "skipped for the rest of the run"
+    and "printed once" are one operation, whatever gates were already
+    inside the failing call.  The embed machinery's own tracing is gated
+    for the call: per judged entity it would count against Isabelle's
+    editor_tracing_messages cap, whose overflow blocks the command."""
+    if task.emb_store is None or task.run_state.prefilter_disabled:
+        return None
+    docs = [entity_document_text(SemanticRecord(EntityKind(e.kind), e.name, e.prop_str, t))
+            for t in (baseline, fresh)]
+    token = _embed_tracing_gated.set(True)
+    try:
+        async with asyncio.timeout(_PREFILTER_TIMEOUT_S):
+            u, v = (await task.emb_store.emb_provider.embed(docs, role="document")).vectors
+    except Exception as exc:
+        _log.warning("prefilter: the embedding call failed; skipped for the rest "
+                     "of the run", exc_info=True)
+        if task.run_state.claim_prefilter_disable():
+            # a bare TimeoutError (the timeout cuts the provider's retry
+            # ladder before it can raise a message) has an empty str
+            await _report(f"The embedding service did not respond: "
+                          f"{str(exc) or type(exc).__name__}", warn=True)
+        return None
+    finally:
+        _embed_tracing_gated.reset(token)
+    return _cosine(u, v)
+
+
+async def _judge(task: InterpretationTask, idx: int, baseline: str, fresh: str) -> bool:
+    """The judge session (§5.4 step 3): one fresh session over the one pair,
+    under a permit of `_JUDGE_SESSIONS` (D12).  True iff the judge said
+    "same".  Every other outcome -- no verdict after the one extra ask, a
+    `FatalAgentError`, any failure of the session -- reads as CHANGED,
+    logged to the host only (D10); a cancellation propagates."""
+    assert task.make_judge_driver is not None, "interpret_file hands the task its judge driver"
+    judge = JudgeTask(task, idx, baseline, fresh)
+    try:
+        async with _JUDGE_SESSIONS:
+            await _run_agent(lambda: task.make_judge_driver(judge), judge)  # type: ignore[misc]
+    except Exception:
+        _log.warning("judge: the session on %s failed; verdict CHANGED",
+                     _label(judge.entries[0]), exc_info=True)
+    finally:
+        task.judge_cost = task.judge_cost.plus(judge.run_cost())
+    return judge.verdict is True
+
+
+def _write(task: InterpretationTask, idx: int, rec: 'SemanticRecord | None',
+           verdict: _Verdict | None, text: str) -> bool:
     """Write one answered entry: `text`, the other wire fields and the gate
     fields in ONE transaction (plan §5.4 step 5, §3, §6.4), over `rec`, the
-    record as stored when this gate read it.
+    record as stored when this gate read it, at the `verdict` reached on
+    `text` -- so what is written and what was judged cannot drift.  Returns
+    whether a version was minted.
 
     Two predicates, each keyed on the digest, never on the kind (a persistent
     constant, or a four-kind entry whose digest is NONE, has a tracked kind
     and no digest and must NOT be given a baseline): `judged` = the entry has
     a digest (§3 rows 1-5); `has_gate_fields` = digest or deps (false only for
     persistent entries and WIP collections / methods, which get None
-    everywhere, D15).  Until the gate judges (§13 step 5) every judged entry
-    is written as a first write, §3 row 1: version ε, baseline := text -- it
-    over-signals, and step 4 must only run against a throw-away store
-    (§15.11)."""
+    everywhere, D15)."""
     e = task.entries[idx]
     judged = e.semantic_digest is not None
     has_gate_fields = judged or bool(e.deps)
@@ -1077,8 +1318,18 @@ def _write(task: InterpretationTask, idx: int,
             version = ((rec.version if rec is not None and rec.version else w.counter_value())
                        if has_gate_fields else None)
             baseline, digest = None, None
-        else:
+        elif rec is None or rec.semantic_digest is None:
+            # §3 row 1, a first write: ε, the text becomes the baseline
             version, baseline, digest = w.counter_value(), text, e.semantic_digest
+        elif verdict is _Verdict.CHANGED:
+            # §3 rows 2-5: a new version, the text becomes the new baseline
+            version, baseline, digest = w.mint(), text, e.semantic_digest
+        else:
+            # UNCHANGED: the stored version and baseline stand (a version-less
+            # record reads ε, the same reading as everywhere else)
+            assert verdict is _Verdict.UNCHANGED, "a digest-bearing record needs a verdict"
+            version = rec.version or w.counter_value()
+            baseline, digest = rec.baseline_interpretation, e.semantic_digest
         deps = (e.deps or []) if has_gate_fields else None
         # The snapshot after this entity's own version: passed to a FRESH
         # evaluator over rec_cache, not read back from a fabricated record.
@@ -1094,29 +1345,72 @@ def _write(task: InterpretationTask, idx: int,
             interpreted_at=ia, baseline_interpretation=baseline)
     task.rec_cache[e.universal_key] = written    # "rec_cache == store" for every later eff*
     task.state[idx] = _DONE
+    return judged and verdict is _Verdict.CHANGED
+
+
+def _propagate(task: InterpretationTask, idx: int) -> None:
+    """Entry `idx` minted (§5.3.1): each of its theory-internal direct
+    dependents is enrolled (not enrolled yet), left to its own coming write
+    (queued, sent, gating -- that write recomputes eff* from `rec_cache`), or
+    has its `interpreted_at` raised to the eff* that now includes the mint
+    (done) -- a gate-field write, no mint, no re-interpretation, and nothing
+    beyond it: a dependent's own dependents were handled at its own verdict."""
+    for j in task.dependents[idx]:
+        if task.state[j] == _NOT_ENROLLED:
+            task.enqueue(j)
+        elif task.state[j] == _DONE:
+            ej = task.entries[j]
+            r = task.rec_cache[ej.universal_key]
+            assert r is not None, "done means written and put back into rec_cache"
+            ia = _EffStar(task.rec_cache).eff_value(r.version or 0, r.deps)
+            with _note_on_failure(f"while raising the interpreted_at snapshot of {ej.name}"), \
+                 Semantic_DB.gate_write() as w:
+                task.rec_cache[ej.universal_key] = w.update_gate_fields(
+                    ej.universal_key, semantic_digest=r.semantic_digest, deps=r.deps,
+                    version=r.version, interpreted_at=ia,
+                    baseline_interpretation=r.baseline_interpretation)
 
 
 async def _gate(task: InterpretationTask, idx: int) -> None:
-    """The gate of one answered entry, a task of `interpret_file`'s group.
-    Today it is the write alone; the semantic change gate proper (prefilter,
-    judge, mint decision, propagation -- plan §5.4) goes in front of the write
-    in §13 step 5.
+    """The gate of one answered entry (plan §5.4), a task of `interpret_file`'s
+    group: which §3 row applies, the prefilter, the judge, the one write,
+    and the propagation of a mint.
 
     A gate writes only the text it judged, over the record it read: both are
     captured at the top of a round and, with no await between the test and
     the write, a round whose text a correction (D11) replaced meanwhile
-    starts over instead of writing.  Every extra round is paid for by one
-    distinct correction, so the loop terminates; with no await in the body
-    (today) it runs exactly once."""
+    starts over on the newer text instead of writing.  Every extra round is
+    paid for by one distinct correction, so the loop terminates.  The record
+    cannot move under a round: only this entity's own gate writes it, and
+    two gates of one entity never overlap (`_write` marks the entry done as
+    its last statement and nothing awaits after it -- `_propagate`'s writes
+    are synchronous -- so an answer that finds the entry done runs strictly
+    after this gate)."""
     e = task.entries[idx]
     while True:
         rec = task.rec_cache[e.universal_key]       # the record as currently stored (§3's R)
         text = task.results[idx]
         assert text is not None
-        if task.results[idx] != text:
-            continue
-        _write(task, idx, rec, text)
+        verdict: _Verdict | None = None             # rows 1, theorem-alike, persistent: no verdict needed
+        if e.semantic_digest is not None and rec is not None and rec.semantic_digest is not None:
+            if rec.baseline_interpretation is None:
+                verdict = _Verdict.CHANGED          # §3 row 2: a record from before the gate
+            else:
+                sim = await _prefilter(task, e, rec.baseline_interpretation, text)
+                if sim is not None and sim < _GATE_SIMILARITY:
+                    verdict = _Verdict.CHANGED      # §3 row 3
+                    _log.info("gate: %s CHANGED by the prefilter (similarity %.3f)",
+                              _label(e), sim)
+                elif await _judge(task, idx, rec.baseline_interpretation, text):
+                    verdict = _Verdict.UNCHANGED    # §3 row 4
+                else:
+                    verdict = _Verdict.CHANGED      # §3 row 5
+        if task.results[idx] != text:               # a correction landed mid-gate:
+            continue                                # judge the new text; nothing written, nothing minted
+        minted = _write(task, idx, rec, verdict, text)
         break
+    if minted:
+        _propagate(task, idx)
 
 
 def _first_failure(eg: BaseExceptionGroup) -> BaseException:
@@ -1163,7 +1457,7 @@ async def _retry_unanswered(driver: InterpretationDriver, task: AgentTask) -> No
         # not spin forever.
         if prev_missing is not None and len(chunk) >= prev_missing:
             stall += 1
-            if stall >= _MAX_STALLED_RETRIES:
+            if stall >= task.max_stalled_retries:
                 missing_names = [task.entries[i].name for i in task.unanswered()]
                 _log.error("agent: %d entries unanswered after %d stalled "
                            "retry rounds: %s", len(missing_names), stall, missing_names)
@@ -1322,6 +1616,7 @@ async def interpret_file(
             lg.setLevel(connection.server.logger.level)
     _log.info("interpret_file%s: %s (%s), %d entries",
               " (dry run)" if dry_run else "", theory_longname, file_path, n)
+    run_state = current_run_state()
 
     # --- the scan (plan §5.2, §15.8) ---
     # Nothing minted, no gate field written, no counter put.  Per entry: the
@@ -1424,8 +1719,7 @@ async def interpret_file(
     else:
         await _report(f"Interpreting {theory_longname}: found {n} entities to interpret; "
                       f"none are in the semantic database yet, asking the LLM for all {n}.")
-    current_cost = CostSummary(0, 0, 0, 0, 0.0)
-    cumulative_cost = CostSummary(0, 0, 0, 0, 0.0)
+    current_cost = cumulative_cost = _NO_COST
 
     if seeds:
         from .hover import mk_definition_tool, mk_hover_tool
@@ -1433,6 +1727,30 @@ async def interpret_file(
         from .theory_structure import mk_unicode_file
 
         unicode_file_path = mk_unicode_file(file_path)
+
+        # The prefilter's embedding store, resolved on THIS connection (the
+        # user's context governs the model, D5) and only for this run's use.
+        # None -- unconfigured (the startup check said so, or the resolution
+        # raises here), or the service already failed this run -- means the
+        # judge decides alone (D2); the host log keeps the reason.
+        emb_store: 'Semantic_Vector_Store | None' = None
+        if not run_state.prefilter_disabled:
+            try:
+                emb_store = await connection.semantic_vector_store()   # type: ignore[attr-defined]
+            except Exception:
+                _log.warning("interpret_file: no embedding store for the prefilter; "
+                             "the judge decides alone", exc_info=True)
+
+        def make_judge_driver(judge: JudgeTask) -> InterpretationDriver:
+            return make_interpretation_driver(
+                driver_name,
+                model=model,
+                system_prompt=_JUDGE_SYSTEM_PROMPT,
+                tools=[mk_verdict_tool(judge)],
+                task=judge,
+                on_context_reset=lambda: None,
+                cli_tools=False,
+            )
 
         # The task spans ALL of the theory's entries: a dependent that is not
         # a seed must be enrollable later, so it needs an index, a state and a
@@ -1443,6 +1761,8 @@ async def interpret_file(
             driver=driver_name, model=model,
             unicode_file_path=unicode_file_path,
             rec_cache=rec_cache, dependents=dependents,
+            emb_store=emb_store, run_state=run_state,
+            make_judge_driver=make_judge_driver,
         ) as task:
             for i in not_enrolled:
                 task.results[i] = results[i]
@@ -1528,12 +1848,10 @@ async def interpret_file(
             # Cost is flushed per turn by the driver, so this is normally
             # a no-op flush; it still returns the up-to-date cumulative totals.
             cum = task.write_cost()
-            # current_cost = cost of THIS run; read from the run-level
-            # accumulator (write_cost resets total_*, but never run_*).
-            current_cost = CostSummary(
-                task.run_input_tokens, task.run_cache_creation_tokens,
-                task.run_cache_read_tokens, task.run_output_tokens,
-                task.run_cost_usd)
+            # current_cost = cost of THIS run: the interpretation session's
+            # run-level accumulator (write_cost resets total_*, never run_*)
+            # plus the judge sessions' (§15.9).
+            current_cost = task.run_cost().plus(task.judge_cost)
             cumulative_cost = CostSummary(*cum)
             await _report(f"{theory_longname}: done -- {task.n_interpreted()} entities "
                           f"interpreted, cost ${current_cost.cost_usd:.4f}.")

@@ -2,9 +2,10 @@
 (ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md §6, §10): the 15th record field, the
 one entry point `gate_write` (with its two puts), the raw-put grant it shares
 with `backfill_field`, the read-only `counter_snapshot` -- and, over the same
-isolated store, the gate of semantic_interpretation.py (`_gate` / `_write`,
-as it stands before §13 step 5 adds the judge), the only way an
-interpretation reaches the store.
+isolated store, the not-judged rows of the gate of semantic_interpretation.py
+(`_gate` / `_write`: a first write, an untracked entry), the only way an
+interpretation reaches the store.  The judged rows, the prefilter, the judge
+and the propagation are test_semantic_change_gate.py's.
 
 Isolation follows test_layered_db.py: fresh SEMANTIC_DB_DIR per test, every
 singleton environment closed around it.
@@ -367,9 +368,9 @@ def _gate_fields(rec: Record) -> tuple:
 
 
 def test_the_gate_writes_the_answer_as_a_first_write_in_one_record(cache):
-    """§3 row 1 (the only row until step 5 judges): version ε, the wire
-    digest and deps, baseline := the text, interpreted_at = eff* over
-    rec_cache; an untracked entry keeps every gate field None."""
+    """§3 row 1: version ε, the wire digest and deps, baseline := the text,
+    interpreted_at = eff* over rec_cache; an untracked entry keeps every
+    gate field None.  No judge: a first write needs none."""
     task = _gate_task(["the c", "the p"])
     for i in range(2):
         asyncio.run(_run_gate(task, i))
@@ -416,26 +417,6 @@ def test_a_gate_write_failure_propagates_the_store_s_exception_with_a_note(cache
     assert not isinstance(e.value, AssertionError)
     assert e.value.__notes__ == ["while writing the interpretation of Foo.c"]
     assert task.state[0] == _GATING
-
-
-def test_a_correction_is_a_second_gate_that_rewrites_the_text(cache):
-    """D11: a correction of a written entity re-runs the gate over the record
-    the first gate wrote.  Until step 5 judges, the second gate is again a
-    first write (§3 row 1): the same ε and snapshot, the baseline moved to
-    the new text -- the over-signalling §15.11 accepts for step 4."""
-    task = _gate_task(["the c", "the p"])
-    asyncio.run(_run_gate(task, 0))
-    first = S.Semantic_DB[_uk("c")]
-    store = _mk_vector_store(cache)
-    store.put(_uk("c"), _basis(0))
-    task.state[0] = _GATING                      # what on_answer does for a _DONE entry
-    task.results[0] = "corrected text"
-    asyncio.run(_run_gate(task, 0))
-    second = S.Semantic_DB[_uk("c")]
-    assert second.interpretation == "corrected text"
-    assert _gate_fields(second) == _gate_fields(first)[:4] + ("corrected text",)
-    assert store.contains([_uk("c")]) == [False], "the embedded document changed"
-    assert task.state[0] == _DONE and task.n_interpreted() == 1
 
 
 # --- interpret_file end to end (scan, loop, gates, closing count) ------------

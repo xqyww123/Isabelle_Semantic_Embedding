@@ -36,12 +36,64 @@ All paths relative to `contrib/Semantic_Embedding/`.
   make_judge_driver deferred to step 5; `enrolled_names` on AgentTask;
   `rec_cache` a constructor keyword; every judged entry written as §3 row 1
   until step 5 (baseline := text); opening lines' wording waits for step 8.
-- Next: §13 step 5 (the gate proper: prefilter, JudgeTask + verdict tool,
+- Step 5 (the gate proper) implemented 2026-09-09 after the user's "开工";
+  reviewed (`ai-artifacts/review_step5/`: SCOPE.md, working_tree*.diff,
+  judge.json — 10 agents; rereview_judge.json — 3 agents; FIX_LIST.md):
+  three production fixes approved by the user and applied (the prefilter's
+  `embed` under `_embed_tracing_gated`; `RunState.claim_prefilter_disable()`
+  so §12 #5 is printed once per run even by gates already inside the
+  failing call; the `<error>` slot `str(exc) or type(exc).__name__`), plan
+  §5.4 Failures / §15.5 / status edited by hand (rev 5.4); the re-review
+  accepted the production code and asked four test-only fixes, all applied
+  (the tracing gate's reset pinned from inside the awaiting task; `_Run.start`
+  / `go` split, no hand copy; pytest's `caplog`; a scripted CHANGED verdict
+  in the unrequested-answer test).  Suite 388 passed / 3 env failures; 33
+  tests in the new file.  Proposal from the re-review, DECLINED by the user
+  2026-09-09 ("看不到什么收益"; do not re-raise): an `embed_tracing_gated()` context manager beside the ContextVar in
+  semantic_embedding.py replacing the two hand-written token/`finally` pairs
+  (semantic_interpretation.py `_prefilter`, semantics.py
+  `complete_vector_store`).  Until §13 step 6 threads D16's `warn`, an
+  unconfigured embedding service prints the 23-line setup message once per
+  seeded theory (recorded, not a regression).
+- Next (was): §13 step 5 (the gate proper: prefilter, JudgeTask + verdict tool,
   decisions, propagation, snapshot raise, failure handling, derived
   permissions, SERVER_NAME move, cli_tools; RunState / current_run_state,
   emb_store, make_judge_driver; `_propagate` with `_note_on_failure`) —
   needs the user's go-ahead.  Step 5's test file must carry the enrolment
   test with a not-enrolled entry NOT in last position (step-4 judge).
+
+## Entry point for step 5 (read this after the compaction)
+
+- Git: steps 1–4 committed in this repo (`8683e6f`, `5a3c201`) and bumped in
+  the superproject (`7ec6756b`, `7793813f`); nothing pushed.  The working
+  tree still carries two foreign edits (`Tools/entity_position.ML`,
+  `archive/tests/test_migrate_from_collection.py`) — not ours, leave them.
+- WAIT for the user's explicit go-ahead ("开工" / "继续") before touching
+  production code.  Then: read plan §3, §5.4, §5.5, §5.6, §12, §15.1,
+  §15.5, §15.6, §15.8 "Run-scoped state", §15.9, §15.10 (step-5 file), §15.11
+  (after step 5); then the code on disk (`_write` / `_gate` / `_EffStar` /
+  `interpret_file` in semantic_interpretation.py; the driver package's
+  `_options` / permissions in claude_code.py, codex.py; mcp_server.py's
+  `SERVER_NAME`).  Implement, test (new `archive/tests/test_semantic_change_gate.py`
+  driving `interpret_file` with a scripted driver, a scripted judge driver and
+  a fake embedding store over the `cache` fixture; reuse the helpers of
+  test_semantic_change_gate_storage.py / test_interpretation_driver.py), run
+  the suite, write `ai-artifacts/review_step5/SCOPE.md` + diff, run the
+  review workflow (same script shape as `review-gate-step4-*.js`: 3 lenses →
+  filter → rebutters → judge, Opus 5, English), report in Chinese with the
+  fix plan, wait for approval on production fixes, apply, commit when asked.
+- Step-5 specifics already decided: `_write(task, idx, rec, verdict, text)`
+  gains the verdict and §3 rows 2–5; `_gate`'s fixpoint gets its awaits
+  (prefilter, judge); `_propagate` per §15.5 with
+  `_note_on_failure("while raising the interpreted_at snapshot of <j>")`;
+  judge cap `asyncio.Semaphore(40)` around the session only; `JudgeTask`
+  with `max_stalled_retries` attribute (interpretation: `_MAX_STALLED_RETRIES`,
+  judge: 1) read by `_retry_unanswered`; `mk_verdict_tool`; derived
+  permissions (`_CLI_BUILTINS`, one local feeding both `allowed_tools` and
+  the hook); `SERVER_NAME` moves to `interpretation_driver/__init__.py`;
+  `cli_tools` flag; `RunState` / `current_run_state()`; `emb_store` resolved
+  per `interpret_file` via `connection.semantic_vector_store()` inside
+  `except Exception`; texts stay today's (step 8).
 
 The decisions and work list below are kept as the record of what was done.
 

@@ -35,20 +35,14 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
 from Isabelle_RPC_Host import Connection
 
+from . import SERVER_NAME
+
 if TYPE_CHECKING:
     from claude_agent_sdk import SdkMcpTool
 
     from ..semantic_interpretation import AgentTask
 
 _log = logging.getLogger(__name__)
-
-#: Server name, and hence the flat tool names the model sees
-#: (`mcp__isabelle_semantics__answer`).  It MUST match the name the Claude Code
-#: path registers, because the system prompt, the batch prompts and the answer
-#: tool's own replies all address the tools by those names -- one wording serves
-#: both backends only as long as this string does.
-SERVER_NAME = "isabelle_semantics"
-
 
 # --- result translation -----------------------------------------------------
 

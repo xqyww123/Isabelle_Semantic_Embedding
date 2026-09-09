@@ -1,11 +1,16 @@
 # Semantic change gate, shielded invalidation and interpretation lock — implementation plan (rev 5)
 
-Status: **rev 5.3 (2026-09-09); §13 steps 1–4 implemented, reviewed and
+Status: **rev 5.4 (2026-09-09); §13 steps 1–5 implemented, reviewed and
 accepted (step 3: `ai-artifacts/review_step3/`; step 4:
 `ai-artifacts/review_step4/`, judge `judge.json`, five fixes applied — the
 live-path statement refresh unconditional, the query tool's refusal compared
-in one spelling, no self edge in the reverse graph); steps 5–8 pending
-approval to start.**
+in one spelling, no self edge in the reverse graph; step 5:
+`ai-artifacts/review_step5/`, judge `judge.json` and `rereview_judge.json`,
+three production fixes applied — the prefilter's `embed` call under the embed
+machinery's tracing gate, `RunState.claim_prefilter_disable()` so §12 #5 is
+printed once even by gates already inside the failing call, the `<error>`
+slot filled by the exception's class name when its `str` is empty — plus
+tests); steps 6–8 pending approval to start.**
 Three review rounds (rev 1: 98 agents; rev 2: 23; rev 3: 23) and the user's
 rulings on them are absorbed.  Rev 5.3 records the user's decisions of
 2026-09-08/09 after the step-3 code review: D11 revised (a correction re-runs
@@ -346,9 +351,11 @@ cap cannot deadlock the queue.  Steps:
 
 **Failures (D10).**  Steps 2–4 never raise past the task: an embedding failure
 skips the prefilter for the rest of the run (`RunState.prefilter_disabled`,
-§15.8; text §12 #5 through `_report(..., warn=True)`, once per run, the flag
-set before the report so "skipped for the rest of the run" and "printed
-once" are one fact); the prefilter's one `embed` call is bounded by
+§15.8; text §12 #5 through `_report(..., warn=True)`, once per run: the
+caller that flips the flag is the one that reports —
+`RunState.claim_prefilter_disable()`, §15.5 — so "skipped for the rest of the
+run" and "printed once" are one operation even for the gates already inside
+the failing call); the prefilter's one `embed` call is bounded by
 `asyncio.timeout(_PREFILTER_TIMEOUT_S)` (a constant beside
 `_GATE_SIMILARITY`, 60 s) because `embed` otherwise inherits the corpus
 embedding's ten-step retry ladder (semantic_embedding.py:341-372, about 17
@@ -1148,11 +1155,22 @@ task.run_state.prefilter_disabled`.  Two `entity_document_text` renderings
 `e.prop_str`), one `await task.emb_store.emb_provider.embed(text=[doc_baseline,
 doc_fresh], role="document")` (the parameter is named `text`,
 semantic_embedding.py:456) inside `async with asyncio.timeout(_PREFILTER_TIMEOUT_S)`,
-cosine by hand, `None` on zero norm / non-finite.  On any `Exception`
-(`TimeoutError` included): set `task.run_state.prefilter_disabled = True`
-FIRST, then log and `await _report(text §12 #5, warn=True)`, return `None`
-— the flag before the report, so "skipped for the rest of the run" and
-"printed once" are one fact.
+cosine by hand, `None` on zero norm / non-finite.  The embed machinery's own
+tracing is gated for the call (`_embed_tracing_gated`, set before the `try`
+and reset in a `finally`): per judged entity it would count against
+Isabelle's `editor_tracing_messages` cap, whose overflow blocks the command
+— the hazard the whole-DB embed already guards against.  On any `Exception`
+(`TimeoutError` included): log the traceback, then
+`if task.run_state.claim_prefilter_disable(): await _report(text §12 #5,
+warn=True)`, return `None` — `claim_prefilter_disable()` flips the flag and
+says whether THIS caller flipped it, one synchronous step, so the caller that
+disables the prefilter is the one that reports it and "skipped for the rest
+of the run" and "printed once" are one operation even for the gates that were
+all inside the failing call when the service went down (a flag merely set
+before the report would let each of them report).  The `<error>` slot is
+`str(exc) or type(exc).__name__`: the timeout cuts the provider's retry
+ladder before it can raise a message, so the dominant failure is a bare
+`TimeoutError` whose `str` is empty.
 
 `_judge` (§5.4 step 3, §15.6): builds a `JudgeTask` with the single entity,
 runs `_run_agent(lambda: task.make_judge_driver(judge), judge)`; returns
