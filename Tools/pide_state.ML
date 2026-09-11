@@ -731,6 +731,7 @@ local open MessagePackBinIO.Pack MessagePackBinIO.Unpack in
 val _ = Theory.setup (Context.theory_map (
   Remote_Procedure_Calling.register_global_callback {
       name = "pide_state.goto_definition",
+      on_interrupt = Remote_Procedure_Calling.Reraise,
       arg_schema = unpackPair (unpackString, unpackInt),
       ret_schema = packOption (packTuple4 (packString, packInt, packInt, packInt)),
       function = fn (file, offset) =>
@@ -746,6 +747,7 @@ val _ = Theory.setup (Context.theory_map (
     }
   #> Remote_Procedure_Calling.register_global_callback {
       name = "pide_state.hover_message",
+      on_interrupt = Remote_Procedure_Calling.Reraise,
       arg_schema = unpackPair (unpackString, unpackInt),
       ret_schema = packOption packString,
       function = fn (file, offset) =>
@@ -754,6 +756,7 @@ val _ = Theory.setup (Context.theory_map (
     }
   #> Remote_Procedure_Calling.register_global_callback {
       name = "pide_state.entity_at_position",
+      on_interrupt = Remote_Procedure_Calling.Reraise,
       arg_schema = unpackPair (unpackString, unpackInt),
       ret_schema = packOption (packPair (packString, packString)),
       function = fn (file, offset) =>
@@ -762,6 +765,7 @@ val _ = Theory.setup (Context.theory_map (
     }
   #> Remote_Procedure_Calling.register_global_callback {
       name = "pide_state.command_at_position",
+      on_interrupt = Remote_Procedure_Calling.Reraise,
       arg_schema = unpackPair (unpackString, unpackInt),
       ret_schema = packOption (packTuple3 (packString, packInt, packInt)),
       function = fn (file, offset) =>
@@ -770,6 +774,7 @@ val _ = Theory.setup (Context.theory_map (
     }
   #> Remote_Procedure_Calling.register_global_callback {
       name = "pide_state.get_session_databases",
+      on_interrupt = Remote_Procedure_Calling.Reraise,
       arg_schema = unpackUnit,
       ret_schema = packList (packPair (packString, packString)),
       function = fn () => PIDE_State.get_session_databases (),

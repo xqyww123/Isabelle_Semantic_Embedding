@@ -27,7 +27,15 @@ signature SEMANTIC_STORE = sig
   (* The first context is where the run reads `Semantic_Embedding.interpretation_driver`;
      it is read once, here, and carried down to every cone node as data.  Pass the
      context the USER declared it in -- which is not always one of the roots. *)
-  val interpret_with_parallel : Context.generic -> bool -> Context.generic list -> unit
+  val interpret_with_parallel : Context.generic -> bool -> Context.generic list -> unit option
+  (* The interpretation lock (SEMANTIC_CHANGE_GATE_PLAN.md §8): run `body` as the one
+     live interpretation run on this database, or return NONE at once if another run
+     holds the lock (D8: try once, never wait).  interpret_with_parallel is wrapped in
+     it; exposed so a test can hold the lock. *)
+  val with_interpretation_lock : (unit -> 'a) -> 'a option
+  (* Text §12 #2, raised by run_semantic_interpretation and by `interpret` when the
+     lock is busy. *)
+  val lock_busy_error : string
   (* The callbacks a live interpret_file RPC carries: `interpret_file_callbacks config_cb
      context` -- the run's one Config.lookup callback (built by interpret_with_parallel
      from the context the driver was read from, so the prefilter's embedding model is the
@@ -2262,6 +2270,39 @@ fun dry_run (force : bool) (roots : Context.generic list) : string list * int =
     (map Context.theory_long_name work, fold (curry op +) pcounts n_work)
   end
 
+(* --- the interpretation lock (SEMANTIC_CHANGE_GATE_PLAN.md §8) --- *)
+
+val try_acquire_cmd : (unit, bool) Remote_Procedure_Calling.command = {
+  name = "Semantic_Store.try_acquire_interpretation_lock",
+  arg_schema = MessagePackBinIO.Pack.packUnit,
+  ret_schema = MessagePackBinIO.Unpack.unpackBool,
+  callback = [], timeout = NONE}
+
+(* The lock is owned by a connection of its own, held open for the whole run and
+   CLOSED afterwards, never released to the pool: the host releases the lock when the
+   socket goes, so an interrupt anywhere in `body` releases it too.  The finaliser is
+   armed before the connection exists, and the connect-and-record step is one
+   uninterruptible bubble in which `get_connection` (it may launch a host) stays
+   interruptible through `run`: no interrupt can leave a connection unguarded. *)
+fun with_interpretation_lock (body : unit -> 'a) : 'a option =
+  let val conn : Remote_Procedure_Calling.connection option Unsynchronized.ref =
+        Unsynchronized.ref NONE
+  in
+    \<^try>\<open>
+      let
+        val c = Thread_Attributes.uninterruptible_body (fn run =>
+                  let val c = run Remote_Procedure_Calling.get_connection ()
+                  in conn := SOME c; c end)
+      in
+        if Remote_Procedure_Calling.call_command' try_acquire_cmd c () then SOME (body ())
+        else NONE
+      end
+    finally
+      (case ! conn of
+        SOME c => (try Remote_Procedure_Calling.close_connection c; ())
+      | NONE => ())\<close>
+  end
+
 (* The startup check of a cone run (SEMANTIC_CHANGE_GATE_PLAN.md §5.6): Python resolves
    the embedding configuration through `config_cb` -- the very Config.lookup callback
    interpret_file carries, so the check judges the configuration the prefilter will use
@@ -2289,7 +2330,9 @@ fun check_embedding_service (config_cb : Remote_Procedure_Calling.callback') : u
    roots from theory NAMES, so `map Context.Theory` there would throw away the caller's
    context — and with it the declaration.  Resolving here, once, is also what keeps the
    whole cone on one driver (see interpretation_driver's comment). *)
-fun interpret_with_parallel (cfg_context : Context.generic) (force : bool)
+local
+
+fun interpret_with_parallel' (cfg_context : Context.generic) (force : bool)
       (roots : Context.generic list) : unit =
   let
     val driver = Config.get_generic cfg_context interpretation_driver
@@ -2350,7 +2393,25 @@ fun interpret_with_parallel (cfg_context : Context.generic) (force : bool)
     ()
   end
 
-fun interpret force context = interpret_with_parallel context force [context]
+in
+
+(* Every live run goes through the lock -- the unlocked body above is reachable from
+   nowhere else; a dry run never does (D8). *)
+fun interpret_with_parallel cfg_context force roots =
+  with_interpretation_lock (fn () => interpret_with_parallel' cfg_context force roots)
+
+end
+
+val lock_busy_error =
+  "run_semantic_interpretation: another semantic interpretation run is in progress on \
+  \this database. Wait for it to finish, then run the command again."
+
+(* No caller in the repository; run_semantic_interpretation is the one user command
+   on this path, so its text is reused deliberately (D17). *)
+fun interpret force context =
+  (case interpret_with_parallel context force [context] of
+    SOME () => ()
+  | NONE => error lock_busy_error)
 
 fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpacker)
     : Remote_Procedure_Calling.callback' =
@@ -2390,10 +2451,16 @@ fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpa
         else
           (* `context` for the config read whatever the roots are: only the
              caller's context carries its interpretation_driver declaration. *)
-          (interpret_with_parallel context force roots;
-           (* A live run reports no numbers -- the dry run is the one workload
-              metering.  ~1 says "not counted", distinct from a genuine ([], 0)
-              nothing-to-do dry-run report. *)
+          (* A live run reports no numbers -- the dry run is the one workload
+             metering.  ~1 says "not counted", distinct from a genuine ([], 0)
+             nothing-to-do dry-run report.  Lock busy: the caller (aoa's startup
+             check, _auto_embed) goes on with what is stored (D8). *)
+          ((case interpret_with_parallel context force roots of
+              SOME () => ()
+            | NONE => writeln
+                "[Semantic_Embedding] Another semantic interpretation run is in progress \
+                \on this database; skipping the automatic update. The proof continues \
+                \with the interpretations already stored.");
            ([], ~1))
       end,
     timeout = NONE

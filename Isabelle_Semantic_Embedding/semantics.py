@@ -14,7 +14,7 @@ import msgpack
 import numpy as np
 from ._paths import semantic_DB_dir
 from Isabelle_RPC_Host import Connection, isabelle_remote_procedure
-from Isabelle_RPC_Host.rpc import IsabelleError
+from Isabelle_RPC_Host.rpc import IsabelleError, IsabelleInterrupt
 from Isabelle_RPC_Host.position import IsabellePosition
 from Isabelle_RPC_Host.unicode import pretty_unicode, ascii_of_unicode
 from Isabelle_RPC_Host.universal_key import EntityKind, UndefinedEntity, universal_key, universal_key_of, universal_key_and_name_of, destruct_key, is_WIP, RULE_ONLY_TAG_BYTES, RULE_ONLY_KINDS
@@ -1797,6 +1797,8 @@ def mk_query_by_name_tool(
                     if args.get("show_defs", False):
                         sem = await _append_definition(sem, connection, tag, uk, short, log)
                     return _mk_ret(_noted(f"The {name} is undefined, but we find:\n{sem}"))
+                except IsabelleInterrupt:
+                    raise
                 except (IsabelleError, UndefinedEntity, LookupError):
                     pass
             # Try resolving as a syntax/notation token via resolve_notation
@@ -1811,6 +1813,8 @@ def mk_query_by_name_tool(
                 _noted(str(e) + " Try using `mcp__proof__semantic_search` to find what you need."),
                 is_error=True,
             )
+        except IsabelleInterrupt:
+            raise
         except IsabelleError as e:
             log.warning("%s: %s", type(e).__name__, e)
             return _mk_ret(_noted(str(e)), is_error=True)

@@ -129,6 +129,7 @@ fun make_desugar_callback (fallback : Context.generic)
   let open MessagePackBinIO.Pack MessagePackBinIO.Unpack in
   Remote_Procedure_Calling.mk_callback {
     name = "explain_term.desugar_and_explain",
+    on_interrupt = Remote_Procedure_Calling.Reraise,
     arg_schema = unpackPair (
       unpackOption (unpackPair (unpackString, unpackInt)),
       unpackString),
@@ -159,6 +160,7 @@ fun make_resolve_notation_callback (fallback : Context.generic)
   let open MessagePackBinIO.Pack MessagePackBinIO.Unpack in
   Remote_Procedure_Calling.mk_callback {
     name = "explain_term.resolve_notation",
+    on_interrupt = Remote_Procedure_Calling.Reraise,
     arg_schema = unpackPair (
       unpackOption (unpackPair (unpackString, unpackInt)),
       unpackString),
