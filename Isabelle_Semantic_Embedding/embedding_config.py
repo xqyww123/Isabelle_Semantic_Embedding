@@ -43,12 +43,20 @@ def config_source() -> pathlib.Path | None:
     return _CONFIG.source()
 
 
+class Missing_Dimension(KeyError):
+    """`KeyError.__str__` is the repr of its argument; this argument is a
+    sentence the user reads."""
+
+    def __str__(self) -> str:
+        return self.args[0]
+
+
 def dimension(model: str) -> int:
     """Embedding vector dimension for a canonical model name. Hard error if missing."""
     cfg = load_embedding_config()
     dims = cfg.get("dimension") or {}
     if model not in dims:
-        raise KeyError(
+        raise Missing_Dimension(
             f"No 'dimension' entry for model {model!r} in embedding config "
             f"({config_source()}). Add it under 'dimension:'.")
     return int(dims[model])

@@ -35,8 +35,14 @@ from .interpretation_driver import (
     make_interpretation_driver,
     resolve_interpretation_driver_class,
 )
-from .semantic_embedding import _embed_tracing_gated
-from .semantics import Provenance, Semantic_DB, SemanticRecord, unpack_thy_status
+from .semantic_embedding import _embed_tracing_gated, make_embedding_provider
+from .semantics import (
+    Provenance,
+    Semantic_DB,
+    SemanticRecord,
+    _resolve_embedding_config,
+    unpack_thy_status,
+)
 
 if TYPE_CHECKING:
     from .semantics import Semantic_Vector_Store
@@ -1732,11 +1738,13 @@ async def interpret_file(
         # user's context governs the model, D5) and only for this run's use.
         # None -- unconfigured (the startup check said so, or the resolution
         # raises here), or the service already failed this run -- means the
-        # judge decides alone (D2); the host log keeps the reason.
+        # judge decides alone (D2); the host log keeps the reason.  The
+        # startup check has printed the setup hint once for the run (§12 #4,
+        # D16): the resolution must not repeat it per theory.
         emb_store: 'Semantic_Vector_Store | None' = None
         if not run_state.prefilter_disabled:
             try:
-                emb_store = await connection.semantic_vector_store()   # type: ignore[attr-defined]
+                emb_store = await connection.semantic_vector_store(warn=False)   # type: ignore[attr-defined]
             except Exception:
                 _log.warning("interpret_file: no embedding store for the prefilter; "
                              "the judge decides alone", exc_info=True)
@@ -1935,6 +1943,28 @@ async def _interpret_file(arg: Any, connection: Connection) -> InterpretationRes
     )
     assert isinstance(result, InterpretationResult)  # not a dry run
     return result
+
+
+@isabelle_remote_procedure("Semantic_Store.check_embedding_service")
+async def _check_embedding_service(arg: Any, connection: Connection) -> None:
+    """The startup check of a cone run (plan §5.6), once, before any theory
+    starts: resolve the embedding configuration under the caller's context
+    (its `Config.lookup` callback; D5) and construct the provider, which is
+    where the model's dimension is looked up -- then discard it.  A failure
+    means the run's prefilter is off (D2) and the user is told once, text §12
+    #4; the resolution's own warning stays silent (D16) so the setup hint
+    appears exactly once per run.  Network reachability is not tested here:
+    it is only known at the first embedding call (§5.4 step 2)."""
+    try:
+        driver, base_url, model, api_key = await _resolve_embedding_config(
+            connection, warn=False)
+        make_embedding_provider(driver, base_url, model, api_key)
+    except Exception as exc:
+        _log.warning("startup check: the embedding service is not configured; "
+                     "the prefilter is off for this run", exc_info=True)
+        current_run_state().prefilter_disabled = True
+        await _report("[Semantic_Embedding] The embedding service is not configured: "
+                      f"{str(exc) or type(exc).__name__}", warn=True)
 
 
 @isabelle_remote_procedure("Semantic_Store.interpret_file_dry_run")

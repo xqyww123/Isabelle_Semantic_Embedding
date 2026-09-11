@@ -28,6 +28,13 @@ signature SEMANTIC_STORE = sig
      it is read once, here, and carried down to every cone node as data.  Pass the
      context the USER declared it in -- which is not always one of the roots. *)
   val interpret_with_parallel : Context.generic -> bool -> Context.generic list -> unit
+  (* The callbacks a live interpret_file RPC carries: `interpret_file_callbacks config_cb
+     context` -- the run's one Config.lookup callback (built by interpret_with_parallel
+     from the context the driver was read from, so the prefilter's embedding model is the
+     one the user declared, never the cone node's default) and the entity callbacks of
+     the node being interpreted.  Exposed so a test can assert what is on the list. *)
+  val interpret_file_callbacks : Remote_Procedure_Calling.callback' -> Context.generic ->
+        Remote_Procedure_Calling.callback' list
 
   (* The two pieces interpret_with_parallel is built from, exposed so a test can drive the
      scheduler with a cheap body -- no network, no LLM spend. `schedule_dag label body cone`
@@ -388,6 +395,7 @@ val base_theory_names = map Context.theory_long_name base_theories
 val _ = Theory.setup (Context.theory_map (
   Remote_Procedure_Calling.register_global_callback {
     name = "Semantic_Store.excluded_theory_names",
+    on_interrupt = Remote_Procedure_Calling.Reraise,
     arg_schema = MessagePackBinIO.Unpack.unpackUnit,
     ret_schema = MessagePackBinIO.Pack.packList MessagePackBinIO.Pack.packString,
     function = fn () => base_theory_names,
@@ -1809,17 +1817,13 @@ fun enumerate_entries (context : Context.generic) =
      position_report = position_report, tie_break_degraded = tie_break_degraded}
   end
 
-(* The send half of interpret': build the tool callbacks and hand the enumerated
-   entries to Python for the live interpretation (cache filter, then LLM for the
-   rest).  `driver` is the "<Driver>[.<model>]" string resolved ONCE at the entry
-   point (see interpretation_driver above); it is carried down as data, never re-read
-   here -- this context is rebuilt from the cone node's own theory and would read the
-   default. *)
-fun send_for_interpretation (driver : string) (context : Context.generic)
-      {file_path, theory_longname, theory_key, entries, position_report = _,
-       tie_break_degraded = _} : usage * usage =
+(* Step 7 of interpret': the callbacks capturing context.  `config_cb` is the run's
+   Config.lookup callback, made once by interpret_with_parallel from the user's context;
+   it is threaded down as a value so that no cone node's context -- rebuilt from the
+   node's own theory, reading the default -- can ever serve it. *)
+fun interpret_file_callbacks (config_cb : Remote_Procedure_Calling.callback')
+    (context : Context.generic) : Remote_Procedure_Calling.callback' list =
   let
-    (* 7. Build callbacks capturing context *)
     val su = Context_Callbacks.static_context_unpacker context
     val pu = PIDE_State.position_context_unpacker context
     val uk_cb = Universal_Key.make_universal_key_callback pu
@@ -1832,11 +1836,26 @@ fun send_for_interpretation (driver : string) (context : Context.generic)
     val {constants, theorems, types, classes, locales, named_theorems, methods,
          introduction_rules, elimination_rules,
          induction_rules, case_split_rules} = make_entity_callbacks context pu
-    val cmd = make_interpret_file_cmd [uk_cb, theory_info_cb, desugar_cb,
-          resolve_notation_cb,
-          constants, theorems, types, classes, locales, named_theorems, methods,
-          introduction_rules, elimination_rules,
-          induction_rules, case_split_rules]
+  in
+    [uk_cb, theory_info_cb, desugar_cb, resolve_notation_cb, config_cb,
+     constants, theorems, types, classes, locales, named_theorems, methods,
+     introduction_rules, elimination_rules,
+     induction_rules, case_split_rules]
+  end
+
+(* The send half of interpret': build the tool callbacks and hand the enumerated
+   entries to Python for the live interpretation (cache filter, then LLM for the
+   rest).  `driver` is the "<Driver>[.<model>]" string resolved ONCE at the entry
+   point (see interpretation_driver above); it is carried down as data, never re-read
+   here -- this context is rebuilt from the cone node's own theory and would read the
+   default.  `config_cb` is the Config.lookup callback made from that same resolution
+   context, carried down for the same reason (interpret_file_callbacks). *)
+fun send_for_interpretation (driver : string) (config_cb : Remote_Procedure_Calling.callback')
+      (context : Context.generic)
+      {file_path, theory_longname, theory_key, entries, position_report = _,
+       tie_break_degraded = _} : usage * usage =
+  let
+    val cmd = make_interpret_file_cmd (interpret_file_callbacks config_cb context)
 
     (* 8. Call RPC command *)
     val rpc_arg = {
@@ -1857,11 +1876,12 @@ fun send_for_interpretation (driver : string) (context : Context.generic)
     (current, cumulative)
   end
 
-fun interpret' (driver : string) (context : Context.generic) : usage * usage =
+fun interpret' (driver : string) (config_cb : Remote_Procedure_Calling.callback')
+    (context : Context.generic) : usage * usage =
   let val payload = enumerate_entries context
   in
     if null (#entries payload) then (zero_usage, zero_usage)
-    else send_for_interpretation driver context payload
+    else send_for_interpretation driver config_cb context payload
   end
 
 (* Per-theory dry run (level 2 of Semantic_Store.dry_run): same enumeration as a live
@@ -2001,14 +2021,15 @@ fun schedule_dag (label : string) (body : theory -> unit -> 'a) (cone : theory l
         Par_Exn.release_first results
       end)
 
-fun interpret_cone (driver : string) (force : bool) (cone : theory list) : usage * usage =
+fun interpret_cone (driver : string) (config_cb : Remote_Procedure_Calling.callback')
+      (force : bool) (cone : theory list) : usage * usage =
   let
     (* An already-interpreted theory still gets a task: it relays the dependency edge on to
        its descendants without doing any work. *)
     fun body thy () =
       if skip_interpreted force thy then (zero_usage, zero_usage)
       else
-        let val r = interpret' driver (Context.Theory thy)
+        let val r = interpret' driver config_cb (Context.Theory thy)
             val _ = mark_interpreted thy
         in r end
     fun add2 ((c1, h1), (c2, h2)) = (add_usage (c1, c2), add_usage (h1, h2))
@@ -2241,6 +2262,23 @@ fun dry_run (force : bool) (roots : Context.generic list) : string list * int =
     (map Context.theory_long_name work, fold (curry op +) pcounts n_work)
   end
 
+(* The startup check of a cone run (SEMANTIC_CHANGE_GATE_PLAN.md §5.6): Python resolves
+   the embedding configuration through `config_cb` -- the very Config.lookup callback
+   interpret_file carries, so the check judges the configuration the prefilter will use
+   -- and, when it is unconfigured, tells the user once and switches the run's prefilter
+   off (the flag reaches the run's theories once the lock creates the run's state, §13
+   step 7).  A configuration problem never fails the run; only an RPC-level failure
+   surfaces, as interpret_file's would. *)
+fun check_embedding_service (config_cb : Remote_Procedure_Calling.callback') : unit =
+  Remote_Procedure_Calling.call_command
+    {name = "Semantic_Store.check_embedding_service",
+     arg_schema = MessagePackBinIO.Pack.packUnit,
+     ret_schema = MessagePackBinIO.Unpack.unpackUnit,
+     callback = [config_cb],
+     timeout = NONE} ()
+  handle Remote_Procedure_Calling.Remote_Calling_Failure {message, ...} =>
+    interpretation_rpc_error message
+
 (* Interpret the merged ancestor cone of `roots` under one DAG, at the width the REPL was
    started with (-o threads=N). A `Context.Proof` root additionally has its own proof-local
    entities interpreted, last and sequentially, and is never marked (a proof context has no
@@ -2255,6 +2293,11 @@ fun interpret_with_parallel (cfg_context : Context.generic) (force : bool)
       (roots : Context.generic list) : unit =
   let
     val driver = Config.get_generic cfg_context interpretation_driver
+    (* The run's one Config.lookup callback, built here from the same context as the
+       driver (D5) and threaded down as a value: a cone node's context cannot stand in
+       for it. *)
+    val config_cb = Config.make_config_lookup_callback
+                      (Context_Callbacks.static_context_unpacker cfg_context)
     val cone = collect_cone (map Context.theory_of roots)
     (* Same set plan_interpretation reports, by construction: the command shows the user
        a count, then this runs the work.  `cone` itself is still needed below -- interpret_cone
@@ -2281,15 +2324,19 @@ fun interpret_with_parallel (cfg_context : Context.generic) (force : bool)
         "constants, theorems, types and locales will be translated into English\n",
         "interpretations and stored in the semantic database.\n",
         "Interrupting is safe -- interpretations are saved as they arrive, and re-running resumes."])
+    (* Once per run, before any theory starts, and only when something will run: a run
+       that has nothing to interpret has no prefilter to configure. *)
+    val _ = if n_units = 0 then () else check_embedding_service config_cb
 
     (* Nothing to do (the common resume case): do not build a graph or fork relay tasks. *)
     val (ttotal, thist) =
-      if null work then (zero_usage, zero_usage) else interpret_cone driver force cone
+      if null work then (zero_usage, zero_usage)
+      else interpret_cone driver config_cb force cone
 
     (* Proof contexts run LAST and sequentially; interpreted but never marked. *)
     val (ptotal, phist) =
       fold (fn ctx => fn (acc, hacc) =>
-        let val (cur, cum) = interpret' driver ctx
+        let val (cur, cum) = interpret' driver config_cb ctx
         in (add_usage (acc, cur), add_usage (hacc, cum)) end)
       proofs (zero_usage, zero_usage)
 
@@ -2309,6 +2356,7 @@ fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpa
     : Remote_Procedure_Calling.callback' =
   Remote_Procedure_Calling.mk_callback {
     name = "Semantic_Store.interpret_theories",
+    on_interrupt = Remote_Procedure_Calling.Reraise,
     arg_schema = MessagePackBinIO.Unpack.unpackTuple5
       (ctxt_unpack,
        MessagePackBinIO.Unpack.unpackList MessagePackBinIO.Unpack.unpackString,

@@ -2758,11 +2758,14 @@ def _missing_api_key_message() -> str:
 
 
 async def _resolve_embedding_config(
-        connection: Connection | None) -> tuple[str, str, str, str | None]:
+        connection: Connection | None, *, warn: bool = True) -> tuple[str, str, str, str | None]:
     """Resolve (driver, base_url, model, api_key), each by: ML config -> env -> default.
 
     Also the one place that can tell a user who has configured NOTHING from one who
     chose their endpoint deliberately, so it is where the missing-key check lives.
+    `warn=False` leaves that case to the caller's own message (the interpretation
+    run's startup check prints the hint once per run and never again; plan
+    SEMANTIC_CHANGE_GATE_PLAN.md §5.6, D16) -- the exception is raised either way.
 
     The api_key has no ML config option on purpose -- config options are set from
     theory text, and secrets do not belong in .thy files -- so it comes from the
@@ -2797,7 +2800,7 @@ async def _resolve_embedding_config(
         # depends on who catches it (an ML Remote_Calling_Failure escapes it as a
         # single-line string literal with \n printed literally), whereas the
         # warning arrives readable. One of the two always gets through.
-        if connection is not None:
+        if warn and connection is not None:
             await connection.warning(msg)
         raise RuntimeError(msg)
     return driver, base_url, model, api_key
@@ -2812,19 +2815,20 @@ async def _resolve_reranker_model(connection: Connection | None) -> str | None:
     return os.getenv("RERANKER_MODEL") or None
 
 
-async def _conn_semantic_vector_store(self: Connection, embedding_model: str | None = None) -> Semantic_Vector_Store:
+async def _conn_semantic_vector_store(self: Connection, embedding_model: str | None = None,
+                                      *, warn: bool = True) -> Semantic_Vector_Store:
     """Get or create a Semantic_Vector_Store for the active (or given) embedding model.
 
     With no ``embedding_model``, uses the fully resolved (driver, base_url, model)
     triple. When ``embedding_model`` is given, it overrides only the model while
-    reusing the active driver + base_url.
+    reusing the active driver + base_url.  ``warn`` is _resolve_embedding_config's.
 
     LIMITATION: a single run has exactly one active driver + base_url, so embedding
     several models in one run (e.g. isabelle_semantics --embed-models) only works for
     models served by that same endpoint (fireworks-hosted qwen3/harrier/nv-embed
     are fine; mixing e.g. fireworks + mistral in one run is not supported).
     """
-    driver, base_url, model, api_key = await _resolve_embedding_config(self)
+    driver, base_url, model, api_key = await _resolve_embedding_config(self, warn=warn)
     if embedding_model is not None:
         model = embedding_model
     with _svs_lock:

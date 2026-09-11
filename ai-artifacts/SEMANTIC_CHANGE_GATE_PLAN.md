@@ -10,7 +10,12 @@ three production fixes applied — the prefilter's `embed` call under the embed
 machinery's tracing gate, `RunState.claim_prefilter_disable()` so §12 #5 is
 printed once even by gates already inside the failing call, the `<error>`
 slot filled by the exception's class name when its `str` is empty — plus
-tests); steps 6–8 pending approval to start.**
+tests); step 6: `ai-artifacts/review_step6/`, judge `judge.json` and
+`rereview_judge.json`, two production fixes applied — the `Config.lookup`
+callback built once in `interpret_with_parallel` and threaded as a value
+(§5.6), `embedding_config.Missing_Dimension` so §12 #4 carries the message
+and not its repr — plus tests, and the user's ruling to keep #4's slot text
+verbatim; steps 7–8 pending approval to start.**
 Three review rounds (rev 1: 98 agents; rev 2: 23; rev 3: 23) and the user's
 rulings on them are absorbed.  Rev 5.3 records the user's decisions of
 2026-09-08/09 after the step-3 code review: D11 revised (a correction re-runs
@@ -469,23 +474,34 @@ Description 2 always the fresh text.  Deviations from the measured comparator
 ### 5.6 Callback prerequisite and startup check
 
 `_resolve_embedding_config` issues `Config.lookup` callbacks (static context)
-and `send_for_interpretation`'s callback list has none.  The list gains
-`Config.make_config_lookup_callback (Universal_Key.static_context_unpacker cfg_context)`
-with `cfg_context` threaded from `interpret_with_parallel` through
-`interpret_cone` and `interpret'` beside `driver` (one ML parameter, no wire
-change; `interpret_with_parallel` calls `interpret'` directly for its
-`Context.Proof` roots at semantic_store.ML:2292 as well as through
-`interpret_cone` at :2287 -- both call sites): the user's context governs the
-prefilter (D5).
+and `send_for_interpretation`'s callback list has none.  `interpret_with_parallel`
+builds `Config.make_config_lookup_callback (Context_Callbacks.static_context_unpacker
+cfg_context)` once, beside the driver read, and threads that `callback'` -- not
+the context it was made from -- through `interpret_cone` and `interpret'`
+beside `driver` (one ML parameter, no wire change; `interpret_with_parallel`
+calls `interpret'` directly for its `Context.Proof` roots as well as through
+`interpret_cone` -- both call sites), where `interpret_file_callbacks config_cb
+context` (exported, so a test can assert on the list) puts it beside the
+node's entity callbacks: the user's context governs the prefilter (D5), and
+because the threaded value is a callback rather than a context, no cone
+node's context can be substituted for it (step-6 review, `review_step6/judge.json`).
 
-**Startup check** (once per cone run, in `interpret_with_parallel` before any
-theory starts): one RPC `Semantic_Store.check_embedding_service`, carrying the
-same `Config.lookup` callback over `cfg_context`, resolves the embedding
-configuration (`_resolve_embedding_config`: driver, base URL, model name, API
-key) and constructs the provider, which is where the model's dimension is
-looked up (`Embedding_Provider.__init__`, semantic_embedding.py:288).  Failure ⇒ text §12 #4 once, through
-`_report(..., warn=True)` (user-visible, like the function's own warning it
-replaces), and `RunState.prefilter_disabled` is set for the run (§15.8, D2).
+**Startup check** (once per cone run, in `interpret_with_parallel` after the
+opening block and before any theory starts, and only when the run has
+something to interpret -- the opening block's own `n_units = 0` guard, so a
+nothing-to-do resume prints neither line): one RPC
+`Semantic_Store.check_embedding_service`, carrying that same callback value,
+resolves the embedding configuration (`_resolve_embedding_config`: driver,
+base URL, model name, API key) and constructs the provider, which is where the
+model's dimension is looked up (`Embedding_Provider.__init__`,
+semantic_embedding.py:288).  Failure -- any exception of the resolution or of
+the construction -- ⇒ text §12 #4 once, its slot `str(exc) or the class name`
+as in #5, through `_report(..., warn=True)` (user-visible, like the function's
+own warning it replaces), and `RunState.prefilter_disabled` is set for the run
+(§15.8, D2).  An RPC-level failure of the check is fatal, as
+`send_for_interpretation`'s is: while the connection is healthy the only way
+it can fail is a Python half that predates the gate, and running that half
+silently would be worse than stopping (step-6 review ruling).
 `_resolve_embedding_config` already warns with the full setup text before
 raising (semantics.py:2778-2779, deliberately); it gains `warn: bool = True`,
 the startup check passes `warn=False` and prints #4 itself, so the hint
@@ -780,6 +796,9 @@ queue loop and the per-entity gate:
    `Semantic_Store.collect: another semantic interpretation run is in progress on this database. Two runs must never share a database; wait for the other run to finish, then retry.`
 4. Startup, embedding service not configured (once per run):
    `[Semantic_Embedding] The embedding service is not configured: <existing message with the settings hint>`
+   (the existing message verbatim, "The system cannot continue." included --
+   the user's ruling of 2026-09-11 on the step-6 review's proposal to drop or
+   reword that sentence for this site: leave it)
 5. Mid-run, embedding call failed (once per run):
    `[Semantic_Embedding] The embedding service did not respond: <error>`
 6. After the user clicks Yes in the AoA startup dialog:

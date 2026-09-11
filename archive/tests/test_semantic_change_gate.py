@@ -30,6 +30,7 @@ from Isabelle_Semantic_Embedding.interpretation_driver import (
     accumulate_usage,
 )
 import Isabelle_Semantic_Embedding.semantic_embedding as SE
+import Isabelle_Semantic_Embedding.embedding_config as EC
 from Isabelle_Semantic_Embedding.semantic_embedding import EmbedResult
 from Isabelle_Semantic_Embedding.semantic_interpretation import (
     USER_ERROR_MARKER,
@@ -149,20 +150,48 @@ class _FakeStore:
 class _Connection:
     """What `interpret_file` touches on its connection: the host logger and
     the per-connection vector store resolution (`store=None`: the
-    resolution raises, as an unconfigured service does)."""
+    resolution raises, as an unconfigured service does).  `store_warns`
+    records the `warn` of every resolution."""
 
     class server:
         logger = logging.getLogger("test_semantic_change_gate.stub")
 
     def __init__(self, store):
         self.store = store
-        self.store_calls = 0
+        self.store_warns: list[bool] = []
 
-    async def semantic_vector_store(self):
-        self.store_calls += 1
+    @property
+    def store_calls(self) -> int:
+        return len(self.store_warns)
+
+    async def semantic_vector_store(self, *, warn: bool = True):
+        self.store_warns.append(warn)
         if self.store is None:
             raise RuntimeError("no embedding service is configured")
         return self.store
+
+
+class _ConfigConnection:
+    """What the startup check touches: `Config.lookup` answers (by option
+    name; "" for an undeclared option, as the ML callback does) and the
+    user-facing channels."""
+
+    class server:
+        logger = logging.getLogger("test_semantic_change_gate.stub")
+
+    def __init__(self, config: dict[str, str] | None = None):
+        self.config = config or {}
+        self.warnings: list[str] = []
+        self.lines: list[str] = []
+
+    async def config_lookup(self, name: str, ctxt=None) -> str:
+        return self.config.get(name, "")
+
+    async def warning(self, msg: str) -> None:
+        self.warnings.append(msg)
+
+    async def writeln(self, msg: str) -> None:
+        self.lines.append(msg)
 
 
 class _ScriptedJudge(InterpretationDriver):
@@ -232,16 +261,16 @@ class _Run:
         return self.result
 
     def start(self, script, entries, *, verdicts=None, provider=None, store=True,
-              hold=None, prefilter_disabled=False, dry_run=False, judge_cls=_ScriptedJudge):
+              hold=None, run_state=None, dry_run=False, judge_cls=_ScriptedJudge):
         """Wire the scripted backends up and return the run as an awaitable
-        (bounded by 20 s), for a caller that owns the loop."""
+        (bounded by 20 s), for a caller that owns the loop.  `run_state`: the
+        run's, when the caller has one (the startup check flagged it)."""
         thy = self._tmp / "T.thy"
         thy.write_text("theory T imports Main begin\nend\n")
         self._mp.setattr(SI, "interpretation_driver_override", "")
         self._mp.delenv("INTERPRETATION_DRIVER", raising=False)
         self.provider = provider or _FakeProvider()
-        self.run_state = RunState()
-        self.run_state.prefilter_disabled = prefilter_disabled
+        self.run_state = run_state or RunState()
         self._mp.setattr(SI, "current_run_state", lambda: self.run_state)
         self.connection = _Connection(_FakeStore(self.provider) if store else None)
         verdicts = verdicts or {}
@@ -674,24 +703,123 @@ def test_a_slow_embedding_call_is_cut_at_the_prefilter_timeout(run, monkeypatch,
         "a bare TimeoutError has an empty str; the class name fills the slot"
 
 
-def test_an_unconfigured_service_means_no_store_and_the_judge_alone(run):
-    """The startup check (§5.6) set the flag: no store is resolved, every
-    gate is judged, the run completes."""
-    _store("a", "the a", DG["a"])
-    entries = [_entry("a", DG2["a"])]
-    run.go([_answer_batch()], entries, verdicts={"T.a": True}, prefilter_disabled=True)
-    assert run.connection.store_calls == 0 and run.judged == ["T.a"]
-    assert run.task.emb_store is None and _rec("a").version == 1
-
-
 def test_a_failing_store_resolution_is_logged_and_the_judge_decides_alone(run, caplog):
+    """The resolution raises (unconfigured): no §12 #4 from here -- the
+    startup check printed it once for the run, so the store is resolved
+    with the hint silenced (D16) -- and the judge decides alone."""
     _store("a", "the a", DG["a"])
     entries = [_entry("a", DG2["a"])]
     with caplog.at_level(logging.WARNING, logger=SI.__name__):
         run.go([_answer_batch()], entries, verdicts={"T.a": True}, store=False)
-    assert run.connection.store_calls == 1 and run.task.emb_store is None
+    assert run.connection.store_warns == [False] and run.task.emb_store is None
     assert run.judged == ["T.a"] and not run.run_state.prefilter_disabled
     assert any("no embedding store" in r.getMessage() for r in caplog.records)
+
+
+# --- the startup check (§5.6, D16) --------------------------------------------
+
+_NOT_CONFIGURED = "[Semantic_Embedding] The embedding service is not configured: "
+_LOCAL_SERVER = "http://127.0.0.1:1/v1"       # a deliberate endpoint: no key needed
+
+
+@pytest.fixture
+def check(monkeypatch):
+    """Run the startup check RPC on a stub connection -- as an RPC handler
+    would, with the connection current for `_report` -- against a `RunState`
+    of the test's, with the embedding environment cleared so only
+    `Config.lookup` answers count, and the embedding config pinned to the
+    shipped template.  Returns (connection, run_state)."""
+    for var in ("EMBEDDING_DRIVER", "EMBEDDING_BASE_URL", "EMBEDDING_MODEL",
+                "EMBEDDING_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    # The provider's dimension lookup reads the embedding config: pin the
+    # shipped template, not this machine's file (the loader's cache is
+    # dropped under monkeypatch, so the previous data comes back on teardown).
+    monkeypatch.setenv("EMBEDDING_CONFIG_PATH", str(EC._CONFIG.template_path()))
+    monkeypatch.setattr(EC._CONFIG, "_data", None)
+    monkeypatch.setattr(EC._CONFIG, "_source", None)
+
+    def go(config: dict[str, str] | None = None, run_state: RunState | None = None):
+        conn = _ConfigConnection(config)
+        run_state = run_state or RunState()
+        monkeypatch.setattr(SI, "current_run_state", lambda: run_state)
+
+        async def as_handler():
+            SI.Connection.set_current(conn)          # type: ignore[arg-type]
+            await SI._check_embedding_service(None, conn)   # type: ignore[arg-type]
+
+        asyncio.run(as_handler())
+        return conn, run_state
+
+    return go
+
+
+def test_the_startup_check_prints_the_setup_hint_once_and_disables_the_prefilter(check):
+    """Nothing configured: text §12 #4 exactly once -- the resolution's own
+    warning is silenced (D16) -- carrying the existing settings hint, and
+    the run's prefilter is off."""
+    conn, run_state = check()
+    assert run_state.prefilter_disabled
+    assert len(conn.warnings) == 1 and conn.lines == []
+    assert conn.warnings[0].startswith(_NOT_CONFIGURED)
+    assert S._missing_api_key_message() in conn.warnings[0]
+
+
+def test_the_startup_check_accepts_a_configured_service_and_leaves_no_store_behind(check):
+    """The user's context answers the endpoint (D5: `Config.lookup`, not the
+    environment): the provider is constructed for its dimension lookup and
+    discarded -- nothing registered on the connection, nothing printed."""
+    conn, run_state = check({"Semantic_Embedding.embedding_base_url": _LOCAL_SERVER})
+    assert not run_state.prefilter_disabled
+    assert conn.warnings == [] and conn.lines == []
+    assert not hasattr(conn, "_semantic_vector_stores")
+
+
+def test_the_startup_check_covers_the_provider_s_construction(check):
+    """A model the embedding config does not know fails at the provider's
+    dimension lookup, after the resolution passed: still §12 #4, once."""
+    conn, run_state = check({"Semantic_Embedding.embedding_base_url": _LOCAL_SERVER,
+                             "Semantic_Embedding.embedding_model": "no-such/model"})
+    assert run_state.prefilter_disabled
+    assert len(conn.warnings) == 1 and conn.warnings[0].startswith(_NOT_CONFIGURED)
+    assert "no-such/model" in conn.warnings[0]
+    assert conn.warnings[0].endswith("Add it under 'dimension:'."), \
+        "the error's message, not its repr"
+
+
+def test_an_unconfigured_service_completes_the_run_with_every_gate_judged(check, run):
+    """§10: the startup check failed; the run resolves no store, judges
+    every gate and completes without an error."""
+    _, run_state = check()
+    _store("a", "the a", DG["a"])
+    _store("b", "the b", DG["b"], deps=["a"])
+    entries = [_entry("a", DG2["a"]), _entry("b", DG["b"], deps=["a"])]
+    run.go([_answer_batch(), _answer_batch()], entries,
+           verdicts={"T.a": False, "T.b": True}, run_state=run_state)
+    assert run.connection.store_calls == 0 and run.provider.calls == []
+    assert sorted(run.judged) == ["T.a", "T.b"]
+    assert run.task.emb_store is None
+    assert _rec("a").version == _counter() == 2                      # a minted
+    assert _rec("b").version == 1 and _rec("b").interpreted_at == 2  # b: same, snapshot raised
+
+
+def test_the_resolution_s_own_warning_is_optional(check):
+    """D16: `warn=False` keeps the exception and drops the warning -- through
+    the store registry `interpret_file` resolves its store from, too; the
+    default keeps warning, for every other caller."""
+    conn = _ConfigConnection()
+
+    async def all_three():
+        with pytest.raises(RuntimeError):
+            await S._resolve_embedding_config(conn, warn=False)   # type: ignore[arg-type]
+        with pytest.raises(RuntimeError):
+            await S._conn_semantic_vector_store(conn, warn=False)  # type: ignore[arg-type]
+        assert conn.warnings == []
+        with pytest.raises(RuntimeError):
+            await S._resolve_embedding_config(conn)               # type: ignore[arg-type]
+        assert len(conn.warnings) == 1
+
+    asyncio.run(all_three())
 
 
 # --- corrections (D11) as second gates ----------------------------------------

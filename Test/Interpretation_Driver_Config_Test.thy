@@ -52,4 +52,20 @@ ML \<open>
   val _ = \<^assert> (driver_in (Context.Proof \<^context>) = "ClaudeCode")
 \<close>
 
+(* The prefilter's embedding model takes the same road (SEMANTIC_CHANGE_GATE_PLAN.md
+   §5.6, D5): interpret_with_parallel makes the run's Config.lookup callback from the
+   user's context and threads the callback VALUE down, so a cone node's context cannot
+   serve it.  What is left to assert is the list itself: the callback is on it, and
+   once -- the RPC layer resolves a duplicated name by list order, so a second
+   Config.lookup among the entity callbacks would decide the answer silently.  No
+   Python, no LLM. *)
+ML \<open>
+  val config_cb =
+    Config.make_config_lookup_callback
+      (Context_Callbacks.static_context_unpacker (Context.Proof \<^context>))
+  val names =
+    map #name (Semantic_Store.interpret_file_callbacks config_cb (Context.Proof \<^context>))
+  val _ = \<^assert> (length (filter (fn n => n = "Config.lookup") names) = 1)
+\<close>
+
 end
