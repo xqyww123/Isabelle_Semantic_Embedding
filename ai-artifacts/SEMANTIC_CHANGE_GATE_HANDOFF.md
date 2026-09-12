@@ -87,11 +87,23 @@ All paths relative to `contrib/Semantic_Embedding/`.
   M = 1; D7, §5.2, §11, §12 and CHECK_OUTDATE_PLAN.md say "neither bound,
   exact at zero".  elegance-INT-4 applied (`__enter__/__exit__` gone,
   `historical_cost` a staticmethod).  §13 is complete.
-- Still the user's decisions: whether to run the two paid §10 acceptance
-  items (a live run with the production driver, its host log; the
-  interactive scaffold on `Sim_Measure_B.thy` vs `Sim_Measure_A1.thy`); and
-  whether to close the CLI built-ins channel (PATH 20 below) -- the judge
-  recorded it, the user has not ruled.
+- The paid §10 items are DONE (2026-09-12, `ai-artifacts/acceptance_step10/`:
+  REPORT.md, both collect logs, both host logs, the store dumps, the two
+  scripts).  ClaudeCode/Opus 5 (Codex login expired), USD 10.76, isolated
+  store `/var/tmp/qiyuan/gate_accept_db` (may be deleted).  Both pass.
+  Finding 1 of the report is OPEN and the user's: a `fun`-defined
+  constant's semantic digest does not change when its equations change
+  (`own_defining_axioms` reads `Defs.specifications_of`, which for the
+  function package is `f_def: f ≡ f_sumC …`; the equations live in the
+  infra `f_graph` intros and in the statement-keyed `f.simps`), so
+  `narquil`'s `< 5 → <= 5` edit re-interpreted nothing but the new
+  `narquil.simps` entities -- a pre-existing digest limitation, not a gate
+  defect; candidate fixes: consult `Spec_Rules` for function-package
+  constants, or add a limitations entry and a §14 sensitivity row.
+  PATH 20 (the CLI built-ins in the interpretation session) is ACCEPTED as
+  is, not closed (D20, 2026-09-12).  Uncommitted at the time of writing:
+  D20 in the plan, this file, the acceptance directory, the plan's status
+  paragraph.
 - Process rules unchanged: approval before production code ("批准" /
   "开工"); tests and comments are the implementer's call ("与测试相关的...
   自行决定", "所有跟注释相关的可以由你自行决定"); reviews as workflows

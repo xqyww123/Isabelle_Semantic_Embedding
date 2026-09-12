@@ -40,9 +40,14 @@ texts, §11 docs, elegance-INT-4) done and reviewed 2026-09-12
 (`ai-artifacts/review_step8/`, `judge.json`, `rereview_judge.json`): the
 review refuted the "dry-run count is a lower bound over a cone" claim (D7,
 §5.2 corrected: neither bound, exact at zero) and the user re-approved §12
-#8–#11 with "About n"; all §13 items are implemented.  Still the user's
-call: the paid §10 items (a live run's host log, the interactive scaffold)
-and PATH 20 of the disclosure audit.**
+#8–#11 with "About n"; all §13 items are implemented.  The paid §10 items
+were run on 2026-09-12 (`ai-artifacts/acceptance_step10/REPORT.md`,
+ClaudeCode/Opus 5, USD 10.76, isolated store): both pass -- 2 judge
+verdicts, 3 prefilter decisions, 5 mints propagated to 31 dependents, a
+post-run dry run of 0; one finding outside the gate, a `fun`-defined
+constant's digest does not see a change of its equations (`narquil`),
+raised with the user.  PATH 20 of the disclosure audit accepted as is
+(D20).**
 Three review rounds (rev 1: 98 agents; rev 2: 23; rev 3: 23) and the user's
 rulings on them are absorbed.  Rev 5.3 records the user's decisions of
 2026-09-08/09 after the step-3 code review: D11 revised (a correction re-runs
@@ -117,6 +122,7 @@ cone; the interpretation lock (§8) serialises runs per database.
 | D17 | The exported `Semantic_Store.interpret` (no caller in the repo) reuses text §12 #2 deliberately (§8.2) |
 | D18 | **No stored interpretation of the theory being interpreted is disclosed to the agent** (2026-09-12, integration review): inside an interpretation session nothing hands the agent a stored interpretation of an entity this run enumerated for that theory, enrolled or not -- the two lookup tools `query` and `desugar_and_explain` hide them, keyed on the resolved universal key at every point a text would be returned (`AgentTask.theory_keys`, fixed at construction), and the locale-interpretation provenance hint the ML side composes into the batch prompt omits its `Template meaning:` / `Locale "…":` lines for them (`build_entries`, the run's own keys dropped before the store is consulted).  Supersedes the enrolment-time refusal of §15.8's step-4 ruling: an entity enrolled by a later CHANGED verdict may already have been read otherwise, and an echoed text would make the judge say "same" on a real change.  The agent reads the definitions from the source instead |
 | D19 | **An empty wire statement means "could not be computed", never "empty"** (2026-09-12): `mk_prop_str` yields "" for an ML_file method, an unreadable theory file, a failed constraint lookup; both writers (the gate's write and the statement refresh) store the wire `prop_str` or, when it is "", the stored `expr` -- one rule, `_statement(e, rec)`, so a re-interpreted entity whose statement could not be computed keeps its stored one |
+| D20 | **The CLI built-ins stay in the interpretation session; PATH 20 is accepted, not closed** (2026-09-12, after step 8): the interpretation driver keeps `cli_tools=True`, so Claude Code's `Read`/`Grep`/`Glob`/`Bash` remain allowed -- D18 tells the agent to read the definitions from the source, and these are its means.  D18's guarantee is therefore about what the pipeline hands the agent, not about the store being unreachable from a process with a filesystem (the store is an on-disk LMDB and its reader an importable package; no prompt or tool text names it).  The judge session keeps `cli_tools=False` |
 
 ## 3. The gate rule
 
