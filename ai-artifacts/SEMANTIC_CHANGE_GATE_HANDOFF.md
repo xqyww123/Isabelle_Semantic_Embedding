@@ -62,6 +62,54 @@ All paths relative to `contrib/Semantic_Embedding/`.
   needs the user's go-ahead.  Step 5's test file must carry the enrolment
   test with a not-enrolled entry NOT in last position (step-4 judge).
 
+## Integration review of steps 1–7 (2026-09-12; read this before step 8)
+
+- Record: `ai-artifacts/review_integration/` -- SCOPE.md (with the two
+  "what changed" sections), `judge.json` (16 findings: 2 major, 7 minor, 1
+  proposal, 6 rejected), `rereview_judge.json` (one blocker: the ML
+  provenance hint, plus small items), `rereview2_judge.json` (ACCEPTABLE;
+  four minor repairs, all applied; the 20-path disclosure audit).  Diffs
+  `working_tree.diff`, `working_tree_v2.diff`.  UNCOMMITTED at the time of
+  writing: commit only on "提交" (the user decides whether alone or with
+  step 8).
+- New user decisions (in the plan's §2): **D18** -- inside a session no
+  stored interpretation of an entity this run enumerated for the theory
+  reaches the agent: `AgentTask.theory_keys` (fixed at construction;
+  `enrolled_names` deleted) hides them in `query` (three disclosure points on
+  the RESOLVED key: name lookup, notation fallback, short-name fallback) and
+  in `desugar_and_explain` (an annotation pointing at the source instead);
+  and the ML provenance hint (`build_entries`: `own_uks` dropped from
+  `wanted_uks`, `sem_of` refuses them) omits its `Template meaning:` /
+  `Locale "…":` lines for them.  **D19** -- an empty wire `prop_str` means
+  "could not be computed": `_statement(e, rec)` (wire text or the stored
+  `expr`) is the one rule for both writers.  The user REJECTED: narrowing
+  `update_gate_fields` to one field (P1); any change to the system prompt;
+  any change to the hint's behaviour for other theories (do not re-raise).
+- Other fixes: `_stop_if_cancelled` raises `asyncio.CancelledError()` (logs
+  the laundered exception) and is also called first in `_judge`'s `except
+  Exception`; `update_gate_fields` checks the dict it writes (`_GATE_FIELDS`
+  gone); `with_interpretation_lock` converts `Remote_Calling_Failure` inside
+  the try body; `format_entries` uses `_label`, the `answer` enum is
+  `_KIND_PROMPT_LABELS.values()`; `_collapse_provenance` keys on the head
+  line alone (D18 removes the locale line); `_try_resolve_syntax_token`
+  binds its prefix once, the hidden branch returns early.  Deferred to step
+  8 by the judge: elegance-INT-4 (delete `AgentTask.__enter__/__exit__`,
+  plain assignment at both construction sites, a receiver-free
+  `historical_cost`).
+- Tests added: hiding (both tools, all disclosure points, foreign entity
+  served), resolved-key refusal in either spelling, two laundered
+  cancellations (RuntimeError, FatalAgentError), answered-before-sent,
+  backoff `[2,4,8,16,32,60,2]`, grant routing, empty statement on both
+  paths, head-keyed collapse, and `test_prefilter_regression_phase2.py`
+  (the free §10 acceptance item over the phase-2 data: 0 misses at 0.90,
+  the judge alone misses one).  Suite: 408 passed, 16 pre-existing failures.
+- Known open channel, recorded not closed (PATH 20 of the audit): the
+  interpretation session's CLI built-ins (Bash/Read/Grep/Glob) could read
+  the database files out of band; the agent needs them to read the theory
+  source.  Not a D18 violation by any tool this feature serves.
+- Still owed after step 8 and the user's decision on spend: the interactive
+  scaffold and a live run's host log (§10).
+
 ## Entry point for step 8 (written 2026-09-11, after step 7's review)
 
 - Git: steps 1–6 committed (`8683e6f`, `5a3c201`, `0d279d7`, `aa5b93c`).

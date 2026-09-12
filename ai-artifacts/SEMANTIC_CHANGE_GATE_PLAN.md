@@ -25,7 +25,17 @@ step-7 commit waited for the other agent's interrupt work to land in
 Isabelle_RPC first (it did, 2026-09-11, and its commits `2b22658` /
 `694ebaa` swept in the Isabelle_RPC half of step 7 and `semantic_store.ML`;
 the rest followed in the step-7 commit of 2026-09-12), and Isabelle_RPC's
-v0.5.0 is not tagged before `Connection.on_close` is in; step 8 pending
+v0.5.0 is not tagged before `Connection.on_close` is in; integration review
+of steps 1–7 as one program (2026-09-12, `ai-artifacts/review_integration/`,
+`judge.json`, `rereview_judge.json`, `rereview2_judge.json`): accepted after
+D18 (no stored interpretation of this run's entries reaches the agent --
+both lookup tools and the ML provenance hint), D19 (an empty wire statement
+keeps the stored `expr`), the cancellation fix (`_stop_if_cancelled` raises
+a `CancelledError`, also from `_judge`'s handler), the grant check on the
+writer's own dict, the lock acquire's RPC-error conversion, the `_label`
+reuse, the head-keyed provenance collapse, and the tests §10 now lists;
+the user rejected narrowing `update_gate_fields` and any change to the
+system prompt or to the hint's behaviour for other theories; step 8 pending
 approval to start.**
 Three review rounds (rev 1: 98 agents; rev 2: 23; rev 3: 23) and the user's
 rulings on them are absorbed.  Rev 5.3 records the user's decisions of
@@ -99,6 +109,8 @@ cone; the interpretation lock (§8) serialises runs per database.
 | D15 | **Entries outside the four tracked kinds** (2026-09-08): theorem-alike entries, WIP collections / methods and persistent-theory entries keep today's behaviour exactly: written when their answer arrives, no judge, no mint, no baseline; theorem-alike carry `version` (stored or ε) and `interpreted_at`, the other two carry `None` everywhere (§3) |
 | D16 | Startup check (2026-09-08): `_resolve_embedding_config` gains `warn=True`; the startup check calls it with `warn=False` so text §12 #4 is printed once, not on top of the function's own warning (§5.6) |
 | D17 | The exported `Semantic_Store.interpret` (no caller in the repo) reuses text §12 #2 deliberately (§8.2) |
+| D18 | **No stored interpretation of the theory being interpreted is disclosed to the agent** (2026-09-12, integration review): inside an interpretation session nothing hands the agent a stored interpretation of an entity this run enumerated for that theory, enrolled or not -- the two lookup tools `query` and `desugar_and_explain` hide them, keyed on the resolved universal key at every point a text would be returned (`AgentTask.theory_keys`, fixed at construction), and the locale-interpretation provenance hint the ML side composes into the batch prompt omits its `Template meaning:` / `Locale "…":` lines for them (`build_entries`, the run's own keys dropped before the store is consulted).  Supersedes the enrolment-time refusal of §15.8's step-4 ruling: an entity enrolled by a later CHANGED verdict may already have been read otherwise, and an echoed text would make the judge say "same" on a real change.  The agent reads the definitions from the source instead |
+| D19 | **An empty wire statement means "could not be computed", never "empty"** (2026-09-12): `mk_prop_str` yields "" for an ML_file method, an unreadable theory file, a failed constraint lookup; both writers (the gate's write and the statement refresh) store the wire `prop_str` or, when it is "", the stored `expr` -- one rule, `_statement(e, rec)`, so a re-interpreted entity whose statement could not be computed keeps its stored one |
 
 ## 3. The gate rule
 
@@ -141,8 +153,8 @@ A correction (D11) re-enters this table with R = what its first gate wrote,
 so its row may differ from the first gate's: an entity this run first wrote
 now has a digest and a baseline, so its correction takes the judged rows and
 a CHANGED verdict there mints and propagates.  That is deliberate
-over-signalling under D2 — nothing consumed the superseded text
-(`mk_query_by_name_tool` refuses every enrolled name, §15.8), and a needless
+over-signalling under D2 — nothing consumed the superseded text (no stored
+interpretation of this theory's entities reaches the agent at all, D18/§15.8), and a needless
 propagation is acceptable while a missed change is not — not a defect.  The
 not-judged rows re-run unchanged, taking their version from R, so a second
 write keeps the ε its first write committed instead of re-reading a counter
@@ -312,8 +324,9 @@ the queue emptied, so the session is kept open while gates run, and
 what makes every mint of this theory visible to the descendants `schedule_dag`
 starts afterwards.
 
-**5.3.2 Statement refresh.**  For every not-enrolled entry whose `prop_str`
-differs from the stored `expr` (today's guard verbatim, §15.8 item 8),
+**5.3.2 Statement refresh.**  For every not-enrolled entry whose statement
+`_statement(e, rec)` -- the wire `prop_str`, or the stored `expr` when the
+wire's is "" (D19, §15.8 item 8) -- differs from the stored `expr`,
 `Semantic_DB.update_expr` (invalidates vectors).  On the live path it runs
 after the loop (today's scan-time refresh moved after the LLM work); on the
 dry path it runs before the early return, so an `expr`-only change is
@@ -658,7 +671,9 @@ fun with_interpretation_lock body =
         val c = Thread_Attributes.uninterruptible_body (fn run =>
                   let val c = run get_connection () in conn := SOME c; c end)
       in
-        if call_command' try_acquire_cmd c () then SOME (body ()) else NONE
+        if (call_command' try_acquire_cmd c ()
+              handle Remote_Calling_Failure {message, ...} => interpretation_rpc_error message)
+        then SOME (body ()) else NONE
       end
     finally
       (case ! conn of SOME c => (try close_connection c; ()) | NONE => ())\<close>
@@ -728,7 +743,23 @@ queue loop and the per-entity gate:
 - queue loop: a fake driver raising `RateLimitError` mid-turn with part of the
   batch answered — after the recycle every entry ends non-`None`, none
   interpreted twice, none lost; gates started before the recycle finish and
-  write;
+  write; an entry answered before its batch goes out (the whole seed set is
+  enqueued up front while a batch is `_BATCH_SIZE`) is not re-sent by
+  `next_batch`, so no written entity returns to `_SENT` and the retry rounds
+  do not give up on it; the rate-limit backoff doubles, caps at 60 s, jitters
+  by ±50 % and resets after a completed turn (`[2, 4, 8, 16, 32, 60, 2]`);
+  a cancellation laundered by the judge driver's teardown still writes and
+  mints nothing;
+- D18: inside a session the `query` tool's name lookup, notation fallback
+  and short-name fallback, and the desugar tool's annotations, disclose no
+  stored interpretation of the theory's entities, enrolled or not, while an
+  entity of another theory is served; the provenance hint the ML side
+  composes likewise omits the stored text of this run's own entries (ML,
+  not reachable from pytest); a run of sibling facts whose hint carries no
+  `Locale "…":` line still collapses on the head line;
+- D19: an empty wire statement leaves the stored `expr` (dry path:
+  byte-identical record; live path: the gate's write keeps the stored `expr`
+  while the interpretation and version change);
 - rec_cache write-back: an UNCHANGED entity written earlier in the run is a
   wall for every later eff\* in the run;
 - concurrency: several gates in flight at once write correct, distinct
@@ -744,8 +775,10 @@ queue loop and the per-entity gate:
 - crash shapes (i)–(ii); a write aborted mid-transaction leaves store and
   counter byte-identical; creation-from-absent and tombstone resurrection; a
   `from_collection` record whose enumerated name changed rewrites `name` and
-  tombstones its vector; adding an embedded-doc field to the gate writer's set
-  raises; legacy-arity round trip (12-, 13-, 14-field tuples through
+  tombstones its vector; the gate writer checks the very dict it puts (an
+  embedded-document field in it raises, an unknown field raises, and
+  `update_gate_fields` really routes its five fields through
+  `_check_raw_put_grant`); legacy-arity round trip (12-, 13-, 14-field tuples through
   `update_gate_fields`, 15 read back; `put_interpretation` writes the three
   formerly truncated fields itself and is arity-invariant, so it is pinned
   once, on a 12-field record whose `experience` / `goal_patterns` must
@@ -941,7 +974,7 @@ New or changed top-level names, in file order:
 | `_JUDGE_SESSIONS = asyncio.Semaphore(40)` | module-level | D12 |
 | `_first_failure(eg) -> BaseException` | helper | §5.4 failures: selects the leaf `interpret_file` raises (outside its `except`) from the gate task group's `ExceptionGroup` |
 | `_note_on_failure(note)` | context manager | §5.4 failures: `exc.add_note(note)` on any `Exception` leaving a store write; the exception itself propagates |
-| `_stop_if_cancelled()` | helper | §15.4: called first in every recovering arm of `_run_agent`; re-raises when the current task is being cancelled |
+| `_stop_if_cancelled()` | helper | §15.4: called first in every recovering arm of `_run_agent`; raises a `CancelledError` (the arm's laundered exception kept as its context) when the current task is being cancelled, so no `except Exception` above can absorb it |
 | `class RunState` | | §15.8 run-scoped state, owned by the lock (§8.1) |
 | `_NOT_ENROLLED, _QUEUED, _SENT, _GATING, _DONE = range(5)` | constants | the entity states of §5.3.1 |
 | `_JUDGE_SYSTEM_PROMPT` | constant | §15.6 |
@@ -979,6 +1012,7 @@ class AgentTask:
         self.batch: list[int] = []               # indices sent in the turn in flight
         self.gates_running: int = 0
         self._progress = asyncio.Event()         # set when a gate finishes or enrols
+        self.theory_keys: frozenset[bytes] = frozenset(e.universal_key for e in entries)   # D18: what the lookup tools hide
 
     # the queue (§5.3)
     def enqueue(self, idx) -> None:
@@ -1038,7 +1072,6 @@ class InterpretationTask(AgentTask):
         self.rec_cache: dict[bytes, SemanticRecord | None]
         self.emb_store = emb_store                 # None: prefilter skipped for this theory (§15.8)
         self.run_state = run_state                 # the run's RunState (§15.8), one per interpret_file
-        self.enrolled_names: list[str] = []        # appended by enqueue; shared with mk_query_by_name_tool
         self.make_judge_driver = make_judge_driver
         self.judge_cost: CostSummary               # sum of finished judges' run_* (§15.9)
 ```
@@ -1047,7 +1080,12 @@ class InterpretationTask(AgentTask):
 
 `build_prompt(indices)` is today's (:517-533) with the file path and theory
 name read from the task and the first-turn distinction from
-`_first_turn_sent`.  `format_entries` and `_collapse_provenance` are today's.
+`_first_turn_sent`.  `format_entries` is today's.  `_collapse_provenance` keys the collapse on
+the head line alone (`if head is not None and (head, locale) == prev`): D18
+removes the `Locale "…":` line whenever the instantiated locale is an entry
+of this run, and the former two-line key would silently stop collapsing
+exactly there -- the sibling runs D18 was introduced for.  Where the locale
+line is present the rendered bytes are identical to today's.
 `retry_report` / `retry_prompt` / `unanswered_failure` carry today's three
 wordings (:733-739, :798-810); their numbers are §12 #14–#15's (m and N from
 `state`), and `_retry_unanswered` hands the run-wide unanswered set to
@@ -1118,10 +1156,15 @@ async def _run_agent(make_driver, task):
         `asyncio.current_task().cancelling()` is true the gate task group is
         tearing this session down and a driver's teardown replaced the
         CancelledError with an ordinary exception (a cost flush on the broken
-        store, the subprocess transport's __aexit__); the helper re-raises
-        instead of recycling, because a recycled session would have every
+        store, the subprocess transport's __aexit__); the helper raises a
+        `CancelledError` -- not the arm's laundered exception, which it logs
+        first -- instead of recycling: a recycled session would have every
         create_task refused and the loop would park in wait_for_progress for
-        ever (Python 3.12's wait_for/timeout call uncancel() before raising
+        ever, and re-raising the ordinary exception would be swallowed again
+        by `_judge`'s `except Exception` (§5.4 step 3) one frame above the
+        judge's nested `_run_agent`, which reads any session failure as
+        CHANGED and lets the gate write and mint on a run being torn down
+        (integration review) (Python 3.12's wait_for/timeout call uncancel() before raising
         TimeoutError, so a driver's own timeout does not trip it);
         the whole try is inside `while True` and a handler `continue`s
         instead of `return await _run_agent(...)` (no recursion, so no
@@ -1428,24 +1471,35 @@ Today's phases 1–3 (:930-1130) become:
    covers all entries today.
 
 8. Statement refresh (§5.3.2), after the loop on the live path and before the
-   return on the dry path: for `i` with `state[i] == _NOT_ENROLLED`, today's
-   guard verbatim — `if e.prop_str and rec.expr != e.prop_str` (:1128; the
-   truthiness test matters: `mk_prop_str` yields "" for some entries, and a
-   bare inequality would blank a stored `expr` and tombstone its vector) —
-   `Semantic_DB.update_expr`.
+   return on the dry path: for `i` with `state[i] == _NOT_ENROLLED`, when
+   `_statement(e, rec)` -- the wire `prop_str`, or the stored `expr` when the
+   wire's is "" (D19; the same rule the gate's write uses for `expr`) --
+   differs from the stored `expr`, `Semantic_DB.update_expr`.  So an entry
+   whose statement could not be computed is left byte-identical.
 
 The addressing rule follows the states: the answer tool accepts an answer
 only for an entry whose state is not `_NOT_ENROLLED` (an unrequested name
 goes to the reply's `errors` list, exactly today's "Unknown entry", and
-starts no gate, writes nothing, mints nothing); the names
-`mk_query_by_name_tool` (:1191) refuses are `task.enrolled_names`, a list
-`enqueue` appends to and the tool is handed as the same mutable object (its
-membership test re-reads it on every call, comparing in the list's glyph
-spelling — `pretty_unicode(name)` — because the tool has already rewritten
-the agent's input to the escape form; step-4 review), so an entity enrolled by a later
-CHANGED verdict is refused from that moment on — otherwise the agent could be
-handed the stored text of the very entity it is re-interpreting, echo it, and
-the judge would say "same" on a real change.  The counters of §12 #13–#16
+starts no gate, writes nothing, mints nothing); what the lookup tools hide
+is `task.theory_keys` -- the universal keys of every entry of the theory,
+fixed when the task is built (D18) -- checked on the RESOLVED key at every
+point a stored text would be returned: `mk_query_by_name_tool`'s name
+lookup, its notation fallback and its short-name fallback, and
+`mk_desugar_and_explain_tool`'s per-constant annotations (which say "read
+its definition from the source" instead).  The third disclosure point is
+upstream of Python: `build_entries` (semantic_store.ML) composes the
+locale-interpretation provenance hint, whose `Template meaning:` and
+`Locale "…":` lines carry stored interpretations of the instantiated locale
+and its template theorem; the run's own keys are dropped from the lookup
+(`own_uks`) and `sem_of` refuses them outright, so a `Template meaning:` or
+`Locale "…":` line is omitted whenever the template theorem or the
+instantiated locale is itself an entry of this run -- the hint then degrades
+to the shape it already has when the store holds no text for that key -- and
+a locale of a parent theory keeps its hint byte-identical.  Enrolment plays no part: an
+entity enrolled by a later CHANGED verdict could otherwise have been read
+before it was enrolled, and an echoed text would make the judge say "same"
+on a real change (the integration review's flow-INT-1, which replaced the
+step-4 ruling's enrolment-time list).  The counters of §12 #13–#16
 are derived from `state`, never from `results` (§12 gives the formulas).
 
 **Run-scoped state.**  A run = one holder of the interpretation lock (§8):
@@ -1585,9 +1639,10 @@ is the shared accumulator.
   correction that lands during the judge session (judged, not adopted: the
   stored text and its verdict come from the same text), and a byte-identical
   resubmission (no gate, record byte-identical) — unrequested-answer
-  rejection and its mirror (after a CHANGED
-  verdict enrols a dependent, `query` refuses that dependent's name; record byte-identical, no judge
-  driver constructed, counter untouched), dry-run and cost assertions of
+  rejection and its mirror (D18: neither lookup tool discloses a stored
+  interpretation of this theory's entities, enrolled or not, at the name
+  lookup, the notation fallback, the short-name fallback or the desugar
+  annotations, while an entity of another theory is served), dry-run and cost assertions of
   §10, driving `interpret_file` with a fake driver (scripted answers), a
   fake judge driver (scripted verdicts) and a fake embedding store (scripted
   similarities), over an isolated store; the `ExceptionGroup` unwrapping

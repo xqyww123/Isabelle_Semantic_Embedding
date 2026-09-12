@@ -159,6 +159,20 @@ def test_a_dry_run_refreshes_a_changed_statement_and_nothing_else(isolated_db):
     assert (r.semantic_digest, r.version, r.interpreted_at) == (DG_A, 1, 1)
 
 
+def test_an_empty_wire_statement_keeps_the_stored_one(isolated_db):
+    """D19: an empty wire `prop_str` means the statement could not be
+    computed, not that the entity has none -- the dry-path refresh leaves the
+    record byte-identical (no write, no vector tombstone)."""
+    from Isabelle_Semantic_Embedding.semantics import Semantic_DB
+    _put("a", "described", DG_A, [DEP_X], 1, 1)
+    Semantic_DB.delete(_uk("b"))
+    before = _raw_and_counter()
+    entries = [_entry("a", DG_A, [DEP_X])._replace(prop_str=""),
+               _entry("b", DG_B, [_uk("a")])]
+    assert _dry(entries) == 1
+    assert _raw_and_counter() == before and _rec("a").expr == "nat"
+
+
 def test_a_cached_theorem_is_re_listed_when_its_definition_mints(isolated_db):
     """The `bool(e.deps)` half of the scan's gate-field predicate: a
     theorem-alike entry (no digest, deps present) takes the eff* test like a

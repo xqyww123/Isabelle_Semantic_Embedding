@@ -27,6 +27,7 @@ from Isabelle_Semantic_Embedding.semantic_interpretation import (
     FatalAgentError,
     InterpretationTask,
     PoisonedSessionError,
+    RateLimitError,
     _DONE,
     _KIND_CONSTANT,
     _MAX_STALLED_RETRIES,
@@ -675,22 +676,69 @@ def test_on_context_reset_reaches_the_desugar_dedup_set():
     assert all(v is not None for v in task.results)
 
 
-# --- the query tool's refusal list -----------------------------------------
+# --- the provenance collapse without a locale line (D18) ---------------------
 
-def test_the_query_tool_refuses_an_enrolled_name_in_either_spelling(monkeypatch):
-    """`enrolled_names` holds the glyph spelling the agent was shown; the tool
-    rewrites the agent's input to the escape form before looking it up.  A
-    symbol-bearing enrolled name must be refused whichever spelling the agent
-    types; an unrelated name still reaches the store."""
+def test_sibling_facts_collapse_on_the_head_line_when_the_locale_line_is_absent():
+    """D18 omits the `Locale "...":` line when the instantiated locale is an
+    entry of this run; the collapse keys on the head line alone, so a run of
+    siblings still reads as one provenance."""
+    head = SI._HINT_HEAD_PREFIX + 'instance of locale "T.L", qualifier "q".'
+    hint = head + "\nTemplate L.foo: f x\n(Provenance shown as context only.)"
+    task = _make_task(3, batch_size=3)
+    task.entries = [e._replace(prompt_extra=hint) for e in task.entries]
+    text = task.format_entries(range(3))
+    assert text.count(head) == 1 and text.count(SI._HINT_SAME_LOCALE) == 2
+
+def test_an_entry_answered_before_its_batch_goes_out_is_not_re_sent():
+    """The whole seed set is enqueued up front while a batch is `batch_size`
+    long, so the answer tool accepts an entry still waiting in the queue; the
+    next batch must skip it, or the loop re-sends a written entity and the
+    retry rounds give up on it."""
+    task = _make_task(4, batch_size=2)
+    log = _run(task, [_answer(0, 1, 2), _answer(3)])
+    assert all(task.state[i] == _DONE for i in range(4))
+    assert sorted(task.written) == [(i, f"description of c{i}") for i in range(4)]
+    turns = [p for k, p in log if k == "turn"]
+    assert len(turns) == 2 and "T.c3" in turns[1] and "T.c2" not in turns[1]
+
+
+def test_the_rate_limit_backoff_doubles_caps_jitters_and_resets(monkeypatch):
+    """§15.4: min(2 * 2**throttled, 60) s, jittered by ±50 %, `throttled`
+    incremented only by that arm and reset by a completed turn."""
+    windows: list = []
+    sleeps: list = []
+    monkeypatch.setattr(SI.random, "uniform", lambda lo, hi: (windows.append((lo, hi)), 1.0)[1])
+
+    async def sleep(delay):
+        sleeps.append(delay)
+    monkeypatch.setattr(SI.asyncio, "sleep", sleep)
+    task = _make_task(2, batch_size=1)
+    hit = [_raise(RateLimitError("429")) for _ in range(6)]
+    _run(task, hit + [_answer(0), _raise(RateLimitError("429")), _answer(1)])
+    assert [s for s in sleeps if s] == [2, 4, 8, 16, 32, 60, 2]
+    assert windows == [(0.5, 1.5)] * 7
+    assert all(task.state[i] == _DONE for i in range(2))
+
+
+# --- the query tool's refusal ----------------------------------------------
+
+def test_the_query_tool_refuses_by_the_resolved_key_in_either_spelling(monkeypatch):
+    """The refusal is keyed on the RESOLVED universal key (D18), so a
+    symbol-bearing name of the theory is refused whichever spelling the agent
+    types -- the tool rewrites the input to the escape form before the lookup
+    -- while an unrelated name still reaches the store."""
     from Isabelle_Semantic_Embedding import semantics as S
     reached: list = []
+    task = _make_task(1, batch_size=1)
+    own = task.entries[0].universal_key
 
     async def raw(connection, tag, name, **kw):
         reached.append(name)
+        if name == "Foo.f\\<^sub>1":
+            return "stored text", own
         raise LookupError("no such entity")
     monkeypatch.setattr(S, "query_by_name_raw", raw)
-    task = _make_task(1, batch_size=1)          # enrols T.c0 ... but we need a symbol
-    tool = S.mk_query_by_name_tool(_StubConnection(), ["Foo.f₁"] + task.enrolled_names)
+    tool = S.mk_query_by_name_tool(_StubConnection(), hidden_keys=task.theory_keys)
 
     async def ask(name):
         return (await tool.handler({"type": "constant", "name": name}))["content"][0]["text"]
@@ -702,4 +750,4 @@ def test_the_query_tool_refuses_an_enrolled_name_in_either_spelling(monkeypatch)
     assert glyph.startswith('Cannot query "Foo.f₁"')
     assert escape.startswith('Cannot query "Foo.f\\<^sub>1"'), "echoed as typed"
     assert "no such entity" in other
-    assert reached == ["Foo.g"], "only the unrelated name reached the store"
+    assert reached == ["Foo.f\\<^sub>1", "Foo.f\\<^sub>1", "Foo.g"], "resolved in the escape form, then refused by key"

@@ -799,9 +799,13 @@ fun build_entries (context : Context.generic)
        The RPC host is an environmental dependency (absent in standalone /
        test invocations of build_entries), so RPC failures only degrade the
        hint to name + proposition — but never silently. *)
+    (* This run's own entries: their stored interpretations are never fetched (D18,
+       sem_of below); dropping them here spares the contains round trip as well. *)
+    val own_uks = Bytehashtab.make_set (map #4 raw)
     val wanted_uks =
       prim_provenance |> maps (fn NONE => [] | SOME (t, l, _) => map_filter I [t, l])
       |> distinct (op =)
+      |> filter_out (Bytehashtab.defined own_uks)
     val available : unit Bytehashtab.table = Bytehashtab.empty 64
     val _ =
       if null wanted_uks then ()
@@ -841,9 +845,12 @@ fun build_entries (context : Context.generic)
         else s
       end
     val sem_cache : string option Bytehashtab.table = Bytehashtab.empty 64
+    (* D18: no stored interpretation of this run's own entries reaches the agent --
+       the hint drops its Template-meaning / Locale lines for them. *)
     fun sem_of NONE = NONE
       | sem_of (SOME uk) =
-          if not (Bytehashtab.defined available uk) then NONE
+          if Bytehashtab.defined own_uks uk orelse not (Bytehashtab.defined available uk)
+          then NONE
           else (case Bytehashtab.lookup sem_cache uk of
                   SOME r => r
                 | NONE =>
@@ -2294,8 +2301,10 @@ fun with_interpretation_lock (body : unit -> 'a) : 'a option =
                   let val c = run Remote_Procedure_Calling.get_connection ()
                   in conn := SOME c; c end)
       in
-        if Remote_Procedure_Calling.call_command' try_acquire_cmd c () then SOME (body ())
-        else NONE
+        if (Remote_Procedure_Calling.call_command' try_acquire_cmd c ()
+              handle Remote_Procedure_Calling.Remote_Calling_Failure {message, ...} =>
+                interpretation_rpc_error message)
+        then SOME (body ()) else NONE
       end
     finally
       (case ! conn of

@@ -400,26 +400,56 @@ def test_enrolment_follows_every_changed_verdict_down_the_chain(run):
     assert _dry(entries) == 0
 
 
-def test_the_query_tool_refuses_a_dependent_from_the_moment_it_is_enrolled(run, monkeypatch):
-    """The mirror of the unrequested-answer rejection: once a's CHANGED
-    verdict enrols b, the agent may not look b up (it would be handed the
-    stored text of the entity it is re-interpreting)."""
-    reached: list = []
+def test_the_lookup_tools_hide_every_entity_of_the_theory_being_interpreted(run, monkeypatch):
+    """D18, the mirror of the unrequested-answer rejection: inside the session
+    no stored interpretation of THIS theory's entities reaches the agent --
+    enrolled (b) or not (d) -- at any of the disclosure points: the name
+    lookup, the notation fallback (a glyph resolving to b's key), the
+    desugar annotations.  An entity of another theory is still served."""
+    FOREIGN = b"\x77" * 32
+    stored = {_uk("b"): "OLD b", _uk("d"): "OLD d", FOREIGN: "the foreign one"}
 
     async def raw(connection, tag, name, **kw):
-        reached.append(name)
-        raise LookupError("no such entity")
+        if name in ("\\<sqsubseteq>", "T.d"):       # d: only its short name resolves
+            raise S.UndefinedEntity(EntityKind.CONSTANT, name, "undefined")
+        uk = FOREIGN if name == "U.x" else _uk(name.split(".")[-1])
+        return stored[uk], uk
     monkeypatch.setattr(S, "query_by_name_raw", raw)
-    _chain(run, {"T.a": False, "T.b": True})
-    tool = S.mk_query_by_name_tool(run.connection, run.task.enrolled_names)
 
-    async def ask(name):
-        return (await tool.handler({"type": "constant", "name": name}))["content"][0]["text"]
-    async def both():
-        return await ask("T.b"), await ask("T.c")
-    refused, other = asyncio.run(both())
-    assert run.task.enrolled_names == ["T.a", "T.b"]
-    assert refused.startswith('Cannot query "T.b"') and "no such entity" in other
+    async def notation_cb(rpc, arg):
+        assert rpc == "explain_term.resolve_notation"
+        return ("T.b", _uk("b"), "T.b x y")             # every pattern resolves to b
+    _chain(run, {"T.a": False, "T.b": True})
+    run.connection.callback = notation_cb
+    keys = run.task.theory_keys
+    assert keys == frozenset(_uk(n) for n in "abcd")
+    query = S.mk_query_by_name_tool(run.connection, hidden_keys=keys)
+    monkeypatch.setattr(S.Semantic_DB, "query", lambda uk, **kw: stored.get(bytes(uk)))
+    from Isabelle_Semantic_Embedding.desugar import mk_desugar_and_explain_tool
+
+    async def desugar_cb(rpc, arg):
+        assert rpc == "explain_term.desugar_and_explain"
+        return ("T.b x", [("T.b", _uk("b")), ("U.x", FOREIGN)])
+
+    async def ask(tool, args):
+        return (await tool.handler(args))["content"][0]["text"]
+
+    async def go():
+        b = await ask(query, {"type": "constant", "name": "T.b"})
+        d = await ask(query, {"type": "constant", "name": "T.d"})
+        x = await ask(query, {"type": "constant", "name": "U.x"})
+        glyph = await ask(query, {"type": "constant", "name": "⊑"})
+        run.connection.callback = desugar_cb
+        desugar = mk_desugar_and_explain_tool(run.connection, hidden_keys=keys)
+        annotated = await ask(desugar, {"term": "b x"})
+        return b, d, x, glyph, annotated
+    b, d, x, glyph, annotated = asyncio.run(go())
+    assert b.startswith('Cannot query "T.b"')
+    assert d.startswith('Cannot query "T.d"'), "refused on the short-name fallback"
+    assert "the foreign one" in x
+    assert "Underlying constant: T.b" in glyph and "OLD b" not in glyph
+    assert "OLD b" not in annotated and "the foreign one" in annotated
+    assert "read its definition from the source" in annotated
 
 
 def test_an_answer_for_an_entity_this_run_did_not_ask_for_is_refused(run):
@@ -531,6 +561,18 @@ def test_a_failed_snapshot_raise_fails_the_run_with_its_own_exception_and_note(r
 
 
 # --- the decision table (§3) --------------------------------------------------
+
+def test_an_empty_wire_statement_keeps_the_stored_expr_on_the_gate_s_write(run):
+    """D19 on the live path: the statement could not be computed (wire
+    prop_str ""), the gate still writes the new text and version, and the
+    stored `expr` stands instead of being blanked (and its vector killed)."""
+    _store("a", "the a", DG["a"])                 # stored expr "nat"
+    entries = [_entry("a", DG2["a"], prop="")]
+    run.go([_answer_batch()], entries, verdicts={"T.a": False})
+    r = _rec("a")
+    assert (r.interpretation, r.version) == ("new a", 2), "the gate did write"
+    assert r.expr == "nat", "D19: the stored statement stands"
+
 
 def test_a_first_write_needs_neither_prefilter_nor_judge(run):
     entries = [_entry("a", DG["a"])]
@@ -938,6 +980,69 @@ def test_judge_sessions_are_capped_and_each_holds_one_entity(run, monkeypatch):
     for _, n, p in run.events("judge-turn"):
         assert p.count("Entity:") == 1 and n in p
     assert [_rec(n).version for n in "abcde"] == [1, 2, 1, 3, 1], "each verdict reached its own entity"
+
+
+class _LaunderingJudge(_ScriptedJudge):
+    """A judge driver whose teardown replaces the cancellation with an
+    ordinary exception -- the shape a cost flush on a broken store has."""
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await super().__aexit__(exc_type, exc, tb)
+        if exc_type is asyncio.CancelledError:
+            raise RuntimeError("teardown failed")
+
+
+def test_a_cancellation_laundered_by_the_judge_s_teardown_still_writes_nothing(run):
+    """`_stop_if_cancelled` raises a CancelledError, never the laundered
+    exception: that one would land in `_judge`'s `except Exception`, read as
+    CHANGED, and the gate would write and mint on a run being torn down."""
+    _store("a", "the a", DG["a"])
+    entries = [_entry("a", DG2["a"])]
+    hold = asyncio.Event()
+
+    async def go():
+        runner = asyncio.ensure_future(run.start([_answer_batch()], entries, hold=hold,
+                                                 judge_cls=_LaunderingJudge))
+        for _ in range(50):
+            await asyncio.sleep(0)
+        assert run.events("judge-turn")
+        runner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await runner
+    asyncio.run(go())
+    assert _rec("a").interpretation == "the a" and _counter() == 1, "nothing written, nothing minted"
+
+
+class _FatalLaunderingJudge(_ScriptedJudge):
+    """Teardown replaces the cancellation with the one exception `_run_agent`
+    re-raises without recovering (FatalAgentError): the only arm that does
+    not call `_stop_if_cancelled` itself."""
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await super().__aexit__(exc_type, exc, tb)
+        if exc_type is asyncio.CancelledError:
+            raise FatalAgentError(None, "teardown failed")
+
+
+def test_a_cancellation_laundered_into_a_fatal_error_still_writes_nothing(run):
+    """`_judge`'s own `_stop_if_cancelled` call: the fatal arm of the judge's
+    `_run_agent` lets the laundered exception out, and `_judge`'s
+    `except Exception` must not read it as CHANGED."""
+    _store("a", "the a", DG["a"])
+    entries = [_entry("a", DG2["a"])]
+    hold = asyncio.Event()
+
+    async def go():
+        runner = asyncio.ensure_future(run.start([_answer_batch()], entries, hold=hold,
+                                                 judge_cls=_FatalLaunderingJudge))
+        for _ in range(50):
+            await asyncio.sleep(0)
+        assert run.events("judge-turn")
+        runner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await runner
+    asyncio.run(go())
+    assert _rec("a").interpretation == "the a" and _counter() == 1, "nothing written, nothing minted"
 
 
 def test_a_cancellation_propagates_and_closes_the_judge_session(run):

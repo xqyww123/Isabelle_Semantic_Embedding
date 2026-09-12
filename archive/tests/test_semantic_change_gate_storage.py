@@ -211,18 +211,28 @@ def test_update_gate_fields_does_not_invalidate_vectors(cache):
     assert store.contains([k]) == [True]
 
 
-def test_the_raw_put_grant_is_checked_for_the_gate_writer(cache, monkeypatch):
-    """Adding an embedded-document field to the gate writer's set raises
-    before any transaction is opened."""
-    monkeypatch.setattr(S._Semantic_DB, "_GATE_FIELDS",
-                        S._Semantic_DB._GATE_FIELDS + ("interpretation",))
-    with pytest.raises(AssertionError, match="gate_write\\('interpretation'\\)"):
-        with S.Semantic_DB.gate_write():
-            pass
-    monkeypatch.setattr(S._Semantic_DB, "_GATE_FIELDS", ("no_such_field",))
+def test_the_raw_put_grant_is_checked_on_the_fields_the_gate_writer_writes(cache, monkeypatch):
+    """`update_gate_fields` checks the very dict it puts (no separate list of
+    names to keep in step): an embedded-document field in it raises, as does
+    an unknown field."""
+    check = S.Semantic_DB._check_raw_put_grant
+    with pytest.raises(AssertionError, match="update_gate_fields\\('interpretation'\\)"):
+        check("update_gate_fields", {"interpreted_at": 1, "interpretation": "x"})
     with pytest.raises(AssertionError, match="no such record field"):
-        with S.Semantic_DB.gate_write():
-            pass
+        check("update_gate_fields", {"no_such_field": 1})
+    check("update_gate_fields", {"semantic_digest": None, "deps": None, "version": 1,
+                                 "interpreted_at": 1, "baseline_interpretation": None})
+    # ... and the writer really routes its dict through the check.
+    seen: list = []
+    k = _uk("g")
+    S.Semantic_DB[k] = _full_record()
+    orig = S._Semantic_DB._check_raw_put_grant          # a staticmethod
+    monkeypatch.setattr(S._Semantic_DB, "_check_raw_put_grant", staticmethod(
+        lambda who, fields: (seen.append((who, sorted(fields))), orig(who, fields))[1]))
+    with S.Semantic_DB.gate_write() as w:
+        w.update_gate_fields(k, **_gate(_full_record(version=2, interpreted_at=2)))
+    assert seen == [("update_gate_fields", ["baseline_interpretation", "deps", "interpreted_at",
+                                            "semantic_digest", "version"])]
 
 
 def test_backfill_field_keeps_its_grant_check(cache):

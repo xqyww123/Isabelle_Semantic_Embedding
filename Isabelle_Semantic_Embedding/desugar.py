@@ -1,6 +1,7 @@
 """Desugar-and-explain tool: strips syntax sugar and annotates constants."""
 
 import re
+from collections.abc import Collection
 from typing import Any
 
 from Isabelle_RPC_Host import Connection
@@ -63,8 +64,14 @@ def mk_desugar_and_explain_tool(
     file_path: str | None = None,
     seen_constants: set[str] | None = None,
     dedup: bool = True,
+    hidden_keys: 'Collection[bytes]' = frozenset(),
 ) -> SdkMcpTool[Any]:
     """The desugar tool, annotating each constant with its English description.
+
+    `hidden_keys`: constants whose stored description is never disclosed --
+    inside an interpretation session, every entity of the theory being
+    interpreted (SEMANTIC_CHANGE_GATE_PLAN.md D18); they are annotated with a
+    pointer to the source instead, and not counted as seen.
 
     `dedup` skips a constant already annotated earlier in the conversation, to
     spend the tokens once.  It is only safe while someone clears
@@ -116,10 +123,14 @@ def mk_desugar_and_explain_tool(
             uk: universal_key = bytes(uk_bytes)
             if dedup and full_name in seen_constants:
                 continue
+            base = full_name.rsplit(".", 1)[-1] if "." in full_name else full_name
+            if uk in hidden_keys:
+                new_annotations.append(
+                    f"  {base}: (belongs to the theory being interpreted; read its definition from the source)")
+                continue
             sem = Semantic_DB.query(uk, with_pretty=False)
             if sem is None:
                 continue
-            base = full_name.rsplit(".", 1)[-1] if "." in full_name else full_name
             new_annotations.append(f"  {base}: {sem}")
             seen_constants.add(full_name)
 

@@ -5,7 +5,7 @@ import json
 import os
 import re
 import threading
-from collections.abc import Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator
 from contextlib import contextmanager
 from typing import Any, NamedTuple
 
@@ -928,11 +928,6 @@ class _Semantic_DB:
             if field not in _Semantic_DB.Record._fields:
                 raise AssertionError(f"{who}: no such record field {field!r}")
 
-    # The fields the semantic change gate writes (ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md
-    # §6.4); their raw-put grant is checked on every gate_write.
-    _GATE_FIELDS = ("semantic_digest", "deps", "version", "interpreted_at",
-                    "baseline_interpretation")
-
     class Gate_Writer:
         """One entity's gate writes inside the single transaction `gate_write`
         opened: the mint and the record put commit together or not at all."""
@@ -981,10 +976,11 @@ class _Semantic_DB:
             written (the caller's rec_cache must equal the store, §5.4).  The
             record exists: this is the snapshot raise of an entity already
             written this run; a missing one raises LookupError."""
-            return self._db._put_fields(self._txn, key, dict(
-                semantic_digest=semantic_digest, deps=deps, version=version,
-                interpreted_at=interpreted_at,
-                baseline_interpretation=baseline_interpretation))
+            fields = dict(semantic_digest=semantic_digest, deps=deps, version=version,
+                          interpreted_at=interpreted_at,
+                          baseline_interpretation=baseline_interpretation)
+            self._db._check_raw_put_grant("update_gate_fields", fields)
+            return self._db._put_fields(self._txn, key, fields)
 
     @contextmanager
     def gate_write(self) -> 'Iterator[Gate_Writer]':
@@ -992,7 +988,6 @@ class _Semantic_DB:
         (ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md §5.4 step 5, §6.4): the mint
         and the puts commit together or not at all.  The body is synchronous
         and must not open a second write transaction on this environment."""
-        self._check_raw_put_grant("gate_write", self._GATE_FIELDS)
         with self._ensure_env().begin(write=True) as txn:
             yield self.Gate_Writer(self, txn)
 
@@ -1534,7 +1529,7 @@ _NAME_DESCRIPTION_INTERP = (
     _NAME_DESCRIPTION_BASE +
     " For multi-variant theorems, include a '(idx)' suffix (e.g. 'conjI(2)').")
 
-def _mk_query_by_name_schema(working_names: list[str]) -> dict:
+def _mk_query_by_name_schema(interpreting: bool) -> dict:
     return {
         "type": "object",
         "properties": {
@@ -1548,7 +1543,7 @@ def _mk_query_by_name_schema(working_names: list[str]) -> dict:
             },
             "name": {
                 "type": "string",
-                "description": _NAME_DESCRIPTION_INTERP if working_names else _NAME_DESCRIPTION_BASE,
+                "description": _NAME_DESCRIPTION_INTERP if interpreting else _NAME_DESCRIPTION_BASE,
             },
             "show_defs": {
                 "type": "boolean",
@@ -1684,6 +1679,7 @@ async def _append_definition(
 async def _try_resolve_syntax_token(
     connection: Connection, name: str, ctxt: Any,
     with_pretty: bool, show_defs: bool, log: Any,
+    hidden_keys: 'Collection[bytes]' = frozenset(),
 ) -> str | None:
     """Try to resolve a name as a syntax/notation token via resolve_notation.
 
@@ -1711,19 +1707,19 @@ async def _try_resolve_syntax_token(
         const_name, uk_bytes, compact_str = resolved
         uk: universal_key = bytes(uk_bytes)
         log.debug("resolved syntax token %r -> %s via pattern %r", name, const_name, pattern)
+        prefix = (
+            f'"{name}" is a notation (syntax: {display}).\n'
+            f'It desugars to: {compact_str}\n'
+            f'Underlying constant: {const_name}')
+        if uk in hidden_keys:
+            return prefix + '\n(It belongs to the theory being interpreted; read its definition from the source.)'
         sem = Semantic_DB.query(uk, with_pretty=with_pretty)
         if sem is not None:
-            result = (
-                f'"{name}" is a notation (syntax: {display}).\n'
-                f'It desugars to: {compact_str}\n'
-                f'Underlying constant: {const_name}\n\n{sem}')
+            result = prefix + f'\n\n{sem}'
         else:
             # Constant found but not yet interpreted — still report the resolution
-            result = (
-                f'"{name}" is a notation (syntax: {display}).\n'
-                f'It desugars to: {compact_str}\n'
-                f'Underlying constant: {const_name}\n'
-                f'(Not yet interpreted. Use `query` with name="{const_name}" '
+            result = prefix + (
+                f'\n(Not yet interpreted. Use `query` with name="{const_name}" '
                 f'or `desugar_and_explain` for more details.)')
         if show_defs:
             result = await _append_definition(
@@ -1734,19 +1730,30 @@ async def _try_resolve_syntax_token(
 
 
 def mk_query_by_name_tool(
-    connection: Connection, working_names: list[str], with_pretty: bool = True,
-    file_path: str | None = None,
+    connection: Connection, *, hidden_keys: 'Collection[bytes]' = frozenset(),
+    with_pretty: bool = True, file_path: str | None = None,
 ) -> SdkMcpTool[Any]:
+    """`hidden_keys`: the entities whose stored interpretation is never
+    disclosed -- inside an interpretation session, every entity of the theory
+    being interpreted (SEMANTIC_CHANGE_GATE_PLAN.md D18); checked on the
+    RESOLVED key at every point a text would be returned."""
     log = connection.server.logger.getChild("semantics")
     description = "Look up the English translation of a dependency from parent theories."
-    if working_names:
+    if hidden_keys:
         description += (
-            " Do not query entries you have been asked to interpret"
-            " — interpret those from the source file yourself.")
+            " Entities of the theory you are interpreting cannot be queried"
+            " — read their definitions from the source file yourself.")
+
+    def refused(typed: str) -> ToolCall_ret:
+        return _mk_ret(
+            f"Cannot query \"{typed}\" — it belongs to the theory being interpreted;"
+            " read its definition from the source.",
+            is_error=True)
+
     @tool(
         "query",
         description,
-        input_schema=_mk_query_by_name_schema(working_names),
+        input_schema=_mk_query_by_name_schema(bool(hidden_keys)),
     )
     async def query_by_name_tool(args: dict[str, Any]) -> ToolCall_ret:
         t = args.get("type", "")
@@ -1773,16 +1780,9 @@ def mk_query_by_name_tool(
             return f"{ctxt_note}\n\n{s}" if ctxt_note else s
 
         try:
-            # `working_names` carries the glyph spelling the agent was shown
-            # (Entry.name); `name` is already the escape form, so compare in
-            # the list's spelling -- per call, the list grows with enrolment.
-            if working_names and pretty_unicode(name) in working_names:
-                log.debug("Entity name %r is in working_names; cannot query entities assigned for interpretation.", name)
-                return _mk_ret(
-                    f"Cannot query \"{typed}\" — it is or will be your task to interpret it from the source.",
-                    is_error=True,
-                )
             sem, uk = await query_by_name_raw(connection, tag, name, with_pretty=with_pretty, ctxt=ctxt)
+            if uk in hidden_keys:
+                return refused(typed)
             if args.get("show_defs", False):
                 sem = await _append_definition(sem, connection, tag, uk, name, log,
                                                ctxt=ctxt)
@@ -1794,6 +1794,8 @@ def mk_query_by_name_tool(
                 short = name.rsplit(".", 1)[1]
                 try:
                     sem, uk = await query_by_name_raw(connection, tag, short, with_pretty=with_pretty)
+                    if uk in hidden_keys:
+                        return refused(typed)
                     if args.get("show_defs", False):
                         sem = await _append_definition(sem, connection, tag, uk, short, log)
                     return _mk_ret(_noted(f"The {name} is undefined, but we find:\n{sem}"))
@@ -1805,7 +1807,7 @@ def mk_query_by_name_tool(
             if tag == EntityKind.CONSTANT:
                 resolved = await _try_resolve_syntax_token(
                     connection, name, ctxt, with_pretty,
-                    args.get("show_defs", False), log)
+                    args.get("show_defs", False), log, hidden_keys)
                 if resolved is not None:
                     return _mk_ret(_noted(resolved))
             log.warning("%s: %s", type(e).__name__, e)
