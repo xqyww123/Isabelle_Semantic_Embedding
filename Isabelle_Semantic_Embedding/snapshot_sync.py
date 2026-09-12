@@ -238,6 +238,10 @@ def _extract_tar_zst(tarball: str, dest: str) -> None:
 # The install file lock (renamed from the old `.r2_pull.lock`), beside the
 # stores it guards.
 INSTALL_LOCK_NAME = ".install_system_db.lock"
+# The interpretation lock (SEMANTIC_CHANGE_GATE_PLAN.md §8): one live
+# interpretation run per database directory; taken by
+# semantic_interpretation.py, on the same FileLock terms as the install lock.
+INTERPRETATION_LOCK_NAME = ".interpretation.lock"
 
 
 @contextmanager

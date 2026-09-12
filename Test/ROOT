@@ -17,6 +17,7 @@ session Semantic_Embedding_Test = Semantic_Embedding +
     Infra_Decl_Test
     SSymb_Infra_Test
     Interpretation_Driver_Config_Test
+    Interpretation_Lock_Test
     Command_At_Position_Test
     Entity_Position_Test
     Test_Sensitivity

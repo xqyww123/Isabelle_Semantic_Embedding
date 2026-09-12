@@ -147,9 +147,10 @@ fun run (force : bool) names state =
            only the command's own context sees a `declare
            [[Semantic_Embedding.interpretation_driver]]` made above this command. *)
         fun go () =
-          (Semantic_Store.interpret_with_parallel (Context.Proof ctxt) force
-             (map Context.Theory roots);
-           embed_phase ())
+          (case Semantic_Store.interpret_with_parallel (Context.Proof ctxt) force
+                  (map Context.Theory roots) of
+            SOME () => embed_phase ()
+          | NONE => error Semantic_Store.lock_busy_error)
       in
         if capable then
           let

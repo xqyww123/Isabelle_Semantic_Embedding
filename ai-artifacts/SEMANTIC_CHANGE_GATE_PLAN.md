@@ -15,7 +15,18 @@ tests); step 6: `ai-artifacts/review_step6/`, judge `judge.json` and
 callback built once in `interpret_with_parallel` and threaded as a value
 (§5.6), `embedding_config.Missing_Dimension` so §12 #4 carries the message
 and not its repr — plus tests, and the user's ruling to keep #4's slot text
-verbatim; steps 7–8 pending approval to start.**
+verbatim; step 7: `ai-artifacts/review_step7/`, judge `judge.json` and
+`rereview_judge.json`, accepted with three production fixes applied — the
+unlocked body hidden in `local … in … end`, `uninterruptible_body` in
+`with_interpretation_lock`, a timeless `RunState` docstring — and the ML
+test rewritten to bounded waits; §8.1 and §8.2 edited accordingly; the
+user's decisions of 2026-09-11: the ML lock test stays in `Test/ROOT`, the
+step-7 commit waited for the other agent's interrupt work to land in
+Isabelle_RPC first (it did, 2026-09-11, and its commits `2b22658` /
+`694ebaa` swept in the Isabelle_RPC half of step 7 and `semantic_store.ML`;
+the rest followed in the step-7 commit of 2026-09-12), and Isabelle_RPC's
+v0.5.0 is not tagged before `Connection.on_close` is in; step 8 pending
+approval to start.**
 Three review rounds (rev 1: 98 agents; rev 2: 23; rev 3: 23) and the user's
 rulings on them are absorbed.  Rev 5.3 records the user's decisions of
 2026-09-08/09 after the step-3 code review: D11 revised (a correction re-runs
@@ -597,12 +608,22 @@ thread_local=False)` (the package depends on `filelock`;
 `INSTALL_LOCK_NAME`).  Two instances in one process exclude each other; the OS
 drops the lock when the holder dies; a failed acquire leaks nothing.  Owned by
 the RPC **connection** that acquired it: `Semantic_Store.try_acquire_interpretation_lock`
-→ bool stores the FileLock and the run's `RunState` (§15.8) on the
-`Connection`; `Isabelle_RPC_Host.rpc.Connection` gains an `on_close`
-callback list run by `close()` at most once (a `_closed` flag: `close()` is
-reached both from `handle_client`'s `finally`, rpc.py:374, and from
-`Connection.__aexit__`, :232), and the lock module registers the release of
-both.  No release procedure, no sidecar.
+→ bool appends to the acquiring `Connection`'s `on_close` one `release`
+closure that holds the FileLock and the run's `RunState` (§15.8), and only
+then publishes the `RunState` in the module-level slot `_locked_run` that
+`current_run_state()` reads; the closure clears the slot (if it still holds
+this run) and releases the lock.  Nothing is set as an attribute of the
+connection -- the closure IS the ownership; the slot is needed because the
+run state's consumers (`interpret_file`, the §5.6 startup check) run on
+OTHER, pooled connections, while the lock connection carries nothing but the
+acquire.  `Isabelle_RPC_Host.rpc.Connection` gains the `on_close` callback
+list, run by `close()` at most once (a `_closed` flag: `close()` is reached
+both from `handle_client`'s `finally` and from `Connection.__aexit__`); a
+callback that raises is logged and the others still run.  No release
+procedure, no sidecar.  The release is asynchronous to the ML caller:
+`close_connection` only closes the socket, and the host runs the closure when
+it sees EOF, so an acquire issued immediately after a run returns may still
+be refused (the ML test waits within a bound).
 
 **Release ordering.**  On an ML interrupt, `schedule_dag` cancels the group and
 returns without joining, so the lock connection's close is not ordered against
@@ -622,17 +643,20 @@ recorded in `doc/invalidation_limitations.md` (§11).
 `with_interpretation_lock : (unit -> 'a) -> 'a option` in semantic_store.ML,
 combining two RPC.ML idioms -- the finaliser armed first
 (`\<^try>\<open>launch_body () finally ...\<close>`, RPC.ML:815-826) and the
-connect-and-record uninterruptible bubble (RPC.ML:779-791); the `fn run =>`
-form, which keeps `get_connection ()` interruptible inside the bubble, is new
-here (`Thread_Attributes.uninterruptible` accepts it, thread_attributes.ML:20):
+connect-and-record uninterruptible bubble (RPC.ML:779-791);
+`Thread_Attributes.uninterruptible_body` (thread_attributes.ML:21) keeps
+`get_connection ()` interruptible inside the bubble through `run` -- the same
+form `schedule_dag` already uses, and the one `Isabelle_Thread.try_finally`,
+i.e. `\<^try>\<open>… finally …\<close>` itself, is built from
+(isabelle_thread.ML:186):
 
 ```
 fun with_interpretation_lock body =
   let val conn : connection option Unsynchronized.ref = Unsynchronized.ref NONE in
     \<^try>\<open>
       let
-        val c = Thread_Attributes.uninterruptible (fn run => fn () =>
-                  let val c = run get_connection () in conn := SOME c; c end) ()
+        val c = Thread_Attributes.uninterruptible_body (fn run =>
+                  let val c = run get_connection () in conn := SOME c; c end)
       in
         if call_command' try_acquire_cmd c () then SOME (body ()) else NONE
       end

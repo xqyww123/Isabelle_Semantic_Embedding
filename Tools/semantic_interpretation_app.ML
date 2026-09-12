@@ -112,7 +112,12 @@ val _ = register_streaming_app "Semantic_Store.collect" (fn cin =>
     val cfg_context = (case thys of thy :: _ => Context.Theory thy
                         | [] => Context.Theory (Thy_Info.get_theory "Pure"))
   in
-    Semantic_Store.interpret_with_parallel cfg_context force (map Context.Theory thys)
+    (case Semantic_Store.interpret_with_parallel cfg_context force (map Context.Theory thys) of
+      SOME () => ()
+    | NONE => error
+        "Semantic_Store.collect: another semantic interpretation run is in progress on \
+        \this database. Two runs must never share a database; wait for the other run \
+        \to finish, then retry.")
   end)
 
 val _ = register_streaming_app "Semantic_Store.backfill_positions" (fn cin =>

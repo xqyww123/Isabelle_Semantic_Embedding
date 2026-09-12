@@ -62,7 +62,74 @@ All paths relative to `contrib/Semantic_Embedding/`.
   needs the user's go-ahead.  Step 5's test file must carry the enrolment
   test with a not-enrolled entry NOT in last position (step-4 judge).
 
-## Entry point for step 7 (written 2026-09-11, after step 6 was accepted)
+## Entry point for step 8 (written 2026-09-11, after step 7's review)
+
+- Git: steps 1–6 committed (`8683e6f`, `5a3c201`, `0d279d7`, `aa5b93c`).
+  Step 7 is implemented, reviewed (`ai-artifacts/review_step7/judge.json`,
+  re-review `rereview_judge.json`) and committed in two halves, by the
+  user's decision (a) of 2026-09-11 to let the other agent's interrupt work
+  land first: that agent's commits -- Isabelle_RPC `2b22658` and
+  Semantic_Embedding `694ebaa`, 2026-09-11 -- swept in the Isabelle_RPC half
+  of step 7 (`Connection.on_close` / `_closed` / `close()`, the rpc.pyi line,
+  `close_connection` in RPC.ML) and the whole of `Tools/semantic_store.ML`
+  (the lock, the wrapping, the callback arm) without naming them; the rest
+  of step 7 is the Semantic_Embedding commit of 2026-09-12 (see `git log`).
+  The superproject was bumped by that agent to `2b22658` / `694ebaa` and by
+  the step-7 commit after.  Still foreign and uncommitted: the temporary hunt
+  marker in `Tools/entity_position.ML` and `archive/tests/test_migrate_from_collection.py`.
+  Version floor: v0.5.0 of Isabelle_RPC is not to be tagged before
+  `on_close` is in (user, 2026-09-11); pyproject.toml's floor comment says so.
+- Step-7 files (Semantic_Embedding): `Tools/semantic_store.ML`
+  (`try_acquire_cmd`, `with_interpretation_lock`, `local … in … end` around
+  `interpret_with_parallel'` / `interpret_with_parallel : … -> unit option`,
+  `lock_busy_error`, `interpret`, the callback arm), `Tools/interpret_command.ML`,
+  `Tools/semantic_interpretation_app.ML`, `Isabelle_Semantic_Embedding/
+  semantic_interpretation.py` (`_locked_run`, `current_run_state`,
+  `_try_acquire_interpretation_lock`, `RunState` docstring),
+  `Isabelle_Semantic_Embedding/snapshot_sync.py` (`INTERPRETATION_LOCK_NAME`),
+  `pyproject.toml` (floor comment), `Test/ROOT`, `Test/Interpretation_Lock_Test.thy`,
+  `archive/tests/test_interpretation_lock.py`, the plan (§8.1, §8.2, status
+  paragraph at commit time), this file, `ai-artifacts/review_step7/`.
+- What step 7 shipped (essence): one live interpretation run per database
+  directory.  Python: `FileLock(timeout=0, thread_local=False)` on
+  `<semantic_DB_dir()>/.interpretation.lock`, acquired by the RPC
+  `Semantic_Store.try_acquire_interpretation_lock` and released by the
+  acquiring connection's `on_close` closure (which also clears the module
+  slot `_locked_run` that `current_run_state()` reads -- so the step-6
+  startup check's flag now reaches the run).  ML: `with_interpretation_lock`
+  takes a connection of its own, arms the finaliser first, tries once, runs
+  the body, CLOSES the connection (never pools it); `interpret_with_parallel`
+  is wrapped ⇒ `unit option`; four `NONE` sites print/raise §12 #1–#3;
+  `dry_run` unlocked.  Judged sound; the release is asynchronous to the ML
+  caller (host runs it at EOF) -- the ML test waits within a bound.
+- Rejected by the judges, do not re-raise: swallowing the check's RPC
+  failure (step 6); a `run_config` record (step 6); lazy import of
+  `INTERPRETATION_LOCK_NAME`; moving the `Connection.close()` tests into
+  Isabelle_RPC; a `with_own_connection` helper in RPC.ML (filtered);
+  arming the Python release before the acquire (filtered); a dry run not
+  binding the run state (filtered); renaming `Missing_Dimension`.
+- ML tests: run through the REPL server ONLY, started with
+  `SEMANTIC_DB_DIR=<scratch>` in its environment (the attached Python host
+  inherits it; the host log under `$ISABELLE_HOME_USER/log/RPC_attached_*`
+  shows the lock file's path), e.g.
+  `SEMANTIC_DB_DIR=$SCR/lockdb ../Isa-REPL/repl_server.sh 127.0.0.1:6702 Semantic_Embedding $SCR/repl_out`;
+  wait for a line matching `^Running REPL` AND for the port to listen
+  (`ss -ltn`), then `IsaREPL.Client` async `file()`; stop it by the pid
+  `ss -ltnp` shows on the port, in a shell step whose command line does not
+  contain the launch string.  An edited `.ML` needs a restart (rebuilds the
+  heap in ~20 s); an edited `.thy` test does not.
+- WAIT for the user's explicit go-ahead ("开工" / "继续") before step 8.
+- Step 8 = §13 item 8: texts (§12 -- every approved text to its site, found
+  by grepping the current text's distinctive words, never by line number;
+  #4 stays verbatim per the user; #1–#3 already in place from step 7; #5
+  from step 5 lacks the `[Semantic_Embedding]` prefix today -- harmonise) and
+  docs (§11: CHECK_OUTDATE_PLAN.md sections, the ML/Python comment sites
+  listed there, `doc/invalidation_limitations.md` #7 incl. the §8.1
+  release-ordering corner, README §5).  Then the acceptance items of §10
+  that need a live service (non-LLM regression on `pairs_phase2.json`, the
+  interactive scaffold, a live run's host log).
+
+## Entry point for step 7 (done; kept as the record)
 
 - Git: steps 1–5 committed (`8683e6f`, `5a3c201`, `0d279d7`; superproject
   `7ec6756b`, `7793813f`, `666cdae7`).  Step 6 is accepted by review and

@@ -21,11 +21,13 @@ from collections.abc import Callable, Generator, Iterable
 from typing import TYPE_CHECKING, Any, NamedTuple, Self
 
 import numpy as np
+from filelock import FileLock, Timeout as _LockTimeout
 from Isabelle_RPC_Host import Connection, isabelle_remote_procedure
 from Isabelle_RPC_Host.universal_key import EntityKind, is_WIP, universal_key
 from Isabelle_RPC_Host.unicode import pretty_unicode
 from claude_agent_sdk import SdkMcpTool, tool
 
+from ._paths import semantic_DB_dir
 from .base import ToolCall_ret, mk_ret as _mk_ret
 from .desugar import mk_desugar_and_explain_tool
 from .document_text import entity_document_text
@@ -43,6 +45,7 @@ from .semantics import (
     _resolve_embedding_config,
     unpack_thy_status,
 )
+from .snapshot_sync import INTERPRETATION_LOCK_NAME
 
 if TYPE_CHECKING:
     from .semantics import Semantic_Vector_Store
@@ -352,8 +355,8 @@ _NOT_ENROLLED, _QUEUED, _SENT, _GATING, _DONE = range(5)
 
 class RunState:
     """State scoped to one interpretation run (plan §15.8 "Run-scoped
-    state"): one holder of the interpretation lock (§8, §13 step 7) once the
-    lock lands; until then, one `interpret_file`."""
+    state"): the holder of the interpretation lock (§8); off the lock, one
+    `interpret_file` (`current_run_state`)."""
 
     def __init__(self) -> None:
         # The prefilter is skipped for the rest of the run: set by the startup
@@ -370,12 +373,48 @@ class RunState:
         return first
 
 
+# The RunState of the run holding the interpretation lock, or None.  One
+# host serves one database directory and the lock admits one run per
+# directory, so one slot is the whole registry (plan §15.8).
+_locked_run: RunState | None = None
+
+
 def current_run_state() -> RunState:
-    """The run's `RunState`.  No run holds the lock before §13 step 7, so
-    this is a fresh one per call and the scope degrades to the one
-    `interpret_file` that resolves it at its top -- never a module-level
-    singleton that would outlive the run."""
-    return RunState()
+    """The run's `RunState`: the lock holder's while a run holds the lock;
+    otherwise (unit tests, an unlocked caller) a fresh one, so the scope
+    degrades to the one `interpret_file` that resolves it at its top -- never
+    a module-level singleton that would outlive the run."""
+    return _locked_run if _locked_run is not None else RunState()
+
+
+@isabelle_remote_procedure("Semantic_Store.try_acquire_interpretation_lock")
+async def _try_acquire_interpretation_lock(arg: Any, connection: Connection) -> bool:
+    """The interpretation lock (plan §8.1, D8): one live run per database
+    directory, tried once, never waited for.  A `filelock.FileLock` -- the
+    OS drops it when the holder dies, two instances in one process exclude
+    each other -- owned by THIS connection: the lock and the run's `RunState`
+    go when the connection closes (`on_close`), so there is no release
+    procedure to forget and an interrupted run releases through its socket."""
+    global _locked_run
+    cache = semantic_DB_dir()
+    os.makedirs(cache, exist_ok=True)
+    lock = FileLock(os.path.join(cache, INTERPRETATION_LOCK_NAME), timeout=0,
+                    thread_local=False)
+    try:
+        lock.acquire()
+    except _LockTimeout:
+        return False
+    run = RunState()
+
+    def release() -> None:
+        global _locked_run
+        if _locked_run is run:
+            _locked_run = None
+        lock.release()
+
+    connection.on_close.append(release)
+    _locked_run = run
+    return True
 
 
 # Theory-status keys of the cost accumulators, in the order of the
