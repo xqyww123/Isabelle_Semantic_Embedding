@@ -72,7 +72,7 @@ All paths relative to `contrib/Semantic_Embedding/`.
   `Tools/interpret_command.ML`, `Tools/semantic_store.ML`, three tests,
   `README.md`, `doc/invalidation_limitations.md`, the plan, this file,
   `ai-artifacts/review_step8/`; outside this repository the untracked
-  `/home/qiyuan/Current/MLML/CHECK_OUTDATE_PLAN.md`.  Foreign uncommitted
+  `CHECK_OUTDATE_PLAN.md` (since 2026-09-12 at `archive/plans/`, tracked).  Foreign uncommitted
   edits still in the tree (leave them): `Tools/entity_position.ML`,
   `archive/tests/test_migrate_from_collection.py`.  Last commits:
   Semantic_Embedding `6cac576`, superproject `e87b531f`; nothing pushed.

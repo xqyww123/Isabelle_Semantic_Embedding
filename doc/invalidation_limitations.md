@@ -6,7 +6,7 @@
 **状态**: 缺陷均已知且被明确接受；机制本体已落地（`Tools/semantic_digest.ML` +
 `semantic_interpretation.py` 的种子集过滤与 semantic change gate，CHECK_OUTDATE_PLAN
 M1–M4 + SEMANTIC_CHANGE_GATE_PLAN）
-**关联**: `CHECK_OUTDATE_PLAN.md`（仓库根；本文是其 §4.4/§7.3 的接受缺陷登记处）；
+**关联**: `archive/plans/CHECK_OUTDATE_PLAN.md`（本文是其 §4.4/§7.3 的接受缺陷登记处）；
 `ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md`（缺陷 7 的机制与测量）
 
 本文集中记录 `check_outdate` 增量失效机制**已知不能覆盖的情况**。这些缺陷是设计权衡的
@@ -265,7 +265,7 @@ judge 把一次真实的意思变化误判为 same（且 cosine ≥ 0.90）时�
 - 加 0.90 后备后：tracked kinds 漏判 0/24（type class 与 type 未测，计划 §7）；
   全部 kinds 0/87。
 - 代价模型：漏判率按 1 % 计，一次误判平均留下 0.6 个本应重解释的下游实体
-  （`ai-artifacts/eff_shield_verification/REPORT.md`）。
+  （`ai-artifacts/eff_shield_verification/REPORT.md`，该目录只保留在本地、不进 git）。
 
 ### 生产 judge 与测量所用 comparator 的偏差
 

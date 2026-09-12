@@ -64,10 +64,12 @@ Also approved on 2026-09-08 after the rev 5 checklist: the judge's one-round
 retry (§5.4 step 3), the `judge_` cost breakdown (§5.5), the Codex sandbox
 deviation (§5.5) and the 3-second window of §8.1 recorded as a limitation.
 
-Parent design: `CHECK_OUTDATE_PLAN.md` (repo root); its glossary terms keep
+Parent design: `archive/plans/CHECK_OUTDATE_PLAN.md` (moved there from the
+superproject root on 2026-09-12); its glossary terms keep
 their meaning.  Measurements: `ai-artifacts/similarity_measurement/REPORT.md`,
 `REPORT_PHASE2.md`.  Verification of §4: `ai-artifacts/eff_shield_verification/
-REPORT.md` (scope in §4).
+REPORT.md` (scope in §4; that directory is kept locally only, removed from
+git on 2026-09-12).
 
 ## 0. Glossary (one word per concept)
 

@@ -2,7 +2,7 @@
     Author:     Qiyuan Xu
 
 Semantic digests and dependency extraction for the incremental invalidation of
-semantic interpretations.  See CHECK_OUTDATE_PLAN.md (repository root) for the
+semantic interpretations.  See archive/plans/CHECK_OUTDATE_PLAN.md for the
 full design, and doc/invalidation_limitations.md for the known coverage gaps.
 
 THIS FILE IMPLEMENTS THE ML SIDE ONLY.  For one entity of the interpretation
