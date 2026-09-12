@@ -18,7 +18,7 @@ import random
 import re
 from collections import deque
 from collections.abc import Callable, Generator, Iterable
-from typing import TYPE_CHECKING, Any, NamedTuple, Self
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
 from filelock import FileLock, Timeout as _LockTimeout
@@ -506,12 +506,6 @@ class AgentTask:
         # that of a dead network; this trail is the only thing that tells them apart.
         self.api_retry_errors: list[tuple[Any, Any]] = []
 
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        pass
-
     # --- the work queue (plan §5.3) ---
 
     def enqueue(self, idx: int) -> None:
@@ -601,10 +595,12 @@ class AgentTask:
                            self.run_cache_read_tokens, self.run_output_tokens,
                            self.run_cost_usd)
 
-    def historical_cost(self) -> tuple[int, int, int, int, float]:
-        """Read cumulative cost from LMDB (without modifying it).  A layered
-        read: a system-resident status counts, a tombstoned one reads as zero."""
-        raw = Semantic_DB._get_raw(self.theory_key)
+    @staticmethod
+    def historical_cost(theory_key: bytes) -> tuple[int, int, int, int, float]:
+        """Read a theory's cumulative cost from LMDB (without modifying it).  A
+        layered read: a system-resident status counts, a tombstoned one reads
+        as zero."""
+        raw = Semantic_DB._get_raw(theory_key)
         if not raw:
             return (0, 0, 0, 0, 0.0)
         prev = unpack_thy_status(raw)
@@ -1014,6 +1010,7 @@ async def _report(msg: str, *, warn: bool = False) -> None:
     (default 1000) and exceeding it pops Isabelle's own blocking "Tracing paused" dialog
     (isabelle_process.ML:35-60).  A large cone would hit that.
     """
+    msg = f"[Semantic_Embedding] {msg}"
     (_log.warning if warn else _log.info)("%s", msg)
     conn = Connection.current()
     if conn is None:
@@ -1649,16 +1646,20 @@ async def interpret_file(
             position, and universal_key.
         driver: The Isabelle side's `"<Driver>[.<model>]"` choice, "" if it made
             none; `_resolve_driver` decides what actually runs.
-        dry_run: Mode 4 (CHECK_OUTDATE_PLAN.md §8): stop right after the cache
-            filter and return how many entries an ordinary run would send to
-            the LLM.  No LLM runs, no cost is written, and the theory is never
-            marked interpreted; the count comes from the same filter an
-            ordinary run applies, so it cannot drift from the actual work.
+        dry_run: Mode 4 (CHECK_OUTDATE_PLAN.md §8): stop after the scan and
+            return the seed set's size against the store as it stands now --
+            per theory, against the store state this scan read, every counted
+            seed is sent (the dependents the gate enrols are not counted),
+            summed over a
+            cone neither bound (an ancestor theory's UNCHANGED verdict can
+            wall off a seed counted here; plan §5.2); exact at zero.  No LLM
+            runs, no cost is written, and the theory is never marked
+            interpreted.
 
     Returns:
         InterpretationResult with per-entry interpretations, pretty-prints,
         and cost summaries (current run + cumulative); under ``dry_run``, the
-        number of entries that still need interpretation.
+        seed count.
     """
     n = len(entries)
 
@@ -1753,8 +1754,8 @@ async def interpret_file(
         # The statement refresh is its only write, so an `expr`-only change
         # is refreshed even when the cone quotes zero (§5.3.2).
         _refresh_statements(entries, rec_cache, not_enrolled)
-        _log.info("interpret_file (dry run): %s -- at least %d of %d entries need "
-                  "interpretation", theory_longname, len(seeds), n)
+        _log.info("interpret_file (dry run): %s -- %d of %d entries are seeds",
+                  theory_longname, len(seeds), n)
         return len(seeds)
 
     # Resolve before any LLM work: a misspelt driver name is a configuration
@@ -1768,14 +1769,13 @@ async def interpret_file(
     # interpret" means nothing to someone watching from a theory buffer.
     if not seeds:
         await _report(f"{theory_longname}: all {n} entities are already interpreted "
-                      f"in the semantic database and up to date, nothing to ask.")
+                      f"in the semantic database, nothing to ask.")
     elif n_cached:
-        await _report(f"Interpreting {theory_longname}: found {n} entities to interpret; "
-                      f"{n_cached} are already interpreted and up to date, asking the "
-                      f"LLM for the remaining {len(seeds)} (new or outdated).")
+        await _report(f"Interpreting {theory_longname}: {n} entities; {n_cached} are "
+                      f"already interpreted, asking the LLM for {len(seeds)} (or more).")
     else:
-        await _report(f"Interpreting {theory_longname}: found {n} entities to interpret; "
-                      f"none are in the semantic database yet, asking the LLM for all {n}.")
+        await _report(f"Interpreting {theory_longname}: {n} entities, none are in the "
+                      f"semantic database yet, asking the LLM for all {n}.")
     current_cost = cumulative_cost = _NO_COST
 
     if seeds:
@@ -1815,112 +1815,108 @@ async def interpret_file(
         # a seed must be enrollable later, so it needs an index, a state and a
         # result slot.  Non-seeds start _NOT_ENROLLED with their stored text;
         # seeds are enqueued in wire order.
-        with InterpretationTask(
+        task = InterpretationTask(
             connection, file_path, theory_longname, theory_key, entries,
             driver=driver_name, model=model,
             unicode_file_path=unicode_file_path,
             rec_cache=rec_cache, dependents=dependents,
             emb_store=emb_store, run_state=run_state,
             make_judge_driver=make_judge_driver,
-        ) as task:
-            for i in not_enrolled:
-                task.results[i] = results[i]
-            for i in seeds:
-                task.enqueue(i)
+        )
+        for i in not_enrolled:
+            task.results[i] = results[i]
+        for i in seeds:
+            task.enqueue(i)
 
-            # The desugar tool annotates each constant it shows with its English
-            # description, and skips a constant it has already annotated in this
-            # conversation.  Once the backend compacts the conversation those
-            # annotations are gone from the agent's context while this set still
-            # says "told them" — so the driver clears it just before compacting
-            # (`on_context_reset`), and the agent never sees an unexplained
-            # constant.  It is a bare local reachable from neither `task` nor the
-            # tool objects, hence its own channel into the driver.
-            seen_constants: set[str] = set()
-            # Both lookup tools hide this theory's stored interpretations (D18,
-            # `AgentTask.theory_keys`): the agent interprets from the source.
-            query_by_name_tool = mk_query_by_name_tool(
-                connection, hidden_keys=task.theory_keys, file_path=file_path)
-            definition_tool = mk_definition_tool(connection, unicode=True)
-            hover_tool = mk_hover_tool(connection, unicode=True)
-            desugar_tool = mk_desugar_and_explain_tool(
-                connection, file_path=file_path, seen_constants=seen_constants,
-                dedup=driver_cls.REPORTS_CONTEXT_RESET, hidden_keys=task.theory_keys)
-            tools = [query_by_name_tool, definition_tool, hover_tool,
-                     desugar_tool, mk_answer_tool(task)]
+        # The desugar tool annotates each constant it shows with its English
+        # description, and skips a constant it has already annotated in this
+        # conversation.  Once the backend compacts the conversation those
+        # annotations are gone from the agent's context while this set still
+        # says "told them" — so the driver clears it just before compacting
+        # (`on_context_reset`), and the agent never sees an unexplained
+        # constant.  It is a bare local reachable from neither `task` nor the
+        # tool objects, hence its own channel into the driver.
+        seen_constants: set[str] = set()
+        # Both lookup tools hide this theory's stored interpretations (D18,
+        # `AgentTask.theory_keys`): the agent interprets from the source.
+        query_by_name_tool = mk_query_by_name_tool(
+            connection, hidden_keys=task.theory_keys, file_path=file_path)
+        definition_tool = mk_definition_tool(connection, unicode=True)
+        hover_tool = mk_hover_tool(connection, unicode=True)
+        desugar_tool = mk_desugar_and_explain_tool(
+            connection, file_path=file_path, seen_constants=seen_constants,
+            dedup=driver_cls.REPORTS_CONTEXT_RESET, hidden_keys=task.theory_keys)
+        tools = [query_by_name_tool, definition_tool, hover_tool,
+                 desugar_tool, mk_answer_tool(task)]
 
-            def make_driver() -> InterpretationDriver:
-                return make_interpretation_driver(
-                    driver_name,
-                    model=model,
-                    system_prompt=_SYSTEM_PROMPT,
-                    tools=tools,
-                    task=task,
-                    on_context_reset=seen_constants.clear,
-                )
+        def make_driver() -> InterpretationDriver:
+            return make_interpretation_driver(
+                driver_name,
+                model=model,
+                system_prompt=_SYSTEM_PROMPT,
+                tools=tools,
+                task=task,
+                on_context_reset=seen_constants.clear,
+            )
 
-            _log.info("interpret_file: starting %s agent on %s with %d entries",
-                      driver_name, model or "the backend's default model",
-                      task.enrolled())
-            # The gates are tasks of this group, so interpret_file returns only
-            # after every one of them has joined -- which is what makes every
-            # write of this theory visible to the descendants schedule_dag
-            # starts afterwards (plan §5.3 termination).  A failure is raised
-            # OUTSIDE the except block, so the leaf keeps its own __context__
-            # instead of the group (plan §5.4 failures).
-            failure: BaseException | None = None
-            try:
-                async with asyncio.TaskGroup() as tg:
-                    task.task_group = tg
-                    await _run_agent(make_driver, task)
-            except ExceptionGroup as eg:
-                failure = _first_failure(eg)
-            if failure is not None:
-                raise failure
-            _log.info("interpret_file: agent finished, %d/%d interpreted",
-                      task.n_interpreted(), task.enrolled())
-            # COMPLETENESS INVARIANT: interpret_file either gives every entry an
-            # interpretation or raises; the returned `interpretations` never
-            # contains None.  Isabelle relies on this -- Semantic_Store.interpret'
-            # discards the list entirely, and interpret_cone marks a theory
-            # interpreted as soon as interpret' RETURNS.  Were a partial result to
-            # get back, the theory would be recorded as done with entities missing,
-            # and only `force` could ever redo it.
-            #
-            # The retry loop already raises when it stalls; this is the backstop
-            # that keeps the invariant true no matter how the loop is later
-            # restructured.  "Answered" is not "durable" (D14): the certificate
-            # that licenses mark_interpreted is that every gate joined without
-            # raising (the group above) AND every entry is written or was in
-            # the store to begin with -- the state clause asserted here.
-            # ANYONE RELAXING THIS must also revisit semantic_store.ML's
-            # `val (_, _, current, cumulative)` and interpret_cone's
-            # unconditional mark_interpreted.
-            missing = [i for i, sem in enumerate(task.results) if sem is None]
-            if missing:
-                raise FatalAgentError(task.unanswered_failure(
-                    [task.entries[i].name for i in missing]))
-            assert all(s in (_DONE, _NOT_ENROLLED) for s in task.state), \
-                "every gate joined, yet an answered entry was not written"
-            # Cost is flushed per turn by the driver, so this is normally
-            # a no-op flush; it still returns the up-to-date cumulative totals.
-            cum = task.write_cost()
-            # current_cost = cost of THIS run: the interpretation session's
-            # run-level accumulator (write_cost resets total_*, never run_*)
-            # plus the judge sessions' (§15.9).
-            current_cost = task.run_cost().plus(task.judge_cost)
-            cumulative_cost = CostSummary(*cum)
-            await _report(f"{theory_longname}: done -- {task.n_interpreted()} entities "
-                          f"interpreted, cost ${current_cost.cost_usd:.4f}.")
+        _log.info("interpret_file: starting %s agent on %s with %d entries",
+                  driver_name, model or "the backend's default model",
+                  task.enrolled())
+        # The gates are tasks of this group, so interpret_file returns only
+        # after every one of them has joined -- which is what makes every
+        # write of this theory visible to the descendants schedule_dag
+        # starts afterwards (plan §5.3 termination).  A failure is raised
+        # OUTSIDE the except block, so the leaf keeps its own __context__
+        # instead of the group (plan §5.4 failures).
+        failure: BaseException | None = None
+        try:
+            async with asyncio.TaskGroup() as tg:
+                task.task_group = tg
+                await _run_agent(make_driver, task)
+        except ExceptionGroup as eg:
+            failure = _first_failure(eg)
+        if failure is not None:
+            raise failure
+        _log.info("interpret_file: agent finished, %d/%d interpreted",
+                  task.n_interpreted(), task.enrolled())
+        # COMPLETENESS INVARIANT: interpret_file either gives every entry an
+        # interpretation or raises; the returned `interpretations` never
+        # contains None.  Isabelle relies on this -- Semantic_Store.interpret'
+        # discards the list entirely, and interpret_cone marks a theory
+        # interpreted as soon as interpret' RETURNS.  Were a partial result to
+        # get back, the theory would be recorded as done with entities missing,
+        # and only `force` could ever redo it.
+        #
+        # The retry loop already raises when it stalls; this is the backstop
+        # that keeps the invariant true no matter how the loop is later
+        # restructured.  "Answered" is not "durable" (D14): the certificate
+        # that licenses mark_interpreted is that every gate joined without
+        # raising (the group above) AND every entry is written or was in
+        # the store to begin with -- the state clause asserted here.
+        # ANYONE RELAXING THIS must also revisit semantic_store.ML's
+        # `val (_, _, current, cumulative)` and interpret_cone's
+        # unconditional mark_interpreted.
+        missing = [i for i, sem in enumerate(task.results) if sem is None]
+        if missing:
+            raise FatalAgentError(task.unanswered_failure(
+                [task.entries[i].name for i in missing]))
+        assert all(s in (_DONE, _NOT_ENROLLED) for s in task.state), \
+            "every gate joined, yet an answered entry was not written"
+        # Cost is flushed per turn by the driver, so this is normally
+        # a no-op flush; it still returns the up-to-date cumulative totals.
+        cum = task.write_cost()
+        # current_cost = cost of THIS run: the interpretation session's
+        # run-level accumulator (write_cost resets total_*, never run_*)
+        # plus the judge sessions' (§15.9).
+        current_cost = task.run_cost().plus(task.judge_cost)
+        cumulative_cost = CostSummary(*cum)
+        await _report(f"{theory_longname}: {task.n_interpreted()} entities interpreted; "
+                      f"cost ${current_cost.cost_usd:.4f}.")
 
-            results = list(task.results)     # 1:1 with `entries`; the store was written by the gates
+        results = list(task.results)     # 1:1 with `entries`; the store was written by the gates
     else:
         # All cached — read cumulative cost from DB
-        with InterpretationTask(
-            connection, file_path, theory_longname, theory_key,
-            entries=[], driver=driver_name, model=model,
-        ) as task:
-            cumulative_cost = CostSummary(*task.historical_cost())
+        cumulative_cost = CostSummary(*AgentTask.historical_cost(theory_key))
 
     # The statement refresh (§5.3.2), on every live path -- a theory with no
     # seed included.  The scan's not-enrolled list is the right one: every
@@ -2013,15 +2009,16 @@ async def _check_embedding_service(arg: Any, connection: Connection) -> None:
         _log.warning("startup check: the embedding service is not configured; "
                      "the prefilter is off for this run", exc_info=True)
         current_run_state().prefilter_disabled = True
-        await _report("[Semantic_Embedding] The embedding service is not configured: "
+        await _report("The embedding service is not configured: "
                       f"{str(exc) or type(exc).__name__}", warn=True)
 
 
 @isabelle_remote_procedure("Semantic_Store.interpret_file_dry_run")
 async def _interpret_file_dry_run(arg: Any, connection: Connection) -> int:
     """Mode 4 (CHECK_OUTDATE_PLAN.md §8): count, over the same wire payload an
-    ordinary run sends, how many entries still need interpretation.  The driver
-    field arrives as "" and is never read -- nothing runs on this path."""
+    ordinary run sends, the entries that are changed or uncached (the seed
+    set, plan §5.2).  The driver field arrives as "" and is never read --
+    nothing runs on this path."""
     (file_path, theory_longname, theory_key, driver, raw_entries) = arg
     count = await interpret_file(
         connection, file_path, theory_longname, bytes(theory_key),

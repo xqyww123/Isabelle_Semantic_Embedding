@@ -88,7 +88,7 @@ def test_big_n_asks_and_yes_runs():
     assert options == ["Yes", "No", "No, don't ask again in this session"]
     assert len(_live_calls(conn)) == 1
     (ack,) = conn.writelns
-    assert "Choice received" in ack and "interpreting" in ack and str(BIG) in ack
+    assert ack == "[Semantic_Embedding] Choice received."
 
 
 def test_big_n_no_declines_once():

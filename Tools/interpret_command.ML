@@ -93,9 +93,11 @@ fun run (force : bool) names state =
     val _ = List.app Theory_Hash.store_theory_hash roots
 
     (* Mode 4 / dry run (CHECK_OUTDATE_PLAN.md §8): the entity count n is the one
-       workload number -- it is computed by the very cache filter the live run
-       applies, so the confirmation below quotes exactly the work a "Yes" buys.
-       The theory names only show the user the scope. *)
+       workload number: the cone's changed / uncached entities against the store as it
+       stands now.  A "Yes" may buy more (a CHANGED verdict of the semantic change gate
+       enrols dependents) or fewer (an ancestor theory's UNCHANGED verdict walls off a
+       dependent counted here; SEMANTIC_CHANGE_GATE_PLAN.md §5.2); exact at zero.  The
+       theory names only show the user the scope. *)
     val (work_names, n) = Semantic_Store.dry_run force (map Context.Theory roots)
     val m = length work_names
 
@@ -135,10 +137,12 @@ fun run (force : bool) names state =
           (if m > limit then ", ... (and " ^ string_of_int (m - limit) ^ " more)" else "")
 
         val info = String.concat [
-          "[Semantic_Embedding] ", string_of_int n,
-          (if n = 1 then " entity needs" else " entities need"), " interpretation, across ",
-          string_of_int m, (if m = 1 then " theory" else " theories"), ":\n",
+          "[Semantic_Embedding] About ", string_of_int n,
+          (if n = 1 then " entity in the following theories is"
+           else " entities in the following theories are"),
+          " new or outdated:\n",
           listing, "\n",
+          "The run interprets these and, where a meaning changed, their dependents.\n",
           "This calls the LLM: it may take a long time and cost money.\n",
           "Afterwards, missing vector embeddings are computed as well (embedding API; far cheaper)."]
         (* roots, NOT work: interpret_with_parallel re-derives the cone itself and needs

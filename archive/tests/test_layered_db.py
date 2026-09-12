@@ -420,7 +420,7 @@ def test_write_cost_accumulates_onto_system_status(cache):
     task.total_cache_read_tokens = 0
     task.total_output_tokens = 4
     task.total_cost_usd = 0.5
-    assert task.historical_cost() == (10, 0, 0, 2, 1.0)      # layered read
+    assert SI.AgentTask.historical_cost(HA) == (10, 0, 0, 2, 1.0)   # layered read
     total = task.write_cost()
     assert total == (11, 0, 0, 6, 1.5)                       # system values continue
     st = S.unpack_thy_status(_user_raw(HA))

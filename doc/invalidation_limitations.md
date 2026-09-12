@@ -1,10 +1,13 @@
 # 增量失效机制的已知缺陷
 
 **日期**: 2026-07-20（2026-07-28 随机制落地同步：计划节号更新、补缺陷 6、
-删除已作废的「手动强制重解释入口」承诺）
+删除已作废的「手动强制重解释入口」承诺；2026-09-12 随 semantic change gate 落地
+补缺陷 7）
 **状态**: 缺陷均已知且被明确接受；机制本体已落地（`Tools/semantic_digest.ML` +
-`semantic_interpretation.py` 的待办集过滤，CHECK_OUTDATE_PLAN M1–M4）
-**关联**: `CHECK_OUTDATE_PLAN.md`（仓库根；本文是其 §4.4/§7.3 的接受缺陷登记处）
+`semantic_interpretation.py` 的种子集过滤与 semantic change gate，CHECK_OUTDATE_PLAN
+M1–M4 + SEMANTIC_CHANGE_GATE_PLAN）
+**关联**: `CHECK_OUTDATE_PLAN.md`（仓库根；本文是其 §4.4/§7.3 的接受缺陷登记处）；
+`ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md`（缺陷 7 的机制与测量）
 
 本文集中记录 `check_outdate` 增量失效机制**已知不能覆盖的情况**。这些缺陷是设计权衡的
 结果，不是实现 bug。写下来是为了避免日后有人误以为覆盖是完备的，也为将来改进留下起点。
@@ -23,6 +26,7 @@
 | 4 | method 永不过期 | 低 | 28 个 |
 | 5 | theorem collection 永不过期 | 低 | 64 个 |
 | 6 | 无记录的 dep 目标贡献 eff 0（infra 死边） | 低 | Main 上 28% 的 dep 目标 |
+| 7 | semantic change gate 的误判「same」让下游停留在过期解释 | 低 | 被误判实体的独占下游依赖者 |
 
 ---
 
@@ -232,3 +236,50 @@ uninterpreted 的常量（`[[uninterpreted_constant …]]` 或 `Performant_Isabe
 与缺陷 1/2 相同——本机制检测英文解释是否过时，不算逻辑闭包；infra 实体的语义
 变动几乎不改变依赖者的英文描述。persistent 侧不受影响（infra theory 的内容变化
 照样使 Merkle hash 漂移）。
+
+---
+
+## 7. semantic change gate 的误判「same」让下游停留在过期解释
+
+### 机制
+
+自 semantic change gate（`ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md`）落地起，一个
+tracked 实体（constant / type / typeclass / locale）被重解释之后——无论它是因 digest
+变化进了种子集，还是被上游的 CHANGED 裁定纳入——都比较新旧两段英文解释：一个 LLM
+judge 回答「意思是否相同」，并以两段 embedding document 的 cosine 相似度作后备——judge
+说 same **且** cosine ≥ 0.90 才算 UNCHANGED；相似度无法计算时（embedding 服务未配置或
+不响应，计划 D2）后备关闭，由 judge 独判，漏判率回到下面「judge 单独」那一行。
+只有判 CHANGED 才 mint 新 version、才把依赖者纳入重解释；判 UNCHANGED 则它之下的
+依赖者被屏蔽（eff\*，计划 §4）。
+
+### 缺陷
+
+judge 把一次真实的意思变化误判为 same（且 cosine ≥ 0.90）时，该实体不 mint，
+**只经它**到达这次变更的下游依赖者不会重解释，直到该实体或它们的另一条上游再次
+变化为止。另一条上游的变化照常传播——屏蔽只作用于被误判的那一跳。
+
+### 测得的比率
+
+- judge 单独：严格标准下漏判 1/87（1.1 %），误报 5/663；测量总体以 lemma 为主
+  （`ai-artifacts/similarity_measurement/REPORT_PHASE2.md` §7、§11）。
+- 加 0.90 后备后：tracked kinds 漏判 0/24（type class 与 type 未测，计划 §7）；
+  全部 kinds 0/87。
+- 代价模型：漏判率按 1 % 计，一次误判平均留下 0.6 个本应重解释的下游实体
+  （`ai-artifacts/eff_shield_verification/REPORT.md`）。
+
+### 生产 judge 与测量所用 comparator 的偏差
+
+测量用 gpt-5.6-sol、reasoning effort low、每对一次调用、JSON 回答，prompt 写的是
+「a constant, a lemma, a type, or a locale」。生产 judge 用解释 driver 的模型
+（`Semantic_Embedding.interpretation_driver`），系统提示词列 constant / type /
+typeclass / locale，经 `verdict` 工具报告，没有 verdict 时补问一轮；Codex driver
+的只读沙箱允许 judge 读文件（计划 §5.5）。上面的比率因此不能直接照搬。
+
+### 被中断的强制 run（计划 §8.1）
+
+ML 侧中断时 `schedule_dag` 取消任务而不等它们结束，各 worker 连接各自关闭，
+Python 侧对被取消的 handler 保留 3 秒宽限，其间它的 gate 写入仍可能 mint。下一个
+run 若已读到 mint 前的记录，就会错过这次 mint。theory 之间靠 `schedule_dag` 的
+祖先先于后代、theory 之内靠计划 §5.3.1 的入队与 snapshot raise 兜底，唯一残留的
+角落是：被中断的 force run 作用于本进程内已 mark 的 theory。记录本身不会损坏
+（每次写入是一个事务）。

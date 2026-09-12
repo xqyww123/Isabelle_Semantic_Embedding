@@ -726,7 +726,8 @@ def test_an_embedding_failure_skips_the_prefilter_for_the_rest_of_the_run(run, m
     assert run.judged == ["T.a", "T.b", "T.c"], "the judge decides alone"
     assert [_rec(n).version for n in "abc"] == [1, 1, 1]
     lines = [r.getMessage() for r in caplog.records if "did not respond" in r.getMessage()]
-    assert lines == ["The embedding service did not respond: embedding service down"]
+    assert lines == ["[Semantic_Embedding] The embedding service did not respond: "
+                     "embedding service down"]
     assert sum("prefilter: the embedding call failed" in r.getMessage() for r in caplog.records) \
         == len(provider.calls), "the host log keeps every failure"
 
@@ -741,7 +742,8 @@ def test_a_slow_embedding_call_is_cut_at_the_prefilter_timeout(run, monkeypatch,
     assert run.run_state.prefilter_disabled and run.judged == ["T.a"]
     assert _rec("a").version == 2
     lines = [r.getMessage() for r in caplog.records if "did not respond" in r.getMessage()]
-    assert lines == ["The embedding service did not respond: TimeoutError"], \
+    assert lines == ["[Semantic_Embedding] The embedding service did not respond: "
+                     "TimeoutError"], \
         "a bare TimeoutError has an empty str; the class name fills the slot"
 
 

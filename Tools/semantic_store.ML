@@ -54,13 +54,16 @@ signature SEMANTIC_STORE = sig
   (* Mode 4 / dry run (CHECK_OUTDATE_PLAN.md §8): the system's ONE workload-metering
      implementation.  Level 1 filters the ancestor cone of `roots` down to the theories
      still needing interpretation (one `Semantic_Store.is_interpreted` RPC per cone
-     node); level 2 enumerates each one's entities and has Python count -- with the
-     very filter a live run applies -- how many would actually be sent to the LLM.
+     node); level 2 enumerates each one's entities and has Python count its seed set.
      A Proof root is additionally enumerated as itself (the live path's proof
      channel), mirroring interpret_with_parallel.  Returns (long names of the due
-     theories, the entity count).  Counts only: no LLM call, no cost written, and
-     no theory marked interpreted -- the same theories stay due until a live run
-     completes (write-back discipline 3). *)
+     theories, the entity count).  The count is the sum of the cone's seed sets
+     (see dry_run_payload) against the store as it stands before the run; the live
+     run can send more (CHANGED verdicts enrol dependents) or fewer (an ancestor
+     theory's UNCHANGED verdict walls off a dependent counted here); exact at zero
+     (SEMANTIC_CHANGE_GATE_PLAN.md §5.2).  Counts only: no
+     LLM call, no cost written, and no theory marked interpreted -- the same theories
+     stay due until a live run completes (write-back discipline 3). *)
   val dry_run : bool -> Context.generic list -> string list * int
   (* Level 2 alone, one theory, no level-1 due-filter -- exposed for sizing
      measurements (archive/plans/INFRA_FILTER_REWORK_PLAN.md step 4). *)
@@ -264,7 +267,7 @@ fun fmt_usage ({input, cache_write, cache_read, output, cost} : usage) =
    `run_semantic_interpretation`. *)
 (* Default TRUE since CHECK_OUTDATE_PLAN §8/§12 landed: the two preconditions
    for the flip -- the flat-path removal (cone-only interpretation) and the
-   policy shell with its real-workload confirmation (update_interpretations,
+   policy shell with its confirmation (update_interpretations,
    quoting the dry run's entity count before any large LLM spend) -- are both
    in place, so an enabled gate can no longer silently ignite an unbounded
    sweep from a query. *)
@@ -476,11 +479,11 @@ fun make_interpret_file_cmd callbacks :
 }
 
 (* Mode 4 / dry run: same payload as interpret_file (one wire format, one Python-side
-   parser -- the count comes from the very cache filter a live run applies, so the
-   report cannot drift from the work), but Python stops after that filter and returns
-   how many entities it would have sent to the LLM.  The driver field is unread on
-   this path (no LLM runs) and is sent as "".  No callbacks: the dry path never
-   invokes the interpretation agent's tools. *)
+   parser -- the dry scan sees exactly the entities a live run's scan sees), but
+   Python stops after the scan and returns the size of its seed set (see the
+   signature comment of `dry_run`).  The driver field is unread on this path (no LLM
+   runs) and is sent as "".  No callbacks: the dry path never invokes the
+   interpretation agent's tools. *)
 val interpret_file_dry_run_cmd :
     ({file_path: string, theory_longname: string, theory_key: Universal_Key.universal_key,
       driver: string,
@@ -1470,8 +1473,8 @@ fun interpretation_rpc_error message =
 (* The enumerate half of interpret' (CHECK_OUTDATE_PLAN.md §8's two-piece split):
    steps 1-6 -- enumerate the context's entities, build the wire entries, run the
    label-uniqueness assert -- with no LLM-side effect.  Shared verbatim by the live
-   path (interpret') and the dry run (dry_run'), which is what makes a dry-run
-   report equal the live work set by construction. *)
+   path (interpret') and the dry run (dry_run_payload), so both see the same
+   entities. *)
 fun enumerate_entries (context : Context.generic) =
   let
     (* 1. Get theory information *)
@@ -1900,9 +1903,11 @@ fun interpret' (driver : string) (config_cb : Remote_Procedure_Calling.callback'
   end
 
 (* Per-theory dry run (level 2 of Semantic_Store.dry_run): same enumeration as a live
-   run, then the interpret_file_dry_run RPC -- Python applies the live run's cache
-   filter and returns how many entities the LLM would be asked about, doing nothing
-   else.  No driver is involved: nothing runs. *)
+   run, then the interpret_file_dry_run RPC -- Python returns the size of its seed
+   set and does nothing else.  A LOWER BOUND on the live run's work: this theory's
+   changed / uncached entities.  Their dependents are not counted -- whether a change
+   propagates is decided by the semantic change gate after re-interpretation, which a
+   dry run never runs.  Exact at zero.  No driver is involved: nothing runs. *)
 fun dry_run_payload {file_path, theory_longname, theory_key, entries,
                      position_report = _, tie_break_degraded = _} : int =
   if null entries then 0
@@ -2233,14 +2238,14 @@ fun dry_run (force : bool) (roots : Context.generic list) : string list * int =
         string_of_int m, (if m = 1 then " theory..." else " theories...")])
     val proofs = filter (fn Context.Proof _ => true | _ => false) roots
     (* Theory channel: enumerate once per theory, count via the RPC, and KEEP
-       the enumerated uks.  One dry_run is ONE metering (the quote must equal
-       the live work, CHECK_OUTDATE_PLAN.md section 8), so the proof channel
-       below must never re-count a uk this channel already counted: the
-       proof-context enumeration is subtractive only for static theorems --
+       the enumerated uks.  No uk may be counted twice inside one dry run, or n
+       overstates the seed set: the proof channel below must
+       never re-count a uk this channel already counted -- the proof-context
+       enumeration is subtractive only for static theorems, while
        constants/types/classes/locales/collections/methods/rules re-enumerate
        with identical uks, which the live run pays once (theory channel writes
        first, the proof channel's copies are cache-filtered) but a plain sum
-       here counted twice, an upward-only quote drift (review R2). *)
+       here counted twice (review R2). *)
     val work_results =
       schedule_dag "Semantic_Store.dry_run"
         (fn thy => fn () =>

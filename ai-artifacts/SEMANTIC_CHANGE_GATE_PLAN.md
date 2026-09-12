@@ -35,8 +35,14 @@ a `CancelledError`, also from `_judge`'s handler), the grant check on the
 writer's own dict, the lock acquire's RPC-error conversion, the `_label`
 reuse, the head-keyed provenance collapse, and the tests §10 now lists;
 the user rejected narrowing `update_gate_fields` and any change to the
-system prompt or to the hint's behaviour for other theories; step 8 pending
-approval to start.**
+system prompt or to the hint's behaviour for other theories; step 8 (§12
+texts, §11 docs, elegance-INT-4) done and reviewed 2026-09-12
+(`ai-artifacts/review_step8/`, `judge.json`, `rereview_judge.json`): the
+review refuted the "dry-run count is a lower bound over a cone" claim (D7,
+§5.2 corrected: neither bound, exact at zero) and the user re-approved §12
+#8–#11 with "About n"; all §13 items are implemented.  Still the user's
+call: the paid §10 items (a live run's host log, the interactive scaffold)
+and PATH 20 of the disclosure audit.**
 Three review rounds (rev 1: 98 agents; rev 2: 23; rev 3: 23) and the user's
 rulings on them are absorbed.  Rev 5.3 records the user's decisions of
 2026-09-08/09 after the step-3 code review: D11 revised (a correction re-runs
@@ -98,7 +104,7 @@ cone; the interpretation lock (§8) serialises runs per database.
 | D4 | The baseline interpretation is stored as text in the Record |
 | D5 | The prefilter embedding model follows `Semantic_Embedding.embedding_model` |
 | D6 | **No on/off option**: gate and eff\* are always on (they must switch together) |
-| D7 | The dry run returns one number per theory, **a lower bound** on the run's work: the seed set's size (§5.2); it serves the two existing `n = 0` guards and the 400 threshold, and is shown to the user as "at least n" (§12) |
+| D7 | The dry run returns one number per theory, the seed set's size (§5.2) — per theory, against the store state that scan read, every counted seed is sent, but summed over a cone **neither bound** (step-8 review, 2026-09-12); it serves the two existing `n = 0` guards (where it is exact) and the 400 threshold, and is shown to the user as "About n" (§12, re-approved 2026-09-12) |
 | D8 | Interpretation lock, **try once, never wait**: `by aoa`'s startup check and `_auto_embed` skip with one line; `run_semantic_interpretation` and `Semantic_Store.collect` raise an error.  A dry run is never locked |
 | D9 | 0.90 is a Python constant, not an option |
 | D10 | **Failure principle**: nothing ever mints a version silently or hides a failure — a mint happens only on the gate's explicit CHANGED verdict; an outcome the gate could not judge is CHANGED (conservative) and is logged; an answer whose gate did not finish is never written (D14), so the next scan re-lists the entity by the very criterion that enrolled it (§5.4, §6.4) |
@@ -232,13 +238,19 @@ finite, and no gate run ever re-interprets an entity.
 **Dry run (D7).**  `interpret_file(dry_run=True)` returns the seed set's size
 after the statement refresh of the not-enrolled entries (its only write: an
 `expr` and a vector tombstone, no gate field, no mint, no counter put); ML
-`dry_run`, `interpret_file_dry_run_cmd`, `pack_arg` unchanged (one `int`).  The number is a **lower bound** on the live run's work:
-dependents, in this theory or in others, are not counted, because whether a
-change propagates is decided by the gate after re-interpretation, which a dry
-run never runs; summed over a cone it is the work of a run in which every
-gate says "unchanged".  It is exact at zero (no seed anywhere ⇒ no gate mints
-⇒ the `n == 0` guards in `update_interpretations` and `interpret_command.ML:122`
-stay exact).  The comment at both dry-run sites (semantic_store.ML's dry-run
+`dry_run`, `interpret_file_dry_run_cmd`, `pack_arg` unchanged (one `int`).  The number is the sum of the
+theories' seed sets against the store as it stands before the run.  Per
+theory, against the store state the dry run read, every counted seed is
+sent (dependents are not counted: whether a change propagates is decided
+by the gate after re-interpretation, which a dry run never runs).  Summed over a cone it is
+**neither bound** (step-8 review, 2026-09-12): the live run can send more (a
+CHANGED verdict enrols dependents) or fewer -- `schedule_dag` scans a
+descendant theory only after its ancestors' writes, and an ancestor's
+UNCHANGED verdict raises its `interpreted_at` to eff\*, walling off a
+dependent in the later theory that the dry run had counted.  It is exact at
+zero (no seed anywhere ⇒ no gate mints ⇒ the `n == 0` guards in
+`update_interpretations` and `interpret_command.ML:122` stay exact); the
+user-visible texts therefore say "About n" (§12 #8–#11).  The comment at both dry-run sites (semantic_store.ML's dry-run
 comment, Python's `dry_run` branch), approved wording (2026-09-08, rev 5):
 
 > A LOWER BOUND on the live run's work: this theory's changed / uncached
@@ -820,17 +832,17 @@ queue loop and the per-entity gate:
   immutable and concurrent runs are excluded by the lock, up to rpc.py's 3 s
   grace after a worker connection closes, during which a cancelled handler's
   gate write may still mint); §8's pipeline block; §8 metering: the dry run
-  count is a lower bound (the approved comment), shown as "at least n";
-  §14's dry-run row: the "quote = actual work" assertion is **retired**,
-  replaced by "n ≤ the entities the following live run sends, and n = 0 iff
-  it sends none"; glossary.
+  count is the sum of the seed sets, neither bound over a cone (§5.2),
+  shown as "About n"; §14's dry-run row: the "quote = actual work" assertion
+  is **retired**, replaced by "n = 0 iff the following live run sends none"
+  (the step-8 review refuted the interim "n ≤ …" row, 2026-09-12); glossary.
 - ML and Python sites that state the retired equality or the scan-time
   bump, found by grepping for `metering`, `quote`, `actual work`, `by
   construction`, `would be asked` (not for a local `n`): semantic_store.ML
   :39-48, :1447-1451, the dry-run comment, and :2199-2207 — whose
   de-duplication below the proof channel is justified there ONLY by the
   retired equality and must be restated on a premise that survives ("no uk
-  may be counted twice inside one quote, or n stops being a lower bound");
+  may be counted twice inside one dry run, or n overstates the seed set");
   interpret_command.ML:94-98; semantic_interpretation.py:890-894 (the scan
   comment) and :1228-1240 (the completeness-invariant comment, restated per
   §15.4: every `results` non-None AND every gate joined without raising).
@@ -862,14 +874,18 @@ queue loop and the per-entity gate:
    `[Semantic_Embedding] Choice received.`
 7. Closing line per theory (approved 2026-09-08, rev 5 wording):
    `[Semantic_Embedding] <theory>: <A> entities interpreted; cost $<x>.`
-8. Isar command confirmation:
-   `[Semantic_Embedding] At least <n> entities in the following theories are new or outdated and need interpretation:` / `<theory list>` / `This calls the LLM: it may take a long time and cost money.` / `Afterwards, missing vector embeddings are computed as well (embedding API; far cheaper).`
-9. AoA startup dialog (the existing explanatory sentences and `Proceed?` follow):
-   `[Semantic_Embedding] At least <n> entities in the following theories are new or outdated and need interpretation: <theory list>`
-10. Below-threshold tracing line:
-    `[Semantic_Embedding] interpreting at least <n> new or outdated entities in <M> theories`
-11. Non-interactive warning:
-    `[Semantic_Embedding] At least <n> entities in <M> theories are new or outdated and were not interpreted automatically. This can degrade AoA's retrieval quality. Run run_semantic_interpretation to update them.`
+8. Isar command confirmation (re-approved 2026-09-12 with "About": the
+   dry-run count is neither bound over a cone, §5.2; n = 1 reads
+   `1 entity … is`):
+   `[Semantic_Embedding] About <n> entities in the following theories are new or outdated:` / `<theory list>` / `The run interprets these and, where a meaning changed, their dependents.` / `This calls the LLM: it may take a long time and cost money.` / `Afterwards, missing vector embeddings are computed as well (embedding API; far cheaper).`
+9. AoA startup dialog (re-approved 2026-09-12; the existing NOTE paragraph
+   sits between the two parts):
+   `[Semantic_Embedding] About <n> entities in the following theories are new or outdated: <theory list>` … `The run interprets these and, where a meaning changed, their dependents.` / `This calls the LLM: it may take a long time and cost money. Proceed?`
+10. Below-threshold tracing line (re-approved 2026-09-12; `entity … its` at
+    n = 1, `theory` at M = 1):
+    `[Semantic_Embedding] interpreting about <n> new or outdated entities in <M> theories, and their dependents where a meaning changed`
+11. Non-interactive warning (re-approved 2026-09-12; `theory` at M = 1):
+    `[Semantic_Embedding] About <n> entities in <M> theories are new or outdated and were not interpreted automatically. This can degrade AoA's retrieval quality. Run run_semantic_interpretation to update them.`
 
 12. Dry-run comment at both dry-run sites (approved 2026-09-08, rev 5
     wording; the text is in §5.2).

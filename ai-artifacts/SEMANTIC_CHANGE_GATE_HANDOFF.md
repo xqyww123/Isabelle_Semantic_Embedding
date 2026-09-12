@@ -62,16 +62,53 @@ All paths relative to `contrib/Semantic_Embedding/`.
   needs the user's go-ahead.  Step 5's test file must carry the enrolment
   test with a not-enrolled entry NOT in last position (step-4 judge).
 
-## Integration review of steps 1–7 (2026-09-12; read this before step 8)
+## Entry point after step 8 (2026-09-12)
+
+- Step 8 is DONE and reviewed (`ai-artifacts/review_step8/SCOPE.md`,
+  `judge.json`, `rereview_judge.json`, the two diffs); the re-review judged
+  ACCEPTABLE_AFTER_FIXES with three prose fixes, all applied, no further
+  re-review required.  Uncommitted at the time of writing (commit on the
+  user's "提交"): `semantic_interpretation.py`, `semantics.py`,
+  `Tools/interpret_command.ML`, `Tools/semantic_store.ML`, three tests,
+  `README.md`, `doc/invalidation_limitations.md`, the plan, this file,
+  `ai-artifacts/review_step8/`; outside this repository the untracked
+  `/home/qiyuan/Current/MLML/CHECK_OUTDATE_PLAN.md`.  Foreign uncommitted
+  edits still in the tree (leave them): `Tools/entity_position.ML`,
+  `archive/tests/test_migrate_from_collection.py`.  Last commits:
+  Semantic_Embedding `6cac576`, superproject `e87b531f`; nothing pushed.
+- What step 8 changed (essence): `_report` prefixes every line it forwards
+  with `[Semantic_Embedding] `; §12 #6–#11 and #16 at their sites; the
+  review refuted the plan's claim that the dry-run count is a lower bound
+  over a cone (an ancestor theory's UNCHANGED verdict raises its
+  `interpreted_at` and walls off a dependent in a later theory that the dry
+  run counted), so the user re-approved #8–#11 as "About <n>" plus the
+  sentence "The run interprets these and, where a meaning changed, their
+  dependents." (#8, #9; a clause in #10), with singular forms at n = 1 /
+  M = 1; D7, §5.2, §11, §12 and CHECK_OUTDATE_PLAN.md say "neither bound,
+  exact at zero".  elegance-INT-4 applied (`__enter__/__exit__` gone,
+  `historical_cost` a staticmethod).  §13 is complete.
+- Still the user's decisions: whether to run the two paid §10 acceptance
+  items (a live run with the production driver, its host log; the
+  interactive scaffold on `Sim_Measure_B.thy` vs `Sim_Measure_A1.thy`); and
+  whether to close the CLI built-ins channel (PATH 20 below) -- the judge
+  recorded it, the user has not ruled.
+- Process rules unchanged: approval before production code ("批准" /
+  "开工"); tests and comments are the implementer's call ("与测试相关的...
+  自行决定", "所有跟注释相关的可以由你自行决定"); reviews as workflows
+  (Opus 5, English), reports in Chinese; commit only on "提交"; never push;
+  minimal fixes ("你修法一定要简单"); never change existing behaviour
+  beyond the user's decision; before declaring a decision implemented,
+  GREP FOR EVERY SITE it touches (the D18 lesson: the ML hint was missed).
+
+## Integration review of steps 1–7 (2026-09-12; done, kept as the record)
 
 - Record: `ai-artifacts/review_integration/` -- SCOPE.md (with the two
-  "what changed" sections), `judge.json` (16 findings: 2 major, 7 minor, 1
-  proposal, 6 rejected), `rereview_judge.json` (one blocker: the ML
-  provenance hint, plus small items), `rereview2_judge.json` (ACCEPTABLE;
-  four minor repairs, all applied; the 20-path disclosure audit).  Diffs
-  `working_tree.diff`, `working_tree_v2.diff`.  UNCOMMITTED at the time of
-  writing: commit only on "提交" (the user decides whether alone or with
-  step 8).
+  "what changed" sections and the round-two outcome), `judge.json` (16
+  findings: 2 major, 7 minor, 1 proposal, 6 rejected), `rereview_judge.json`
+  (one blocker: the ML provenance hint, plus small items),
+  `rereview2_judge.json` (ACCEPTABLE; four minor repairs, all applied; the
+  20-path disclosure audit).  Diffs `working_tree*.diff`.  Committed as
+  `6cac576`.
 - New user decisions (in the plan's §2): **D18** -- inside a session no
   stored interpretation of an entity this run enumerated for the theory
   reaches the agent: `AgentTask.theory_keys` (fixed at construction;

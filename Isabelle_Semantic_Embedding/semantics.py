@@ -326,8 +326,9 @@ class _Semantic_DB:
         # A literal 0 must never be stored (§4.4: None/0 read as "unknown,
         # re-judge").
         version: 'int | None' = None
-        # eff(E) snapshot taken BEFORE the interpreting agent started, stored
-        # when its answer lands (write-back discipline 4).
+        # eff*(E) snapshot taken at this entity's own write, after its own
+        # mint, and raised if a dependency mints later in the same run
+        # (write-back discipline 4; SEMANTIC_CHANGE_GATE_PLAN.md §5.3.1).
         interpreted_at: 'int | None' = None
         # Where this entity is declared in Isabelle source, as
         # (portable symbolic file path, line, byte column) -- archive/plans/ENTITY_POSITION_PLAN.md §1.
@@ -1860,8 +1861,8 @@ async def update_interpretations(connection: Connection,
     yields the workload count n.  4. n = 0: nothing to do.  5. n below the
     threshold: interpret silently.  6. otherwise ask (three options; "don't
     ask again" sets the host-wide flag above) when ask_user, else warn with
-    the real n and the explicit command -- and do nothing.  Every answered
-    button press is acknowledged with a writeln naming what happens next."""
+    n and the explicit command -- and do nothing.  Every answered button
+    press is acknowledged with a writeln."""
     global _dont_ask_this_session
     gate = await connection.config_lookup("auto_interpret_for_embedding", ctxt)
     if not gate:
@@ -1874,8 +1875,10 @@ async def update_interpretations(connection: Connection,
         return
     if n < _UPDATE_ASK_THRESHOLD:
         await connection.tracing(
-            f"[Semantic_Embedding] updating {n} new or outdated entity "
-            f"interpretations across {len(thy_names)} theories")
+            f"[Semantic_Embedding] interpreting about {n} new or outdated "
+            f"{'entity' if n == 1 else 'entities'} in {len(thy_names)} "
+            f"{'theory' if len(thy_names) == 1 else 'theories'}, and "
+            f"{'its' if n == 1 else 'their'} dependents where a meaning changed")
         await connection.callback("Semantic_Store.interpret_theories",
                                   (ctxt, names, False, False, include_context))
         return
@@ -1884,8 +1887,8 @@ async def update_interpretations(connection: Connection,
             return          # the user said not to ask; they knowingly declined
         shown = ", ".join(thy_names[:10]) + (", ..." if len(thy_names) > 10 else "")
         answer = await connection.dialogue(
-            f"[Semantic_Embedding] {n} entities across {len(thy_names)} theories "
-            f"need (re-)interpretation: {shown}\n"
+            f"[Semantic_Embedding] About {n} entities in the following theories "
+            f"are new or outdated: {shown}\n"
             f"\n"
             f"NOTE: Semantic_Embedding can only reuse prebuilt semantic "
             f"interpretations for theories that are loaded from a built heap. "
@@ -1896,6 +1899,7 @@ async def update_interpretations(connection: Connection,
             f"theories' prebuilt interpretations are reused instead of being "
             f"re-generated here.\n"
             f"\n"
+            f"The run interprets these and, where a meaning changed, their dependents.\n"
             f"This calls the LLM: it may take a long time and cost money. Proceed?",
             ["Yes", "No", "No, don't ask again in this session"])
         if answer is not None:
@@ -1909,9 +1913,7 @@ async def update_interpretations(connection: Connection,
                 await connection.writeln(
                     "[Semantic_Embedding] Choice received; skipping this update.")
                 return
-            await connection.writeln(
-                f"[Semantic_Embedding] Choice received; interpreting {n} "
-                f"entities across {len(thy_names)} theories ...")
+            await connection.writeln("[Semantic_Embedding] Choice received.")
             await connection.callback("Semantic_Store.interpret_theories",
                                       (ctxt, names, False, False, include_context))
             return
@@ -1921,13 +1923,14 @@ async def update_interpretations(connection: Connection,
         # the string comparisons, which would otherwise swallow None into a
         # silent return.
     # Nobody was asked (ask_user=False, or the dialogue had no responder): the
-    # one warning point of §8's warning discipline -- report the real workload
-    # and the explicit remedy, do nothing.
+    # one warning point of §8's warning discipline -- report the workload
+    # count and the explicit remedy, do nothing.
     await connection.warning(
-        f"[Semantic_Embedding] {n} entities across {len(thy_names)} theories have "
-        f"new or outdated interpretations that were not updated automatically.\n"
-        f"These gaps can degrade AoA's retrieval quality.  Run "
-        f"`run_semantic_interpretation` to update them.")
+        f"[Semantic_Embedding] About {n} entities in {len(thy_names)} "
+        f"{'theory' if len(thy_names) == 1 else 'theories'} "
+        f"are new or outdated and were not interpreted automatically. This can "
+        f"degrade AoA's retrieval quality. Run run_semantic_interpretation to "
+        f"update them.")
 
 
 _RERANK_FETCH_MULTIPLIER = 4
@@ -2131,7 +2134,7 @@ class Semantic_Vector_Store(Vector_Store):
         # (1) Point-fix interpretation of the missing entities' theories,
         # delegated to the policy shell (update_interpretations, CHECK_OUTDATE_
         # PLAN §8) -- which never asks at query time: small jobs run silently,
-        # big ones warn with the dry run's real workload count.  DOUBLE gate:
+        # big ones warn with the dry run's count.  DOUBLE gate:
         # first the per-call `interpret_in_auto_embed` override, falling back
         # to this store's field of the same name (AoA passes False on its
         # lookups -- its by-aoa startup sweep already ran the check, so its

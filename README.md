@@ -80,6 +80,8 @@ If you self-host an embedding model (e.g. via vLLM or TGI), set `embedding_base_
 
 The system guarantees that the query and the stored entities are embedded by the same model. If you change `embedding_model`, all contextual entities will therefore be re-embedded with the new model before the next semantic search — this typically costs little. Changing only `embedding_base_url` while keeping `embedding_model` unchanged triggers no re-embedding.
 
+The embedding model also serves interpretation runs: when a re-run finds that an entity's definition changed, the semantic change gate re-interprets it and compares the old and new interpretations (an LLM judge, backed by the cosine similarity of the two embeddings), and re-interprets the entity's dependents only if the meaning changed — so if the embedding service is not configured, the run says so once and the judge decides alone.
+
 The following subsections cover each configuration option and its available choices in turn.
 
 ### 5.1 `embedding_driver`
