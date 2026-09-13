@@ -45,7 +45,7 @@ were run on 2026-09-12 (`ai-artifacts/acceptance_step10/REPORT.md`,
 ClaudeCode/Opus 5, USD 10.76, isolated store): both pass -- 2 judge
 verdicts, 3 prefilter decisions, 5 mints propagated to 31 dependents, a
 post-run dry run of 0; one finding outside the gate, a `fun`-defined
-constant's digest does not see a change of its equations (`narquil`),
+constant's digest does not see a change of its equations (`narquil`; repaired 2026-09-13 by `ai-artifacts/fun_digest/PLAN.md`, acceptance in `ai-artifacts/fun_digest/ACCEPTANCE.md`),
 raised with the user.  PATH 20 of the disclosure audit accepted as is
 (D20).**
 Three review rounds (rev 1: 98 agents; rev 2: 23; rev 3: 23) and the user's
@@ -232,7 +232,12 @@ index lists over `entries`.  No condensation, no topological order (D13).
 **Seed set** = locally stale ∪ (eff\* over the store > interpreted_at) ∪
 uncached untracked.  Every other entry is filled from the store into
 `task.results`, as today's cached path does.  The **queue** starts as the seed
-set in wire order.
+set in wire order.  The digest is not invariant under renaming (the alpha
+normaliser was removed 2026-09-13), so an entity whose only change is a
+variable rename is a seed: it is re-interpreted once and judged — UNCHANGED
+walls its dependents when the record carries a baseline; a record predating
+the gate (digest, no baseline) is forced CHANGED and mints (§3 row 2).  That
+is the designed path.
 
 Why no closure: a dependent of a seed is enrolled the moment the seed's
 verdict is CHANGED (§5.3.1); until then the seed's record, which still looks

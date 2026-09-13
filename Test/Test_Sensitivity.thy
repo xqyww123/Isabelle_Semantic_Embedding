@@ -65,8 +65,6 @@ subsection \<open>S3 locale: assumes, defines, parents, parameters\<close>
 locale sens_parent = fixes p :: "nat \<Rightarrow> bool" assumes p0: "p 0"
 locale sens_child = sens_parent + assumes p1: "p 1"
 locale sens_def = fixes q :: "nat \<Rightarrow> nat" defines qd: "q \<equiv> \<lambda>n. n + 1"
-locale sens_swapA = fixes f g :: "nat \<Rightarrow> nat" assumes "f 0 = 0"
-locale sens_swapB = fixes f g :: "nat \<Rightarrow> nat" assumes "g 0 = 0"
 
 ML \<open>
 (* NB: `env` above was built at the top of the file, BEFORE these locales were
@@ -93,36 +91,6 @@ in
   check "S3d  sens_def reaches its defines body (depends on Groups.plus)"
     (exists (fn (_, m) => m = "Groups.plus_class.plus")
        (deps2 "Test_Sensitivity.sens_def"))
-end
-\<close>
-
-ML \<open>
-(* Replicate sem_locale's payload construction EXACTLY but WITHOUT the locale
-   name, then normalise the whole thing in ONE pass.  Both details matter:
-   - omit the name, or two differently-named locales always differ and the
-     check passes vacuously (the self-deceiving shape);
-   - normalise params and props TOGETHER, or each prop's Free independently
-     takes z0 and the very desynchronisation under test is reproduced in the
-     test itself -- an earlier version of this check did exactly that and
-     reported a failure the code did not have. *)
-let
-  val thy = \<^theory>
-  fun hyp_props n =
-    Locale.hyp_spec_of thy n
-    |> maps (fn Element.Assumes asms => maps (fn (_, ts) => maps (op ::) ts) asms
-              | Element.Defines defs => map (fn (_, (t, _)) => t) defs
-              | _ => [])
-  val nil_p = Const ("Semantic_Digest.nil", dummyT)
-  fun shape n =
-    let
-      val params = Locale.params_of thy n
-      val pp = fold (fn ((nm, T), _) => fn acc => Free (nm, T) $ acc) params nil_p
-      val ap = fold (fn p => fn acc => Const ("Semantic_Digest.kind.ax", dummyT) $ p $ acc)
-                 (hyp_props n) nil_p
-    in Semantic_Digest.normalize (pp $ ap) end
-in
-  check "S3e  swapping which same-typed parameter is constrained is visible"
-    (shape "Test_Sensitivity.sens_swapA" <> shape "Test_Sensitivity.sens_swapB")
 end
 \<close>
 
@@ -177,30 +145,6 @@ let
               ", Main=" ^ string_of_int (supers env n) ^ ")");
      check ("S7  " ^ n ^ " digest is env-independent") (d env_rings n = d env n))
 in map cmp ["Rings.idom", "Rings.comm_ring_1"] end
-\<close>
-
-subsection \<open>S8 type_synonym: parameters share the body's canonicalisation\<close>
-
-type_synonym ('a, 'b) sens_perm_A = "'a \<Rightarrow> 'b"
-type_synonym ('a, 'b) sens_perm_B = "'b \<Rightarrow> 'a"
-type_synonym 'a sens_ren_A = "'a list"
-type_synonym 'b sens_ren_B = "'b list"
-
-ML \<open>
-let
-  fun body n =
-    case Type.the_decl (Sign.tsig_of \<^theory>) (n, Position.none) of
-      Type.Abbreviation (vs, b, _) =>
-        Semantic_Digest.normalize
-          (fold (fn v => fn acc => Const ("Semantic_Digest.typ", TFree (v, [])) $ acc) vs
-             (Const ("Semantic_Digest.typ", b)))
-    | _ => Const ("<not an abbreviation>", dummyT)
-in
-  check "S8a  ('a,'b) 'a=>'b  distinct from  'b=>'a"
-    (body "Test_Sensitivity.sens_perm_A" <> body "Test_Sensitivity.sens_perm_B");
-  check "S8b  'a list  same as  'b list under renaming"
-    (body "Test_Sensitivity.sens_ren_A" = body "Test_Sensitivity.sens_ren_B")
-end
 \<close>
 
 subsection \<open>S9 datatype: constructor declaration order is semantic\<close>
@@ -312,6 +256,93 @@ in
   app (writeln o prefix "      MISMATCH ") (take 10 bad);
   check "S12  production extraction == def-parse over all classes in scope"
     (null bad)
+end
+\<close>
+
+subsection \<open>S13 constant: function-package equations reach the digest\<close>
+
+(* The function package writes only `f == f_sumC` to Defs; the equations must
+   arrive from its registry.  The body mentions Orderings.ord_class.less, which
+   a nat => nat type cannot supply. *)
+fun sens_fun :: "nat \<Rightarrow> nat" where
+  "sens_fun n = (if n < 2 then n else sens_fun (n - 1) + sens_fun (n - 2))"
+
+(* No `termination`: the registry holds psimps only, each guarded by the
+   `accp sens_pfun_rel` premise. *)
+function sens_pfun :: "nat \<Rightarrow> nat" where
+  "sens_pfun n = (if n < 2 then n else sens_pfun (n - 1) + sens_pfun (n - 2))"
+  by pat_completeness auto
+
+(* Under `context fixes`, the fixed variable becomes a parameter on export and
+   the registry key is `sens_cfun ?sens_k`, not the bare constant. *)
+context fixes sens_k :: nat begin
+fun sens_cfun :: "nat \<Rightarrow> nat" where
+  "sens_cfun 0 = sens_k"
+| "sens_cfun (Suc n) = sens_cfun n + sens_k"
+end
+
+(* Controls: these packages carry the body in Defs and have no registry entry,
+   so each must keep exactly its one Defs axiom. *)
+primrec sens_prim :: "nat \<Rightarrow> nat" where
+  "sens_prim 0 = 0"
+| "sens_prim (Suc n) = sens_prim n"
+
+definition sens_defn :: "nat \<Rightarrow> nat" where
+  "sens_defn n = (if n < 2 then n else 0)"
+
+partial_function (option) sens_part :: "nat \<Rightarrow> nat option" where
+  "sens_part n = (if n < 2 then Some n else sens_part (n - 1))"
+
+ML \<open>
+(* Own env: the file-level env predates the subjects above. *)
+let
+  val env3 = Semantic_Digest.make_env \<^theory>
+  fun own c = Semantic_Digest.own_defining_axioms env3 ("Test_Sensitivity." ^ c)
+  fun mentions ps c = exists (fn (_, t) => exists_Const (fn (n, _) => n = c) t) ps
+  (* MERGE pin: the Defs meta-equality survives AND an equation (a Trueprop)
+     joins it.  Red under replace, red under any _sumC name filter. *)
+  fun merged ps =
+    exists (fn (_, t) => can Logic.dest_equals t) ps andalso
+    exists (fn (_, t) => not (can Logic.dest_equals t)) ps
+  fun show c = writeln ("      " ^ c ^ ": " ^ commas (map fst (own c)))
+in
+  app show ["sens_fun", "sens_pfun", "sens_cfun", "sens_prim", "sens_defn", "sens_part"];
+  check "S13a sens_fun's props mention Orderings.ord_class.less (from its equation)"
+    (mentions (own "sens_fun") "Orderings.ord_class.less");
+  check "S13b sens_fun keeps its Defs axiom AND gains an equation (merge)"
+    (merged (own "sens_fun"));
+  check "S13c sens_pfun (no termination) reaches its equation via psimps"
+    (mentions (own "sens_pfun") "Orderings.ord_class.less");
+  check "S13d sens_pfun's psimps carry the accp premise"
+    (mentions (own "sens_pfun") "Wellfounded.accp");
+  check "S13e sens_pfun keeps its Defs axiom AND gains an equation (merge)"
+    (merged (own "sens_pfun"));
+  check "S13f primrec keeps exactly its Defs axiom"
+    (map fst (own "sens_prim") = ["Test_Sensitivity.sens_prim_def"]);
+  (* `definition` always records its Defs axiom as `_def_raw`
+     (Specification.gen_def); `_def` is the derived fact *)
+  check "S13g definition keeps exactly its Defs axiom"
+    (map fst (own "sens_defn") = ["Test_Sensitivity.sens_defn_def_raw"]);
+  check "S13h partial_function keeps exactly its Defs axiom"
+    (map fst (own "sens_part") = ["Test_Sensitivity.sens_part_def"]);
+  (* nat => nat => nat and the body-free Defs axiom cannot supply `plus` *)
+  check "S13i fun under context-fixes reaches its equations (key `sens_cfun ?sens_k`)"
+    (mentions (own "sens_cfun") "Groups.plus_class.plus")
+end
+\<close>
+
+subsection \<open>S14 digest: nothing sits between a payload and its hash\<close>
+
+ML \<open>
+(* The witness carries an Abs with a binder name, a Free, TFrees and a
+   schematic Var with a non-zero index: each of the transforms the removed
+   alpha normaliser performed would change term128 of it. *)
+let
+  val t = Abs ("y", TFree ("'a", []),
+            Free ("x", TFree ("'b", [])) $ Bound 0 $ Var (("v", 3), TFree ("'c", [])))
+in
+  check "S14  digest_term is Term_Digest.term128 itself"
+    (Semantic_Digest.digest_term t = Term_Digest.term128 t)
 end
 \<close>
 

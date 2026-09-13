@@ -315,7 +315,7 @@ class _Semantic_DB:
         #     semantic_digest (their key's thm128 is the digest);
         #   * collections and methods never expire: all four None.
         # 16-byte digest of the entity's own semantic content (ML-side
-        # Semantic_Digest; alpha-canonical).
+        # Semantic_Digest).
         semantic_digest: 'bytes | None' = None
         # Dependency edge targets as their full universal keys, resolved at
         # scan time -- the uk doubles as the edge's moment-in-time imprint for

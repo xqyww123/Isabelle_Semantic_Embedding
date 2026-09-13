@@ -2,7 +2,7 @@
 
 **日期**: 2026-07-20（2026-07-28 随机制落地同步：计划节号更新、补缺陷 6、
 删除已作废的「手动强制重解释入口」承诺；2026-09-12 随 semantic change gate 落地
-补缺陷 7）
+补缺陷 7；2026-09-13 随函数包方程进 digest 补缺陷 8、缺陷 6/7 各加一段）
 **状态**: 缺陷均已知且被明确接受；机制本体已落地（`Tools/semantic_digest.ML` +
 `semantic_interpretation.py` 的种子集过滤与 semantic change gate，CHECK_OUTDATE_PLAN
 M1–M4 + SEMANTIC_CHANGE_GATE_PLAN）
@@ -27,6 +27,7 @@ M1–M4 + SEMANTIC_CHANGE_GATE_PLAN）
 | 5 | theorem collection 永不过期 | 低 | 64 个 |
 | 6 | 无记录的 dep 目标贡献 eff 0（infra 死边） | 低 | Main 上 28% 的 dep 目标 |
 | 7 | semantic change gate 的误判「same」让下游停留在过期解释 | 低 | 被误判实体的独占下游依赖者 |
+| 8 | 常量自身的定义内容进不了自身的 digest | 低 | locale 内的 `fun`/`function`、自带登记表的定义包（Nominal2） |
 
 ---
 
@@ -237,6 +238,10 @@ uninterpreted 的常量（`[[uninterpreted_constant …]]` 或 `Performant_Isabe
 变动几乎不改变依赖者的英文描述。persistent 侧不受影响（infra theory 的内容变化
 照样使 Merkle hash 漂移）。
 
+函数包（`fun`/`function`）的常量自 2026-09-13 起不再靠这条死边看见自己的方程：
+它指向 `f_sumC` 的边仍在（无记录，沉默），但方程本身经函数包的登记表进了它自己的
+digest（CHECK_OUTDATE_PLAN §7.3 第 1 条）。
+
 ---
 
 ## 7. semantic change gate 的误判「same」让下游停留在过期解释
@@ -257,6 +262,12 @@ judge 回答「意思是否相同」，并以两段 embedding document 的 cosin
 judge 把一次真实的意思变化误判为 same（且 cosine ≥ 0.90）时，该实体不 mint，
 **只经它**到达这次变更的下游依赖者不会重解释，直到该实体或它们的另一条上游再次
 变化为止。另一条上游的变化照常传播——屏蔽只作用于被误判的那一跳。
+
+附带说明（不是缺陷）：digest 对变量改名不作不变处理（原有的 alpha 归一化已于
+2026-09-13 撤销），所以只改了绑定变量名或模式变量名的实体会进种子集，被重解释
+一次并交 gate 裁定；记录带 baseline 时应判 UNCHANGED、屏蔽其依赖者；gate 落地前
+写下的记录（有 digest、无 baseline）则按 SEMANTIC_CHANGE_GATE_PLAN §3 第 2 行强制
+CHANGED 并 mint——这是设计路径。
 
 ### 测得的比率
 
@@ -283,3 +294,35 @@ run 若已读到 mint 前的记录，就会错过这次 mint。theory 之间靠 
 祖先先于后代、theory 之内靠计划 §5.3.1 的入队与 snapshot raise 兜底，唯一残留的
 角落是：被中断的 force run 作用于本进程内已 mark 的 theory。记录本身不会损坏
 （每次写入是一个事务）。
+
+---
+
+## 8. 常量自身的定义内容进不了自身的 digest
+
+### 现象
+
+常量的 digest 由它自己的定义命题算出（`own_defining_axioms`：同 theory 的 Defs
+公理；函数包常量再合并登记表里的方程，CHECK_OUTDATE_PLAN §7.3 第 1 条，2026-09-13）。
+以下几种常量，定义内容不在这两处，改了定义 digest 不动，它自己和依赖者都不重解释：
+
+- **locale target 里的 `fun`/`function`**：函数包用 `pervasive = false` 登记
+  （`function.ML:135-136`、`:215-216`），theory 可见的登记表里没有任何键提到该
+  locale 常量或它经 `global_interpretation … defines` 得到的常量（CENSUS (b)：
+  wildcard 枚举 19 条，无一相关），裸常量查询返回 0；它保留的仍是不含方程体的
+  `f ≡ f_sumC`。发行版实例
+  `Bit_Operations.fold2_bit_int.F`（有记录）与 locale 层的
+  `…bit_operations.or_num`（`Infra("class_variant")`，本就无记录）。class 体内
+  的 `fun` 经 class operation 能取到（`…_class.or_num`），不在此列。
+- **自带登记表的定义包**：写 `_sumC` 型无体公理进 Defs、却把方程记在自己
+  登记表里的包，登记表分支看不见；发行版之外的实例 Nominal2 的
+  `nominal_function`（`nominal_function_core.ML:1021`）。
+- **`instantiation` 里的 `fun`**：实例常量是 `Infra("inst_infix")`，无记录；
+  类参数本身按缺陷 2 恒不失效。
+
+### 为何接受
+
+与缺陷 6 同源：方程体所在的 `f_graph`/`f_sumC` 是无记录的 infra 常量，指向它们
+的边永远沉默（缺陷 6 说的是死边这一半，本条说的是常量自身这一半）。三种形状在
+发行版 87 个 theory 的 heap 里合计 1 个有记录的常量；为它们另找一条取到方程的路
+（locale 内部的登记未测）或接 AFP 私有登记表，不值。（theory 层 `context fixes x`
+块里的 `fun` 不在此列：其键是 `f ?x`，登记表分支按参数个数逐一查询，能取到。）

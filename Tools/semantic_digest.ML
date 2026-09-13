@@ -17,6 +17,10 @@ pipeline's own enumeration (semantic_store.ML's enumerate_entries), it computes:
     stale when a constant it mentions changes meaning; the edges are what let
     the Python side track that.
 
+A constant's digest is built from its own defining axioms (Defs, own theory
+only) and, for a constant of the function package, from the equations in that
+package's registry -- its Defs axiom `f == f_sumC` carries no body.
+
 Comparing against stored state, bumping versions, effective-version (eff)
 evaluation and the todo-set filter all happen Python-side
 (semantic_interpretation.py).
@@ -30,8 +34,10 @@ accepted-gap register is doc/invalidation_limitations.md #1/#2.
 
 signature SEMANTIC_DIGEST =
 sig
-  (* Per-pass precomputed state: the indexed axiom table and the locale-parent
-     index.  Building these per entity would be quadratic. *)
+  (* Per-pass precomputed state: the indexed axiom table, the locale-parent
+     index and the theory's global proof context (the function package's
+     registry answers to a context).  Building these per entity would be
+     quadratic. *)
   type env
   val make_env: theory -> env
   val theory_of_env: env -> theory
@@ -42,10 +48,6 @@ sig
      come from its statement, and statements mention constants and types,
      never other theorems). *)
   type dep = Universal_Key.entity_kind * string
-
-  (* Alpha-canonical form: type variables, schematic variables and free
-     variables renamed by first occurrence, Abs binder names erased. *)
-  val normalize: term -> term
 
   (* The constants, type constructors and sort classes a term mentions. *)
   val deps_of_term: term -> dep list
@@ -60,9 +62,16 @@ sig
                                    do not resolve. *)
   val semantics_of: env -> Universal_Key.entity -> (Term_Digest.digest128 option * dep list) option
 
-  (* The defining axioms retained for a constant after the own-theory filter,
-     exposed for the sensitivity suite. *)
+  (* The propositions carrying a constant's own definitional content after the
+     own-theory filter: its own-theory Defs axioms plus, for a function-package
+     constant, its equations from the package's registry.  The first component
+     is a fact-like label, not necessarily the name of a fact.  Exposed for the
+     sensitivity suite. *)
   val own_defining_axioms: env -> string -> (string * term) list
+
+  (* The hash every payload goes through, exposed for the sensitivity suite's
+     guard that no transformation sits between a payload and its hash. *)
+  val digest_term: term -> Term_Digest.digest128
 end;
 
 structure Semantic_Digest: SEMANTIC_DIGEST =
@@ -74,6 +83,7 @@ struct
    per constant would be O(#constants * #axioms).  Index it once. *)
 type env =
  {thy: theory,
+  ctxt: Proof.context,
   axioms: term Symtab.table,
   (* locale long name -> its DEF-TIME parent locales.  Locale.dependencies_of
      is NOT exported (only its implementation is visible at locale.ML:259); the
@@ -97,6 +107,7 @@ type env =
    S11/S12/S3 assertions catch.) *)
 fun make_env thy : env =
  {thy = thy,
+  ctxt = Proof_Context.init_global thy,
   axioms = Symtab.make_distinct (Theory.all_axioms_of thy),
   locale_parents =
     let
@@ -112,70 +123,16 @@ fun make_env thy : env =
 fun theory_of_env ({thy, ...}: env) = thy
 
 
-(* --- alpha normalisation --- *)
+(* --- the hash --- *)
 
 type dep = Universal_Key.entity_kind * string
 
-(* Term_Digest.hash_term hashes Abs binder names, TFree/TVar names and Var
-   indices, so term128 is NOT alpha-invariant -- stated outright at
-   Term_Digest.ML:224+.  For theorem KEYS that is deliberate and must stay.  For
-   staleness detection it is a false-positive source: renaming a bound variable
-   would make an entity look changed and buy a needless LLM re-interpretation.
-
-   So canonicalise the term first and hash the result with the existing hasher.
-   Do NOT touch thm128 itself -- redefining it would move all 95,338 theorem
-   keys in the store.
-
-   Renaming is by first occurrence, threading one counter through types and
-   terms alike.  Sharing one counter between the two makes the numbering
-   interleave, which is harmless: all that matters is that the same input always
-   yields the same output. *)
-
-type norm_st = int Symtab.table * int
-
-fun canon (tab, next) key =
-  case Symtab.lookup tab key of
-    SOME i => (i, (tab, next))
-  | NONE => (next, (Symtab.update (key, next) tab, next + 1))
-
-fun norm_typ (Type (n, Ts)) st =
-      let val (Ts', st') = fold_map norm_typ Ts st
-      in (Type (n, Ts'), st') end
-  | norm_typ (TFree (a, S)) st =
-      let val (i, st') = canon st ("tf " ^ a)
-      in (TFree ("'z" ^ string_of_int i, S), st') end
-  | norm_typ (TVar ((a, j), S)) st =
-      let val (i, st') = canon st ("tv " ^ a ^ " " ^ string_of_int j)
-      in (TVar (("'z" ^ string_of_int i, 0), S), st') end
-
-fun norm_term (Const (n, T)) st =
-      let val (T', st') = norm_typ T st in (Const (n, T'), st') end
-  | norm_term (Free (a, T)) st =
-      let
-        val (T', st') = norm_typ T st
-        val (i, st'') = canon st' ("f " ^ a)
-      in (Free ("z" ^ string_of_int i, T'), st'') end
-  | norm_term (Var ((a, j), T)) st =
-      let
-        val (T', st') = norm_typ T st
-        val (i, st'') = canon st' ("v " ^ a ^ " " ^ string_of_int j)
-      in (Var (("z" ^ string_of_int i, 0), T'), st'') end
-  | norm_term (Bound i) st = (Bound i, st)
-  | norm_term (Abs (_, T, body)) st =
-      (* binder name erased: it is cosmetic, de Bruijn indices carry the binding *)
-      let
-        val (T', st') = norm_typ T st
-        val (body', st'') = norm_term body st'
-      in (Abs ("", T', body'), st'') end
-  | norm_term (t1 $ t2) st =
-      let
-        val (t1', st') = norm_term t1 st
-        val (t2', st'') = norm_term t2 st'
-      in (t1' $ t2', st'') end
-
-fun normalize t = #1 (norm_term t (Symtab.empty, 0))
-
-fun digest_term t = Term_Digest.term128 (normalize t)
+(* Term_Digest.term128 hashes Abs binder names, TFree/TVar names and Var
+   indices (Term_Digest.ML:224+), so renaming a variable moves the digest.
+   Accepted (2026-09-13): the entity becomes a seed once and the semantic
+   change gate judges it UNCHANGED.  An alpha normaliser that once sat here
+   was removed; nothing sits between a payload and its hash. *)
+val digest_term = Term_Digest.term128
 
 
 (* --- dependency extraction --- *)
@@ -217,8 +174,7 @@ fun tagged tag t = Const (synthetic_prefix ^ "kind." ^ tag, dummyT) $ t
 (* List terminator. *)
 val nil_payload = Const (synthetic_prefix ^ "nil", dummyT)
 
-(* Carries a type into the term language, so that one alpha normaliser and one
-   hasher serve both. *)
+(* Carries a type into the term language, so that one hasher serves both. *)
 fun typ_payload T = Const (synthetic_prefix ^ "typ", T)
 
 (* A non-term scalar (a flag, an arity) that must nevertheless reach the digest. *)
@@ -339,6 +295,11 @@ fun resolve_prop (env: env) name =
 fun class_param_of (env: env) const_name =
   Axclass.class_of_param (#thy env) const_name
 
+(* Props that do not come from Defs carry no axiom name of their own, so their
+   order is fixed by the label and then the term itself. *)
+fun prop_ord ((a, s), (b, t)) =
+  (case string_ord (a, b) of EQUAL => Term_Ord.term_ord (s, t) | ord => ord)
+
 (* Defs knows nothing about `axiomatization`: Specification.gen_axioms goes
    through Thm.add_axiom_global and never touches it, so an axiomatized constant
    has a spec (the declaration marker) whose #def is NONE.  Measured:
@@ -380,8 +341,42 @@ fun spec_rule_axioms (env: env) const_name =
     |> filter (fn {name, ...} =>
          same_theory env {const_name = const_name, axiom_name = name})
     |> maps (fn {name, rules, ...} => map (fn th => (name, Thm.prop_of th)) rules)
-    |> sort (fn ((a, s), (b, t)) =>
-         (case string_ord (a, b) of EQUAL => Term_Ord.term_ord (s, t) | ord => ord))
+    |> sort prop_ord
+  end
+
+(* The function package (fun, function) writes a body-free axiom `f == f_sumC`
+   to Defs: the equations live in the infrastructure constant f_graph (no store
+   record, limitation #6) and in the derived f.simps, so the Defs axiom alone
+   cannot see an equation edit.  The package's own registry holds them: simps
+   once termination is proved, else psimps (with the `accp f_rel` premise).
+   The registry's answer is re-stamped with env's theory and carries no theory
+   attribution of its own, so a non-empty own-theory Defs result is the only
+   evidence that the constant is declared here -- sound because production
+   always builds env from the declaring theory (semantic_store.ML:1811,
+   theory_structure.ML:171-183).  The registry is keyed on the exported
+   function term: the bare constant, or, for a `fun` declared under
+   `context fixes x` with `x` in its equations, `f ?x` (the block's fixed
+   variables become parameters on export).  The net matches a query only
+   against keys of the same argument count, so every count up to the arity is
+   queried, `Var`s as wildcards.  The net also returns its wildcard branch;
+   keep only the entries keyed on this constant. *)
+fun function_equations (env: env) const_name =
+  let
+    val T = Consts.the_constraint (Sign.consts_of (#thy env)) const_name
+    fun keyed_on_const (t, _) =
+      (case head_of t of Const (n, _) => n = const_name | _ => false)
+    fun equations ({simps, psimps, ...}: Function_Common.info) =
+      (case simps of
+         SOME ths => map (pair (const_name ^ ".simps") o Thm.prop_of) ths
+       | NONE => map (pair (const_name ^ ".psimps") o Thm.prop_of) psimps)
+    fun query n =
+      Function_Common.retrieve_function_data (#ctxt env)
+        (list_comb (Const (const_name, T), map (fn i => Var (("a", i), dummyT)) (1 upto n)))
+  in
+    maps query (0 upto length (binder_types T))
+    |> filter keyed_on_const
+    |> maps (equations o snd)
+    |> sort prop_ord
   end
 
 fun own_defining_axioms (env: env) const_name =
@@ -395,7 +390,8 @@ fun own_defining_axioms (env: env) const_name =
         |> map_filter (fn ax => Option.map (pair ax) (resolve_prop env ax))
         |> sort (fn ((a, _), (b, _)) => string_ord (a, b))
     in
-      if null from_defs then spec_rule_axioms env const_name else from_defs
+      if null from_defs then spec_rule_axioms env const_name
+      else from_defs @ function_equations env const_name
     end
 
 
@@ -466,20 +462,9 @@ fun sem_type (env: env) name =
     val tsig = Sign.tsig_of thy
     fun from_decl () =
       case try (Type.the_decl tsig) (name, Position.none) of
-        (* The parameter list must go through the SAME alpha canonicalisation as
-           the body, or the two halves desynchronise and produce a matched pair
-           of errors.  Encoding a parameter as `Const (v, dummyT)` leaves its
-           name untouched by normalize (which rewrites types, not Const names)
-           while the body's TFrees are renumbered, so:
-             'a env = "'a list"  vs  'b env = "'b list"  ->  digests DIFFER
-                 (false positive: a pure renaming forces a re-interpretation)
-             ('a,'b) f = "'a => 'b"  vs  "'b => 'a"      ->  digests AGREE
-                 (false negative: permuting the parameters is invisible)
-           Carrying each parameter as a TFree instead puts it through canon, and
-           because the fold places the parameters ahead of the body they claim
-           the low numbers -- so the body's occurrences are numbered RELATIVE to
-           the declared parameter order, which is exactly what distinguishes
-           'a => 'b from 'b => 'a. *)
+        (* The parameter list is part of the payload, ahead of the body: its
+           length and order are semantic (`('a,'b) f = 'a => 'b` differs from
+           `'b => 'a`).  Renaming a parameter moves the digest (see digest_term). *)
         SOME (Type.Abbreviation (vs, body, syn)) =>
           SOME (tagged "abbrev"
                   (fold (fn v => fn acc => typ_payload (TFree (v, [])) $ acc) vs
@@ -648,13 +633,10 @@ fun sem_locale (env: env) name =
       (case hyp_props () of
          [] => map Thm.prop_of (Locale.axioms_of thy name)
        | ts => ts)
-    (* REGRESSION: parameters must be Free (not Const) and must be canonicalised
-       BEFORE the propositions, where they also occur as Frees -- with Const the
-       two halves fell out of step and `fixes f g assumes "f 0 = 0"` normalised
-       identically to the same with `g`.  Same defect class as the abbreviation
-       parameters in sem_type.  Free is additionally invisible to deps_of_term,
-       which is wanted: a parameter is locale-local, not an entity to depend on.
-       Its TYPE still contributes dependencies. *)
+    (* Parameters are Free, as they also occur in the propositions.  Free is
+       invisible to deps_of_term, which is wanted: a parameter is locale-local,
+       not an entity to depend on.  Its TYPE still contributes dependencies.
+       Renaming a parameter moves the digest (see digest_term). *)
     val param_payload =
       fold (fn ((nm, T), _) => fn acc => Free (nm, T) $ acc) params nil_payload
     val payload =

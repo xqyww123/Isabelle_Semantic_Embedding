@@ -62,7 +62,218 @@ All paths relative to `contrib/Semantic_Embedding/`.
   needs the user's go-ahead.  Step 5's test file must carry the enrolment
   test with a not-enrolled entry NOT in last position (step-4 judge).
 
-## Entry point after step 8 (2026-09-12)
+## Entry point after the `fun` digest implementation (2026-09-13, evening): REVIEW, then commit on "提交"
+
+The `fun` digest plan (`ai-artifacts/fun_digest/PLAN.md` rev 2.3) is
+IMPLEMENTED in the working tree, uncommitted.  What was done, in order:
+
+1. `Tools/semantic_digest.ML`: `env.ctxt`; `prop_ord` shared; the new
+   `function_equations` (registry `simps`, else `psimps`, key filter on
+   `head_of`, sorted by `prop_ord`) MERGED after the own-theory `Defs`
+   axioms; the alpha normaliser deleted, `digest_term = Term_Digest.term128`
+   exported; comments (header, hash, `typ_payload`, `sem_type`,
+   `sem_locale`, the signature).
+2. `Test/Test_Sensitivity.thy`: S3e/S8 and their subjects deleted; S13a–h
+   (fun / unterminated function / three controls) and S14 (the guard) added.
+   Red-then-green observed: S13a–e and S14 fail on the old module (scratch
+   copy with only the `val digest_term` line added), pass on the new;
+   controls pass on both.  `Test_All` passes (19672/19672, 1134 digests,
+   211734 edges, determinism OK).  Registry re-check over the 38 census
+   constants: 32 gain simps, 6 class parameters `[]`, `fold2_bit_int.F`
+   unchanged.  Probe scratch: `…/scratchpad/fun_impl/`.
+3. Docs edited by hand: `archive/plans/CHECK_OUTDATE_PLAN.md` §7.3 (三条,
+   item 1 gains the registry layer), §14 (four new rows), glossary;
+   `doc/invalidation_limitations.md` (#8 new with index row, one paragraph
+   in #6 and #7, header date); `ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md`
+   §5.2 (one sentence on renames); `semantics.py:318`; PLAN.md status line.
+4. Paid acceptance DONE, PASS: `ai-artifacts/fun_digest/ACCEPTANCE.md`
+   (dry run N = 28 vs 26; `narquil` judged CHANGED, minted 128 → 132, its
+   lemmas re-interpreted; `galmuth` judged UNCHANGED, walled; USD 9.92).
+   Raw logs `/var/tmp/qiyuan/fun_accept_logs/`; isolated stores
+   `/var/tmp/qiyuan/gate_accept_db{,_after_run1}/` (deletable).
+5. Round-four review DONE (`review/impl_judge.json`, READY_AFTER_FIXES;
+   NB it ran on the session model by my omission — every later workflow
+   passes `model: 'opus'` on each agent).  F1 (a `fun` under
+   `context fixes x` is keyed `f ?x`; the bare query missed it) decided by
+   the user as option A (per-argument-count queries) after an Opus 5
+   verification of option B and a cost measurement (scratch
+   `…/scratchpad/fun_optB/`, `fun_perfA/`); implemented with test S13i and
+   the nine wording fixes; all tests green again.  Round-five re-review
+   DONE (Opus 5, `review/rereview_impl_judge.json`, READY_AFTER_FIXES on
+   four record-only clauses in PLAN.md/ACCEPTANCE.md, applied).  NEXT:
+   "提交" commits: the two production files, the three docs, `semantics.py`,
+   this file, and the untracked `ai-artifacts/fun_digest/` (PLAN.md,
+   VERIFICATION.md, CENSUS.md, NORMALIZE_TIMING.md, ACCEPTANCE.md,
+   review/*).  Foreign uncommitted edits to leave alone:
+   `Tools/entity_position.ML`, `archive/tests/test_migrate_from_collection.py`.
+   Never commit probe files or logs.
+
+## Record: entry point after the compaction of 2026-09-13 (evening): IMPLEMENT the `fun` digest plan (done)
+
+Read `ai-artifacts/fun_digest/PLAN.md` rev 2.3 first — it is the authority
+(§4 the rule, §5 the normaliser removal, §6 tests/docs, §7 known gaps, §9
+acceptance).  The user said "很好，建议在 compact 后开工" and asked for this
+compaction; the word "开工" itself has NOT been given yet — wait for it,
+then implement without further questions (all decisions F1–F7 and §8 are
+settled; tests, comments and plan details are the implementer's call).
+
+- Git: Semantic_Embedding `master` = `56ad94b` (pushed); superproject
+  `bd36361c` (not pushed).  Uncommitted and OURS: this file;
+  `ai-artifacts/fun_digest/` (untracked: `PLAN.md`, `VERIFICATION.md`,
+  `CENSUS.md`, `NORMALIZE_TIMING.md`, `review/SCOPE.md`, `review/judge.json`,
+  `review/rereview_judge.json`, `review/rereview2_judge.json`) — all are
+  plan/record files and get committed with the next "提交".  Foreign
+  uncommitted edits, leave them: `Tools/entity_position.ML`,
+  `archive/tests/test_migrate_from_collection.py`.  Never commit probe
+  files or logs; scratch lives in the session scratchpad
+  (`…/scratchpad/fun_probe/`, `fun_verify/`, `fun_census/`, `norm_timing/`).
+- Implementation order (one commit at the end, on "提交"):
+  1. `Tools/semantic_digest.ML` — (a) `env` record (`:75-82`) gains
+     `ctxt: Proof.context`, set in `make_env` (`:98`) as
+     `Proof_Context.init_global thy`; env comment `:33-34` names it.
+     (b) bind `fun prop_ord ((a, s), (b, t)) = (case string_ord (a, b) of EQUAL => Term_Ord.term_ord (s, t) | ord => ord)`
+     above `spec_rule_axioms` and use it at `:383-384`.  (c) in
+     `own_defining_axioms` (`:387-399`), after `from_defs` (the `Defs`
+     branch, its name-only sort at `:396` untouched): if `from_defs` is
+     non-empty, query `Function_Common.retrieve_function_data (#ctxt env) (Const (c, T))`
+     (`T = Consts.the_constraint`), `filter (fn (t, _) => case head_of t of Const (n, _) => n = c | _ => false)`,
+     `map snd`, take `#simps` if `SOME` else `#psimps` of every surviving
+     info, `map (fn th => (c ^ ".simps" or ".psimps", Thm.prop_of th))`,
+     sort ALL of them together by `prop_ord`, and MERGE with `from_defs`
+     (concatenation order the implementer's, deterministic); the
+     `Spec_Rules` fallback stays for the empty-`Defs` case only.  (d)
+     delete the alpha normalisation block (`:115-176`: comment, `norm_st`,
+     `canon`, `norm_typ`, `norm_term`, `normalize`) and `val normalize`
+     (`:46-48`); `fun digest_term = Term_Digest.term128`; export
+     `val digest_term: term -> Term_Digest.digest128` (test-only export,
+     precedent `own_defining_axioms`); restate the `:63-65` signature
+     comment (own-theory `Defs` axioms plus, for a function-package
+     constant, its registry equations; first component a fact-like label).
+     (e) comments: file header (`:24-29` area), the block above
+     `own_defining_axioms` (function package body-free in `Defs`; registry
+     answer carries no theory, "② non-empty" is the theory evidence; sound
+     only when env = declaring theory, which production guarantees
+     `semantic_store.ML:1811` + `theory_structure.ML:171-183`; the key
+     filter drops wildcard-keyed entries), `typ_payload` comment `:220`,
+     the `sem_type` (`:469-476`) and `sem_locale` (`:640-660`) parameter
+     comments cut to what stays true.  Short, load-bearing.
+  2. `Test/Test_Sensitivity.thy` — delete S3e (`:99-127`) and S8
+     (`:182-204`) with their subjects (`:68-69`, `:184-187`) and the S8
+     title/S3e block comment; add the new subsection per PLAN §6 (own env;
+     `fun sens_fun` mentioning `Orderings.ord_class.less`; `function
+     sens_pfun` without termination mentioning the body constant and
+     `Wellfounded.accp`; the MERGE pin `exists (can Logic.dest_equals) ps`
+     AND its complement on both; controls `primrec`/`definition`/
+     `partial_function (option)` keep exactly their `Defs` axiom, count and
+     name) and the change-2 guard
+     `Semantic_Digest.digest_term t = Term_Digest.term128 t` with
+     `t = Abs ("y", TFree ("'a", []), Free ("x", TFree ("'b", [])) $ Bound 0 $ Var (("v", 3), TFree ("'c", [])))`.
+     First run the new checks against the UNMODIFIED module (plus only the
+     `val digest_term` signature line) to see them red, then after.
+  3. Run through the REPL server only (never `isabelle build`):
+     `cd contrib/Semantic_Embedding && ../Isa-REPL/repl_server.sh 127.0.0.1:6702 Semantic_Embedding <out>`,
+     wait for "Running REPL" (20 s–3 min), client
+     `Client("127.0.0.1:6702","Semantic_Embedding")`,
+     `set_register_thy(False)`, `load_theory(["<abs path without .thy>"])`;
+     ML output via `File.append`; a fresh server after every `.ML` edit;
+     stop it by pid from `ss -ltnp` (only ours).  `Test/Test_Sensitivity.thy`
+     and `Test/Test_All.thy` (no crash, coverage ≥ 95 %, edges/digests
+     non-empty).  Registry re-check (PLAN §9 item 2): over CENSUS's 38,
+     32 gain simps, the six class `fixes` parameters keep `[]`,
+     `fold2_bit_int.F` unchanged — probe shape in `…/scratchpad/fun_census/`.
+  4. Docs (by hand, no scripts on plan documents):
+     `archive/plans/CHECK_OUTDATE_PLAN.md` (§7.3 item 1 registry layer;
+     delete item 3, heading 四条→三条, renumber; §14 two `fun` rows and the
+     `:732` row both cells; glossary `semantic digest` row),
+     `doc/invalidation_limitations.md` (new numbered entry + index row for
+     "a constant whose own definitional content does not reach its own
+     digest": locale-target `fun`, `fun` in `instantiation`'s instance
+     constant, packages with their own registry (Nominal2); #6 one
+     sentence on the `f_sumC` edge; one sentence in #7 on renames with the
+     no-baseline exception), `ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md`
+     §5 one sentence, `Isabelle_Semantic_Embedding/semantics.py:318` drop
+     "alpha-canonical", PLAN.md status line, this file.
+  5. Paid end-to-end (PLAN §9 item 3; user chose it): `env.copy` of the
+     production store (`semantics.lmdb`, `theory_hash.lmdb`,
+     `experience_index.lmdb`) to `/var/tmp/qiyuan/gate_accept_db/`, export
+     `SEMANTIC_DB_DIR` and `INTERPRETATION_DRIVER=ClaudeCode.claude-opus-5`
+     to the REPL server; scaffold `Sim_Measure_A1.thy` copied to
+     `/var/tmp/qiyuan/gate_accept_thy/`; baseline
+     `python -m Isabelle_Semantic_Embedding.isabelle_semantics collect --repl-addr 127.0.0.1:6702 --session Semantic_Embedding --rpc-addr 127.0.0.1:27183 <path without .thy>`
+     (~USD 8; then a SECOND `env.copy` so (iii) is repeatable); overwrite
+     the file with `Sim_Measure_B.thy`'s content under the name
+     `Sim_Measure_A1`; fresh REPL; dry run via
+     `Semantic_Store.dry_run false [Context.Theory thy]` (script shape
+     `/var/tmp/qiyuan/gate_accept_logs/gate_dry_run.py`): N must exceed
+     26; live run (~USD 3): host log `$ISABELLE_HOME_USER/log/RPC_attached_*.log`
+     must show a `gate:`/`verdict:` line for `constant Sim_Measure_A1.narquil`,
+     judged CHANGED, minted, its lemmas re-interpreted (`gate_inspect.py`
+     shape); `galmuth` recorded as an observation.  Report
+     `ai-artifacts/fun_digest/ACCEPTANCE.md`; raw logs outside git.  Cost
+     estimate honestly (Opus 5 prices, acceptance_step10 figures).
+  6. Review as an Agent Workflow (Opus 5, English; challengers → nitpick
+     filter → fresh rebutters → judge), report in Chinese with fix plan,
+     fixes only after the user agrees; commit on "提交".
+
+## Record: entry point after the compaction of 2026-09-12 (evening): the `fun` digest work (done: verified, planned, reviewed)
+
+- The semantic change gate is FINISHED: steps 1–8 implemented, reviewed,
+  committed; the paid §10 acceptance passed (`ai-artifacts/acceptance_step10/REPORT.md`);
+  PATH 20 accepted (D20).  Git: Semantic_Embedding `master` = `56ad94b`,
+  pushed to origin after a history rewrite (git filter-repo removed 51
+  intermediate files -- probe files, review diffs, `*.unicode.thy`,
+  `Test/Infra_Filter_Step1_*.thy`, `ai-artifacts/eff_shield_verification/`
+  -- all kept on disk as untracked files); superproject `bd36361c`, NOT
+  pushed.  `CHECK_OUTDATE_PLAN.md` now lives at `archive/plans/`.  Foreign
+  uncommitted edits, leave them: `Tools/entity_position.ML`,
+  `archive/tests/test_migrate_from_collection.py`.  This section is the
+  only uncommitted change of ours.
+- NEXT (the user: "很好的观察，先记一下，我们在目前这个工作收尾后立刻进行"):
+  a `fun`-defined constant's semantic digest does not change when its
+  equations change.  Evidence from the acceptance run: `narquil (Brint n)
+  = (if n < 5 …)` → `(if n <= 5 …)` left the constant `narquil` with the
+  same digest, version and interpreted_at, its stored text still says
+  "smaller than five", and its lemmas (`narquil_small`, `narquil_large`,
+  `narquil_glaive_*`) were not re-interpreted; only the statement-keyed
+  `narquil.simps` facts were interpreted afresh (as new entities).  Cause
+  (`Tools/semantic_digest.ML`, `own_defining_axioms`): the constant's
+  defining axioms come from `Defs.specifications_of`, which for the
+  function package yields `f_def: f ≡ f_sumC …` -- no equation body; the
+  equations live in `f_graph`'s intros (infra, no record: limitation #6)
+  and in `f.simps`; the `spec_rule_axioms` fallback (`Spec_Rules`, which
+  does register the equations) is consulted only when `Defs` yields
+  nothing.  `definition`, `inductive` and `locale` roots were all caught.
+  Not covered by `Test/Test_Sensitivity.thy` (no `fun` row in
+  `archive/plans/CHECK_OUTDATE_PLAN.md` §14) nor by
+  `doc/invalidation_limitations.md`.
+- 2026-09-13: verified (`ai-artifacts/fun_digest/VERIFICATION.md`,
+  `CENSUS.md`, `NORMALIZE_TIMING.md`), reviewed twice as Agent Workflows
+  (`ai-artifacts/fun_digest/review/`, both READY_AFTER_FIXES, fixes
+  applied), and DECIDED by the user; the plan is
+  `ai-artifacts/fun_digest/PLAN.md` rev 2.2 (rule §4, decisions F1–F7 §3,
+  no open items).  In one line: for a constant the function package
+  registers, `own_defining_axioms` MERGES the registry's `simps` (or
+  `psimps` when termination is unproved,
+  `Function_Common.retrieve_function_data`, key-filtered to this constant)
+  with its same-theory `Defs` axioms; class-parameter check stays first;
+  `Spec_Rules` stays the `axiomatization` fallback only; AND the
+  alpha-normaliser `normalize` is REMOVED (never approved, no correctness
+  value), the prop sort kept.  Only the function package is body-free in
+  `Defs`.  Cost: persistent theories carry no digest, so the 19 reached
+  heap constants pay nothing; WIP records pay once.  Acceptance is paid
+  (§9 item 3).  `digest_term` is exported as the standing test guard of
+  the normaliser's removal (user's choice (b)).  Three review rounds done
+  (rulings archived in `ai-artifacts/fun_digest/review/`); plan rev 2.3
+  meets the start condition; implementation awaits "开工".
+- Process rules unchanged: approval before production code ("批准" /
+  "开工"); tests and comments the implementer's call; reviews as workflows
+  (Opus 5, English), reports in Chinese, essence first; commit only on
+  "提交"; only plan files and production code get committed (no probe
+  files, no logs); plan files live in `ai-artifacts/` or `archive/`; never
+  push unless told; minimal fixes; never change existing behaviour beyond
+  the user's decision; grep every site before declaring a decision done.
+
+## Entry point after step 8 (2026-09-12; done, kept as the record)
 
 - Step 8 is DONE and reviewed (`ai-artifacts/review_step8/SCOPE.md`,
   `judge.json`, `rereview_judge.json`, the two diffs); the re-review judged

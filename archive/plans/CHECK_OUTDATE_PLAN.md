@@ -35,7 +35,7 @@ digest」三路探针结论归档于 §3.4 尾注。同日（终）：全计划 
 | **名字哈希** | WIP theory 的 theory hash：`FNV-1a-128(theory 长名)`，WIP 位=1 | FNV key、名字 key、稳定 key、FNV 回退分支 |
 | **WIP 位** | theory hash 首字节最低位：0 = persistent、1 = WIP | LSB 约定 |
 | **thm128** | 定理 statement 的 128 位内容摘要，定理类 uk 的载荷 | — |
-| **semantic digest** | WIP 名字寻址实体自身语义内容的摘要（增量机制字段） | digest（单独出现即指它） |
+| **semantic digest** | WIP 名字寻址实体自身语义内容的摘要（增量机制字段）；对改名不作不变处理 | digest（单独出现即指它） |
 | **dry run** | 模式 4 的运行形态：两级扫描只数不做（§8），返回（theory 名单, 种子实体数 n）；**全系统唯一的工作量计量实现**。n 是各 theory 种子集按 run 前库状态之和：单个 theory 内、对同一库状态，数到的种子全部发送（依赖者不计），跨锥则**上下界都不是**（上游 UNCHANGED 会挡住下游已数的实体），零处精确（`contrib/Semantic_Embedding/ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md` §5.2）；用户可见文案一律写 "About n" | 报价、报价单 |
 | **semantic change gate** | 重解释一个 tracked 实体之后（无论它是因 digest 变化进了种子集，还是被上游的 CHANGED 裁定纳入），比较新旧两段解释是否同义（LLM judge，以两段 embedding document 的 cosine ≥ 0.90 作后备）；只有判 CHANGED 才 mint version、才把依赖者纳入重解释（同上计划 §3、§5.4） | gate（单独出现即指它） |
 | **eff\*** | §4.1 的 eff 的屏蔽版：沿依赖闭包递归时，被 gate 判 UNCHANGED 的 hop 之下的信号不再抬升（同上计划 §4） | — |
@@ -120,7 +120,7 @@ force 做的；该效果对 persistent 侧继续存在，对 WIP 侧由增量机
 兼任 dep 统一判据的时刻印记，见 §4.3）。
 
 **内容**（放哪些边）：
-- constant：own-defining-axioms 三层过滤（§7.3 详述）提取的定义公理中出现的
+- constant：own-defining-axioms（§7.3 第 1 条：过滤后的同 theory Defs 公理，函数包常量再加登记表方程）提取的命题中出现的
   constant/type/class/locale；
 - type：定义结构（typedef 定义集合、ctr_sugar 等）中的实体；
 - **class / locale 统一走 locale dependencies 表 + serial 过滤**：
@@ -346,19 +346,26 @@ digest 定名并加「部署后永不可改」注释；重写 :44-60 与 limitat
 主体改用 `Universal_Key.entity`（动态成员无名字、多定理 fact 成员名解析不了），
 直接复用 `interpret'` 在 `:1275-1290` 算好的 `all_entries_with_pos`。
 
-### 7.3 ⚠️ 最容易被误删、实则不可替代（历经实测的四条）
+### 7.3 ⚠️ 最容易被误删、实则不可替代（历经实测的三条）
 
-1. **own_defining_axioms 三层过滤**：类参数一律不保留定义
+1. **own_defining_axioms 的过滤与来源**：类参数一律不保留定义
    （`Axclass.class_of_param`；`plus` 有 9 条下游实例定义、`less_eq` 16 条，
    而 `less_eq` 被 13.3% 的定理提及——直接调 `Defs.specifications_of` 会静默
    大规模误失效）；只保留同 theory 定义公理；Defs 为空退
    `Spec_Rules.get_global`（**不是** `retrieve_global`——Item_Net 对空 terms
-   不建索引，`HOL.The`/`HOL.eq`/`HOL.implies` 实测中招）。
+   不建索引，`HOL.The`/`HOL.eq`/`HOL.implies` 实测中招）；Defs 非空且函数包
+   登记表（`Function_Common.retrieve_function_data`）有该常量时，**合并**登记表
+   里的方程（`simps`，未证终止则 `psimps`）——函数包写进 Defs 的公理是
+   `f ≡ f_sumC`，不含方程体；Spec_Rules 里的同一组方程以 `Binding.empty`
+   登记（`function.ML:217`），无名，`same_theory` 永远过不了（要用它只能
+   `Spec_Rules.dest_theory`，F4 已否），而未证终止的 `function` 在 Spec_Rules
+   里根本没有条目、只有登记表有 psimps；是合并而非替代，同 theory
+   `overloading` 家族里的兄弟定义才不会丢；登记表按导出后的函数项做键，
+   `context fixes x` 下的 `fun` 键是 `f ?x`，所以从 0 到 arity 每个参数个数
+   各查一次（2026-09-13）。
 2. **`add_sort_classes` 用 `fold_atyps_sorts`**：`fold_atyps` 看不见
    `TFree (a, S)` 的 S，删掉则全部 class 依赖边消失且双重静默。
-3. **参数归一化用 `TFree`/`Free` 而非 `Const`**：`normalize` 不碰 Const 名，
-   用 Const 会让参数半边与 body 脱节。
-4. **class 的传递超类闭包不进 payload**（`Rings.idom` 在 HOL.Rings 下 43 个超类、
+3. **class 的传递超类闭包不进 payload**（`Rings.idom` 在 HOL.Rings 下 43 个超类、
    Main 下 48——进 payload 则 digest 随 env 漂移永不收敛）；`Axclass.get_info`
    的 params/axioms 非传递，恰是够用的原因：digest 只描述实体自身，
    继承走依赖边。
@@ -729,7 +736,11 @@ Semantic_Embedding.thy:20 演示行）。**Sledgehammer_Embedding 不经此路**
 | `Orderings.ord` 依赖 `less_eq`/`less` | class 参数不进 digest |
 | `not_less` 有 `linorder` 的 ClassK 边 | sort 里的类不产生依赖边 |
 | `Rings.idom` 的 digest 跨 env 相同 | 超类闭包污染 digest |
-| 参数置换 vs 参数改名 | 参数未与 body 同步归一化 |
+| `fun` 常量的定义命题提及其方程体里的常量（`sens_fun` → `less`） | 函数包的方程不进 digest（Defs 只有 `f ≡ f_sumC`） |
+| 未证终止的 `function` 取到 psimps（提及 `accp`） | 未证终止的函数没有任何方程进 digest |
+| `fun` 常量既保留 Defs 公理又得到方程；`primrec`/`definition`/`partial_function` 恰保留其一条 Defs 公理 | 替代而非合并会丢 `overloading` 家族的兄弟定义；登记表分支误伤别的包 |
+| `context fixes` 下的 `fun` 的定义命题提及其方程体里的常量（`sens_cfun` → `plus`） | 登记表键 `f ?x` 用裸常量查不到，方程不进 digest |
+| `digest_term t = Term_Digest.term128 t`（参数改名使 digest 变化） | digest 在 hash 前被做了变换（归一化已撤销，2026-09-13） |
 | **class：locale 表取法 ≡ def-parse 取法（全 Main）** | serial 过滤判据漂移无人发现 |
 | **`Rings.idom` 的 deps 恰 2 项、跨 env 相同** | 注册边混入 deps |
 
