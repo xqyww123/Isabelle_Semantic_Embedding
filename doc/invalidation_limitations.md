@@ -2,7 +2,8 @@
 
 **日期**: 2026-07-20（2026-07-28 随机制落地同步：计划节号更新、补缺陷 6、
 删除已作废的「手动强制重解释入口」承诺；2026-09-12 随 semantic change gate 落地
-补缺陷 7；2026-09-13 随函数包方程进 digest 补缺陷 8、缺陷 6/7 各加一段）
+补缺陷 7；2026-09-13 随函数包方程进 digest 补缺陷 8、缺陷 6/7 各加一段；
+2026-09-14 定义来源改为名字路径，缺陷 8 改写、缺陷 6 的一段改写）
 **状态**: 缺陷均已知且被明确接受；机制本体已落地（`Tools/semantic_digest.ML` +
 `semantic_interpretation.py` 的种子集过滤与 semantic change gate，CHECK_OUTDATE_PLAN
 M1–M4 + SEMANTIC_CHANGE_GATE_PLAN）
@@ -27,7 +28,7 @@ M1–M4 + SEMANTIC_CHANGE_GATE_PLAN）
 | 5 | theorem collection 永不过期 | 低 | 64 个 |
 | 6 | 无记录的 dep 目标贡献 eff 0（infra 死边） | 低 | Main 上 28% 的 dep 目标 |
 | 7 | semantic change gate 的误判「same」让下游停留在过期解释 | 低 | 被误判实体的独占下游依赖者 |
-| 8 | 常量自身的定义内容进不了自身的 digest | 低 | locale 内的 `fun`/`function`、自带登记表的定义包（Nominal2） |
+| 8 | 常量自身的定义内容进不了自身的 digest，或不变而 digest 动 | 低 | `overloading` 块里的名字、`instantiation` 里的 `fun`、`termination` 的增删 |
 
 ---
 
@@ -238,9 +239,11 @@ uninterpreted 的常量（`[[uninterpreted_constant …]]` 或 `Performant_Isabe
 变动几乎不改变依赖者的英文描述。persistent 侧不受影响（infra theory 的内容变化
 照样使 Merkle hash 漂移）。
 
-函数包（`fun`/`function`）的常量自 2026-09-13 起不再靠这条死边看见自己的方程：
-它指向 `f_sumC` 的边仍在（无记录，沉默），但方程本身经函数包的登记表进了它自己的
-digest（CHECK_OUTDATE_PLAN §7.3 第 1 条）。
+函数包（`fun`/`function`）的常量自 2026-09-13 起不再靠这条死边看见自己的方程；
+自 2026-09-14 起它的定义命题就是 fact `f.simps`（未证终止则 `f.psimps`），
+不含 `f ≡ f_sumC` 那条公理，指向 `f_sumC` 的死边随之消失（`f.psimps` 的
+`accp f_rel` 前提仍留一条指向 `f_rel` 的死边，同样沉默；CHECK_OUTDATE_PLAN
+§7.3 第 1 条）。
 
 ---
 
@@ -297,32 +300,50 @@ run 若已读到 mint 前的记录，就会错过这次 mint。theory 之间靠 
 
 ---
 
-## 8. 常量自身的定义内容进不了自身的 digest
+## 8. 常量自身的定义内容进不了自身的 digest，或不变而 digest 动
 
 ### 现象
 
-常量的 digest 由它自己的定义命题算出（`own_defining_axioms`：同 theory 的 Defs
-公理；函数包常量再合并登记表里的方程，CHECK_OUTDATE_PLAN §7.3 第 1 条，2026-09-13）。
-以下几种常量，定义内容不在这两处，改了定义 digest 不动，它自己和依赖者都不重解释：
+常量的 digest 由它自己的定义命题算出（`own_defining_axioms`，2026-09-14 起的
+规则：先走名字路径，即取定义命令给它起的 fact——`c.simps`、`c.psimps`、`c_def` 依次，
+第一个非空者即用；`.simps`/`.psimps` 只收「去掉前提后的结论是等式且左边头部是
+该常量本身」的那些，`_def` 只看名字；三者都空才取同 theory 的 Defs 公理，再空取
+Spec_Rules；CHECK_OUTDATE_PLAN §7.3 第 1 条）。在以下情形，这条规则要么取不到
+定义内容，要么在定义未变时让 digest 动：
 
-- **locale target 里的 `fun`/`function`**：函数包用 `pervasive = false` 登记
-  （`function.ML:135-136`、`:215-216`），theory 可见的登记表里没有任何键提到该
-  locale 常量或它经 `global_interpretation … defines` 得到的常量（CENSUS (b)：
-  wildcard 枚举 19 条，无一相关），裸常量查询返回 0；它保留的仍是不含方程体的
-  `f ≡ f_sumC`。发行版实例
-  `Bit_Operations.fold2_bit_int.F`（有记录）与 locale 层的
-  `…bit_operations.or_num`（`Infra("class_variant")`，本就无记录）。class 体内
-  的 `fun` 经 class operation 能取到（`…_class.or_num`），不在此列。
-- **自带登记表的定义包**：写 `_sumC` 型无体公理进 Defs、却把方程记在自己
-  登记表里的包，登记表分支看不见；发行版之外的实例 Nominal2 的
-  `nominal_function`（`nominal_function_core.ML:1021`）。
+- **`overloading` 块里的名字**：块内 `primrec funpow` 生成的 `funpow.simps`、
+  `funpow_def` 说的都是 `compow`（被 overload 的那个类运算），左边头部不是
+  `Nat.funpow`：`.simps` 被保护拒掉，`_def` 按名字命中，内容 `compow ≡ rec_nat …`
+  ——与 2026-09-13 之前结构路径给出的是同一条命题，只是来源换成了 fact；发行版
+  实例 `Nat.funpow`、`Transitive_Closure.relpow`、`relpowp` 三个。块内的 `fun`
+  （AFP `Pairing_Heap_List2_Analysis.thy` 的 `sz`）不在此列：它的 fact 叫
+  `size_hps.simps`（块内局部名），三个名字都落空，但结构路径上那条无体公理
+  `sz ≡ size_hps_sumC` 会按 `_sumC` 前的局部名再查一次 `size_hps.simps`（同样过
+  保护）并被方程替换（PLAN.md §10.3 D9，2026-09-14）。
 - **`instantiation` 里的 `fun`**：实例常量是 `Infra("inst_infix")`，无记录；
-  类参数本身按缺陷 2 恒不失效。
+  类参数本身按缺陷 2 恒不失效。（其 fact 名 `T.c.simps` 与常量名 `T.c_inst.c`
+  连前缀都不同，即便有记录按名字也取不到。）
+- **`termination` 的增删让 digest 动一次**：证终止前只有带 `accp f_rel` 前提的
+  `f.psimps`，证完多出 `f.simps`，来源从 `f.psimps` 换成 `f.simps`，方程未变而 digest 动一次
+  （重解释一次、裁定一次、依赖者屏蔽）。在别的 theory 里证的 `termination`
+  声明 theory 看不见，常量停在 `.psimps` 形式，方程编辑照样抓到。`.simps` 排在
+  `.psimps` 之前是 2026-09-14 的决定；反过来能免掉这一次移动，但被否决。
+
+### 已接受的约定
+
+作者自己写的 `lemma X_def: "X x = …"` 按名字取到即当作 X 的定义——`_def`
+不过保护（PLAN.md §10.3 D4）。对 abbreviation 尤其如此：`Fun.inj_def` 的左边
+展开后头部是 `inj_on`，正因为 `_def` 不过保护它才进得来；全 heap 有 `_def`
+fact 的入库 abbreviation 30 条（2026-09-14，87 个 theory 的 heap）都由此进
+digest，替代展开体。它是作者给 X 的刻画等式，改了就该失效。
 
 ### 为何接受
 
-与缺陷 6 同源：方程体所在的 `f_graph`/`f_sumC` 是无记录的 infra 常量，指向它们
-的边永远沉默（缺陷 6 说的是死边这一半，本条说的是常量自身这一半）。三种形状在
-发行版 87 个 theory 的 heap 里合计 1 个有记录的常量；为它们另找一条取到方程的路
-（locale 内部的登记未测）或接 AFP 私有登记表，不值。（theory 层 `context fixes x`
-块里的 `fun` 不在此列：其键是 `f ?x`，登记表分支按参数个数逐一查询，能取到。）
+`overloading` 三个名字的命题不变、来源换成 fact，块内 `fun` 的方程由 D9 补回；
+`instantiation` 的实例常量本就无记录；
+`termination` 增删极少发生，多付的是一次解释加一次裁定。2026-09-13 登记在此的
+「locale target 里的 `fun`/`function`」与「自带登记表的定义包（Nominal2）」已
+随名字路径关闭：前者的 `….F.simps` 是 theory 层 fact（实测
+`Bit_Operations.fold2_bit_int.F`；它的 `termination` 是 `private`，fact 因而是
+private 条目，按全名直接查 fact 表照样取到），后者记 fact 的代码是函数包的复制品、名字相同
+（读 `nominal_function.ML:105-170`，未实测）。

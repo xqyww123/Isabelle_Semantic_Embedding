@@ -45,7 +45,7 @@ were run on 2026-09-12 (`ai-artifacts/acceptance_step10/REPORT.md`,
 ClaudeCode/Opus 5, USD 10.76, isolated store): both pass -- 2 judge
 verdicts, 3 prefilter decisions, 5 mints propagated to 31 dependents, a
 post-run dry run of 0; one finding outside the gate, a `fun`-defined
-constant's digest does not see a change of its equations (`narquil`; repaired 2026-09-13 by `ai-artifacts/fun_digest/PLAN.md`, acceptance in `ai-artifacts/fun_digest/ACCEPTANCE.md`),
+constant's digest does not see a change of its equations (`narquil`; repaired 2026-09-13 by `ai-artifacts/fun_digest/PLAN.md`, acceptance in `ai-artifacts/fun_digest/ACCEPTANCE.md`; source revised 2026-09-14 to the facts named after the constant, PLAN.md §10),
 raised with the user.  PATH 20 of the disclosure audit accepted as is
 (D20).**
 Three review rounds (rev 1: 98 agents; rev 2: 23; rev 3: 23) and the user's

@@ -41,6 +41,8 @@ digest」三路探针结论归档于 §3.4 尾注。同日（终）：全计划 
 | **eff\*** | §4.1 的 eff 的屏蔽版：沿依赖闭包递归时，被 gate 判 UNCHANGED 的 hop 之下的信号不再抬升（同上计划 §4） | — |
 | **update_interpretations** | Python 策略壳（§8）：gate + dry run + 阈值 400 + 询问，包住锥回调；aoa 启动与 `_auto_embed` 段(1) 的唯一入口 | interpret_outdated、阈值策略函数 |
 | **theory serial** | `Context.theory_identifier` 的值：theory 值不可变，重精化必造新值、必换 serial；WIP 跳过判据存 **(进程标识, theory serial) 对**（serial 是进程内计数器，跨会话必配进程标识防碰撞） | — |
+| **名字路径**（the named-fact source） | 常量定义命题的首选来源（§7.3 第 1 条，2026-09-14）：定义命令以常量全名命名的 fact `c.simps`、`c.psimps`、`c_def`，依次取、逐级过保护，第一个非空者即用；三者都空才走结构路径（Defs、Spec_Rules） | 名字查询 |
+| **保护**（the guard） | 名字路径对 `.simps`/`.psimps` 的过滤：去掉前提后的结论是等式（`≡` 或 `=`）且左边头部是该常量本身；`_def` 不过保护 | 形状检查、严格保护 |
 | **dep 统一判据** | §4.3：对每条 dep 边重解析目标实体的当前 uk 并与存储值比较，失配（含仅 WIP 位翻转）⟹ 过期 | 边界判据、边界 uk 判据、边界失效判据 |
 
 ---
@@ -120,7 +122,7 @@ force 做的；该效果对 persistent 侧继续存在，对 WIP 侧由增量机
 兼任 dep 统一判据的时刻印记，见 §4.3）。
 
 **内容**（放哪些边）：
-- constant：own-defining-axioms（§7.3 第 1 条：过滤后的同 theory Defs 公理，函数包常量再加登记表方程）提取的命题中出现的
+- constant：own-defining-axioms（§7.3 第 1 条：先取以常量命名的 fact `c.simps`/`c.psimps`/`c_def`，没有才取过滤后的同 theory Defs 公理）提取的命题中出现的
   constant/type/class/locale；
 - type：定义结构（typedef 定义集合、ctr_sugar 等）中的实体；
 - **class / locale 统一走 locale dependencies 表 + serial 过滤**：
@@ -353,16 +355,23 @@ digest 定名并加「部署后永不可改」注释；重写 :44-60 与 limitat
    而 `less_eq` 被 13.3% 的定理提及——直接调 `Defs.specifications_of` 会静默
    大规模误失效）；只保留同 theory 定义公理；Defs 为空退
    `Spec_Rules.get_global`（**不是** `retrieve_global`——Item_Net 对空 terms
-   不建索引，`HOL.The`/`HOL.eq`/`HOL.implies` 实测中招）；Defs 非空且函数包
-   登记表（`Function_Common.retrieve_function_data`）有该常量时，**合并**登记表
-   里的方程（`simps`，未证终止则 `psimps`）——函数包写进 Defs 的公理是
-   `f ≡ f_sumC`，不含方程体；Spec_Rules 里的同一组方程以 `Binding.empty`
-   登记（`function.ML:217`），无名，`same_theory` 永远过不了（要用它只能
-   `Spec_Rules.dest_theory`，F4 已否），而未证终止的 `function` 在 Spec_Rules
-   里根本没有条目、只有登记表有 psimps；是合并而非替代，同 theory
-   `overloading` 家族里的兄弟定义才不会丢；登记表按导出后的函数项做键，
-   `context fixes x` 下的 `fun` 键是 `f ?x`，所以从 0 到 arity 每个参数个数
-   各查一次（2026-09-13）。
+   不建索引，`HOL.The`/`HOL.eq`/`HOL.implies` 实测中招）；这两处之前**先走名字
+   路径**——取定义命令给常量起的 fact（2026-09-14，`ai-artifacts/fun_digest/PLAN.md`
+   §10）：`c.simps`、`c.psimps`、`c_def` 依次，第一个过保护后非空者短路返回——函数包写进
+   Defs 的公理是 `f ≡ f_sumC`，不含方程体，方程只在 `f.simps`（未证终止则
+   `f.psimps`）里；Spec_Rules 里的同一组方程以 `Binding.empty` 登记
+   （`function.ML:217`），无名，`same_theory` 永远过不了，而未证终止的
+   `function` 在 Spec_Rules 里根本没有条目；locale target 里的 `fun` 和 Nominal2
+   的 `nominal_function` 也只有这条路（函数包登记表对前者不可见、后者自有登记表；
+   2026-09-13 的登记表来源因此被换掉）。按全名精确查 fact，同 theory 的过滤
+   白送。`.simps`/`.psimps` 必须过保护——结论是等式且左边头部是该常量本身——
+   因为 datatype/typedef 给**类型**起 `T.simps`，同名常量会撞上
+   （`Quickcheck_Exhaustive.unknown`、`Sum_Type.sum`、`Product_Type.prod`）；
+   保护逐级应用，`inductive_set` 的 `.simps` 左边是 `a ∈ S r`、被拒后由其
+   `_def` 接住；`_def` 只看名字（全 heap 无一误收）。结构路径上还有一步：
+   `overloading` 块里的 `fun` 的 fact 以块内局部名命名（`size_hps.simps`），
+   常量名查不到，其 Defs 公理 `sz ≡ size_hps_sumC` 无体，于是按 `_sumC` 前的
+   局部名再查 `.simps`/`.psimps`（同样过保护）替换这条公理（D9）。
 2. **`add_sort_classes` 用 `fold_atyps_sorts`**：`fold_atyps` 看不见
    `TFree (a, S)` 的 S，删掉则全部 class 依赖边消失且双重静默。
 3. **class 的传递超类闭包不进 payload**（`Rings.idom` 在 HOL.Rings 下 43 个超类、
@@ -736,10 +745,15 @@ Semantic_Embedding.thy:20 演示行）。**Sledgehammer_Embedding 不经此路**
 | `Orderings.ord` 依赖 `less_eq`/`less` | class 参数不进 digest |
 | `not_less` 有 `linorder` 的 ClassK 边 | sort 里的类不产生依赖边 |
 | `Rings.idom` 的 digest 跨 env 相同 | 超类闭包污染 digest |
-| `fun` 常量的定义命题提及其方程体里的常量（`sens_fun` → `less`） | 函数包的方程不进 digest（Defs 只有 `f ≡ f_sumC`） |
-| 未证终止的 `function` 取到 psimps（提及 `accp`） | 未证终止的函数没有任何方程进 digest |
-| `fun` 常量既保留 Defs 公理又得到方程；`primrec`/`definition`/`partial_function` 恰保留其一条 Defs 公理 | 替代而非合并会丢 `overloading` 家族的兄弟定义；登记表分支误伤别的包 |
-| `context fixes` 下的 `fun` 的定义命题提及其方程体里的常量（`sens_cfun` → `plus`） | 登记表键 `f ?x` 用裸常量查不到，方程不进 digest |
+| `fun` 常量恰取 `f.simps`，提及其方程体里的常量（`sens_fun` → `less`）且无 `accp` 前提 | 函数包的方程不进 digest（Defs 只有 `f ≡ f_sumC`）；`.psimps` 排到了 `.simps` 之前 |
+| 未证终止的 `function` 恰取 `f.psimps`（提及方程体常量与 `accp`） | 未证终止的函数没有任何方程进 digest |
+| `primrec`/`partial_function` 恰取 `.simps`，`definition` 恰取 `_def` | 名字路径没有短路，结构路径的公理混进来 |
+| `context fixes` 下的 `fun` 恰取 `.simps`，提及 `plus`（`sens_cfun`） | 导出后多一个参数的函数取不到方程 |
+| locale target 里的 `function` 恰取导出的 `L.f.psimps`，提及方程体常量 | 登记表来源（2026-09-13）对 locale target 不可见，方程不进 digest |
+| 与 datatype 同名的常量恰取 `_def`，不提及构造子 | 无保护时类型的 `T.simps` 被当成常量的定义 |
+| `inductive_set` 恰取 `_def` | 左边是 `a ∈ S r` 的 `.simps` 没被保护拒掉，进了 digest（`inductive_set` 的 Defs 公理本身就叫 `_def`，所以这一行钉的是保护，不是逐级回落；逐级回落由上一行钉：`definition` 的 Defs 公理叫 `_def_raw`） |
+| 有作者 `X_def` 引理的 abbreviation 恰取 `X_def` | `_def` 被按形状过滤，abbreviation 的作者定义丢失 |
+| `overloading` 块里的 `fun`（`sens_sz`）取到局部名的 `.simps`、兄弟 `definition` 的 Defs 公理，不含 `_sumC` 公理 | 块内 `fun` 的方程不进 digest（fact 以局部名命名，常量名查不到） |
 | `digest_term t = Term_Digest.term128 t`（参数改名使 digest 变化） | digest 在 hash 前被做了变换（归一化已撤销，2026-09-13） |
 | **class：locale 表取法 ≡ def-parse 取法（全 Main）** | serial 过滤判据漂移无人发现 |
 | **`Rings.idom` 的 deps 恰 2 项、跨 env 相同** | 注册边混入 deps |

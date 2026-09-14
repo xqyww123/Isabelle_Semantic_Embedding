@@ -17,9 +17,10 @@ pipeline's own enumeration (semantic_store.ML's enumerate_entries), it computes:
     stale when a constant it mentions changes meaning; the edges are what let
     the Python side track that.
 
-A constant's digest is built from its own defining axioms (Defs, own theory
-only) and, for a constant of the function package, from the equations in that
-package's registry -- its Defs axiom `f == f_sumC` carries no body.
+A constant's digest is built from the facts its defining command named after
+it (c.simps, c.psimps, c_def -- the first whose guarded result is non-empty)
+and, when there is none, from its own defining axioms (Defs, own theory only;
+Spec_Rules for axiomatizations).
 
 Comparing against stored state, bumping versions, effective-version (eff)
 evaluation and the todo-set filter all happen Python-side
@@ -34,10 +35,8 @@ accepted-gap register is doc/invalidation_limitations.md #1/#2.
 
 signature SEMANTIC_DIGEST =
 sig
-  (* Per-pass precomputed state: the indexed axiom table, the locale-parent
-     index and the theory's global proof context (the function package's
-     registry answers to a context).  Building these per entity would be
-     quadratic. *)
+  (* Per-pass precomputed state: the indexed axiom table and the
+     locale-parent index.  Building these per entity would be quadratic. *)
   type env
   val make_env: theory -> env
   val theory_of_env: env -> theory
@@ -62,11 +61,13 @@ sig
                                    do not resolve. *)
   val semantics_of: env -> Universal_Key.entity -> (Term_Digest.digest128 option * dep list) option
 
-  (* The propositions carrying a constant's own definitional content after the
-     own-theory filter: its own-theory Defs axioms plus, for a function-package
-     constant, its equations from the package's registry.  The first component
-     is a fact-like label, not necessarily the name of a fact.  Exposed for the
-     sensitivity suite. *)
+  (* The propositions carrying a constant's own definitional content: the
+     facts named after it (c.simps, c.psimps, c_def; the first whose guarded
+     result is non-empty), else its own-theory Defs axioms, else its
+     Spec_Rules items.  The first component is the fact name, the axiom name
+     (except a `_sumC` axiom unfolded into a local name's fact, which carries
+     that fact's name) or the Spec_Rules item name respectively.  Exposed for
+     the sensitivity suite. *)
   val own_defining_axioms: env -> string -> (string * term) list
 
   (* The hash every payload goes through, exposed for the sensitivity suite's
@@ -83,7 +84,6 @@ struct
    per constant would be O(#constants * #axioms).  Index it once. *)
 type env =
  {thy: theory,
-  ctxt: Proof.context,
   axioms: term Symtab.table,
   (* locale long name -> its DEF-TIME parent locales.  Locale.dependencies_of
      is NOT exported (only its implementation is visible at locale.ML:259); the
@@ -107,7 +107,6 @@ type env =
    S11/S12/S3 assertions catch.) *)
 fun make_env thy : env =
  {thy = thy,
-  ctxt = Proof_Context.init_global thy,
   axioms = Symtab.make_distinct (Theory.all_axioms_of thy),
   locale_parents =
     let
@@ -341,58 +340,103 @@ fun spec_rule_axioms (env: env) const_name =
     |> filter (fn {name, ...} =>
          same_theory env {const_name = const_name, axiom_name = name})
     |> maps (fn {name, rules, ...} => map (fn th => (name, Thm.prop_of th)) rules)
-    |> sort prop_ord
   end
 
-(* The function package (fun, function) writes a body-free axiom `f == f_sumC`
-   to Defs: the equations live in the infrastructure constant f_graph (no store
-   record, limitation #6) and in the derived f.simps, so the Defs axiom alone
-   cannot see an equation edit.  The package's own registry holds them: simps
-   once termination is proved, else psimps (with the `accp f_rel` premise).
-   The registry's answer is re-stamped with env's theory and carries no theory
-   attribution of its own, so a non-empty own-theory Defs result is the only
-   evidence that the constant is declared here -- sound because production
-   always builds env from the declaring theory (semantic_store.ML:1811,
-   theory_structure.ML:171-183).  The registry is keyed on the exported
-   function term: the bare constant, or, for a `fun` declared under
-   `context fixes x` with `x` in its equations, `f ?x` (the block's fixed
-   variables become parameters on export).  The net matches a query only
-   against keys of the same argument count, so every count up to the arity is
-   queried, `Var`s as wildcards.  The net also returns its wildcard branch;
-   keep only the entries keyed on this constant. *)
-fun function_equations (env: env) const_name =
+(* The facts a defining command names after its constant are consulted first
+   (2026-09-14): c.simps, then c.psimps, then c_def.  They are the
+   user-facing statement of the definition in every package -- the function
+   package's Defs axiom `f == f_sumC` carries no body, and its equations are
+   the facts f.simps (f.psimps, with the `accp f_rel` premise, until
+   termination is proved); a locale-target `fun` and Nominal2's
+   nominal_function name theirs the same way.  The lookup is the fact
+   table's entry for the full name itself (Facts.lookup), never a name-space
+   resolution: no alias or shorter spelling can answer, and a fact's full
+   name begins with its theory's base name exactly as the constant's does,
+   so no own-theory filter is needed.  Private and hidden entries ARE
+   reached (Bit_Operations.fold2_bit_int.F's `private termination` makes
+   its simps private; they are its equations all the same).  A dynamic
+   fact is context-dependent, not a definition, and is refused.
+
+   Datatypes and typedefs name facts after the TYPE, so a constant sharing a
+   type's name meets the type's simps (measured: Quickcheck_Exhaustive.unknown
+   is an axiomatized constant and a datatype; Sum_Type.sum and
+   Product_Type.prod are typedef representing sets).  Hence a simps/psimps
+   fact counts only if its conclusion is an equation whose left-hand head is
+   the constant itself, and an empty guarded answer moves on to the next
+   name: an inductive_set's simps are `(a : S r) = ...`, headed by member,
+   and its `_def` then answers.  `_def` is taken by name alone -- the suffix
+   has no type-level use, and every X_def in the heap is X's definition by
+   its author (abbreviation expansions, locale-exported definitions with
+   premises, `overloading` definitions of the underlying operation) -- an
+   author's `lemma X_def` included.  Three empty answers fall through to the
+   Defs axioms (28 record-eligible constants of the heap have no named fact,
+   no own axiom and no abbreviation body: their digest is name and type). *)
+fun defining_equation const_name prop =
   let
-    val T = Consts.the_constraint (Sign.consts_of (#thy env)) const_name
-    fun keyed_on_const (t, _) =
-      (case head_of t of Const (n, _) => n = const_name | _ => false)
-    fun equations ({simps, psimps, ...}: Function_Common.info) =
-      (case simps of
-         SOME ths => map (pair (const_name ^ ".simps") o Thm.prop_of) ths
-       | NONE => map (pair (const_name ^ ".psimps") o Thm.prop_of) psimps)
-    fun query n =
-      Function_Common.retrieve_function_data (#ctxt env)
-        (list_comb (Const (const_name, T), map (fn i => Var (("a", i), dummyT)) (1 upto n)))
+    val concl = Logic.strip_imp_concl prop
+    val lhs =
+      (case try (fst o Logic.dest_equals) concl of
+         SOME l => SOME l
+       | NONE => try (fst o HOLogic.dest_eq o HOLogic.dest_Trueprop) concl)
   in
-    maps query (0 upto length (binder_types T))
-    |> filter keyed_on_const
-    |> maps (equations o snd)
-    |> sort prop_ord
+    (case Option.map head_of lhs of SOME (Const (n, _)) => n = const_name | _ => false)
   end
+
+fun fact_props (env: env) name =
+  (case Facts.lookup (Context.Theory (#thy env)) (Global_Theory.facts_of (#thy env)) name of
+     SOME {dynamic = false, thms} => map (pair name o Thm.prop_of) thms
+   | _ => [])
+
+fun first_non_empty xss = the_default [] (find_first (not o null) xss)
+
+(* base.simps, else base.psimps, restricted to the equations of const_name *)
+fun equation_facts (env: env) const_name base =
+  let val equations = filter (defining_equation const_name o snd) in
+    first_non_empty
+      [equations (fact_props env (base ^ ".simps")),
+       equations (fact_props env (base ^ ".psimps"))]
+  end
+
+fun named_facts (env: env) const_name =
+  first_non_empty
+    [equation_facts env const_name const_name,
+     fact_props env (const_name ^ "_def")]
+
+(* A `fun` inside an `overloading` block names its facts after the block's
+   local binding, not after the constant (AFP Pairing_Heap_List2_Analysis:
+   `sz` at one type is `fun size_hps`, facts size_hps.simps), so the named
+   lookup above misses and only the body-free Defs axiom `sz == size_hps_sumC`
+   remains.  The local name is the `_sumC` constant's name without the
+   suffix; the axiom is replaced by the equations that name names, and kept
+   as it is when there are none. *)
+fun unfold_sumC_axiom (env: env) const_name (axiom as (_, prop)) =
+  (case try (head_of o strip_abs_body o snd o Logic.dest_equals) prop of
+     SOME (Const (n, _)) =>
+       (case try (unsuffix "_sumC") n of
+          SOME local_name =>
+            (case equation_facts env const_name local_name of
+               [] => [axiom]
+             | equations => equations)
+        | NONE => [axiom])
+   | _ => [axiom])
 
 fun own_defining_axioms (env: env) const_name =
   if is_some (class_param_of env const_name) then []
   else
-    let
-      val from_defs =
-        Defs.specifications_of (Theory.defs_of (#thy env)) (Defs.Const, const_name)
-        |> map_filter #def
-        |> filter (fn ax => same_theory env {const_name = const_name, axiom_name = ax})
-        |> map_filter (fn ax => Option.map (pair ax) (resolve_prop env ax))
-        |> sort (fn ((a, _), (b, _)) => string_ord (a, b))
-    in
-      if null from_defs then spec_rule_axioms env const_name
-      else from_defs @ function_equations env const_name
-    end
+    (case named_facts env const_name of
+       [] =>
+         let
+           val from_defs =
+             Defs.specifications_of (Theory.defs_of (#thy env)) (Defs.Const, const_name)
+             |> map_filter #def
+             |> filter (fn ax => same_theory env {const_name = const_name, axiom_name = ax})
+             |> map_filter (fn ax => Option.map (pair ax) (resolve_prop env ax))
+             |> maps (unfold_sumC_axiom env const_name)
+         in
+           if null from_defs then spec_rule_axioms env const_name else from_defs
+         end
+     | props => props)
+    |> sort prop_ord
 
 
 (* --- per-kind semantics --- *)
@@ -423,9 +467,10 @@ fun sem_constant (env: env) name =
             NONE => nil_payload
           | SOME c => tagged "param_of" (Const (c, dummyT))
         (* An `abbreviation` writes nothing to Defs (Sign.add_abbrev bypasses it)
-           and is not a class parameter, so both sources above come back empty
-           and the payload would collapse to name+type -- rewriting the
-           abbreviation's body would be invisible.  Measured on Main: 205 of the
+           and is not a class parameter, so unless its author named a lemma
+           X_def the sources above come back empty and the payload would
+           collapse to name+type -- rewriting the abbreviation's body would be
+           invisible.  Measured on Main: 205 of the
            1,122 interpretable constants (18%) are abbreviations, e.g. Set.range,
            Set.union, HOL.not_equal. *)
         val abbrev =

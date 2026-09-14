@@ -1,0 +1,124 @@
+{
+  "review": "rev 3.0 re-review after the round-one fixes and the D9 = RECOVER decision",
+  "date": "2026-09-14",
+  "judge_model": "Opus 5 (1M context)",
+  "scope": "Tools/semantic_digest.ML :340-440 and its comments, Test/Test_Sensitivity.thy S13, ai-artifacts/fun_digest/PLAN.md §10, ai-artifacts/SEMANTIC_CHANGE_GATE_HANDOFF.md, doc/invalidation_limitations.md, archive/plans/CHECK_OUTDATE_PLAN.md. Decisions D1-D9 not re-litigated: checked only for correct implementation and correct recording.",
+  "verified_facts": [
+    "D9 is implemented as decided: unfold_sumC_axiom at Tools/semantic_digest.ML:411-420 is applied by `maps` inside the Defs branch (:433), matches the rhs head under its lambdas, strips the `_sumC` suffix, and calls the SHARED equation_facts (:392-397) with base = <local>, keeping the axiom when no such facts exist. The guard is the single defining_equation (:373-382), bound once as `equations` (:393).",
+    "The round-one FIX rulings are all applied: Facts.lookup (:384-387), HOLogic.dest_eq (:378), the guard bound once (:393), three prop-count assertions (Test/Test_Sensitivity.thy:351, :365, :372), the helper renamed props_mention (:342).",
+    "S13n exists and pins D9 (Test/Test_Sensitivity.thy:392-396), with the subject at :319-335.",
+    "Routing is unchanged by D9 on the heap: census_diff2.out and census_diff3.out are byte-identical (diff empty), as PLAN.md:699-700 claims.",
+    "Suite evidence: green3.raw clean; red3.raw \"SENSITIVITY FAILURES (10)\" a,d,f,g,h,i,j,k,m,n from Test_Sensitivity_Red3.thy; pre3.raw \"SENSITIVITY FAILURES (1)\" S13n alone from Test_Sensitivity_Pre3.thy."
+  ],
+  "rulings": [
+    {
+      "id": 1,
+      "title": "After D9 the `Defs` branch can return FACT labels, but the signature comment and PLAN §10.4 still promise an axiom name there",
+      "ruling": "FIX",
+      "severity": "wording",
+      "sites": [
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Tools/semantic_digest.ML:66-68",
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/ai-artifacts/fun_digest/PLAN.md:571-574"
+      ],
+      "reasoning": "Confirmed against the sources. semantic_digest.ML:66-68 states «The first component is the fact name, the axiom name or the Spec_Rules item name respectively», pairing the Defs path with an axiom name; PLAN.md:573-574 carries the same three-way sentence. D9 falsifies it: unfold_sumC_axiom (:411-420) sits inside the Defs branch of own_defining_axioms (:422-438) and replaces the axiom with equation_facts, whose labels are `<local>.simps` / `<local>.psimps` produced by fact_props (:384-387) — fact names emitted from the Defs path. The suite asserts the mixture outright: Test/Test_Sensitivity.thy:393 requires labels \"sens_sz\" = [\"Test_Sensitivity.sens_sz_hp_def_raw\", \"Test_Sensitivity.sens_sz_hps.simps\"], one axiom name and one fact name in a single Defs answer. It is a regression of record introduced by this change: `git diff HEAD -- Tools/semantic_digest.ML` shows the old text was the hedge «a fact-like label, not necessarily the name of a fact», which would still be true today; the diff replaced it with an exact claim the same working tree contradicts. PLAN.md:573-574 also contradicts PLAN.md:566-567 («the D9 unfolding with base = <local>») two bullets above it. Materiality is low but real — it is the exported, caller-facing contract of the one function the sensitivity suite drives — and correct RECORDING of D9 is explicitly in this review's remit.",
+      "fix": "By hand at semantic_digest.ML:66-68 and PLAN.md:571-574: a fact name on the named-fact source; an axiom name on the `Defs` path, EXCEPT a `_sumC` axiom unfolded by D9, whose props carry the local name's fact name; a `Spec_Rules` item name on the fallback.",
+      "blocking": false
+    },
+    {
+      "id": 2,
+      "title": "«the first present» misstates the rule in both the header and the signature comment: it is the first non-empty AFTER the guard",
+      "ruling": "FIX",
+      "severity": "wording",
+      "sites": [
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Tools/semantic_digest.ML:21",
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Tools/semantic_digest.ML:65"
+      ],
+      "reasoning": "Confirmed. The shipped rule is first-whose-GUARDED-result-is-non-empty: named_facts (:399-402) is first_non_empty over equation_facts then `_def`, and equation_facts (:392-397) is itself first_non_empty over the `filter (defining_equation const_name o snd)`-guarded `.simps` and `.psimps`. Presence alone never answers for simps/psimps. semantic_digest.ML:21 writes «c.simps, c.psimps, c_def -- the first present, guarded», whose appended «, guarded» reads as take-the-first-present-then-guard-it — precisely the rejected variant semantic_digest_nomoveon.ML, recorded failing S13k at PLAN.md:676-679; :65 writes «the first present» with no guard clause at all. The distinction is the whole content of D3's move-on half and is what S13k exists to pin (Test/Test_Sensitivity.thy:377-382: `sens_col.simps` IS present — the datatype's — yet `sens_col` must answer `Test_Sensitivity.sens_col_def`), and it is measured on the heap (22 constants route `.simps -> _def`, PLAN.md:706-711). Every other statement of the rule in the tree already uses the right phrase, including this file's own block comment at :364-365 («an empty guarded answer moves on to the next name»), PLAN.md:526 and :541, and SEMANTIC_CHANGE_GATE_HANDOFF.md:70 — so these two lines are also the only places in the repository naming the concept differently, against the project's consistent-terminology rule.",
+      "fix": "By hand at :21 and :65: «the first whose guarded result is non-empty». `_def` needs no extra clause, since both sentences already say it is taken by name.",
+      "blocking": false
+    },
+    {
+      "id": 3,
+      "title": "The parenthetical count in the fall-through comment names a class of 166 constants but gives the figure for a narrower class of 28",
+      "ruling": "FIX",
+      "severity": "wording",
+      "sites": [
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Tools/semantic_digest.ML:370-372"
+      ],
+      "reasoning": "Confirmed. The comment reads «Three empty answers fall through to the Defs axioms (28 record-eligible constants of the heap have no named fact and no own axiom at all)». PLAN.md:512 attaches 28 to the narrower class «no own axioms, no abbreviation» (digest is name+type only); the ML comment dropped the abbreviation qualifier. The class as worded also contains the 138 abbreviations with no author `_def`: they have no named fact, and an abbreviation writes nothing to Defs — as this very file says at :468 («An `abbreviation` writes nothing to Defs (Sign.add_abbrev bypasses it)»), with the abbreviation channel at :475-476 gated on `null axioms`, reachable only because the structural path returned nothing. PLAN.md:715-718 measures the worded class directly at 166 (138 + 28), and census_diff2.out / census_rev30.out report empty=166 of 1038. So the parenthetical understates its own class roughly sixfold, and the difference is load-bearing: for the 138 the digest is NOT name+type only, the abbreviation body is recorded. (Minor inaccuracy in the finding itself: the abbreviation channel is :468-476, not :466-475.)",
+      "fix": "By hand at :370-372: either restore the qualifier — «28 record-eligible constants have no named fact, no own axiom and no abbreviation body, so their digest is name+type only» — or state the figure for the class as worded, 166.",
+      "blocking": false
+    },
+    {
+      "id": 4,
+      "title": "The new glossary row bans 「按名字取」, which the same change then writes in the very section the row points at",
+      "ruling": "FIX",
+      "severity": "wording",
+      "sites": [
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/archive/plans/CHECK_OUTDATE_PLAN.md:44",
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/archive/plans/CHECK_OUTDATE_PLAN.md:358-359",
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/doc/invalidation_limitations.md:6",
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/doc/invalidation_limitations.md:346"
+      ],
+      "reasoning": "Two voters split on this; ruling as judge. The undisputed fact settles it: the new glossary row at CHECK_OUTDATE_PLAN.md:44 fixes the canonical term 名字路径 and places 「名字查询、按名字取」 in the column headed 「废除的别名（勿再使用）」 (:30), and the same commit then writes 按名字取 in bold at CHECK_OUTDATE_PLAN.md:358-359 — inside §7.3 item 1, the exact section the row cites as its definition — and at doc/invalidation_limitations.md:6, :308, :334, :346. Whether the phrase is a competing NAME or an ordinary verb phrase decides which end to repair, not whether there is a defect: a document cannot ban a string in its own authoritative glossary and then use it. I find the refuting argument (verb phrase, not a name) correct for :308 and :334, where the sentence needs a verb («按名字取到即当作 X 的定义»), and NOT correct for doc:6 (「定义来源改为按名字取 fact」) and doc:346 (「已随按名字取 fact 关闭」), which name the mechanism where 名字路径 is the fixed term. The placement complaint also holds: 名字路径 occurs only at CHECK_OUTDATE_PLAN.md:44, :45 and :750 (§14), never in §7.3 where the rule is stated. The repo rule that a document's glossary is authoritative and that terminology must be consistent is squarely in this review's stated criteria.",
+      "fix": "By hand, one direction applied throughout: drop 「按名字取」 from the banned column at :44 (keep 名字查询), since ordinary prose legitimately needs the verb; and use the canonical 名字路径 where the mechanism is NAMED — CHECK_OUTDATE_PLAN.md:358-359 (「这两处之前先走**名字路径**」), doc/invalidation_limitations.md:6 (「定义来源改为名字路径」), :346 (「已随名字路径关闭」) — adding 名字路径 once in §7.3 item 1 so the canonical term appears where the rule is defined.",
+      "blocking": false
+    },
+    {
+      "id": 5,
+      "title": "Two leftovers from the rewrite: the inner `sort prop_ord` is now redundant, and `first_non_empty` re-implements `the_default`",
+      "ruling": "FIX",
+      "severity": "elegance",
+      "sites": [
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Tools/semantic_digest.ML:341",
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Tools/semantic_digest.ML:389"
+      ],
+      "reasoning": "Both halves verified, and neither was ruled on in round one. (a) own_defining_axioms now ends `|> sort prop_ord` at :438, OUTSIDE the whole case (:425-437), so it covers every branch; spec_rule_axioms ends with the same `|> sort prop_ord` at :341 and has exactly one call site, :435, on the branch where `from_defs` is null — so its list IS the whole answer and flows straight into :438, with nothing merged in. Both sorts are literally the same prop_ord (:297-298) and Isabelle/ML `sort` is stable, so dropping :341 is output-identical. It is genuinely a leftover: `git show HEAD:Tools/semantic_digest.ML` shows the old own_defining_axioms sorted only `from_defs`, by `string_ord` on the label alone, and returned spec_rule_axioms directly, so :341 was then the only sort on that path; the new whole-answer sort subsumes it. (Wording note: redundant, not dead — it still executes.) (b) `first_non_empty xss = (case find_first (not o null) xss of SOME xs => xs | NONE => [])` (:389) is exactly `the_default [] (find_first (not o null) xss)`, and this is not an imported preference: the same file writes that idiom at :699. Neither change touches behaviour, both are one-line and zero-risk, and both leave D9 (:411-420) and equation_facts (:392-397) untouched — which is why they qualify under the stated criterion that elegance counts as much as correctness.",
+      "fix": "Drop `|> sort prop_ord` from spec_rule_axioms (:341) so :438 is the single sorting point, and write `fun first_non_empty xss = the_default [] (find_first (not o null) xss)` (:389). If :341 is dropped, keep the one-call-site invariant in view: any future second caller of spec_rule_axioms must route through :438.",
+      "blocking": false
+    },
+    {
+      "id": 6,
+      "title": "PLAN §10.6 says the pre-D9 module shows «three Defs labels» for S13n; the subject has only two",
+      "ruling": "FIX",
+      "severity": "defect (record)",
+      "sites": [
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/ai-artifacts/fun_digest/PLAN.md:650-651"
+      ],
+      "reasoning": "Confirmed, and the arithmetic is decisive. The S13n subject (Test/Test_Sensitivity.thy:325-335) is a TWO-member `overloading` block — `fun sens_sz_hps` and `definition sens_sz_hp` — so exactly two Defs axioms have Test_Sensitivity.sens_sz as their head; the `fun`'s auxiliary constants (`_graph`, `_rel`, `_sumC`) are not in the overloading map and get Defs entries keyed on themselves, so they cannot appear in Defs.specifications_of (Defs.Const, \"Test_Sensitivity.sens_sz\") at :429. The green assertion pins this independently: `length (own \"sens_sz\") = 3` (Test_Sensitivity.thy:394) decomposes as 1 sibling axiom prop + 2 equations produced by unfold_sumC_axiom from ONE input axiom; had there been three Defs axioms the count would be 4. The figure 3 belongs to a different subject — the CENSUS probe FunCensus, whose overloading block has three members (ai-artifacts/fun_digest/CENSUS.md:227-241). The preserved evidence supports nothing stronger: pre3.raw records only «SENSITIVITY FAILURES (1): S13n …». The error matters because PLAN §10.7 designates this acceptance prose as the durable record («The scratchpad is a session tmpfs, so the durable record is this sentence»). Caveat on the proposed fix: its rewrite of the rev 2.3 clause is itself unverified by preserved evidence, so change only the wrong count.",
+      "fix": "By hand at PLAN.md:650-651: replace «(three Defs labels, no `plus`)» with «(the two Defs labels `sens_sz_hps_def`/`sens_sz_hp_def_raw`, no `plus`)», leaving the rev 2.3 clause as it stands.",
+      "blocking": false
+    },
+    {
+      "id": 7,
+      "title": "The HANDOFF's live entry-point section still describes the pre-D9 suite while its own item 1 lists unfold_sumC_axiom",
+      "ruling": "FIX",
+      "severity": "defect (record)",
+      "sites": [
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/ai-artifacts/SEMANTIC_CHANGE_GATE_HANDOFF.md:83-89"
+      ],
+      "reasoning": "Confirmed, and round one's frozen-record exemption does not cover it: the section beginning at HANDOFF:65 is «Entry point after rev 3.0 … (2026-09-14)», newly written in this working tree, and round one's own ruling 21 declined to retro-edit only the frozen record body further down. Inside that live section, item 1 at :76 already names `unfold_sumC_axiom` (D9), while item 2 at :83-89 still says «S13a–m», «9 of 13 fail on the rev 2.3 module» and cites `Test_Sensitivity_Red2.thy`. Every figure is stale: `grep -c 'check \"S13' Test/Test_Sensitivity.thy` = 14 (S13a at :349 through S13n at :392); red3.raw reports 10 failures (a,d,f,g,h,i,j,k,m,n) from Test_Sensitivity_Red3.thy; pre3.raw reports S13n alone from Test_Sensitivity_Pre3.thy, a run the section never mentions; and the D9 subject `sens_sz` (Test_Sensitivity.thy:319-335) is missing from the subject list. PLAN.md:694-700 already records the correct figures, so the repair is a transcription. It is material because the file's own opening instruction is to read it first after a compaction and its item 5 makes the next action «apply the rulings and commit» — a post-compaction session would carry «S13a–m / 9 of 13 / Red2.thy» into the commit message.",
+      "fix": "By hand at HANDOFF:83-89, matching PLAN.md §10.7 verbatim: «S13 rewritten (S13a–n; new subjects `sens_loc.sens_lfun` locale target, `sens_col` datatype/constant name collision, `sens_iset` inductive_set, `sens_abb` with an author `sens_abb_def`, `sens_sz` a `fun` inside `overloading` — D9).  Red-then-green: 10 of 14 fail on the rev 2.3 module (`…/Test_Sensitivity_Red3.thy`), S13n alone fails on the rev 3.0 module before the unfolding (`…/Test_Sensitivity_Pre3.thy`), all pass on the shipped one; guard variants … recorded in PLAN.md §10.7.»",
+      "blocking": false
+    },
+    {
+      "id": 8,
+      "title": "Two rev 2.3 record passages cite S13 letters that rev 3.0 reassigned",
+      "ruling": "FIX",
+      "severity": "wording",
+      "sites": [
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/ai-artifacts/fun_digest/PLAN.md:419",
+        "/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/ai-artifacts/fun_digest/PLAN.md:22"
+      ],
+      "reasoning": "Confirmed, with one decisive extra fact the finding did not use: §6, the rev 2.3 test specification (PLAN.md:311-357), assigns NO S13 letters at all — it describes the shapes in prose only. So `S13i` at :419 (§8's F1 entry, «test S13i») and at :22 («S13i red on the pre-option-A module») has no referent anywhere in the frozen record, and the only resolution available to a reader is the shipped Test/Test_Sensitivity.thy:373, where S13i is «definition takes its _def» — a control test that was never red — while the `context fixes` pin F1 is about is now S13f (:363). `git show HEAD:Test/Test_Sensitivity.thy:329` confirms S13i was the `context fixes` pin under rev 2.3. Ruling 21's no-retro-edit principle is not violated: the repair is a qualifier, exactly what rev 3.0 already did by adding scope markers to the §1/§4/§6/§7/§8/§9 headings while leaving their bodies intact. Non-blocking, and the finding correctly limits itself to S13i — «S13a–e» at :22 still covers the same subjects under rev 3.0's lettering.",
+      "fix": "By hand: append «(rev 2.3 numbering; S13f in rev 3.0)» after «test S13i» at PLAN.md:419 and after «S13i» at PLAN.md:22 — or add one sentence to §10.6 stating that §6/§8's S13 letters are rev 2.3's and were reassigned.",
+      "blocking": false
+    }
+  ],
+  "not_findings": [
+    "D1-D9 are implemented as decided and, apart from the label sentence of ruling 1 and the count of ruling 6, recorded correctly; no behavioural defect was found in this round.",
+    "The seven refuted candidates carried into this round (the mutual-`fun`-in-`overloading` gap, the `unfold_sumC_axiom` comment's last clause, Facts.lookup's eagerness on dynamic entries, §10.4's «mentions <local>_sumC» compression, doc #8's `.simps`-only sentence) stay refuted; I re-checked the two that bear on D9's recording and agree they are immaterial."
+  ],
+  "verdict": "READY_AFTER_FIXES",
+  "verdict_reasoning": "The code is correct and D9 is implemented exactly as decided: the unfolding reuses equation_facts rather than duplicating the guard, it is confined to the Defs branch, it falls back to the axiom when the local name has no facts, and the heap census is byte-identical before and after (census_diff2.out = census_diff3.out), so the change is inert everywhere the shape does not occur and is pinned by S13n where it does. Nothing blocks. What remains is eight by-hand repairs, none behavioural: three comment sentences in Tools/semantic_digest.ML that state the shipped rule wrongly (rulings 1, 2, 3 — the exported label contract after D9, «the first present» for «the first whose guarded result is non-empty», and 28 for a class that measures 166), one terminology inconsistency the change introduced into its own glossary (ruling 4), two stale records (rulings 6 and 7 — «three Defs labels» where the subject has two, and a live handoff section still describing the pre-D9 suite while its own item 1 names unfold_sumC_axiom), one dangling test letter (ruling 8), and two one-line elegance cleanups left by the rewrite (ruling 5). Rulings 2, 6 and 7 are the ones worth doing before the commit: each states as fact something the same working tree contradicts, and 7 sits in the file a post-compaction session reads first."
+}

@@ -1,0 +1,224 @@
+{
+  "review": "PLAN.md §10 (rev 3.0, 2026-09-14): the named-fact source replaces the function-package registry",
+  "judged": "2026-09-14",
+  "verdict": "READY_AFTER_FIXES",
+  "verdict_reason": "The implemented rule matches decisions D1-D8 and the suite is green, but three things must change before the commit. (1) One code-level invariant is asserted in a comment and in the plan but not enforced by the code: Global_Theory.get_thms interns its argument through the fact name space, so the sentence 'the lookup is by exact long name, so a fact of another theory cannot answer' (Tools/semantic_digest.ML:350-352, PLAN.md:497 and :544) is not what the code guarantees; that sentence is the whole justification for having no same_theory call on the named path. (2) One shape the plan itself named as the reason for rev 2.3's MERGE - a `fun` inside an `overloading` block (AFP Amortized_Complexity/Pairing_Heap_List2_Analysis.thy:22-40) - silently loses its equations under rev 3.0, and §10.1's 'the named facts are a superset of what it answered' is measured only on the 87-theory heap where that shape does not occur; this needs the user's ruling and a recorded acceptance, not a reviewer's judgement. (3) Nine separate factual errors in the recorded measurements and in doc/invalidation_limitations.md #8 (counts that do not add up, a source route stated backwards, a direction of a switch written in reverse, a guard row that mislabels 5 of its 55 rows, a status block that claims markers it did not write). None of these is a redesign; all are hand edits plus one small code change and one small test addition.",
+  "rulings": [
+    {
+      "id": 1,
+      "title": "The named lookup goes through Name_Space.intern, so the comment's own-theory invariant is not the one the code has",
+      "ruling": "FIX",
+      "reason": "Confirmed from Pure: Tools/semantic_digest.ML:385 calls Global_Theory.get_thms, which is contrib/Isabelle2025-2/src/Pure/global_theory.ML:173-174 `#thms (Facts.retrieve ... (xname, Position.none))`; Facts.retrieve (Pure/facts.ML:199-201) goes through check -> Name_Space.check -> check_reports, whose first act is `intern space xname` (Pure/General/name_space.ML:615-616, :286, :275-277). intern takes the HEAD of lookup_internals, and add_internals conses the newest declaration to the front, so a later-declared fact whose access path spells the query string shadows the earlier one; the theory chunk of a fact's full name is non-mandatory (Pure/sign.ML:577 local_path, name_space.ML:479 add_path with `false`), so a fact `X.T.c_def` really does carry the access `T.c_def`. Therefore Tools/semantic_digest.ML:350-352 ('The lookup is by exact long name, so a fact of another theory cannot answer and no own-theory filter is needed'), PLAN.md:497 and PLAN.md:544-546 state an invariant the code does not enforce. Not a disagreement with D1-D4: it is the sole recorded rationale for dropping same_theory on this path, and it is factually wrong about the Isabelle mechanism. Secondary, also confirmed: Tools/semantic_digest.ML:386 labels each prop with the QUERY string, while Facts.retrieve returns the resolved #name (Pure/facts.ML:212), so under a shadowed resolution the label misreports which fact was used, contradicting PLAN.md:547-550 ('Labels are now the real fact names').",
+      "action": "In named_facts (Tools/semantic_digest.ML:382-396) make the invariant structural rather than remembered. Either (a) Facts.lookup (Context.Theory thy) (Global_Theory.facts_of thy) name - a plain Change_Table lookup on the full name (Pure/facts.ML:193-197, name_space.ML:637), which also returns the `dynamic` flag and removes the try/exception plumbing; note it reaches hidden entries that get_thms refuses, so item 2 of §10.7's census must be re-taken if this route is chosen - or (b) keep Facts.retrieve and accept the result only when #name equals the query string, which is behaviour-preserving and needs no new census. Label the props with the resolved name either way. Then rewrite Tools/semantic_digest.ML:350-352, PLAN.md:497 and PLAN.md:544-546 to state the guarantee the code actually enforces."
+    },
+    {
+      "id": 2,
+      "title": "named_facts evaluates all three candidates eagerly; the guard is written twice",
+      "ruling": "FIX",
+      "reason": "Narrow scope only. The laziness half is REJECTED: D2 (PLAN.md:521) decides which answer is RETURNED ('the first name whose guarded result is non-empty'), not an ML evaluation strategy, and find_first (not o null) over the three-element literal at Tools/semantic_digest.ML:388-393 returns exactly that; the cost is measured at ~2.1 us per get_thms against ~590 us per constant for a whole semantics_of pass (PLAN.md:513), and census_rev30.out shows only 107 of 1038 constants answer before `_def`, so laziness would save ~7% of a path already below 0.5% of the pass. The duplication half stands as literal text: `filter (defining_equation const_name o snd)` is written character-for-character twice, on Tools/semantic_digest.ML:389 and :390.",
+      "action": "Bind the guard once (e.g. `val eqns = filter (defining_equation const_name o snd)`) and apply it on both lines, keeping the visible asymmetry with the unguarded `_def` line (D4). Do NOT restructure into a (name, guarded-flag) table: that trades an explicit asymmetry for an `I` placeholder and still asks a future editor to set a flag correctly. Since fix 1 rewrites this function anyway, fold this in."
+    },
+    {
+      "id": 3,
+      "title": "defining_equation re-implements HOLogic.dest_eq with the file's only raw constant-name string",
+      "ruling": "FIX",
+      "reason": "Tools/semantic_digest.ML:376 matches `Const (\"HOL.eq\", _) $ l $ _` by hand. contrib/Isabelle2025-2/src/HOL/Tools/hologic.ML:284 is exactly that destructor (`fun dest_eq <Const_>HOL.eq _ for lhs rhs`), signature at :52, and HOLogic is already in scope one line above (Tools/semantic_digest.ML:375 calls HOLogic.dest_Trueprop). A grep over the project's tracked .ML files finds this as the ONLY raw Const-name literal; the sibling modules loaded from the same theory use the checked antiquotation - Tools/infra_filter.ML:190 writes `Const(<const_name>HOL.eq, _)`, and :189/:192/:193, :612-617, Tools/theory_structure.ML:310, Tools/explain_term.ML:26/:45 do the same. A rename upstream would compile cleanly and turn the guard into 'reject every HOL equation' (the suite would catch it, but nothing at compile time would). CLAUDE.md's 'Always Reuse Code' and the elegance criterion both apply, and no decision in §10.3/§10.4 prescribes the spelling.",
+      "action": "Replace the hand-written branch with the library destructor: `(case try (fst o Logic.dest_equals) concl of SOME l => SOME l | NONE => try (fst o HOLogic.dest_eq o HOLogic.dest_Trueprop) concl)`. If the explicit pattern is kept for readability, it must at least be written `<const_name>HOL.eq` so a rename fails at load time."
+    },
+    {
+      "id": 4,
+      "title": "S13l does not pin the move-on half of D3; PLAN §10.6 and the §14 row say it does",
+      "ruling": "FIX",
+      "reason": "Documentation correction only; no test is missing. inductive_set defines its constant through Local_Theory.define with `Thm.def_binding b` (contrib/Isabelle2025-2/src/HOL/Tools/inductive_set.ML:474-481), so the primitive Defs axiom is itself named Test_Sensitivity.sens_iset_def and resolve_prop (Tools/semantic_digest.ML:271-274) hands back the same theorem; the structural fall-through therefore produces the identical label that Test/Test_Sensitivity.thy:359-360 asserts, which makes that assertion satisfiable through an unrelated path - the file's own rule (a) at Test/Test_Sensitivity.thy:13-15. `definition` alone suffixes its primitive binding with _raw (contrib/Isabelle2025-2/src/Pure/Isar/specification.ML:260), which is why sens_col DOES discriminate. The plan's own measurement agrees: PLAN.md:632-635 records that under semantic_digest_nomoveon.ML only S13k fails. So PLAN.md:604-606 ('sens_iset ... red under a guard that does not move on to the next name') and archive/plans/CHECK_OUTDATE_PLAN.md:749 ('保护不逐级应用时，`.simps` 被拒即回落结构路径、错过 `_def`') are both wrong. Also imprecise: PLAN.md:634-635's 'the rule stops there' describes named_facts, but own_defining_axioms does not stop - it falls through to the Defs axiom and returns Test_Sensitivity.sens_col_def_raw, which is what makes S13k red.",
+      "action": "By hand: in PLAN.md §10.6 (:604-606) say S13l is a second GUARD pin (member-headed .simps rejected, its _def answers), and in §10.7 item 1 say S13k is the move-on pin and why (a `definition`'s primitive axiom is `_def_raw`, so the label differs; the rule does not stop, it reaches Defs). Rewrite the CHECK_OUTDATE_PLAN.md:749 failure column accordingly. Adding a second move-on subject is optional (RECORD, see id 8's neighbourhood); if one is added it must be a subject whose structural fall-through is EMPTY, not identically named."
+    },
+    {
+      "id": 5,
+      "title": "D6 switches off sem_constant's abbreviation channel and no assertion covers the resulting edges",
+      "ruling": "REJECT",
+      "reason": "The mechanism is real (Tools/semantic_digest.ML:450-451 gates the abbreviation body on `null axioms`), but it is neither silent nor unpinned: the comment rewritten by this change says it at Tools/semantic_digest.ML:443-449 ('unless its author named a lemma X_def the sources above come back empty'), doc/invalidation_limitations.md:330-332 records it as the accepted convention in so many words ('替代展开体'), PLAN.md:510 measures it, and S13m (Test/Test_Sensitivity.thy:361-363) pins the label. The proposed assertion `mentions (own \"sens_abb\") \"Test_Sensitivity.sens_defn\"` would pin an accident of the test's own lemma (whose right-hand side happens to be sens_defn's body) and would forbid exactly what D6 accepts - an author's characterising equation that states something other than the expansion. Asserting it would freeze a decided-against preference.",
+      "action": "None."
+    },
+    {
+      "id": 6,
+      "title": "labels takes distinct and nothing constrains prop counts, so partial rejection by the guard escapes the suite",
+      "ruling": "FIX",
+      "reason": "Test/Test_Sensitivity.thy:326 is `fun labels c = distinct (op =) (map fst (own c))`, and no S13 check (Test/Test_Sensitivity.thy:331-363) constrains how many props a source contributed - grep for `length` inside the block returns nothing. The guard is applied per prop (Tools/semantic_digest.ML:389-390) and find_first accepts a list that is merely non-empty (:393), so a tightened defining_equation could drop one equation of a multi-equation fact and every S13 check would stay green. The measured evidence shows the subjects exist: scratchpad/fun_names/show.out:61 `FACT Test_Sensitivity_Show2.sens_prim.simps: 2` and :63 `FACT Test_Sensitivity_Show2.sens_cfun.simps: 2`. §10.2's guard row measures this very property ('735 kept whole, 0 partly rejected'), and it is the only aspect of D3 with no pin - the other two each have a deliberately-red module variant (PLAN.md:630-636). One correction to the finding: dropping sens_cfun's SECOND equation would break S13f's `plus` mention, so the escape is existential, not universal; for sens_prim both drops escape.",
+      "action": "Keep distinct in labels and add three counts next to S13f/S13h: `length (own \"sens_cfun\") = 2`, `length (own \"sens_prim\") = 2`, `length (own \"sens_fun\") = 1`. Re-run the suite through the REPL server and record the result in §10.7 item 1."
+    },
+    {
+      "id": 7,
+      "title": "No S13 subject for the overloading fall-through, and three records disagree about which path answers",
+      "ruling": "FIX",
+      "reason": "The documentation half is a measured factual error. own_defining_axioms returns named_facts whenever it is non-empty and only otherwise reaches Defs (Tools/semantic_digest.ML:398-411), and the three overloading names DO have a `_def` fact: scratchpad/fun_names/name_probe8.out:10 records `Nat.funpow: ... _def=1[compow == rec_nat ...]` from a Global_Theory.get_thms probe, name_probe10.out:12,:14,:21 the same for relpow/relpowp/funpow, and census_rev30.out records `Nat.funpow: Nat.funpow_def`. So PLAN.md:580-581 ('the three `overloading` names fall through to the structural path (as rev 2.3)') and doc/invalidation_limitations.md:317-318 ('它们的 digest 来源与 2026-09-13 之前相同（结构路径）') and :336 ('维持原状') are wrong, and doc:316 ('`_def` 命中') contradicts doc:318 inside one bullet. PLAN.md:646 and D4 (PLAN.md:523) have it right. This ruling covers id 14, which is the same defect reported in Chinese.",
+      "action": "By hand, reconcile toward PLAN.md:646/D4: PLAN.md:580-581 and doc/invalidation_limitations.md:316-318 should say `.simps` is rejected by the guard and the same-named `_def` then answers by name (content `compow == ...`, the same proposition the structural path gave, but sourced from a fact rather than from Defs); re-check the '不好不坏 / 维持原状' judgement at doc:318 and :336 against that, since the source changed even where the proposition did not. Adding an `overloading` S13 subject is RECORD, not required."
+    },
+    {
+      "id": 8,
+      "title": "D7's priority (rule (1) before the named lookup) is neither tested nor measured",
+      "ruling": "RECORD",
+      "reason": "Literally true: rule (1) is the outermost guard at Tools/semantic_digest.ML:398-399, S2d/S2e (Test/Test_Sensitivity.thy:57-60) are the only class-parameter assertions, and neither `Groups.plus_class.plus` nor `Orderings.ord_class.less_eq` owns a fact at its own long name, so moving rule (1) after the named lookup leaves both green; every §10.2 probe filtered class parameters out (Name_Probe*.thy, Census_Rev30.thy all carry `is_none (Axclass.class_of_param thy c)`), so no measurement covers them. But rule (1) being the function's first `if` already makes the ordering hard to violate by accident, and the proposed S12-style sweep is a tautology against any implementation that keeps it there. A single named subject would be better than a sweep: contrib/Isabelle2025-2/src/HOL/Parity.thy:983-990 declares `class linordered_euclidean_semiring_division` with `fixes divmod` and `assumes divmod_def`, i.e. a class parameter that does own a fact at `<const>_def`.",
+      "action": "One line in PLAN.md §10.5 or §10.7: D7's ordering is not pinned by any test, and Parity.linordered_euclidean_semiring_division_class.divmod would discriminate if a pin is ever wanted. Not blocking."
+    },
+    {
+      "id": 9,
+      "title": "§10.7 item 1's red/green figures have no saved output for the shipped file or for either guard mutant",
+      "ruling": "RECORD",
+      "reason": "Partly refuted. There IS saved output from the shipped module: scratchpad/fun_names/show.out (Test_Sensitivity_Show2.thy, which ML_files the shipped Tools/semantic_digest.ML) lists all thirteen S13 verdicts and the ten label lists, with only S13f/S13h failing on the pre-distinct labels helper - the artefact §10.7 itself describes at PLAN.md:637-638. What is true: red.raw's traceback names Test_Sensitivity_Red.thy while PLAN.md:628 cites Test_Sensitivity_Red2.thy (Red2.thy's mtime 12:56:59 is later than red.raw's 12:55:37, so red.raw cannot be from it), and the two guard-mutant runs and the rev-3.0 Test_All run left no file. The two files differ only in the theory rename and the `distinct` line, and distinct cannot flip any of the nine on the rev 2.3 module, so the recorded figure is not in doubt. This ruling covers id 20, the same point in Chinese.",
+      "action": "One sentence in §10.7 item 1 saying which file backs which figure: the saved red listing is from Test_Sensitivity_Red.thy before `labels` took distinct; the shipped-module listing is show.out (Show2, also pre-distinct, S13f/S13h failing on duplicate labels only); the two guard-mutant runs and Test_All were observed but their stdout was not kept. Alternatively re-run and save. Note the scratchpad is a tmpfs session directory, so the durable record is the sentence, not the file."
+    },
+    {
+      "id": 10,
+      "title": ".psimps before _def and D8's termination shapes have no discriminating subject",
+      "ruling": "REJECT",
+      "reason": "The observation is true - S13d (Test/Test_Sensitivity.thy:338-339) cannot distinguish `.psimps` from `_def` because the function package emits no f_def (contrib/Isabelle2025-2/src/HOL/Tools/Function/mutual.ML:133 via Thm.make_def_binding with function_internals defaulting to false; confirmed by show.out:65 `FACT Test_Sensitivity_Show2.sens_cfun_def: 0`) - but the proposed action is wrong twice over. Recording 'the two names never coexist' in the S13 header would write a falsehood: D4/D6 admit an author's `lemma X_def`, and the suite already carries that shape at Test/Test_Sensitivity.thy:315-317, so a non-terminating `function` plus an author lemma makes them coexist. And a `function ... termination by lexicographic_order` subject exercises no new path: `fun` is Function.add_function plus the same prove_termination, and both routes note the simps through the same call (contrib/Isabelle2025-2/src/HOL/Tools/Function/function.ML:200), so the digest, which sees only fact names, cannot tell them apart. D8's 'moves exactly once' is a two-theory-state property this single-pass suite cannot state for any subject, and it is an accepted, recorded cost (doc/invalidation_limitations.md:322-326).",
+      "action": "None. If anything is written down, it must not say the two names never coexist."
+    },
+    {
+      "id": 11,
+      "title": "`mentions` names two different concepts in one file",
+      "ruling": "RECORD",
+      "reason": "True as text: Test/Test_Sensitivity.thy:29 defines `mentions e target` over dependency edges, and :324 shadows it with `mentions ps c` over a prop list. But the binding at :324 is pre-existing (git show HEAD:Test/Test_Sensitivity.thy has it byte-identical at :301; git diff shows it as a context line), the outer one is unusable inside S13 anyway because its env predates the subjects (the comment at :320 says so), and the second half of the proposed fix - reusing `mentions` for deps-level checks inside S13 - would query the stale env, where deps_of maps NONE to [] (:28) and every such assertion would pass vacuously, exactly the failure mode the file's header warns about. CLAUDE.md's one-name-per-concept rule still argues for a rename.",
+      "action": "When the block is next touched, rename the S13-local helper to `props_mention`. Not blocking, and do NOT reintroduce the file-level `mentions` inside S13."
+    },
+    {
+      "id": 12,
+      "title": "缺陷 8 的「已接受的约定」说 `_def` 要过保护，与 D4、代码和它自己举的例子相反",
+      "ruling": "FIX",
+      "reason": "doc/invalidation_limitations.md:330 says an author's `lemma X_def`「只要过得了保护」counts as X's definition; 保护 is used at doc:316 in the same section unambiguously for the D3 shape guard. The code does not guard `_def`: Tools/semantic_digest.ML:389-391 filters only `.simps`/`.psimps`, and the comment at :361-365 says '`_def` is taken by name alone'. D4 (PLAN.md:523) says the same. The example the sentence itself cites is a counterexample: `inj` is an abbreviation (contrib/Isabelle2025-2/src/HOL/Fun.thy:151-152), so Fun.inj_def's stored lhs head is Fun.inj_on, and scratchpad/fun_names/name_probe9.out records it under 'ALL rejected (abbreviation) Fun.inj_def' in the strict variant that DOES guard `_def`. It enters the digest precisely because `_def` is not guarded. The same wrong clause sits in the decision row itself, PLAN.md:525 (D6, 'that passes the guard').",
+      "action": "By hand: doc/invalidation_limitations.md:330 -> 「按名字取到即当作 X 的定义（`_def` 不过保护，D4）」, and say that `Fun.inj_def` is reachable exactly because it is not guarded. Drop 'that passes the guard' from PLAN.md:525 as well."
+    },
+    {
+      "id": 13,
+      "title": "缺陷 8 的 `termination` 条目把来源切换方向写反了",
+      "ruling": "FIX",
+      "reason": "doc/invalidation_limitations.md:322-323 reads「证终止前只有带 `accp f_rel` 前提的 `f.psimps`，证完多出 `f.simps`，来源从后者切到前者」. The two nearest antecedents are f.psimps (前者) and f.simps (后者), so the plain reading is 'the source switches from f.simps to f.psimps' - backwards. The rule is `.simps` first (Tools/semantic_digest.ML:389-393, D8 at PLAN.md:527), so after termination the source moves from `.psimps` to `.simps`; the doc's own next sentence (:325-326) says `.simps` 排在 `.psimps` 之前.",
+      "action": "By hand: write the names instead of the pronouns -「来源从 `f.psimps` 换成 `f.simps`」."
+    },
+    {
+      "id": 14,
+      "title": "`overloading` 三个名字被写成「走结构路径」，实测是按名字取到的 `_def`",
+      "ruling": "FIX",
+      "reason": "Same defect as id 7, reported in Chinese with the same evidence (name_probe8.out:10, name_probe10.out:12/:14/:21, census_rev30.out, Tools/semantic_digest.ML:398-411). Both records are wrong: doc/invalidation_limitations.md:317-318 and PLAN.md:580-581.",
+      "action": "Covered by the action on id 7; do the two edits once."
+    },
+    {
+      "id": 15,
+      "title": "§10.7 item 2's breakdown of the 22 accounts for only 21; the residual group is 17",
+      "ruling": "FIX",
+      "reason": "PLAN.md:644-646 explains the bucket of 22 as 'the 16 inductive_set/lexordp, Sum_Type.sum, Product_Type.prod, and the three overloading names' = 21. census_diff.out has exactly 22 `.simps -> _def` lines (:82,:84,:87,:131,:140-143,:159,:182,:186,:188,:189,:191,:192,:197,:198,:200,:203,:209,:215,:222) and the summary at :275 says `.simps -> _def=22`; removing sum, prod, funpow, relpow and relpowp leaves 17, the extra name being Zorn.subset.suc_Union_closed (census_diff.out:159). It is an `inductive_set` inside locale `subset` (contrib/Isabelle2025-2/src/HOL/Zorn.thy:83), so it belongs to the group already named. This ruling covers id 27, the same arithmetic in English.",
+      "action": "By hand: change 'the 16' to 'the 17' at PLAN.md:644-645. Do NOT relabel the group as 'abbreviation' - suc_Union_closed is an inductive_set; its appearance among the 34 abbreviation-tagged rows of a different probe is a separate matter, handled by id 16."
+    },
+    {
+      "id": 16,
+      "title": "§10.2's guard row mislabels 5 of the 55 rejections and omits the 3 rejected .psimps; and it credits the measurement to D3",
+      "ruling": "FIX",
+      "reason": "PLAN.md:510 reads '55 wholly rejected: 34 abbreviations' `_def` ..., 16 ... `.simps`, 2 typedef, 3 `overloading`'. Counting name_probe9.out by suffix: 29 `_def`, 23 `.simps`, 3 `.psimps` (Bit_Operations.{xor,and,or}_int.F.psimps), total 55 - and 34 is the count of rows carrying the '(abbreviation)' marker, which Name_Probe9.thy attaches when the CONSTANT is an abbreviation, irrespective of which name was rejected (34 = 29 `_def` + 3 `.psimps` + 2 Zorn `.simps`). So 5 non-`_def` rejections are counted as `_def` and the 3 rejected `.psimps` - the very constants §10.7 item 2 identifies as the ones that end up empty - appear nowhere in the row. Separately, the row's header says 'the strict guard (§10.3 D3)', but the probe applied the guard to `_def` too (that is why inj_def is in the list), which is NOT D3 (PLAN.md:522: 'for `_def` the name alone suffices'). The 735/55 pair therefore belongs to the strict variant, not to the shipped rule, while §10.7's acceptance criterion at PLAN.md:640-641 says '55 guarded rejections routed as §10.2 says'.",
+      "action": "By hand: rewrite PLAN.md:510 with the measured composition (`_def` 29, `.simps` 23, `.psimps` 3) and relabel the row as the strict variant that guards `_def` as well - which is what makes it evidence FOR D4 - stating explicitly that under the shipped D3/D4 rule no `_def` is ever rejected. Then re-word the §10.7 acceptance sentence so it points at the shipped-rule figures (census_diff.out: `.simps -> _def=22`, `.simps -> empty=1`, `.psimps -> empty=3`) rather than at the strict variant's 55."
+    },
+    {
+      "id": 17,
+      "title": "缺陷 8 里「全 heap 34 条」abbreviation 由作者 `_def` 进 digest，实测是 30 条",
+      "ruling": "FIX",
+      "reason": "doc/invalidation_limitations.md:331 inherits the 34 from the mislabelled row of id 16. The direct measurement of the population the sentence describes is scratchpad/fun_names/name_probe5.out, last block: 'abbreviation with c_def: 30', with 30 `abbrev-with-_def:` detail lines; Name_Probe5.thy's filter is exactly record-eligible, non-class-parameter, own-theory, Consts.the_abbreviation, c_def non-empty. The arithmetic closes: 29 of them answer `_def` by name (name_probe9.out) and the 30th, Zorn.subset.suc_Union_closed, reaches `_def` after the guard empties `.simps` (census_diff.out:159); the other 4 of the 34 go to empty (census_diff.out:49-51, :158) and enter the digest via `_def` not at all.",
+      "action": "By hand: 34 -> 30 at doc/invalidation_limitations.md:331, with the measurement's scope in parentheses (record-eligible abbreviations possessing a c_def fact, measured 2026-09-14 on the 87-theory heap)."
+    },
+    {
+      "id": 18,
+      "title": "The status block claims §4, §6 and §7 carry supersession markers; §6 does not, and §1 still presents the registry as the current rule",
+      "ruling": "FIX",
+      "reason": "PLAN.md:5-6 says '§4, §6 and §7 stay as the record of rev 2.3 and are marked superseded where §10 overrides them'. The headings show markers on §4 (PLAN.md:177 '— rev 2.3, SUPERSEDED by §10'), §7 (:360 '— rev 2.3; see §10.5') and §9 (:427), but §6 (:311 '## 6. Tests and documentation for change 1 (implementer's call, F7)') carries none, although §10.6 replaces it whole. §6 is not merely unmarked but actively contradicted by the shipped tests - it still presents the MERGE pin as live and says primrec/definition/partial_function keep exactly their Defs axiom, while S13h/S13i/S13j (Test/Test_Sensitivity.thy:350-355) assert sens_prim.simps, sens_defn_def, sens_part.simps. Worse, §1 'Essence' (PLAN.md:37-56, the first thing read) still states the fix as 'for a constant the function package's own registry knows (Function_Common.retrieve_function_data), the digest takes the registry's simps', while grep finds no Function_Common anywhere in Tools/semantic_digest.ML.",
+      "action": "By hand: add '— rev 2.3, SUPERSEDED by §10.6' to the §6 heading (PLAN.md:311), and open §1 with one line saying the source was replaced by §10 on 2026-09-14 and that §1 records rev 2.3 (or rewrite §1's Fix paragraph to §10.1's rule and move the old text into §4)."
+    },
+    {
+      "id": 19,
+      "title": "§10.2 says the 28 constants have 'none of the four names'; the rule has three",
+      "ruling": "FIX",
+      "reason": "PLAN.md:508. The rule's names are c.simps, c.psimps, c_def (PLAN.md:533, Tools/semantic_digest.ML:389-391); `four` has no antecedent anywhere in §10, and c_def_raw never appears in the file. The probe that produced the 28 queried exactly three names (Name_Probe5.thy: 'of which a fact c_def exists: 0 / of which a fact c.simps/c.psimps exists: 0'); the four-name figure belongs to a different probe and a different population (name_probe.out:135, 'with none of c_def / c_def_raw / c.simps / c.psimps: 577').",
+      "action": "By hand: 'four names' -> 'three names' at PLAN.md:508."
+    },
+    {
+      "id": 20,
+      "title": "§10.7 item 1 记为已完成的几次运行在证据目录里没有对应输出",
+      "ruling": "RECORD",
+      "reason": "Same point as id 9, in Chinese, with the same partial refutation: show.out is a third saved suite output produced against the shipped module. The residue is the Red/Red2 filename mismatch and the unsaved mutant and Test_All runs.",
+      "action": "Covered by the action on id 9."
+    },
+    {
+      "id": 21,
+      "title": "HANDOFF's record section heading says 'done, committed df2b7fe' while its body still says 'uncommitted'",
+      "ruling": "RECORD",
+      "reason": "Both readings check out. The clash is real (ai-artifacts/SEMANTIC_CHANGE_GATE_HANDOFF.md:98 vs :100-101), but the file's convention is that a record section's body is frozen and only its heading carries status - :144/:154, :251/:262, :309/:314, :473/:478 all show it, and two of those bodies add 'at the time of writing' while two do not. The live section for current state (:65-96) is correct, and retro-editing a frozen record would be the bigger inconsistency. The claim that :103-116 describes the registry implementation in the present tense is not accurate - those items are past participles and the test paragraph.",
+      "action": "Optional, when the file is next touched: add the file's existing 'at the time of writing' qualifier to :100-101. Not blocking."
+    },
+    {
+      "id": 22,
+      "title": "One concept, several names: guard/「保护」 and the named-fact source spelled three ways",
+      "ruling": "RECORD",
+      "reason": "The Chinese rendering 「保护」 is used consistently in all six places (doc/invalidation_limitations.md:316,:330; archive/plans/CHECK_OUTDATE_PLAN.md:365,:368,:748,:749) and the repo's own glossary (archive/plans/CHECK_OUTDATE_PLAN.md:28) already establishes Chinese canonical names for descriptive terms alongside retained English ones, so this half is not a rule violation; and several of the listed 'variants' of the new source are descriptive sentences at the concept's first appearance, which CLAUDE.md prefers over a coined noun. What does wobble is the head noun inside one document: PLAN.md:486 'the named-fact source' vs PLAN.md:553/:610 'the named path', with 「名字路径」 at CHECK_OUTDATE_PLAN.md:745.",
+      "action": "Pick one head noun ('the named-fact source' reads best, since it pairs with 'the structural sources' at PLAN.md:492) and use it throughout §10; add two glossary rows in archive/plans/CHECK_OUTDATE_PLAN.md §28 - one for guard/「保护」 and one for the named-fact source/「名字路径」 - which §10.6 already listed as a task. Not blocking."
+    },
+    {
+      "id": 23,
+      "title": "`fun` inside `overloading`: the named-fact source loses the equations the registry found (rev 2.3's F2=MERGE case)",
+      "ruling": "FIX",
+      "reason": "The most serious survivor, and the only one that is a behavioural regression against committed code (df2b7fe is an ancestor of HEAD). In an `overloading` block the facts are named after the local binding, not after the constant, so all three lookups in named_facts (Tools/semantic_digest.ML:389-391) miss and own_defining_axioms falls to the Defs branch (:404-409). The project's own measurement of this exact shape is ai-artifacts/fun_digest/CENSUS.md:191-241 (the AFP Pairing_Heap_List2_Analysis.thy shape reproduced as FunCensus): the only constant is `sz`; the registry answered 2 simps; the three own-theory Defs axioms include the body-free `[FunCensus.size_hps_def] sz == size_hps_sumC`. Under rev 3.0 the `fun` member's equations are gone and editing them moves nothing - the silent staleness §1 exists to remove - while rev 2.3 merged them in and PLAN.md §4 names this file as the reason F2 was MERGE. The AFP instance is real and doubled: contrib/afp-2026-05-13/thys/Amortized_Complexity/Pairing_Heap_List2_Analysis.thy:22-40 (`sz`) and :42-60 (`Phi`). §10.1's justification 'the named facts are a superset of what it answered (§10.2)' is measured only on the 87-theory HOL heap (PLAN.md:501), where this shape does not occur, and §10.2's 'registry-but-not-named 0' is 0 for that reason; §10.5's 'Stays' list does not mention it, and doc #8's 'overloading' bullet covers only the three `_def`-named cases. Restoring a merge would contradict D1, so that half is not the reviewer's to order.",
+      "action": "Three things before the commit. (1) By hand, scope PLAN.md:495 to what was measured: the named facts are a superset of the registry's answers ON THE 87-THEORY HEAP; they are not in general, and the counterexample shape is a `fun` inside an `overloading` block. (2) Put the loss to the user as a new decision item in §10.3 - accept it, or restore the equations for this shape - since it removes protection that is committed today for a shape rev 2.3 decided MERGE for; do not decide it in the implementer's chair. (3) Whatever the user rules, record the outcome in §10.5 (a 'Stays' row or a 'Closed' row) and in doc/invalidation_limitations.md #8, and, if it is accepted, add a two-member `overloading` S13 subject (one `fun`, one `definition`) asserting what own_defining_axioms returns, so the acceptance is pinned rather than rediscovered. The existing FunCensus probe can confirm the rev 3.0 side cheaply."
+    },
+    {
+      "id": 24,
+      "title": "Global_Theory.get_thms interns the name, so the 'exact long name => own theory' guarantee is not the one the code has",
+      "ruling": "FIX",
+      "reason": "Same defect as id 1, reported independently with the same Pure chain (global_theory.ML:173, facts.ML:199-201/:164, name_space.ML:630/:615/:286/:275-277/:141-142/:168-172) plus two further observations that are correct and worth folding in: a hidden (hide_fact) entry makes retrieve raise and `try` (Tools/semantic_digest.ML:385) silently reports 'absent'; and a dynamic fact of the right name would be evaluated against the passed context, making the answer context-dependent. Also correct that fact full names carry Context.theory_base_name (Pure/sign.ML:577), not the theory long name, so the words 'long name' in the comment are inaccurate too. The wide-env caller it names is real: Test/Test_All.thy:46 builds one env from Main and digests the whole cone.",
+      "action": "Covered by the action on id 1. Prefer the Facts.lookup form if the §10.7 item 2 census is re-taken (it also reaches hidden entries and exposes `dynamic`, which can then be rejected in the same match); otherwise the resolved-name check. Fix the words 'long name' as well."
+    },
+    {
+      "id": 25,
+      "title": "named_facts builds all three candidates eagerly, duplicates the guard, and expresses 'first non-empty' twice",
+      "ruling": "FIX",
+      "reason": "Same as id 2 and ruled the same way: the duplicated guard application is fixed by a single binding; the laziness and the (name, guarded) table are rejected for the reasons given there. The third part - that own_defining_axioms restates 'first non-empty source wins' as a nested case/if-null - is pre-existing (git diff shows `if null from_defs then spec_rule_axioms ...` on both sides of the hunk) and this change deletes far more machinery here than it adds, so it is not a regression. The measurement sub-claim is accurate and worth keeping in mind: a miss costs no name-space completion scan, since Position.none is not reported (contrib/Isabelle2025-2/src/Pure/General/completion.ML:50-53).",
+      "action": "Covered by the action on id 2. Note that its proposed Facts.lookup + `dynamic = false` form is NOT behaviour-preserving on its own - see id 1 for the two acceptable routes."
+    },
+    {
+      "id": 26,
+      "title": "Raw string constant Const (\"HOL.eq\", _) where the repo uses the checked antiquotation",
+      "ruling": "FIX",
+      "reason": "Same as id 3, independently verified, with the useful extra check that the antiquotation is usable at this site (Tools/semantic_digest.ML is ML_file'd from Semantic_Embedding.thy:16 and Test/Test_Sensitivity.thy:5, both HOL contexts, and infra_filter.ML is loaded from the same theory and already writes it). One narrowing to accept: the failure would not be silent forever - S13a/S13d/S13f/S13h/S13j would go red - so it is silent at compile time and at run time, and caught only by running the suite. That is exactly the tested-versus-unviolatable distinction the elegance criterion asks about.",
+      "action": "Covered by the action on id 3."
+    },
+    {
+      "id": 27,
+      "title": "The §10.7 breakdown of the 22 guard-rejected .simps accounts for only 21; the residual group is 17",
+      "ruling": "FIX",
+      "reason": "Same arithmetic as id 15, confirmed from census_diff.out. Its secondary observation about §10.2's guard row is handled separately and more precisely by id 16.",
+      "action": "Covered by the actions on id 15 and id 16."
+    }
+  ],
+  "must_fix_before_commit": {
+    "code": [
+      "Tools/semantic_digest.ML:382-396 + :350-352 and PLAN.md:497/:544-546 - make the own-theory guarantee structural (id 1, 24)",
+      "Tools/semantic_digest.ML:389-390 - bind the guard once (id 2, 25)",
+      "Tools/semantic_digest.ML:376 - use HOLogic.dest_eq or the <const_name> antiquotation (id 3, 26)"
+    ],
+    "tests": [
+      "Test/Test_Sensitivity.thy S13 - three length assertions so partial rejection cannot pass unseen (id 6)"
+    ],
+    "user_decision": [
+      "PLAN.md §10.1/§10.3/§10.5 + doc #8 - the `fun`-inside-`overloading` loss must be put to the user and the answer recorded (id 23)"
+    ],
+    "docs_by_hand": [
+      "PLAN.md:311 heading and §1 - the supersession markers the status block claims (id 18)",
+      "PLAN.md:508 - three names, not four (id 19)",
+      "PLAN.md:510 - the guard row's composition and its scope (id 16)",
+      "PLAN.md:580-581 and doc:316-318/:336 - the overloading names are answered by `_def`, not by the structural path (id 7, 14)",
+      "PLAN.md:604-606, :634-635 and CHECK_OUTDATE_PLAN.md:749 - S13k is the move-on pin, S13l a guard pin (id 4)",
+      "PLAN.md:644-645 - the 17 (id 15, 27)",
+      "PLAN.md:495 - scope the superset claim to the measured heap (id 23)",
+      "PLAN.md:525 and doc:330 - `_def` is taken by name, not 'passes the guard' (id 12)",
+      "doc:322-323 - the termination switch runs .psimps -> .simps (id 13)",
+      "doc:331 - 30, not 34 (id 17)"
+    ]
+  },
+  "record_only": [8, 9, 11, 20, 21, 22],
+  "rejected": [5, 10]
+}

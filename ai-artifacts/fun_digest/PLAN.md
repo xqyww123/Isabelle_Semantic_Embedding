@@ -1,6 +1,13 @@
 # Function-package constants: equations into the semantic digest — plan
 
-Status: **rev 2.3 (2026-09-13); after three adversarial review rounds
+Status: **rev 3.0 (2026-09-14): the registry source of rev 2.3 (§4) is
+REPLACED by the named-fact source of §10, decided by the user on
+2026-09-14 after the measurements recorded there; §4, §6 and §7 stay as
+the record of rev 2.3 and are marked superseded where §10 overrides them.
+Implementation of §10 follows the same discipline as rev 2.3 (red-then-green
+tests through the REPL server, docs by hand, Opus 5 review, commit on
+"提交").**
+Previous status — **rev 2.3 (2026-09-13); after three adversarial review rounds
 (`ai-artifacts/fun_digest/review/`: `SCOPE.md`, `judge.json`,
 `rereview_judge.json`, `rereview2_judge.json` — all READY_AFTER_FIXES,
 every "fix" ruling applied here; round three found no design defect; the
@@ -12,7 +19,8 @@ the user's decisions of the same day (F2 changed to MERGE, the type
 conjunct withdrawn, paid end-to-end acceptance chosen; §5 (b), the
 exported `digest_term` guard, chosen); no open items; IMPLEMENTED
 2026-09-13 after "开工" (code, tests, docs; `Test_Sensitivity` red on the
-old module for S13a–e/S14 and green after, S13i red on the pre-option-A
+old module for S13a–e/S14 and green after, S13i (rev 2.3 numbering; S13f
+in rev 3.0) red on the pre-option-A
 module and green after, `Test_All` green, the registry
 re-check of §9 item 2 gives 32 gain / 6 class parameters `[]` /
 `fold2_bit_int.F` unchanged); the paid acceptance of §9 item 3 is reported
@@ -27,7 +35,7 @@ normaliser: `ai-artifacts/fun_digest/NORMALIZE_TIMING.md`.  Parent design:
 `archive/plans/CHECK_OUTDATE_PLAN.md` (digest §3.1/§7.3, sensitivity §14);
 accepted-gap register `doc/invalidation_limitations.md`.
 
-## 1. Essence
+## 1. Essence (rev 2.3 record; the source of change 1 was REPLACED on 2026-09-14 — §10 is the rule in force)
 
 Two changes to `Tools/semantic_digest.ML`, one function each.
 
@@ -167,7 +175,10 @@ Two changes to `Tools/semantic_digest.ML`, one function each.
 | F6′ | (replaces rev 1's F6) **Remove the alpha-normaliser**; keep the sort of a constant's props; fold this into the present work. |
 | F7 | Tests, comments and the plan's details are the implementer's call. |
 
-## 4. Change 1: the rule (`own_defining_axioms`)
+## 4. Change 1: the rule (`own_defining_axioms`) — rev 2.3, SUPERSEDED by §10
+
+(Kept as the record of what was implemented and committed on 2026-09-13
+as `df2b7fe`; the rule in force is §10.)
 
 ```
 ① class parameter?  (class_param_of)          → []                (unchanged)
@@ -298,7 +309,7 @@ Implementation notes (rulings of the review applied):
   (`SEMANTIC_CHANGE_GATE_PLAN.md` §3 row 2).  That is the designed path,
   not a defect.
 
-## 6. Tests and documentation for change 1 (implementer's call, F7)
+## 6. Tests and documentation for change 1 (implementer's call, F7) — rev 2.3, SUPERSEDED by §10.6
 
 - `Test/Test_Sensitivity.thy`, new subsection "S? constant: function-package
   equations".  Subjects are declared immediately above the checks and the
@@ -347,9 +358,9 @@ Implementation notes (rulings of the review applied):
   longer depend on the `f_sumC` edge for their equations.
 - `ai-artifacts/SEMANTIC_CHANGE_GATE_HANDOFF.md` top section: points here.
 
-## 7. Known, deliberately left (change 1)
+## 7. Known, deliberately left (change 1) — rev 2.3; see §10.5 for what §10 closes
 
-- **`fun`/`function` in a locale target** (measured, CENSUS (b)): the
+- **`fun`/`function` in a locale target** (measured, CENSUS (b); CLOSED by §10): the
   registry holds no key mentioning the locale constant or any of its
   `global_interpretation … defines` images, so the bare-constant query
   returns 0; the constant keeps its body-free `Defs` axiom and remains a
@@ -375,7 +386,8 @@ Implementation notes (rulings of the review applied):
   function term, so a descendant env's answer depends on parent order when
   one parent proved `termination` and the other did not (production is
   never in that env).
-- **Packages with their own registry**: a definitional package producing a
+- **Packages with their own registry** (CLOSED by §10, by reading of the
+  source, not measured): a definitional package producing a
   body-free `_sumC` `Defs` axiom but writing its OWN registry is not reached
   by ③ and is a blind spot today; shipped instance Nominal2's
   `nominal_function` (`nominal_function_core.ML:1021`).
@@ -405,15 +417,16 @@ Decided by the user on 2026-09-13:
   (§2) is repaired by querying every argument count up to the arity —
   option A, chosen by the user over option B (query with each Defs axiom's
   lhs) after an Opus 5 agent verified B correct only with two guards and
-  another measured A's cost at 0.3 ms per heap pass; test S13i.
+  another measured A's cost at 0.3 ms per heap pass; test S13i (rev 2.3
+  numbering; S13f in rev 3.0).
 - §5's (b) chosen (2026-09-13): `digest_term` is exported from
   `SEMANTIC_DIGEST` and one assertion `digest_term t = Term_Digest.term128 t`
   is the standing guard of change 2; S3e/S8 and their subjects are
   deleted; the §14 row is rewritten (both cells) as §5 says.
 
-No open items.
+No open items of rev 2.3.  The decisions of 2026-09-14 are in §10.
 
-## 9. Acceptance
+## 9. Acceptance (rev 2.3; §10.7 for rev 3.0)
 
 1. `Test/Test_Sensitivity.thy` through the REPL server (no `isabelle
    build`): every new assertion §6 annotates as discriminating FAILS on the
@@ -471,3 +484,280 @@ No open items.
    Report in `ai-artifacts/fun_digest/ACCEPTANCE.md`; raw logs outside git.
 4. Review as an Agent Workflow (Opus 5) after implementation; report in
    Chinese; commit on "提交".
+
+## 10. Rev 3.0 (2026-09-14): the named-fact source replaces the registry
+
+### 10.1 Essence
+
+A constant's own definitional content is taken first from the facts the
+defining command NAMED after the constant — `c.simps`, `c.psimps`, `c_def`
+— and only when none of those exists from the structural sources of rev
+2.3 (own-theory `Defs` axioms, then `Spec_Rules`).  The function package's
+registry (`Function_Common.retrieve_function_data`, §4) is no longer read:
+on the measured 87-theory heap the named facts are a superset of what it
+answered (§10.2; not in general — a `fun` inside an `overloading` block
+names its facts after the block's local binding, not after the constant,
+and is the one shape where the registry saw more: D9), the names are
+documented user-facing Isabelle conventions where the registry is an
+internal ML structure, the fact table's entry for the full name (no
+name-space resolution) makes the own-theory attribution implicit (a fact's
+full name begins with its theory's base name exactly as the constant's
+does), and the per-argument-count query machinery of §4 disappears.
+
+### 10.2 Measurements (HOL heap of `Semantic_Embedding`, 87 theories; scratch `…/scratchpad/fun_names/`, probes `Name_Probe*.thy`)
+
+Record-eligible constants (past `Infra_Filter`, not class parameters): 1038.
+
+| measurement | value |
+|---|---|
+| function-package-shaped `Defs` axiom (`f ≡ … f_sumC …`, all constants) | 37; with `c.simps`/`c.psimps` fact 33; with registry equations (rev 2.3) 31; named-but-not-registry 2 (`Bit_Operations.fold2_bit_int.F` — the locale-target case of §7 — and the locale-level `…bit_operations.or_num`); registry-but-not-named 0 |
+| record-eligible constants whose digest is name+type only (no own axioms, no abbreviation) | 28 (`Pure.imp`, `HOL.undefined`, typedef `Rep_`/`Abs_` …); none of them has any of the three names — the named-fact source adds nothing there, and the structural fallback stays |
+| first-hit rule `.simps` → `.psimps` → `_def` over the 1038 | hits 790 (`_def` 657, `.simps` 129, `.psimps` 4); 274 with the same props as rev 2.3, 516 with different props (the digest moves: `f ?x = rhs` vs `f ≡ λx. rhs`, `pick.simps` vs `pick ≡ rec_list …`, `.simps` vs `f ≡ f_sumC` + `.simps`); 248 fall through |
+| the STRICT variant of the guard — applied to all three names, `_def` included (`Name_Probe9`; this is NOT the shipped D3/D4 rule, under which no `_def` is ever rejected; the row is the evidence FOR D4) — over the 790 hits | 735 kept whole, 0 partly rejected, 55 wholly rejected, by the name rejected: 29 `_def` (all on abbreviations: `inj_def`, `wf_def`, `Zorn.subset.chain_def` …, lhs expanded), 23 `.simps` (17 `inductive_set`/`lexordp` with lhs `a ∈ S r`, head `Set.member`, whose `_def` then passes — `Zorn.subset.suc_Union_closed` among them; 2 typedef representing-set constants sharing a type's name, `Sum_Type.sum` and `Product_Type.prod`, whose `sum.simps`/`prod.simps` are the datatype's and whose `_def` passes; 3 `overloading` names `Nat.funpow`, `Transitive_Closure.relpow`, `relpowp` with props headed by `compow`; 1 locale-exported `Zorn.subset.suc_Union_closedp`), 3 `.psimps` (the `global_interpretation` images `Bit_Operations.{xor,and,or}_int.F`, headed by `fold2_bit_int.F`).  The probe tags a row "abbreviation" by the CONSTANT, hence 34 such tags: 29 `_def` + 3 `.psimps` + 2 Zorn `.simps` |
+| facts named `X_def` whose conclusion is not an equation headed by `X` (all constants) | 38 of 1422; every one is the author's definition of `X` (abbreviation expansions, locale-exported definitions with premises, `overloading` definitions) — the name is semantically reliable |
+| the datatype-name collision | `Quickcheck_Exhaustive.unknown` is an axiomatized constant AND a datatype; `unknown.simps` is the datatype's 7 facts (constructor injectivity, `case`, `rec`) — none is an equation headed by the constant |
+| time, 712 constants having both sources, 200 passes | rev 2.3 `own_defining_axioms` 0.644 s (≈ 4.5 µs each); `Global_Theory.get_thms` on `c_def` 0.305 s (≈ 2.1 µs); a whole `semantics_of` pass is 0.42 s, so the difference is below 0.5 % |
+| Nominal2 (`nominal_function.ML:105-170`, AFP 2026-05-13; read, not run) | notes `psimps`/`simps` through a copy of the function package's `add_simps`: fact names `f.psimps`/`f.simps` |
+
+### 10.3 User decisions (2026-09-14)
+
+| # | decision |
+|---|---|
+| D1 | The named facts replace the registry as the source of a function-package constant's equations; the registry read (`function_equations`, `env.ctxt`) is deleted. |
+| D2 | The named facts are consulted BEFORE every structural table, and the first name whose guarded result is non-empty is returned (short-circuit); order `.simps` → `.psimps` → `_def` (the user: `.simps` obviously before `.psimps`; §10.5 on what that leaves open). |
+| D3 | Guard: for `.simps` and `.psimps`, keep only facts whose conclusion (after `Logic.strip_imp_concl`) is an equation — Pure `≡` or HOL `=` — whose left-hand side's head is `Const c` itself; for `_def` the name alone suffices.  The guard is applied per name: an empty guarded result moves on to the next name, and only three empty results fall through to the structural sources. |
+| D4 | `_def` is NOT gated on shape because every `X_def` in the heap is semantically `X`'s definition (§10.2), the suffix has no type-level use (datatypes and typedefs name `T.simps`, never `T_def`), and gating would only push abbreviations and `overloading` names back to the structural path. |
+| D5 | The cost of the one-time digest move (516 of 1038 heap constants; in the production store every moved record becomes a seed: one re-interpretation and one judge call, dependents walled) is NOT a factor: the project is in development. |
+| D6 | An author-written `lemma X_def: "X x = …"` counts as `X`'s definition — taken by name, no guard (D4); it is the author's characterising equation and changes when the meaning changes.  Accepted convention, documented in `doc/invalidation_limitations.md` #8. |
+| D7 | Rule ① (a class parameter keeps no definition) stays first: a correctness rule, not a table lookup.  Not pinned by any test (review id 8): S2d/S2e's subjects own no fact at their own name; `Parity.linordered_euclidean_semiring_division_class.divmod` (a class parameter with a `divmod_def` fact, `Parity.thy:983-990`) would discriminate if a pin is ever wanted. |
+| D8 | `.simps` before `.psimps`, so §7's "`termination` added or deleted moves the digest once" stays (the `.psimps`-first alternative that would close it was offered and declined). |
+| D9 | (raised by the rev 3.0 review, id 23; decided 2026-09-14: RECOVER) A `fun` inside an `overloading` block (AFP `Amortized_Complexity/Pairing_Heap_List2_Analysis.thy:22-40`, `sz`; CENSUS (d)) names its facts after the block's local binding (`size_hps.simps`), not after the constant (`sz`), so the named-fact source misses and the structural path would answer with the body-free `sz ≡ size_hps_sumC` beside the siblings' bodies — the `fun` member's equations, which rev 2.3's registry merge carried, would be lost.  Not in the 87-theory heap.  Recovered on the structural path: a Defs axiom whose right-hand side (under its λs) is headed by a constant named `<local>_sumC` is replaced by the equations `<local>.simps` (else `<local>.psimps`) that define the constant — the same guard, one more name lookup, the registry untouched; the axiom stays when no such facts exist (`unfold_sumC_axiom`).  Test S13n. |
+
+### 10.4 The rule (`own_defining_axioms`, rev 3.0)
+
+```
+① class parameter?  (class_param_of)                          → []
+② for name in [c.simps, c.psimps, c_def]:
+     facts := the fact table's entry for the full name (Facts.lookup; absent or dynamic → [])
+     for .simps/.psimps: keep those whose conclusion is an equation headed by c
+     first non-empty → its props, labelled with the fact name, sorted by prop_ord
+③ Defs axioms of c, own theory only (same_theory)                 (rev 2.3's ②)
+     an axiom `c ≡ … <local>_sumC …` is replaced by <local>.simps (else .psimps),
+     guarded as in ②, when those exist                               (D9)
+④ ③ empty → Spec_Rules fallback                                   (rev 2.3's ⑤)
+the result of whichever step answered, sorted by prop_ord
+```
+
+Implementation notes:
+
+- The lookup is `Facts.lookup (Context.Theory thy) (Global_Theory.facts_of thy) name`:
+  the fact table's own entry for the full name, with no name-space
+  resolution (review ids 1/24: `Global_Theory.get_thms` interns its
+  argument, so an alias, a hidden name or a later declaration whose
+  access path spells the query could have answered, and the label would
+  then have misreported the fact).  A missing entry is `NONE`; a dynamic
+  fact is refused.  A fact's full name begins with its theory's base name
+  exactly as the constant's does, so no `same_theory` call on this path.
+- The equation test is one function (`defining_equation c`): strip
+  premises, then `Logic.dest_equals` or `HOLogic.dest_eq` under
+  `HOLogic.dest_Trueprop`, then `head_of` of the lhs is `Const (c, _)`.
+  It is bound once (`equations`) and applied to `.simps`/`.psimps` only.
+  `_def` facts are taken whole.
+- The lookups are shared: `fact_props` (the table entry), `equation_facts`
+  (`base.simps` else `base.psimps`, guarded for the constant) serves both
+  the named-fact source with `base = c` and the D9 unfolding with
+  `base = <local>`; `named_facts` adds `c_def`.  The `Defs` branch no
+  longer sorts by axiom name alone: the whole answer of
+  `own_defining_axioms`, whichever step gave it, is sorted by `prop_ord`
+  (name, then term) — identical to the old order where names are distinct.
+- Labels are the fact names (`c.simps` etc.), so the signature
+  comment "a fact-like label, not necessarily the name of a fact" is
+  restated: a fact name on the named-fact source, an axiom name on the `Defs`
+  path — except a `_sumC` axiom unfolded by D9, whose props carry the local
+  name's fact name — a `Spec_Rules` item name on the fallback.
+- The `Defs` path and the `Spec_Rules` fallback are unchanged apart from
+  D9; `prop_ord` stays shared and is applied once, on the whole answer
+  (`spec_rule_axioms` no longer sorts on its own; its one caller is
+  `own_defining_axioms`).
+- `env` loses `ctxt`; `make_env` no longer builds a context; the
+  signature comment on `env` drops the registry clause.
+- Dependency edges come from the props as before.  A `fun` constant's
+  edge to `f_sumC` disappears (its `Defs` axiom is no longer in the
+  props); on the `.psimps` path the `accp` premise still yields the
+  recordless `<f>_rel` edge (limitation #6, harmless).  `primrec`'s
+  `rec_T` edge becomes constructor edges.
+- Comments to rewrite: the header paragraph on sources; the block above
+  `own_defining_axioms` (why names first, the guard, the collision, the
+  overloading fall-through); delete the registry block.
+
+### 10.5 What rev 3.0 closes and what stays
+
+Closed: §7's locale-target `fun`/`function` (`fold2_bit_int.F.simps` — a
+private entry, its `termination` being `private` — is a theory-level fact
+the table lookup reaches; measured); §7's packages with their own registry
+(Nominal2 names its facts the same way; by reading, not measured); the
+`f_sumC` dead edge of limitation #6 for function-package constants (the
+axiom is no longer in the props).
+
+Stays: `termination` added/deleted moves the digest once (D8); a
+`termination` proved in another theory leaves the declaring theory on
+`.psimps` (equation edits still caught); `instantiation`'s instance
+constant (Infra, no record; its fact names `T.c.simps` do not even share
+the constant's prefix `T.c_inst.c`); the three `overloading` names
+`Nat.funpow`, `Transitive_Closure.relpow`, `relpowp` have their `.simps`
+rejected by the guard (headed by `compow`) and are answered by their
+same-named `_def` taken by name (D4) — the proposition `compow ≡ …` the
+structural path gave under rev 2.3, now sourced from the fact; renames
+move the digest (change 2); D6's convention.  A `fun` inside an
+`overloading` block is CLOSED by D9's unfolding (S13n), so rev 2.3's
+MERGE case keeps its equations.
+
+### 10.6 Tests and documentation
+
+- `Test/Test_Sensitivity.thy` S13 rewritten for rev 3.0.  Subjects kept:
+  `sens_fun`, `sens_pfun`, `sens_cfun`, `sens_prim`, `sens_defn`,
+  `sens_part`.  New subjects: a locale target
+  `locale sens_loc = fixes sens_k' :: nat begin function sens_lfun … end`
+  (no `termination`; exported constant `Test_Sensitivity.sens_loc.sens_lfun`,
+  fact `….sens_loc.sens_lfun.psimps`); a datatype/constant name collision
+  `datatype sens_col = …` with `definition sens_col :: nat`; an
+  `inductive_set sens_iset` (its `.simps` has `∈` on the lhs); an
+  abbreviation with an author `_def` lemma (`abbreviation sens_abb`,
+  `lemma sens_abb_def`).  Assertions on the labels (`map fst`) and on
+  mentioned constants: `sens_fun` = `[….sens_fun.simps]` and mentions
+  `less` (pins `.simps` before `.psimps`: no `accp`); `sens_pfun` =
+  `[….sens_pfun.psimps]`, mentions `less` and `accp`; `sens_cfun` =
+  `[….sens_cfun.simps]`, mentions `plus`; `sens_prim` = `[….sens_prim.simps]`;
+  `sens_defn` = `[….sens_defn_def]`; `sens_part` = `[….sens_part.simps]`;
+  `sens_lfun` = `[….sens_loc.sens_lfun.psimps]` and mentions `less` (red
+  on rev 2.3: registry miss, body-free axiom); `sens_col` =
+  `[….sens_col_def]` and mentions no constructor (red without the guard:
+  the datatype's `sens_col.simps` would be taken; ALSO red under a guard
+  that does not move on to the next name: `named_facts` then answers
+  nothing, `own_defining_axioms` reaches Defs and returns
+  `sens_col_def_raw`, a different label — a `definition`'s Defs axiom is
+  `_def_raw`); `sens_iset` = `[….sens_iset_def]` (a second GUARD pin:
+  the member-headed `.simps` is rejected and `_def` answers; it does NOT
+  pin the move-on, because `inductive_set`'s Defs axiom is itself named
+  `sens_iset_def`, so the structural fall-through shows the same label —
+  review id 4); `sens_abb` = `[….sens_abb_def]` (pins D4/D6: the abbreviation
+  now has axioms and mentions the lemma's body constant).  Three prop
+  counts (`sens_fun` 1, `sens_cfun` 2, `sens_prim` 2) pin that the guard
+  never drops one equation of a multi-equation fact (review id 6).  The
+  S13-local helper over props is `props_mention`, distinct from the
+  file-level `mentions` over dependency edges (review id 11).  The merge
+  pin (`merged`) is deleted with the merge.  D9's subject: `consts sens_sz`
+  overloaded by `fun sens_sz_hps` and `definition sens_sz_hp` (the AFP
+  shape with a local datatype); S13n asserts labels
+  `[sens_sz_hp_def_raw, sens_sz_hps.simps]`, three props, `plus`
+  mentioned (only the `fun` has it) and `sens_sz_hps_sumC` not mentioned.
+  Red on the rev 2.3 module (labels `sens_sz.simps`, the `_sumC` axiom
+  kept) and on the rev 3.0 module before the unfolding (the two Defs
+  labels `sens_sz_hps_def` / `sens_sz_hp_def_raw`, no `plus`); green
+  after.  The S13 letters cited in §6 and §8 are rev 2.3's; rev 3.0
+  reassigned them (rev 2.3's S13i, the `context fixes` pin, is S13f now).
+- `archive/plans/CHECK_OUTDATE_PLAN.md` §3.2 constant line, §7.3 item 1
+  (the named-fact source replaces the registry clause), §14 rows (the three
+  rev 2.3 rows rewritten, new rows for the locale target, the collision
+  and the `inductive_set` fall-through), glossary if it names the
+  registry.  By hand.
+- `doc/invalidation_limitations.md`: header date; #6 paragraph (the
+  `f_sumC` edge is gone); #8 rewritten: locale-target and Nominal2 removed
+  from the list, `instantiation` and the `overloading` names kept, D6's
+  convention and D8 recorded; index row 8.
+- `ai-artifacts/SEMANTIC_CHANGE_GATE_HANDOFF.md`: a new top section.
+- `ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md`: the "repaired 2026-09-13"
+  clause gains "source revised 2026-09-14".
+
+### 10.7 Acceptance (rev 3.0)
+
+1. `Test/Test_Sensitivity.thy` through the REPL server: the new
+   assertions marked red above FAIL on the rev 2.3 module (scratch copy)
+   and PASS on the new; `Test/Test_All.thy` passes.
+   DONE 2026-09-14: green, all checks pass; red on the rev 2.3 module
+   (`…/scratchpad/fun_names/Test_Sensitivity_Red2.thy`): 9 of the 13 S13
+   checks fail (a, d, f, g, h, i, j, k, m; b/c/e/l pass there too — c and
+   l are pins of the new rule's shape, not of the source change).  Guard
+   variants of the NEW module: with no guard at all
+   (`semantic_digest_noguard.ML`) S13k and S13l fail; with the guard
+   applied only after the first non-empty name, no move-on
+   (`semantic_digest_nomoveon.ML`) S13k fails (the datatype's `sens_col.simps`
+   is non-empty and guarded to nothing; `named_facts` answers nothing,
+   `own_defining_axioms` falls to Defs and returns `sens_col_def_raw`) —
+   so the two guard decisions of D3 are each pinned by a test (S13k the
+   move-on, S13k and S13l the shape guard).  `Test_All` passes.
+   First green run showed a test-side error only: a fact of two equations
+   yields two identical labels, so `labels` takes `distinct`.
+   Which file backs which figure (review id 9): the saved red listing
+   (`red.raw`) is from `Test_Sensitivity_Red.thy`, before `labels` took
+   `distinct` (the rename to `Red2.thy` and `distinct` cannot flip any of
+   the nine); the shipped-module listing is `show.out` (`Show2`, also
+   pre-`distinct`, S13f/S13h failing on duplicate labels only); the two
+   guard-variant runs and `Test_All` were observed but their stdout was
+   not kept.  The scratchpad is a session tmpfs, so the durable record is
+   this sentence.  After the review's code fixes (Facts.lookup,
+   HOLogic.dest_eq, the guard bound once) and test additions (three prop
+   counts): re-run 2026-09-14 on a fresh REPL server — `Test_Sensitivity`
+   green (all checks), `Test_All` passes.  After D9 (S13n added,
+   `unfold_sumC_axiom`): green again; red on the rev 2.3 module
+   (`Test_Sensitivity_Red3.thy`, 10 of 14 S13 checks fail: a, d, f, g, h,
+   i, j, k, m, n) and on the pre-D9 rev 3.0 module
+   (`Test_Sensitivity_Pre3.thy`, S13n alone fails); `Test_All` passes;
+   the heap census (`Census_Diff3.thy`) routes every constant exactly as
+   before D9 — the shape does not occur in the heap.
+2. Heap census with the shipped ML (`Name_Probe7`/`Name_Probe9` figures
+   re-taken on `own_defining_axioms` itself): the shipped rule's routing
+   (`census_diff.out`: `.simps -> _def` 22, `.simps -> empty` 1,
+   `.psimps -> empty` 3, no `_def` ever rejected), `fold2_bit_int.F`
+   carries its psimps.
+   DONE 2026-09-14 (`Census_Rev30.thy`, `Census_Diff.thy`): of the 1038
+   record-eligible constants the shipped rule answers from `_def` for 679
+   (657 by name directly, 22 after the guard emptied `.simps`: the 17
+   `inductive_set`/`lexordp` (`Zorn.subset.suc_Union_closed` among them),
+   `Sum_Type.sum`, `Product_Type.prod`, and the
+   three `overloading` names, whose `_def` is taken by name — D4), from
+   `.simps` for 106, from `.psimps` for 1 (`fold2_bit_int.F`), from the
+   structural path for 86 (36 whose Defs axiom names do not end in `_def`
+   plus 50 whose do — constructor and `rec_` definitions absent from the
+   fact table, present in the axiom table), and empty for 166 (138
+   abbreviations without an author `_def`, served by the abbreviation
+   body in `sem_constant`, and the 28 bare constants).  Named hits 786 =
+   790 − 4: `Zorn.subset.suc_Union_closedp` (`.simps` guarded to nothing,
+   no `_def`, no Defs — empty under rev 2.3 as well) and the three
+   `global_interpretation` images `Bit_Operations.{xor,and,or}_int.F`
+   (their `.psimps` are headed by `fold2_bit_int.F`; no Defs entry —
+   empty under rev 2.3 as well).
+   RE-TAKEN after the review's switch to `Facts.lookup`
+   (`Census_Diff2.thy`, `census_diff2.out`): per-constant routing
+   identical except ONE — `Bit_Operations.fold2_bit_int.F` now answers
+   from `.simps`, not `.psimps`: its `termination` is `private`
+   (`Bit_Operations.thy:1760`), so `F.simps` is a private entry that
+   `Global_Theory.get_thms` refused and the table lookup reaches.  Its
+   equations all the same, without the `accp` premise; accepted, and the
+   module comment says so.  Totals: `_def` 679, `.simps` 107, `.psimps` 0,
+   structural 86, empty 166.
+3. Paid end-to-end acceptance: decided by the user 2026-09-14 (repeat §9
+   item 3 with its criteria unchanged); DONE the same day, PASS —
+   `ACCEPTANCE.md`, "Rev 3.0 run": N = 91 / 28 / 0, `narquil` judged
+   CHANGED and minted 128 → 131 with its five lemmas enrolled, `galmuth`
+   judged UNCHANGED and walled, USD 12.31.
+4. Opus 5 adversarial review (Agent Workflow, `model: 'opus'` on every
+   agent); Chinese report; commit on "提交".
+   DONE 2026-09-14, two rounds.  Round one (`review/rev30_judge.json`,
+   4 dimensions, 37 findings, 27 surviving, READY_AFTER_FIXES): three
+   code fixes (`Facts.lookup` for `Global_Theory.get_thms`,
+   `HOLogic.dest_eq`, the guard bound once), three prop-count assertions,
+   ten record corrections, D9 raised and decided (RECOVER).  Round two,
+   light (`review/rev30_rereview_judge.json`, 2 dimensions, 16 findings, 8
+   surviving, READY_AFTER_FIXES, no behavioural defect): eight by-hand
+   repairs — the label sentence after D9 (signature comment, §10.4), "the
+   first present" → "the first whose guarded result is non-empty" (header,
+   signature), the 28/166 qualifier in the module comment, the glossary's
+   banned column and 名字路径 where the mechanism is named, the inner sort
+   of `spec_rule_axioms` dropped and `first_non_empty` via `the_default`,
+   the S13n pre-D9 label count, the HANDOFF suite paragraph, the rev 2.3
+   S13 letters.  After them: `Test_Sensitivity` green, `Test_All` passes,
+   heap routing identical (`Census_Diff4.thy`).  In both rounds a few
+   verifier calls were refused by the API's safeguards (8 of 79, 3 of 19);
+   each affected finding kept at least one verifier or was judged on the
+   review's own evidence.

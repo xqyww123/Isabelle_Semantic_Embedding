@@ -62,10 +62,59 @@ All paths relative to `contrib/Semantic_Embedding/`.
   needs the user's go-ahead.  Step 5's test file must carry the enrolment
   test with a not-enrolled entry NOT in last position (step-4 judge).
 
-## Entry point after the `fun` digest implementation (2026-09-13, evening): REVIEW, then commit on "提交"
+## Entry point after rev 3.0 of the `fun` digest plan (2026-09-14): REVIEW, then commit on "提交"
+
+`ai-artifacts/fun_digest/PLAN.md` §10 (rev 3.0, decided by the user on
+2026-09-14) replaces the function-package registry source of rev 2.3 with
+the facts named after the constant: `own_defining_axioms` now tries
+`c.simps`, `c.psimps`, `c_def` (first non-empty wins; `.simps`/`.psimps`
+guarded to equations headed by the constant, guard applied per name) and
+falls through to the own-theory `Defs` axioms / `Spec_Rules` only when all
+three are absent.  Done in the working tree, uncommitted:
+
+1. `Tools/semantic_digest.ML`: `defining_equation`, `fact_props`,
+   `equation_facts`, `named_facts`, `unfold_sumC_axiom` (D9, a `fun`
+   inside `overloading`); the registry read (`function_equations`) and
+   `env.ctxt` deleted; comments (header, signature, the block above
+   `own_defining_axioms`, the abbreviation note in `sem_constant`).
+   Review round one (`review/rev30_judge.json`, READY_AFTER_FIXES) applied:
+   `Facts.lookup` instead of `get_thms`, `HOLogic.dest_eq`, the guard
+   bound once, three prop-count assertions, ten doc corrections.
+2. `Test/Test_Sensitivity.thy`: S13 rewritten (S13a–n; new subjects
+   `sens_loc.sens_lfun` locale target, `sens_col` datatype/constant name
+   collision, `sens_iset` inductive_set, `sens_abb` with an author
+   `sens_abb_def`, `sens_sz` a `fun` inside `overloading` — D9).
+   Red-then-green: 10 of 14 fail on the rev 2.3 module
+   (`…/scratchpad/fun_names/Test_Sensitivity_Red3.thy`), S13n alone fails
+   on the rev 3.0 module before the unfolding (`…/Test_Sensitivity_Pre3.thy`),
+   all pass on the shipped one; guard variants (`semantic_digest_noguard.ML`,
+   `semantic_digest_nomoveon.ML`) recorded in PLAN.md §10.7.
+3. Docs by hand: `doc/invalidation_limitations.md` (header, index row 8,
+   #6 paragraph, #8 rewritten); `archive/plans/CHECK_OUTDATE_PLAN.md`
+   (§3.2 constant line, §7.3 item 1, §14 rows);
+   `ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md` (one clause); PLAN.md
+   (status, §4/§7/§8/§9 markers, §10).
+4. Paid end-to-end acceptance repeated 2026-09-14 on the user's decision:
+   PASS (`ACCEPTANCE.md`, "Rev 3.0 run", USD 12.31).  Isolated stores
+   `/var/tmp/qiyuan/gate_accept_db{,_after_run1}/` (deletable, 3.6 GB);
+   the 2026-09-13 log directories deleted; `sim_measure_*` under
+   `/var/tmp/qiyuan/` left (not this line's).  The user declined the
+   memory on `model: 'opus'`; foreign working-tree files are not to be
+   touched; this session's scratch files are to be cleaned up at the end.
+5. Light re-review DONE (`review/rev30_rereview_judge.json`,
+   READY_AFTER_FIXES, eight by-hand repairs applied, suite green again;
+   PLAN.md §10.7 item 4).  NEXT: "提交" commits `Tools/semantic_digest.ML`,
+   `Test/Test_Sensitivity.thy`, `doc/invalidation_limitations.md`,
+   `archive/plans/CHECK_OUTDATE_PLAN.md`, `ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md`,
+   this file, `ai-artifacts/fun_digest/{PLAN,ACCEPTANCE}.md` and the two
+   new `review/rev30_*_judge.json`; then the superproject gitlink by
+   pathspec; push only on the user's word; then delete the isolated stores
+   under `/var/tmp/qiyuan/` and this session's scratch directories.
+
+## Record: entry point after the `fun` digest implementation (2026-09-13, evening): REVIEW, then commit on "提交" (done, committed `df2b7fe`)
 
 The `fun` digest plan (`ai-artifacts/fun_digest/PLAN.md` rev 2.3) is
-IMPLEMENTED in the working tree, uncommitted.  What was done, in order:
+IMPLEMENTED in the working tree, uncommitted at the time of writing.  What was done, in order:
 
 1. `Tools/semantic_digest.ML`: `env.ctxt`; `prop_ord` shared; the new
    `function_equations` (registry `simps`, else `psimps`, key filter on

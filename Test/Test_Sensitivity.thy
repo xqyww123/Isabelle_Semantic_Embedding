@@ -259,30 +259,38 @@ in
 end
 \<close>
 
-subsection \<open>S13 constant: function-package equations reach the digest\<close>
+subsection \<open>S13 constant: the facts named after the constant are its definition\<close>
 
-(* The function package writes only `f == f_sumC` to Defs; the equations must
-   arrive from its registry.  The body mentions Orderings.ord_class.less, which
-   a nat => nat type cannot supply. *)
+(* The function package writes only `f == f_sumC` to Defs; the equations are
+   the facts f.simps.  The body mentions Orderings.ord_class.less, which a
+   nat => nat type cannot supply. *)
 fun sens_fun :: "nat \<Rightarrow> nat" where
   "sens_fun n = (if n < 2 then n else sens_fun (n - 1) + sens_fun (n - 2))"
 
-(* No `termination`: the registry holds psimps only, each guarded by the
+(* No `termination`: only f.psimps exists, each guarded by the
    `accp sens_pfun_rel` premise. *)
 function sens_pfun :: "nat \<Rightarrow> nat" where
   "sens_pfun n = (if n < 2 then n else sens_pfun (n - 1) + sens_pfun (n - 2))"
   by pat_completeness auto
 
-(* Under `context fixes`, the fixed variable becomes a parameter on export and
-   the registry key is `sens_cfun ?sens_k`, not the bare constant. *)
+(* Under `context fixes`, the fixed variable becomes a parameter on export. *)
 context fixes sens_k :: nat begin
 fun sens_cfun :: "nat \<Rightarrow> nat" where
   "sens_cfun 0 = sens_k"
 | "sens_cfun (Suc n) = sens_cfun n + sens_k"
 end
 
-(* Controls: these packages carry the body in Defs and have no registry entry,
-   so each must keep exactly its one Defs axiom. *)
+(* A locale target: the function package registers nothing the theory can see
+   (the registry source of 2026-09-13 returned nothing), but the exported fact
+   sens_loc.sens_lfun.psimps exists. *)
+locale sens_loc = fixes sens_k' :: nat
+begin
+function sens_lfun :: "nat \<Rightarrow> nat" where
+  "sens_lfun n = (if n < sens_k' then n else sens_lfun (n - 1))"
+  by pat_completeness auto
+end
+
+(* Packages that carry the body in Defs too: each takes its named fact. *)
 primrec sens_prim :: "nat \<Rightarrow> nat" where
   "sens_prim 0 = 0"
 | "sens_prim (Suc n) = sens_prim n"
@@ -293,41 +301,99 @@ definition sens_defn :: "nat \<Rightarrow> nat" where
 partial_function (option) sens_part :: "nat \<Rightarrow> nat option" where
   "sens_part n = (if n < 2 then Some n else sens_part (n - 1))"
 
+(* A constant sharing a datatype's name: sens_col.simps belongs to the type. *)
+datatype sens_col = Sens_A | Sens_B
+definition sens_col :: nat where "sens_col = 7"
+
+(* inductive_set: sens_iset.simps is `(a : sens_iset) = ...`, headed by
+   Set.member, so the guard rejects it and sens_iset_def answers. *)
+inductive_set sens_iset :: "nat set" where
+  "0 \<in> sens_iset"
+| "n \<in> sens_iset \<Longrightarrow> Suc n \<in> sens_iset"
+
+(* An author's X_def lemma on an abbreviation counts as its definition. *)
+abbreviation sens_abb :: "nat \<Rightarrow> nat" where "sens_abb \<equiv> sens_defn"
+lemma sens_abb_def: "sens_abb n = (if n < 2 then n else 0)"
+  by (simp add: sens_defn_def)
+
+(* A `fun` inside an `overloading` block (the AFP Pairing_Heap_List2_Analysis
+   shape): its facts are sens_sz_hps.simps, named after the local binding,
+   so only the body-free Defs axiom `sens_sz == sens_sz_hps_sumC` names the
+   constant; the axiom is unfolded to those equations.  The sibling
+   `definition` keeps its Defs axiom.  Only the `fun` mentions `plus`. *)
+datatype sens_hp = Sens_Hp nat "sens_hp list"
+consts sens_sz :: "'a \<Rightarrow> nat"
+overloading
+  sens_sz_hps \<equiv> "sens_sz :: sens_hp list \<Rightarrow> nat"
+  sens_sz_hp \<equiv> "sens_sz :: sens_hp \<Rightarrow> nat"
+begin
+fun sens_sz_hps :: "sens_hp list \<Rightarrow> nat" where
+  "sens_sz_hps (Sens_Hp x hsl # hsr) = sens_sz_hps hsl + sens_sz_hps hsr + 1"
+| "sens_sz_hps [] = 0"
+definition sens_sz_hp :: "sens_hp \<Rightarrow> nat" where
+  "sens_sz_hp h = (case h of Sens_Hp x l \<Rightarrow> sens_sz l)"
+end
+
 ML \<open>
 (* Own env: the file-level env predates the subjects above. *)
 let
   val env3 = Semantic_Digest.make_env \<^theory>
   fun own c = Semantic_Digest.own_defining_axioms env3 ("Test_Sensitivity." ^ c)
-  fun mentions ps c = exists (fn (_, t) => exists_Const (fn (n, _) => n = c) t) ps
-  (* MERGE pin: the Defs meta-equality survives AND an equation (a Trueprop)
-     joins it.  Red under replace, red under any _sumC name filter. *)
-  fun merged ps =
-    exists (fn (_, t) => can Logic.dest_equals t) ps andalso
-    exists (fn (_, t) => not (can Logic.dest_equals t)) ps
-  fun show c = writeln ("      " ^ c ^ ": " ^ commas (map fst (own c)))
+  fun props_mention ps c = exists (fn (_, t) => exists_Const (fn (n, _) => n = c) t) ps
+  (* one label per prop; a fact of several equations repeats its name *)
+  fun labels c = distinct (op =) (map fst (own c))
+  fun show c = writeln ("      " ^ c ^ ": " ^ commas (labels c))
 in
-  app show ["sens_fun", "sens_pfun", "sens_cfun", "sens_prim", "sens_defn", "sens_part"];
-  check "S13a sens_fun's props mention Orderings.ord_class.less (from its equation)"
-    (mentions (own "sens_fun") "Orderings.ord_class.less");
-  check "S13b sens_fun keeps its Defs axiom AND gains an equation (merge)"
-    (merged (own "sens_fun"));
-  check "S13c sens_pfun (no termination) reaches its equation via psimps"
-    (mentions (own "sens_pfun") "Orderings.ord_class.less");
-  check "S13d sens_pfun's psimps carry the accp premise"
-    (mentions (own "sens_pfun") "Wellfounded.accp");
-  check "S13e sens_pfun keeps its Defs axiom AND gains an equation (merge)"
-    (merged (own "sens_pfun"));
-  check "S13f primrec keeps exactly its Defs axiom"
-    (map fst (own "sens_prim") = ["Test_Sensitivity.sens_prim_def"]);
-  (* `definition` always records its Defs axiom as `_def_raw`
-     (Specification.gen_def); `_def` is the derived fact *)
-  check "S13g definition keeps exactly its Defs axiom"
-    (map fst (own "sens_defn") = ["Test_Sensitivity.sens_defn_def_raw"]);
-  check "S13h partial_function keeps exactly its Defs axiom"
-    (map fst (own "sens_part") = ["Test_Sensitivity.sens_part_def"]);
-  (* nat => nat => nat and the body-free Defs axiom cannot supply `plus` *)
-  check "S13i fun under context-fixes reaches its equations (key `sens_cfun ?sens_k`)"
-    (mentions (own "sens_cfun") "Groups.plus_class.plus")
+  app show ["sens_fun", "sens_pfun", "sens_cfun", "sens_loc.sens_lfun", "sens_prim",
+            "sens_defn", "sens_part", "sens_col", "sens_iset", "sens_abb", "sens_sz"];
+  check "S13a sens_fun takes exactly sens_fun.simps (one equation)"
+    (labels "sens_fun" = ["Test_Sensitivity.sens_fun.simps"] andalso
+     length (own "sens_fun") = 1);
+  check "S13b sens_fun's props mention Orderings.ord_class.less (from its equation)"
+    (props_mention (own "sens_fun") "Orderings.ord_class.less");
+  (* .simps before .psimps: no accp premise once termination is proved *)
+  check "S13c sens_fun's props do not carry the accp premise"
+    (not (props_mention (own "sens_fun") "Wellfounded.accp"));
+  check "S13d sens_pfun (no termination) takes exactly sens_pfun.psimps"
+    (labels "sens_pfun" = ["Test_Sensitivity.sens_pfun.psimps"]);
+  check "S13e sens_pfun's psimps carry the equation and the accp premise"
+    (props_mention (own "sens_pfun") "Orderings.ord_class.less" andalso
+     props_mention (own "sens_pfun") "Wellfounded.accp");
+  (* nat => nat => nat cannot supply `plus`; both equations must survive the guard *)
+  check "S13f fun under context-fixes takes its two simps (mentions plus)"
+    (labels "sens_cfun" = ["Test_Sensitivity.sens_cfun.simps"] andalso
+     length (own "sens_cfun") = 2 andalso
+     props_mention (own "sens_cfun") "Groups.plus_class.plus");
+  check "S13g locale-target function takes its exported psimps (mentions less)"
+    (labels "sens_loc.sens_lfun" = ["Test_Sensitivity.sens_loc.sens_lfun.psimps"] andalso
+     props_mention (own "sens_loc.sens_lfun") "Orderings.ord_class.less");
+  check "S13h primrec takes its two simps"
+    (labels "sens_prim" = ["Test_Sensitivity.sens_prim.simps"] andalso
+     length (own "sens_prim") = 2);
+  check "S13i definition takes its _def"
+    (labels "sens_defn" = ["Test_Sensitivity.sens_defn_def"]);
+  check "S13j partial_function takes its simps"
+    (labels "sens_part" = ["Test_Sensitivity.sens_part.simps"]);
+  (* a `definition`'s Defs axiom is `_def_raw`, so a rule that stops at the
+     guarded-to-nothing `sens_col.simps` and falls to Defs shows a different
+     label: this is the pin of "an empty guarded answer moves on" *)
+  check "S13k a constant named like a datatype takes its _def, not the type's simps"
+    (labels "sens_col" = ["Test_Sensitivity.sens_col_def"] andalso
+     not (props_mention (own "sens_col") "Test_Sensitivity.sens_col.Sens_A"));
+  (* inductive_set's Defs axiom is itself named `_def`, so this pins the
+     guard (member-headed simps rejected), not the move-on *)
+  check "S13l inductive_set: guarded simps empty, its _def answers"
+    (labels "sens_iset" = ["Test_Sensitivity.sens_iset_def"]);
+  check "S13m an author's X_def lemma is the abbreviation's definition"
+    (labels "sens_abb" = ["Test_Sensitivity.sens_abb_def"] andalso
+     props_mention (own "sens_abb") "Orderings.ord_class.less");
+  (* three props: the sibling's Defs axiom and the fun's two equations; the
+     body-free `_sumC` axiom is gone *)
+  check "S13n fun inside overloading: the _sumC axiom unfolds to the local name's simps"
+    (labels "sens_sz" = ["Test_Sensitivity.sens_sz_hp_def_raw", "Test_Sensitivity.sens_sz_hps.simps"] andalso
+     length (own "sens_sz") = 3 andalso
+     props_mention (own "sens_sz") "Groups.plus_class.plus" andalso
+     not (props_mention (own "sens_sz") "Test_Sensitivity.sens_sz_hps_sumC"))
 end
 \<close>
 
