@@ -88,7 +88,9 @@ three are absent.  Done in the working tree, uncommitted:
    (`…/scratchpad/fun_names/Test_Sensitivity_Red3.thy`), S13n alone fails
    on the rev 3.0 module before the unfolding (`…/Test_Sensitivity_Pre3.thy`),
    all pass on the shipped one; guard variants (`semantic_digest_noguard.ML`,
-   `semantic_digest_nomoveon.ML`) recorded in PLAN.md §10.7.
+   `semantic_digest_nomoveon.ML`) recorded in PLAN.md §10.7.  S15 (added
+   after the commit `fb2e621`, uncommitted with the mutual-`fun` record):
+   D7's pin, red on a rule-①-late mutant.
 3. Docs by hand: `doc/invalidation_limitations.md` (header, index row 8,
    #6 paragraph, #8 rewritten); `archive/plans/CHECK_OUTDATE_PLAN.md`
    (§3.2 constant line, §7.3 item 1, §14 rows);

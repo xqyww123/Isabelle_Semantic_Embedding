@@ -319,7 +319,13 @@ Spec_Rules；CHECK_OUTDATE_PLAN §7.3 第 1 条）。在以下情形，这条规
   （AFP `Pairing_Heap_List2_Analysis.thy` 的 `sz`）不在此列：它的 fact 叫
   `size_hps.simps`（块内局部名），三个名字都落空，但结构路径上那条无体公理
   `sz ≡ size_hps_sumC` 会按 `_sumC` 前的局部名再查一次 `size_hps.simps`（同样过
-  保护）并被方程替换（PLAN.md §10.3 D9，2026-09-14）。
+  保护）并被方程替换（PLAN.md §10.3 D9，2026-09-14）。**仍留的缺口**：块内的
+  **互递归** `fun f and g`——内部常量叫 `f_g_sumC`，反推出的合成名 `f_g` 没有方程
+  fact（方程仍是 `f.simps`、`g.simps`），常量只剩无体公理，改方程 digest 不动。
+  发行版加 AFP 实测 0 个实例（496 个 `overloading` 块，64 个含递归定义命令，
+  无一互递归）。不靠名字的可靠办法已评估（每个 env 按方程头部常量给本 theory
+  的 `.simps`/`.psimps` 建索引，与 Defs 公理合并；`ai-artifacts/fun_digest/OVERLOADING_PROBE.md`），
+  2026-09-14 决定只登记不实施。
 - **`instantiation` 里的 `fun`**：实例常量是 `Infra("inst_infix")`，无记录；
   类参数本身按缺陷 2 恒不失效。（其 fact 名 `T.c.simps` 与常量名 `T.c_inst.c`
   连前缀都不同，即便有记录按名字也取不到。）

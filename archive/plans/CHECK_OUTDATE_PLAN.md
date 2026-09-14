@@ -754,6 +754,7 @@ Semantic_Embedding.thy:20 演示行）。**Sledgehammer_Embedding 不经此路**
 | `inductive_set` 恰取 `_def` | 左边是 `a ∈ S r` 的 `.simps` 没被保护拒掉，进了 digest（`inductive_set` 的 Defs 公理本身就叫 `_def`，所以这一行钉的是保护，不是逐级回落；逐级回落由上一行钉：`definition` 的 Defs 公理叫 `_def_raw`） |
 | 有作者 `X_def` 引理的 abbreviation 恰取 `X_def` | `_def` 被按形状过滤，abbreviation 的作者定义丢失 |
 | `overloading` 块里的 `fun`（`sens_sz`）取到局部名的 `.simps`、兄弟 `definition` 的 Defs 公理，不含 `_sumC` 公理 | 块内 `fun` 的方程不进 digest（fact 以局部名命名，常量名查不到） |
+| 自带 `sens_op_def` fact 的 class parameter `sens_op` 恰保留 0 条定义（S15） | 类参数规则排到名字路径之后，class 假设被当成参数的定义 |
 | `digest_term t = Term_Digest.term128 t`（参数改名使 digest 变化） | digest 在 hash 前被做了变换（归一化已撤销，2026-09-13） |
 | **class：locale 表取法 ≡ def-parse 取法（全 Main）** | serial 过滤判据漂移无人发现 |
 | **`Rings.idom` 的 deps 恰 2 项、跨 env 相同** | 注册边混入 deps |

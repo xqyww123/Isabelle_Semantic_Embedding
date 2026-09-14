@@ -529,7 +529,7 @@ Record-eligible constants (past `Infra_Filter`, not class parameters): 1038.
 | D4 | `_def` is NOT gated on shape because every `X_def` in the heap is semantically `X`'s definition (§10.2), the suffix has no type-level use (datatypes and typedefs name `T.simps`, never `T_def`), and gating would only push abbreviations and `overloading` names back to the structural path. |
 | D5 | The cost of the one-time digest move (516 of 1038 heap constants; in the production store every moved record becomes a seed: one re-interpretation and one judge call, dependents walled) is NOT a factor: the project is in development. |
 | D6 | An author-written `lemma X_def: "X x = …"` counts as `X`'s definition — taken by name, no guard (D4); it is the author's characterising equation and changes when the meaning changes.  Accepted convention, documented in `doc/invalidation_limitations.md` #8. |
-| D7 | Rule ① (a class parameter keeps no definition) stays first: a correctness rule, not a table lookup.  Not pinned by any test (review id 8): S2d/S2e's subjects own no fact at their own name; `Parity.linordered_euclidean_semiring_division_class.divmod` (a class parameter with a `divmod_def` fact, `Parity.thy:983-990`) would discriminate if a pin is ever wanted. |
+| D7 | Rule ① (a class parameter keeps no definition) stays first: a correctness rule, not a table lookup.  Pinned since 2026-09-14 by S15 (`class sens_cls = fixes sens_op assumes sens_op_def: …`): S15a checks the parameter owns a fact named `sens_op_def` (so the subject discriminates — S2d/S2e's subjects own none), S15b that `own_defining_axioms` is still `[]`; red on a mutant applying rule ① only after the named-fact source, green on the shipped module. |
 | D8 | `.simps` before `.psimps`, so §7's "`termination` added or deleted moves the digest once" stays (the `.psimps`-first alternative that would close it was offered and declined). |
 | D9 | (raised by the rev 3.0 review, id 23; decided 2026-09-14: RECOVER) A `fun` inside an `overloading` block (AFP `Amortized_Complexity/Pairing_Heap_List2_Analysis.thy:22-40`, `sz`; CENSUS (d)) names its facts after the block's local binding (`size_hps.simps`), not after the constant (`sz`), so the named-fact source misses and the structural path would answer with the body-free `sz ≡ size_hps_sumC` beside the siblings' bodies — the `fun` member's equations, which rev 2.3's registry merge carried, would be lost.  Not in the 87-theory heap.  Recovered on the structural path: a Defs axiom whose right-hand side (under its λs) is headed by a constant named `<local>_sumC` is replaced by the equations `<local>.simps` (else `<local>.psimps`) that define the constant — the same guard, one more name lookup, the registry untouched; the axiom stays when no such facts exist (`unfold_sumC_axiom`).  Test S13n. |
 
@@ -610,7 +610,16 @@ same-named `_def` taken by name (D4) — the proposition `compow ≡ …` the
 structural path gave under rev 2.3, now sourced from the fact; renames
 move the digest (change 2); D6's convention.  A `fun` inside an
 `overloading` block is CLOSED by D9's unfolding (S13n), so rev 2.3's
-MERGE case keeps its equations.
+MERGE case keeps its equations — EXCEPT a MUTUAL `fun f and g` inside
+`overloading`: the internal constant is `f_g_sumC` and no fact is named
+`f_g.simps` (the equations stay `f.simps`, `g.simps`), so the unfolding
+finds nothing and the body-free axioms remain (measured on a probe;
+0 instances in Isabelle2025-2 + AFP 2026-05-13).  Recorded as a known
+gap in limitation #8 on the user's ruling of 2026-09-14; the name-free
+alternative (a per-env index of the theory's own `.simps`/`.psimps` by
+the head constant of their guarded equations, unioned with the Defs
+axioms at step ③; 12 heap digests would move, none lose content) is
+evaluated in `OVERLOADING_PROBE.md` and not implemented.
 
 ### 10.6 Tests and documentation
 

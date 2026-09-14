@@ -397,6 +397,30 @@ in
 end
 \<close>
 
+subsection \<open>S15 constant: a class parameter keeps no definition even when a fact bears its name\<close>
+
+(* The class parameter sens_op OWNS a fact named sens_op_def (the class
+   assumption), so the named-fact source would answer for it; rule (1) must
+   come first.  S2d/S2e cannot pin this: their subjects own no such fact. *)
+class sens_cls =
+  fixes sens_op :: "'a \<Rightarrow> 'a"
+  assumes sens_op_def: "sens_op x = x"
+
+ML \<open>
+let
+  val env4 = Semantic_Digest.make_env \<^theory>
+  val c = "Test_Sensitivity.sens_cls_class.sens_op"
+  val fact_exists =
+    is_some (Facts.lookup (Context.Theory \<^theory>) (Global_Theory.facts_of \<^theory>) (c ^ "_def"))
+in
+  check "S15a the subject discriminates: the parameter owns a fact named sens_op_def"
+    fact_exists;
+  check "S15b a class parameter keeps no definition (rule 1 precedes the named-fact source)"
+    (is_some (Axclass.class_of_param \<^theory> c) andalso
+     null (Semantic_Digest.own_defining_axioms env4 c))
+end
+\<close>
+
 subsection \<open>S14 digest: nothing sits between a payload and its hash\<close>
 
 ML \<open>
