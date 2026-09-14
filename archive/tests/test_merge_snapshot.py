@@ -7,10 +7,15 @@ directly and never touch the package singletons.
 """
 from __future__ import annotations
 
+import os
+import sys
+
 import lmdb
 import msgpack
 
-import merge_snapshot as MS
+# merge_snapshot.py lives in ai-artifacts/ (moved 2026-09-14)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ai-artifacts"))
+import merge_snapshot as MS  # noqa: E402
 
 # Persistent keys (LSB of byte 0 clear) and one WIP key (LSB set).
 PA = bytes.fromhex("22" * 16)

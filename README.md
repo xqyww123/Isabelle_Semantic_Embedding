@@ -148,7 +148,7 @@ yourself), you must kill and relaunch it too. Kill it however you started it:
 - a daemon launched via `Isabelle_RPC_Host.fork_and_launch__()`:
   `pkill -f 'Isabelle_RPC_Host\.fork_and_launch__'`
 - a host started with the `isabelle-rpc-host` console script: `pkill -f isabelle-rpc-host`
-- a foreground host (e.g. `debug_launcher.py`): just Ctrl-C it.
+- a foreground host (e.g. `ai-artifacts/debug_launcher.py`): just Ctrl-C it.
 
 (None of these patterns match the per-session attached hosts, whose command line says
 `run_attached__` — those need no manual cleanup.)
