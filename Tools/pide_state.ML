@@ -132,16 +132,25 @@ fun absolutize_id_based_pos {write_to_temp_file} positions =
             XML.Encode.list (XML.Encode.pair XML.Encode.int XML.Encode.int) to_resolve;
           val yxml = Scala.function1 "pide_state.resolve_positions"
             (YXML.string_of_body input_body);
-        in
-          YXML.parse_body yxml
-          |> XML.Decode.list (XML.Decode.pair XML.Decode.string
-               (XML.Decode.pair XML.Decode.int XML.Decode.int))
-        end;
+          val answers =
+            YXML.parse_body yxml
+            |> XML.Decode.list (XML.Decode.pair XML.Decode.string
+                 (XML.Decode.pair XML.Decode.int XML.Decode.int));
+          (* One answer per id, in order (pide_state.scala maps the input).  The
+             walk below pairs them positionally, so a reply of any other length
+             would silently leave a tail of positions unresolved -- and, through
+             the callers, their entities without a source line or a source. *)
+          val _ =
+            length answers = length to_resolve orelse
+              error (String.concat ["PIDE_State.absolutize_id_based_pos protocol error: sent ",
+                string_of_int (length to_resolve), " positions, got ",
+                string_of_int (length answers), " answers"]);
+        in answers end;
 
     val results = Unsynchronized.ref resolved;
     fun pop () = case ! results of
-        [] => ("", (0, 0))
-      | x :: xs => (results := xs; x);
+        x :: xs => (results := xs; x)
+      | [] => raise ListPair.UnequalLengths;  (* unreachable: the reply is length-checked above *)
   in
     positions |> map (fn pos =>
       if needs_resolution pos then
