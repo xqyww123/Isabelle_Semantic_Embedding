@@ -1830,11 +1830,16 @@ def mk_query_by_name_tool(
 # --- Other utilities ---
 
 # Per-RPC-host suppression of the update-interpretations question (the third
-# dialog option).  The RPC host is one process per Isabelle instance, so the
-# flag's scope is naturally "this Isabelle session": it survives across aoa
-# connections and resets with the host.  It suppresses the ASKING only --
-# the startup check still runs and small updates still run silently.
+# dialog option, _DONT_ASK_OPTION).  The RPC host is one process per Isabelle
+# instance, so the flag's scope is naturally "this Isabelle session": it
+# survives across aoa connections and resets with the host.  Once set, an
+# asking caller (the aoa startup check) returns right after the gate read --
+# no dry run, so no silent small update either; that scan is part of what the
+# user declined.  The point fix (ask_user=False) is unaffected.  2026-09-15
+# decision: the scan costs seconds per `by aoa`, and a user who declined for
+# the session should not keep paying it.
 _dont_ask_this_session: bool = False
+_DONT_ASK_OPTION: str = "No, don't ask again in this session"
 
 # The asking threshold, in entities (the dry run's n -- the system's one
 # workload number).  Locked at 400 (2026-07-29 user directive;
@@ -1856,17 +1861,20 @@ async def update_interpretations(connection: Connection,
     threshold, it has its own dialog).
 
     Steps: 1. the `auto_interpret_for_embedding` gate is read fresh (a live
-    per-context option) -- off means silent return.  2/3. one dry run over
-    theory_names ∪ (the connection's current context when include_context)
-    yields the workload count n.  4. n = 0: nothing to do.  5. n below the
-    threshold: interpret silently.  6. otherwise ask (three options; "don't
-    ask again" sets the host-wide flag above) when ask_user, else warn with
-    n and the explicit command -- and do nothing.  Every answered button
-    press is acknowledged with a writeln."""
+    per-context option) -- off means silent return; so does, for an asking
+    caller, the host-wide "don't ask again" flag (the whole check is skipped,
+    dry run included).  2/3. one dry run over theory_names ∪ (the connection's
+    current context when include_context) yields the workload count n.  4. n =
+    0: nothing to do.  5. n below the threshold: interpret silently.  6.
+    otherwise ask (three options; "don't ask again" sets the flag above) when
+    ask_user, else warn with n and the explicit command -- and do nothing.
+    Every answered button press is acknowledged with a writeln."""
     global _dont_ask_this_session
     gate = await connection.config_lookup("auto_interpret_for_embedding", ctxt)
     if not gate:
         return
+    if ask_user and _dont_ask_this_session:
+        return          # the user declined for the session: no question, no scan
     names = theory_names or []
     thy_names, n = await connection.callback(
         "Semantic_Store.interpret_theories",
@@ -1883,8 +1891,6 @@ async def update_interpretations(connection: Connection,
                                   (ctxt, names, False, False, include_context))
         return
     if ask_user:
-        if _dont_ask_this_session:
-            return          # the user said not to ask; they knowingly declined
         shown = ", ".join(thy_names[:10]) + (", ..." if len(thy_names) > 10 else "")
         answer = await connection.dialogue(
             f"[Semantic_Embedding] About {n} entities in the following theories "
@@ -1901,9 +1907,9 @@ async def update_interpretations(connection: Connection,
             f"\n"
             f"The run interprets these and, where a meaning changed, their dependents.\n"
             f"This calls the LLM: it may take a long time and cost money. Proceed?",
-            ["Yes", "No", "No, don't ask again in this session"])
+            ["Yes", "No", _DONT_ASK_OPTION])
         if answer is not None:
-            if answer == "No, don't ask again in this session":
+            if answer == _DONT_ASK_OPTION:
                 _dont_ask_this_session = True
                 await connection.writeln(
                     "[Semantic_Embedding] Choice received; will not ask again "
@@ -2137,8 +2143,9 @@ class Semantic_Vector_Store(Vector_Store):
         # big ones warn with the dry run's count.  DOUBLE gate:
         # first the per-call `interpret_in_auto_embed` override, falling back
         # to this store's field of the same name (AoA passes False on its
-        # lookups -- its by-aoa startup sweep already ran the check, so its
-        # query path pays nothing here, not even a config read; a PARAMETER,
+        # lookups -- its by-aoa startup sweep is where the check runs, unless
+        # the user declined it for the session, so its query path pays nothing
+        # here, not even a config read; a PARAMETER,
         # not a field write, so AoA's policy cannot stick to the
         # connection-cached store other consumers share, review R7); second,
         # `auto_interpret_for_embedding` is read fresh INSIDE the shell (a

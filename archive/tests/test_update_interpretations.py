@@ -85,7 +85,7 @@ def test_big_n_asks_and_yes_runs():
     _run(conn, ask_user=True)
     ((msg, options),) = conn.dialogues
     assert str(BIG) in msg
-    assert options == ["Yes", "No", "No, don't ask again in this session"]
+    assert options == ["Yes", "No", S._DONT_ASK_OPTION]
     assert len(_live_calls(conn)) == 1
     (ack,) = conn.writelns
     assert ack == "[Semantic_Embedding] Choice received."
@@ -101,20 +101,27 @@ def test_big_n_no_declines_once():
 
 
 def test_third_option_sets_the_host_flag_and_later_calls_stay_silent():
-    conn = _Conn(dry=(("HOL.A",), BIG), answer="No, don't ask again in this session")
+    conn = _Conn(dry=(("HOL.A",), BIG), answer=S._DONT_ASK_OPTION)
     _run(conn, ask_user=True)
     assert _live_calls(conn) == []
     assert S._dont_ask_this_session is True
     (ack,) = conn.writelns
     assert "Choice received" in ack and "will not ask again" in ack
-    # a later big-n startup check: no dialog, no warning, no run -- but the
-    # check itself and the small-update path stay alive
+    # a later aoa startup skips the whole check: no dry run (the only call is
+    # the gate lookup), so no dialog, no warning, no run -- and no small-update
+    # path either, since without the scan n is unknown (2026-09-15 decision)
     conn2 = _Conn(dry=(("HOL.A",), BIG))
     _run(conn2, ask_user=True)
-    assert conn2.dialogues == [] and conn2.warnings == [] and _live_calls(conn2) == []
+    assert conn2.calls == [("config", "auto_interpret_for_embedding")]
+    assert conn2.dialogues == [] and conn2.warnings == []
     conn3 = _Conn(dry=(("HOL.A",), 3))
     _run(conn3, ask_user=True)
-    assert len(_live_calls(conn3)) == 1             # the flag suppresses asking only
+    assert conn3.calls == [("config", "auto_interpret_for_embedding")]
+    # the point-fix caller (ask_user=False) is not an asking caller: the flag
+    # does not touch it, its check and its warning still run
+    conn4 = _Conn(dry=(("HOL.A",), BIG))
+    _run(conn4, ask_user=False, theory_names=["HOL.A"], include_context=False)
+    assert len(conn4.warnings) == 1 and _live_calls(conn4) == []
 
 
 def test_not_asked_warns_with_the_real_count():
