@@ -694,42 +694,38 @@ fun build_entries (context : Context.generic)
     val ctxt = Context.cases Proof_Context.init_global I context
     val pp = string_of_term ctxt
     val pp_typ = string_of_typ ctxt
-    fun source_at_pos pos =
-      case PIDE_State.command_at_position pos of
-        SOME (src, _, _) => strip_trailing_begin src
-      | NONE => ""
-    fun mk_prop_str (entity, pos) =
+    (* An entry's expr when it is computed here -- a theorem-alike's statement, a
+       constant's type, "" for the kinds that store none -- and NONE for the kinds
+       whose expr is the source of the command that declared them: types, classes,
+       locales, collections, methods.  Those sources come from ONE
+       PIDE_State.commands_at_positions call for the whole batch below; the same
+       NONE both requests an entry's position there and consumes the answer. *)
+    fun statement kind thm =
+      SOME (pp (Thm.prop_of thm)
+        handle ERROR msg =>
+          (warning ("build_entries: " ^ kind ^ " pp failed: " ^ msg); raise ERROR msg))
+    fun computed_expr entity =
       case entity of
-        Universal_Key.Theorem thm =>
-          (pp (Thm.prop_of thm)
-           handle ERROR msg =>
-             (warning ("mk_prop_str: Theorem pp failed: " ^ msg); raise ERROR msg))
-      | Universal_Key.Introduction_Rule thm =>
-          (pp (Thm.prop_of thm)
-           handle ERROR msg =>
-             (warning ("mk_prop_str: Introduction_Rule pp failed: " ^ msg); raise ERROR msg))
-      | Universal_Key.Elimination_Rule thm =>
-          (pp (Thm.prop_of thm)
-           handle ERROR msg =>
-             (warning ("mk_prop_str: Elimination_Rule pp failed: " ^ msg); raise ERROR msg))
-      | Universal_Key.Induction_Rule thm =>
-          (pp (Thm.prop_of thm)
-           handle ERROR msg =>
-             (warning ("mk_prop_str: Induction_Rule pp failed: " ^ msg); raise ERROR msg))
-      | Universal_Key.Case_Split_Rule thm =>
-          (pp (Thm.prop_of thm)
-           handle ERROR msg =>
-             (warning ("mk_prop_str: Case_Split_Rule pp failed: " ^ msg); raise ERROR msg))
+        Universal_Key.Theorem thm => statement "Theorem" thm
+      | Universal_Key.Introduction_Rule thm => statement "Introduction_Rule" thm
+      | Universal_Key.Elimination_Rule thm => statement "Elimination_Rule" thm
+      | Universal_Key.Induction_Rule thm => statement "Induction_Rule" thm
+      | Universal_Key.Case_Split_Rule thm => statement "Case_Split_Rule" thm
       | Universal_Key.Constant cname =>
-          (let val T = Consts.the_constraint (Sign.consts_of thy) cname
-           in pp_typ T end
-           handle TYPE _ => "" | ERROR _ => "")
-      | Universal_Key.Type _ => source_at_pos pos
-      | Universal_Key.Class _ => source_at_pos pos
-      | Universal_Key.Locale _ => source_at_pos pos
-      | Universal_Key.Theorem_Collection _ => source_at_pos pos
-      | Universal_Key.Method _ => source_at_pos pos
-      | _ => ""
+          SOME (pp_typ (Consts.the_constraint (Sign.consts_of thy) cname)
+            handle TYPE _ => "" | ERROR _ => "")
+      | Universal_Key.Type _ => NONE
+      | Universal_Key.Class _ => NONE
+      | Universal_Key.Locale _ => NONE
+      | Universal_Key.Theorem_Collection _ => NONE
+      | Universal_Key.Method _ => NONE
+      | _ => SOME ""
+    val computed = map (computed_expr o #1) raw
+    val exprs =
+      map2 (fn NONE => (fn (_, _, pos, _) => pos) | SOME _ => K Position.none) computed raw
+      |> PIDE_State.commands_at_positions
+      |> map2 (fn SOME e => K e | NONE => (fn SOME (src, _, _) => strip_trailing_begin src | NONE => ""))
+           computed
     (* Extra prompt-only context (never stored as expr).  For a theorem
        collection, show up to 10 current member propositions so the agent can
        describe the collection's purpose; members are deliberately kept out of
@@ -938,8 +934,7 @@ fun build_entries (context : Context.generic)
        trip, one walk per source file (archive/plans/ENTITY_POSITION_PLAN.md §5.1). *)
     val (entity_positions, position_report) = Entity_Position.of_positions (map #3 raw)
   in
-    ((raw ~~ (provss ~~ prim_provenance)) ~~ entity_positions |> map
-      (fn (((entity, nm, pos, uk), (provs, prov)), entity_pos) =>
+    (@{map 5} (fn (entity, nm, pos, uk) => fn provs => fn prov => fn entity_pos => fn expr =>
         let
           val hint =
             if is_thm_entity entity andalso not (null provs)
@@ -958,7 +953,7 @@ fun build_entries (context : Context.generic)
               Declared n    => (n, NONE)
             | Member (c, i) => (c ^ "(" ^ string_of_int i ^ ")", SOME c)
         in
-          (entity, disp_name, mk_prop_str (entity, pos),
+          (entity, disp_name, expr,
            (* NONE = no entity position (archive/plans/ENTITY_POSITION_PLAN.md §10).  Python's
               Entry derives its line_number from this, and still speaks -1 for
               "no source line" -- its prompt guard (line_number > 0) and the old
@@ -967,7 +962,7 @@ fun build_entries (context : Context.generic)
            entity_pos, uk, hint, prov,
            mk_constituents (entity, uk, space_name nm),
            from_coll)
-        end),
+        end) raw provss prim_provenance entity_positions exprs,
      position_report)
   end
 

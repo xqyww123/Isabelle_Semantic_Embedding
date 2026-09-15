@@ -8,6 +8,7 @@ Access PIDE document state via Scala functions:
   - hover_message: extract tooltip information at a position
   - entity_at_position: return (kind, fully_qualified_name) of entity at a position
   - command_at_position: return source code of the command at a position
+  - commands_at_positions: the same for a whole batch, one round trip for the resolution
 *)
 
 signature PIDE_STATE =
@@ -39,19 +40,29 @@ sig
      Tries live PIDE state first, falls back to session export DB. *)
   val command_at_position: Position.T -> (string * int * int) option
 
-  (* Cut the command spans of a (possibly WIP) theory file locally with
-     Outer_Syntax, returning (source, start_sym_off, end_sym_off) for each real
-     command span.  Offsets are 1-based file-global symbol offsets.  This backs
-     the WIP fallback of command_at_position for files not covered by live PIDE
-     state or a session export DB. *)
-  val command_spans_of_file: string -> (string * int * int) list
-  val command_at_position_wip: string -> int -> (string * int * int) option
+  (* The same for a whole batch: ONE absolutize round trip for the list, then per
+     position the same live-PIDE / export-DB resolution, and every cut of a file
+     -- the fallback reading it from disk, or the re-cut of a whole-file dump
+     Scala returned -- made at most once per call.  The result is parallel to
+     the argument; command_at_position is the singleton case.  A position with
+     no file or offset (Position.none) is answered NONE without any Scala call,
+     so a caller may use it as the "no lookup here" slot.  A Scala round trip
+     costs a few ms of fixed overhead per call whatever the payload (measured:
+     about 4 ms for the position resolution, 1-2 ms for the source lookup, on a
+     transport floor of about 0.6 ms), so a caller with many positions batches. *)
+  val commands_at_positions: Position.T list -> (string * int * int) option list
 
-  (* Re-cut a degenerate whole-file command_at_position result (source, start s)
-     into the single command containing the file-global symbol `offset`; on a
-     miss degrades to command_at_position_wip / NONE, never the whole `source`.
-     Exposed for testing the whole-theory-leak fix. *)
-  val recut_dump_command: string -> string -> int -> int -> (string * int * int) option
+  (* Cut a (possibly WIP) theory file into its command spans (source, start, end),
+     1-based file-global symbol offsets, with local Outer_Syntax.  This backs
+     commands_at_positions for files no live PIDE state or export DB answers for;
+     a file that is not a .thy has no command spans and yields [] without a parse. *)
+  val command_spans_of_file: string -> (string * int * int) list
+
+  (* The re-cut of a degenerate whole-file dump (source, start s) into the single
+     command containing the file-global symbol `offset`: NONE on a miss, never the
+     dump itself.  Exposed for testing the whole-theory-leak fix: that branch
+     cannot be driven from a live theory, so it is unit-tested on a synthetic dump. *)
+  val recut_dump_source: string -> string -> int -> int -> (string * int * int) option
 
   (* Convert between symbol offset and line:column via Python RPC.
      Requires the Isabelle_RPC Python host to be running. *)
@@ -183,13 +194,13 @@ fun expand_path s =
       else File.absolute_path (Path.explode s) |> Path.implode
     end;
 
+(* File path and offset of a position that has been through absolutize_id_based_pos *)
+fun file_offset_of pos =
+  (the_default "" (Position.file_of pos) |> expand_path, the_default 0 (Position.offset_of pos));
+
 (* Extract file path and offset from a Position.T, absolutizing if needed *)
 fun pos_file_offset pos =
-  let
-    val pos' = hd (absolutize_id_based_pos {write_to_temp_file = false} [pos]);
-    val file = the_default "" (Position.file_of pos') |> expand_path;
-    val offset = the_default 0 (Position.offset_of pos');
-  in (file, offset) end;
+  file_offset_of (singleton (absolutize_id_based_pos {write_to_temp_file = false}) pos);
 
 (* PIDE live queries via Scala *)
 
@@ -331,8 +342,9 @@ fun command_at_position_pide file_path symbol_offset =
     else SOME (source, start_offset, end_offset)
   end;
 
-(* command_at_position is defined further below, after theory_of_file, so that
-   it can fall back to the WIP (local Outer_Syntax) command-span path. *)
+(* commands_at_positions, and command_at_position as its singleton case, are
+   defined further below, after theory_of_file, so that they can fall back to
+   cutting the file with local Outer_Syntax. *)
 
 val get_session_databases : unit -> (string * string) list =
   let
@@ -567,69 +579,94 @@ fun command_spans_of_text file_path text : (string * int * int) list =
       (warning ("PIDE_State.command_spans_of_text: " ^ Runtime.exn_message exn); [])
   \<close>;
 
-fun command_spans_of_file file_path : (string * int * int) list =
-  (* standard_path: file_path arrives from the wire and is a PLATFORM path on Windows.
-     Without it Path.explode raises and the \<^try> below turns that into [] plus a
-     warning naming this function -- so command spans degrade to nothing there, with the
-     cause visible only to whoever reads the warnings. *)
-  \<^try>\<open>command_spans_of_text file_path
-      (File.read (Path.explode (ML_System.standard_path file_path)))
-    catch exn =>
-      (warning ("PIDE_State.command_spans_of_file: " ^ Runtime.exn_message exn); [])\<close>;
-
 (* Only .thy files have Isar command spans.  Entities registered from ML files
    (Method.setup with \<^binding> in an ML_file) carry a position in the .ML file;
    cutting that with Outer_Syntax fails on the theory header and would emit one
-   warning per entity, so such files are answered NONE without a parse. *)
-fun command_at_position_wip file off =
-  if not (String.isSuffix ".thy" file) then NONE
-  else List.find (fn (_, s, e) => off >= s andalso off < e) (command_spans_of_file file);
+   warning per entity, so such files are answered [] without a parse. *)
+fun is_thy_file file = String.isSuffix ".thy" file;
 
-(* Re-cut a degenerate whole-file `command_at_position` result.
+(* A degenerate export-DB snapshot dumps the WHOLE theory file as one command's
+   source (Build.read_theory rebuilds the theory as a single Command.unparsed; a
+   whole-file COMMAND_SPAN then makes try_substring return everything), reporting
+   its start s <= 1.  Cutting that dump is the disk cut of the file from symbol s
+   on, so the two share one cutter: `text` is `file` from `base` on, and the spans
+   come back in file-global offsets. *)
+fun command_spans_of_text_from file base text =
+  map (fn (src, s, e) => (src, base + s - 1, base + e - 1)) (command_spans_of_text file text);
 
-   A degenerate DB snapshot dumps the WHOLE theory file as one command's source
-   (Build.read_theory rebuilds the theory as a single Command.unparsed; a
-   whole-file COMMAND_SPAN then makes try_substring return everything).  Such a
-   dump's span starts at the file head (s <= 1).  Given that dump as `source`
-   with its start `s`, re-cut the ALREADY-RETURNED source — NOT the file on
-   disk, so no extra read and no risk of a stale/edited buffer mismatch — and
-   return the single command containing `offset`.
+fun command_spans_of_file file_path : (string * int * int) list =
+  if not (is_thy_file file_path) then []
+  else
+    (* standard_path: file_path arrives from the wire and is a PLATFORM path on Windows.
+       Without it Path.explode raises and the \<^try> below turns that into [] plus a
+       warning naming this function -- so command spans degrade to nothing there, with the
+       cause visible only to whoever reads the warnings. *)
+    \<^try>\<open>command_spans_of_text_from file_path 1
+        (File.read (Path.explode (ML_System.standard_path file_path)))
+      catch exn =>
+        (warning ("PIDE_State.command_spans_of_file: " ^ Runtime.exn_message exn); [])\<close>;
 
-   If the re-cut locates NO span at the offset (the offset fell in inter-command
-   whitespace, or `command_spans_of_text` failed to parse and returned []), we
-   must NOT fall back to the raw whole-file `source`: returning it leaks the
-   entire theory to the caller.  Degrade to the WIP path (re-cut from the clean
-   on-disk source); if that also finds nothing it returns NONE, and the caller
-   degrades to a single-line search.
+fun find_span off = List.find (fn (_, s, e) => off >= s andalso off < e);
 
-   Exposed for testing: it is the only branch the whole-theory-leak fix changed
-   (the leak was `... | NONE => SOME (source, s, e)` returning the whole file),
-   yet that branch cannot be driven from a live theory (it needs an s <= 1
-   degenerate snapshot), so it is unit-tested directly with a synthetic dump. *)
-fun recut_dump_command file source s offset =
+(* The one rule for the command at `offset`: in the cut of the dump Scala returned,
+   if any, else in the cut of the file on disk (made only then).  A miss is NONE,
+   never the dump: returning it would leak the whole theory as one entity's
+   declaring command, the bug this rule exists for. *)
+fun span_at offset dump_spans disk_spans =
+  (case Option.mapPartial (find_span offset) dump_spans of
+    SOME r => SOME r
+  | NONE => find_span offset (disk_spans ()));
+
+fun recut_dump_source file source s offset =
+  span_at offset (SOME (command_spans_of_text_from file s source))
+    (fn () => command_spans_of_file file);
+
+(* What one position still needs after the live-PIDE / export-DB answer: nothing,
+   or span_at over the cuts of `file` and of the dump Scala returned, if any. *)
+datatype outcome =
+    Settled of (string * int * int) option
+  | Needs_Cut of {file: string, dump: (string * int) option, offset: int};
+
+fun commands_at_positions positions =
   let
-    val spans = command_spans_of_text file source
-    val local_off = offset - s + 1  (* source's symbol 1 = file symbol s *)
+    fun outcome (file, offset) =
+      if file = "" orelse offset = 0 then Settled NONE
+      else
+        (case command_at_position_pide file offset of
+          (* Every real entity command sits after `theory .. begin`, so s > 1 is
+             trusted as is; an s <= 1 answer is (or may be) a whole-file dump. *)
+          SOME (r as (source, s, _)) =>
+            if s > 1 then Settled (SOME r)
+            else Needs_Cut {file = file, dump = SOME (source, s), offset = offset}
+        | NONE => Needs_Cut {file = file, dump = NONE, offset = offset})
+    val outcomes =
+      absolutize_id_based_pos {write_to_temp_file = false} positions
+      |> map (outcome o file_offset_of)
+    (* Every cut this call may need -- per file, the file on disk and each distinct
+       dump -- made at most once, and only when span_at asks for it. *)
+    val cuts =
+      fold (fn Settled _ => I
+             | Needs_Cut {file, dump, ...} =>
+                Symtab.map_default (file, {disk = Lazy.lazy (fn () => command_spans_of_file file), dumps = []})
+                  (fn (cs as {disk, dumps}) =>
+                    (case dump of
+                      NONE => cs
+                    | SOME (text, base) =>
+                        if AList.defined (op =) dumps text then cs
+                        else {disk = disk, dumps =
+                          (text, Lazy.lazy (fn () => command_spans_of_text_from file base text)) :: dumps})))
+        outcomes Symtab.empty
+    fun lookup {file, dump, offset} =
+      let val {disk, dumps} = the (Symtab.lookup cuts file) in
+        span_at offset
+          (Option.mapPartial (fn (text, _) => Option.map Lazy.force (AList.lookup (op =) dumps text)) dump)
+          (fn () => Lazy.force disk)
+      end
   in
-    case List.find (fn (_, ss, ee) => local_off >= ss andalso local_off < ee) spans of
-      SOME (src, ss, ee) => SOME (src, s + ss - 1, s + ee - 1)
-    | NONE => command_at_position_wip file offset
+    outcomes |> map (fn Settled r => r | Needs_Cut c => lookup c)
   end;
 
-fun command_at_position pos =
-  let val (file, offset) = pos_file_offset pos
-  in
-    if file = "" orelse offset = 0 then NONE
-    else
-      case command_at_position_pide file offset of
-        (* Every real entity command sits after `theory .. begin`, so s > 1 and
-           is trusted directly with zero work.  An s <= 1 result is (or may be) a
-           whole-file degenerate dump; re-cut it to the single command. *)
-        SOME (r as (source, s, _)) =>
-          if s > 1 then SOME r
-          else recut_dump_command file source s offset
-      | NONE => command_at_position_wip file offset
-  end;
+val command_at_position = singleton commands_at_positions;
 
 
 fun build_reeval_cache file_path =
