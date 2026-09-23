@@ -1514,7 +1514,7 @@ def main() -> None:
              "TTY, e.g. in a fleet).")
     # Interpretation runs on Isabelle's future worker pool, so its DAG width is the REPL's own
     # `-o threads=N` (Multithreading.max_threads). Start the REPL with the width you want:
-    #   ./repl_server.sh 127.0.0.1:6666 <SESSION> <outdir> -o threads=32
+    #   isabelle REPL -l <SESSION> -o threads=32 127.0.0.1:6666 <outdir>
 
     # list
     p_list = sub.add_parser("list", help="List all theories in the semantic database")
