@@ -33,20 +33,23 @@
 #
 # Two known under-counts, both accepted:
 #
-#   * Cache WRITES.  The GPT-5.6 family charges a fourth rate for them (1.25x
-#     the uncached input rate; earlier families charge nothing).  The Codex SDK's
-#     usage report has no cache-write field at all -- input, cached input,
-#     output, reasoning output, total -- so this cost cannot be computed from
-#     what we are given, at any price we could write here.
+#   * Cache WRITES.  The GPT-5.6 and GPT-6 families charge a fourth rate for
+#     them (1.25x the uncached input rate; earlier families charge nothing).
+#     The Codex SDK's usage report, as of the version this was checked against,
+#     has no cache-write field -- input, cached input, output, reasoning
+#     output, total -- so this cost cannot be computed from what we are given,
+#     at any price we could write here.
 #   * Requests over 272K input tokens are billed at 2x input and 1.5x output for
 #     the whole request.  Not modelled; the batches this pipeline sends are far
 #     smaller, and a compaction lands well before that ceiling.
 #
 # ---------------------------------------------------------------------------
-# The prices below were read on 2026-07-27 from
-# https://developers.openai.com/api/docs/pricing (standard tier, short context),
-# and cross-checked against each model's own page.  The page carries no "as of"
-# date; list prices change.  Check them before trusting a dollar figure.
+# The prices below were read on 2026-09-25 from
+# https://developers.openai.com/api/docs/pricing (standard tier, short context).
+# The page carries no "as of" date; list prices change.  Check them before
+# trusting a dollar figure.  AoA keeps an independent price table:
+# contrib/Isa-Mini/IsaMini/AoA/language_model_driver.py PRICING -- update both
+# when prices move.
 #
 # gpt-5.3-codex-spark is deliberately absent: it is available only to ChatGPT Pro
 # subscribers and has no published per-token price.  Substituting a similar
@@ -55,23 +58,43 @@
 models:
   # The Codex default (docs: "the default Power setting, which uses
   # gpt-5.6-sol"; priority 1 in the model catalogue).
+  # promotional; the page says "at least through November 21, 2026"
   gpt-5.6-sol:
     pricing:
-      input: 5.0e-6          # $5.00 / 1M
-      cached_input: 5.0e-7   # $0.50 / 1M
-      output: 3.0e-5         # $30.00 / 1M
+      input: 4.0e-6          # $4.00 / 1M
+      cached_input: 4.0e-7   # $0.40 / 1M
+      output: 2.0e-5         # $20.00 / 1M
 
   gpt-5.6-terra:
     pricing:
-      input: 2.5e-6          # $2.50 / 1M
-      cached_input: 2.5e-7   # $0.25 / 1M
-      output: 1.5e-5         # $15.00 / 1M
+      input: 2.0e-6          # $2.00 / 1M
+      cached_input: 2.0e-7   # $0.20 / 1M
+      output: 1.2e-5         # $12.00 / 1M
 
   gpt-5.6-luna:
     pricing:
-      input: 1.0e-6          # $1.00 / 1M
-      cached_input: 1.0e-7   # $0.10 / 1M
-      output: 6.0e-6         # $6.00 / 1M
+      input: 2.0e-7          # $0.20 / 1M
+      cached_input: 2.0e-8   # $0.02 / 1M
+      output: 1.2e-6         # $1.20 / 1M
+
+  # The GPT-6 family (same page, same date).
+  gpt-6-astra:
+    pricing:
+      input: 1.0e-5          # $10.00 / 1M
+      cached_input: 1.0e-6   # $1.00 / 1M
+      output: 5.0e-5         # $50.00 / 1M
+
+  gpt-6-sol:
+    pricing:
+      input: 2.0e-6          # $2.00 / 1M
+      cached_input: 2.0e-7   # $0.20 / 1M
+      output: 1.0e-5         # $10.00 / 1M
+
+  gpt-6-luna:
+    pricing:
+      input: 1.0e-7          # $0.10 / 1M
+      cached_input: 1.0e-8   # $0.01 / 1M
+      output: 5.0e-7         # $0.50 / 1M
 
   gpt-5.5:
     pricing:
