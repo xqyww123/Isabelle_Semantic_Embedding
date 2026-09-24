@@ -35,10 +35,10 @@
 #
 #   * Cache WRITES.  The GPT-5.6 and GPT-6 families charge a fourth rate for
 #     them (1.25x the uncached input rate; earlier families charge nothing).
-#     The Codex SDK's usage report, as of the version this was checked against,
-#     has no cache-write field -- input, cached input, output, reasoning
-#     output, total -- so this cost cannot be computed from what we are given,
-#     at any price we could write here.
+#     The Codex SDK's usage report (TokenUsageBreakdown, checked in
+#     openai-codex 0.144.4) has no cache-write field -- input, cached input,
+#     output, reasoning output, total -- so this cost cannot be computed from
+#     what we are given, at any price we could write here.
 #   * Requests over 272K input tokens are billed at 2x input and 1.5x output for
 #     the whole request.  Not modelled; the batches this pipeline sends are far
 #     smaller, and a compaction lands well before that ceiling.
@@ -123,9 +123,7 @@ models:
   # the bill (owner ruling: static peak, no time-of-day logic).  The CLI's
   # own dollar figure is ignored for this backend (it prices at Anthropic
   # rates -- measured 4.8x above ours on a cache-heavy turn and ~100x on a
-  # cache-miss-dominated one).  AoA keeps an independent DeepSeek price
-  # table: contrib/Isa-Mini/IsaMini/AoA/language_model_driver.py -- update
-  # both when prices move.
+  # cache-miss-dominated one).
   # deepseek-v4-flash-vision-exp is deliberately absent, from here and from
   # the driver's context-window table alike: unpriced until someone needs
   # it, so a run on it fails loudly instead of free.
