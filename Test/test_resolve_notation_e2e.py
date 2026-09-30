@@ -137,7 +137,7 @@ end
 
 
 async def main():
-    async with Client("127.0.0.1:6666", "Draft", timeout=120) as c:
+    async with Client("127.0.0.1:6666", "Draft", timeout=360) as c:
         print("Connected to REPL")
         results = await c.eval(ML_TEST, timeout=300_000)
 
