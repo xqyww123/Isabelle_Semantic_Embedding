@@ -5,8 +5,8 @@ import json
 import os
 import re
 import threading
-from collections.abc import Collection, Iterable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Collection, Iterable, Iterator
+from contextlib import ExitStack, contextmanager
 from typing import Any, NamedTuple
 
 import lmdb
@@ -158,15 +158,14 @@ _WRITE_BATCH: int = 10_000
 
 
 # --- the positional record codec's shared ritual (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §3) ---
-# One-off migration passes read and write records positionally.  These are THE
-# shared spellings of that ritual; a pass must not redeclare the pad or the
-# indices against _decode's bare literals (a second copy of those numbers is
-# how index drift happens).  NOT for arity-deciding readers:
+# `unpack_fields` is _decode's own first stage.  Index its result by the F_*
+# names, never by a bare number (a second copy of a position is how index
+# drift happens).  NOT for arity-deciding readers:
 # `unpack_fields`' padding destroys exactly the tuple-length signal
 # migrate_entity_positions._scan and the reached/not-reached audits exist to
 # read -- those keep reading len(msgpack.unpackb(raw)) raw.
-RECORD_FIELD_COUNT = 15   # keep equal to _decode/_encode's field count below
-F_KIND, F_NAME, F_POSITION, F_FROM_COLLECTION = 0, 1, 12, 13
+RECORD_FIELD_COUNT = 15   # keep equal to _encode's field count below
+F_KIND, F_NAME, F_INTERPRETATION, F_POSITION, F_FROM_COLLECTION = 0, 1, 3, 12, 13
 
 
 def unpack_fields(raw: bytes) -> list:
@@ -436,6 +435,28 @@ class _Semantic_DB:
     def _dec(v: Any) -> str:
         return v.decode() if isinstance(v, bytes) else v
 
+    _KIND_VALUES = frozenset(int(k) for k in EntityKind)
+
+    @staticmethod
+    def _interpreted_kind(raw: bytes) -> 'int | None':
+        """F_KIND of a stored value on which `unpack_fields` (`_decode`'s first
+        stage) succeeds, with a non-None F_INTERPRETATION and a kind `EntityKind`
+        accepts; None otherwise.  No Record is built.
+
+        Never None where `_decode` succeeds with an interpretation.  Not
+        conversely: `_decode` may still reject such a value
+        (archive/plans/EMBED_COMPLETION_SCAN_PLAN.md §6.1, D1)."""
+        try:
+            vals = unpack_fields(raw)
+            kind = vals[F_KIND]
+            return (kind if vals[F_INTERPRETATION] is not None
+                    and kind in _Semantic_DB._KIND_VALUES else None)
+        except (ValueError, TypeError):
+            # Unpacking, and the membership test on an unhashable kind, raise
+            # only these on a value that is not a record; anything else is a
+            # programming error and surfaces.
+            return None
+
     @staticmethod
     def _decode(raw: bytes) -> 'Record':
         """Decode a stored record.  Records with fewer than 15 fields read with the
@@ -459,11 +480,10 @@ class _Semantic_DB:
         boundary, so no consumer ever parses a record again -- format evolution belongs
         in the codec, not in every reader.  Once every store is migrated
         (migrate_experience_patterns.py) this branch is dead and can be deleted."""
-        vals = list(msgpack.unpackb(raw))
-        vals += [None] * (15 - len(vals))
+        vals = unpack_fields(raw)
         (kind, name, expr, sem, prov_raw, consts_raw, experience, pats_raw,
          digest_raw, deps_raw, version, interpreted_at, position_raw,
-         from_coll_raw, baseline_raw) = vals[:15]
+         from_coll_raw, baseline_raw) = vals[:RECORD_FIELD_COUNT]
         d = _Semantic_DB._dec
         pats = [d(p) for p in pats_raw] if pats_raw is not None else None
         if pats is None and kind == int(EntityKind.EXPERIENCE) and expr is not None:
@@ -597,27 +617,29 @@ class _Semantic_DB:
             return None if is_tombstone(raw) else bytes(raw)
         return self._system_get(key)
 
-    def _get_raw_many(self, keys: list[universal_key]) -> 'list[bytes | None]':
-        """Batch counterpart of ``_get_raw``: ONE read transaction per layer for
-        the whole batch (see get_many for why per-key transactions are ruinous)."""
-        out: 'list[bytes | None]' = []
+    def _raw_getter(self, stack: ExitStack) -> 'Callable[[universal_key], bytes | None]':
+        """Batch counterpart of ``_get_raw``: the same layered point read as a
+        per-key closure over ONE read transaction per layer, both entered on
+        ``stack`` so the caller's ``with`` bounds them (the shape of
+        ``Vector_Store._raw_getter``; see get_many for why per-key transactions
+        are ruinous)."""
         sys_env = self._ensure_system_env()
-        with self._ensure_env().begin() as utxn:
-            if sys_env is None:
-                for k in keys:
-                    raw = utxn.get(k)
-                    out.append(None if raw is None or is_tombstone(raw)
-                               else bytes(raw))
-            else:
-                with sys_env.begin() as stxn:
-                    for k in keys:
-                        raw = utxn.get(k)
-                        if raw is None:
-                            raw = stxn.get(k)
-                        elif is_tombstone(raw):
-                            raw = None
-                        out.append(bytes(raw) if raw is not None else None)
-        return out
+        utxn = stack.enter_context(self._ensure_env().begin())
+        if sys_env is None:
+            def get_user_only(k: universal_key) -> 'bytes | None':
+                raw = utxn.get(k)
+                return None if raw is None or is_tombstone(raw) else bytes(raw)
+            return get_user_only
+        stxn = stack.enter_context(sys_env.begin())
+
+        def get(k: universal_key) -> 'bytes | None':
+            raw = utxn.get(k)
+            if raw is None:
+                raw = stxn.get(k)
+            elif is_tombstone(raw):
+                raw = None
+            return bytes(raw) if raw is not None else None
+        return get
 
     def __getitem__(self, key: universal_key) -> 'Record | None':
         raw = self._get_raw(key)
@@ -630,19 +652,43 @@ class _Semantic_DB:
 
     def contains(self, keys: list[universal_key]) -> list[bool]:
         """Check existence for a batch of keys in a single transaction per layer."""
-        return [raw is not None for raw in self._get_raw_many(keys)]
+        with ExitStack() as stack:
+            get = self._raw_getter(stack)
+            return [get(k) is not None for k in keys]
 
-    def get_many(self, keys: list[universal_key]) -> 'list[Record | None]':
+    _RAISE = object()
+
+    def get_many(self, keys: list[universal_key], *,
+                 undecodable: Any = _RAISE) -> 'list[Record | None]':
         """Fetch a batch of records in a SINGLE read transaction per layer -- the
         batch counterpart of ``__getitem__``, mirroring ``contains``.  Result is
         positionally aligned with ``keys``; a key with no record yields None.
 
+        ``undecodable``: when given, a value ``_decode`` rejects yields this object
+        instead of raising -- for a caller that must tell it from a missing record.
+
         ``[self[k] for k in keys]`` would open (and commit) one txn PER key.  Callers
         like ``_auto_embed`` run on the event loop with a ``missing`` list that can be
         10^5 long when a library has not been embedded for the active model yet, so the
-        per-key form turns one cheap scan into 10^5 synchronous begin/commit pairs."""
-        return [self._decode(raw) if raw is not None else None
-                for raw in self._get_raw_many(keys)]
+        per-key form turns one cheap scan into 10^5 synchronous begin/commit pairs.
+
+        Each value is decoded as it is read: all the raw values are never held at
+        once (1.3 GB when every record of a 1.45M-record store is fetched)."""
+        out: 'list[Any]' = []
+        with ExitStack() as stack:
+            get = self._raw_getter(stack)
+            for k in keys:
+                raw = get(k)
+                if raw is None:
+                    out.append(None)
+                    continue
+                try:
+                    out.append(self._decode(raw))
+                except Exception:
+                    if undecodable is self._RAISE:
+                        raise
+                    out.append(undecodable)
+        return out
 
     @staticmethod
     def _bounded_cursor(txn: Any, prefix: bytes) -> 'Iterator[tuple[bytes, bytes]]':
@@ -687,6 +733,13 @@ class _Semantic_DB:
                         yield s
                         s = next(siter, None)
 
+    def _iter_entity_items(self) -> 'Iterator[tuple[bytes, bytes]]':
+        """``iter_items()`` restricted to entity keys (longer than 16 bytes): no
+        theory-status key, no COUNTER_KEY."""
+        for k, v in self.iter_items():
+            if len(k) > 16:
+                yield k, v
+
     def iter_entity_records(self) -> 'Iterator[tuple[universal_key, Record]]':
         """Yield ``(key, Record)`` for every non-status record visible in the
         LAYERED store (user shadows system; tombstones yield nothing), in ONE
@@ -697,18 +750,31 @@ class _Semantic_DB:
         a second (e.g. via ``query``/``__getitem__``) while iterating would fail.
         Build any text you need from the yielded Record, not by re-querying.
 
-        Skips the 16-byte theory-status keys and any value that does not decode as a
-        Record (legacy / non-entity). This is the whole-DB enumeration the offline
-        embed drives off — using the singleton envs, NEVER a second ``lmdb.open`` of
-        semantics.lmdb (which py-lmdb refuses in-process)."""
-        for k, v in self.iter_items():
-            if len(k) == 16:
-                continue
+        Skips the keys that are not entity keys (theory status, the counter) and any
+        value that does not decode as a Record (legacy / non-entity) — using the
+        singleton envs, NEVER a second ``lmdb.open`` of semantics.lmdb (which py-lmdb
+        refuses in-process)."""
+        for k, v in self._iter_entity_items():
             try:
                 rec = self._decode(v)
             except Exception:
                 continue
             yield k, rec
+
+    def iter_interpreted_keys(self, kinds: 'set | None' = None) -> 'Iterator[universal_key]':
+        """Yield the key of every record that has an interpretation, as visible in
+        the LAYERED store (user shadows system; tombstones yield nothing), in ONE
+        read txn per layer and in key order.  ``kinds`` restricts to those
+        EntityKinds.
+
+        No Record is built (``_interpreted_kind``): this is the whole-DB
+        enumeration the vector completion drives off, and decoding 1.45M records
+        to keep their keys cost 15 of its 18 seconds."""
+        wanted = None if kinds is None else {int(k) for k in kinds}
+        for k, v in self._iter_entity_items():
+            kind = self._interpreted_kind(v)
+            if kind is not None and (wanted is None or kind in wanted):
+                yield k
 
     def __setitem__(self, key: universal_key, record: 'Record') -> None:
         """Write a record, invalidating its vectors FIRST.
@@ -2600,8 +2666,9 @@ class Semantic_Vector_Store(Vector_Store):
             self.mark_thy_embedded(thy_key, stamp=stamp)
 
 
-def _collect_embed_candidates(kinds: 'set | None' = None) -> 'list[tuple[bytes, object]]':
-    """Every interpreted record as (key, record), in one read txn.
+def _collect_embed_candidates(kinds: 'set | None' = None) -> 'list[bytes]':
+    """The key of every interpreted record.  Keys only: ``complete_vector_store``
+    fetches the records of the keys it will embed.
 
     WIP records are INCLUDED, exactly like persistent ones. Every other path in the
     pipeline already treats them alike -- Semantic_DB[k] = rec and put_experience write
@@ -2618,29 +2685,22 @@ def _collect_embed_candidates(kinds: 'set | None' = None) -> 'list[tuple[bytes, 
     pair for them -- an honest "this very loaded value was processed" -- instead
     of the `finished` promise only a content-addressed key can make.)
 
-    Records are handed to ``Semantic_Vector_Store.embed_records``, which derives the
+    The fetched records go to ``Semantic_Vector_Store.embed_records``, which derives the
     document text via ``document_text_of`` (the single authority, dispatched on kind).
     EXPERIENCE records are now INCLUDED: their framing document text is produced by the
     same lower-layer authority, so this offline tool re-embeds them under the identical
     convention as the AoA write path (the f63b0bb experience-exclusion stopgap is gone).
-    Records are yielded from the singleton env -- never a second lmdb.open of
-    semantics.lmdb, and never a nested query() (see Semantic_DB.iter_entity_records).
+    Keys are yielded from the singleton env -- never a second lmdb.open of
+    semantics.lmdb (see Semantic_DB.iter_interpreted_keys).
 
     ``kinds``: if given, restrict to these EntityKinds (e.g. {EXPERIENCE} for the §5
     experience-vector migration); default None = all kinds."""
-    out: list[tuple[bytes, object]] = []
-    for key, rec in Semantic_DB.iter_entity_records():
-        if rec.interpretation is None:
-            continue
-        if kinds is not None and rec.kind not in kinds:
-            continue
-        out.append((key, rec))
-    return out
+    return list(Semantic_DB.iter_interpreted_keys(kinds))
 
 
 async def complete_vector_store(
         store: 'Semantic_Vector_Store',
-        candidates: 'list[tuple[bytes, object]]',
+        candidates: 'list[bytes]',
         *,
         force: bool,
         label: str,
@@ -2649,8 +2709,10 @@ async def complete_vector_store(
         confirm=None,
         verbose: bool = False,
 ) -> 'tuple[int, int, int]':
-    """Make ``store`` complete w.r.t. ``candidates``: embed every candidate record
-    missing a vector (or all of them under ``force``), in batches of 256.
+    """Make ``store`` complete w.r.t. ``candidates`` (keys of interpreted records):
+    embed every candidate missing a vector (or all of them under ``force``), in
+    batches of 256.  Only the records to embed are fetched from Semantic_DB, and
+    only after the presence check -- so their text is no older than that check.
 
     THE shared completion routine behind both frontends: the CLI
     (`isabelle-semantics embed` / `collect --embed-models`, where report/warn print
@@ -2671,21 +2733,25 @@ async def complete_vector_store(
     token = _embed_tracing_gated.set(not verbose)
     try:
         if force:
-            todo = candidates
+            todo_keys = candidates
         else:
-            present = store.contains([k for k, _ in candidates])
-            todo = [kr for kr, p in zip(candidates, present) if not p]
+            present = store.contains(candidates)
+            todo_keys = [k for k, p in zip(candidates, present) if not p]
 
-        if len(todo) == 0:
+        if len(todo_keys) == 0:
             await report(f"{label}: already complete ({len(candidates)} entities).")
             return (0, 0, 0)
         # embed_records SKIPS any record document_text_of cannot render (no
         # interpretation, or an unparseable experience expr). Say so out loud: a silent
         # skip after a purge would leave the record with no vector in any store and no
-        # hint that it happened.
+        # hint that it happened.  A record that does not decode is the same case.
+        undecodable = object()
         chars, unrenderable, renderable = 0, [], []
-        for k, rec in todo:
-            t = document_text_of(rec)
+        for k, rec in zip(todo_keys,
+                          Semantic_DB.get_many(todo_keys, undecodable=undecodable)):
+            if rec is None:      # deleted since the scan (as embed_keys, _auto_embed)
+                continue
+            t = None if rec is undecodable else document_text_of(rec)
             if t is None:
                 unrenderable.append(k)
             else:

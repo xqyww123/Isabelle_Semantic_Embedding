@@ -1387,9 +1387,11 @@ class Vector_Store(ABC):
         Follows the vector-layer self-sufficiency invariant: a key with no user
         vector but a system one counts as present, so completion runs never
         re-embed what the system DB ships; a tombstoned key counts as absent, so
-        a re-interpreted record IS re-embedded."""
+        a re-interpreted record IS re-embedded.
+
+        ``buffers=True``: a presence check must not copy each 8 KB vector."""
         with contextlib.ExitStack() as stack:
-            get = self._raw_getter(stack)
+            get = self._raw_getter(stack, buffers=True)
             return [get(k) is not None for k in keys]
 
     async def embed(self, kv_pairs: list[tuple[key, str]]) -> int:
