@@ -792,8 +792,9 @@ class _Semantic_DB:
         reverse order would leave a new record with an old vector, permanently.
 
         Writers that do NOT come through here must invalidate explicitly; the
-        enumerated set is `delete`, `update_expr`, `repair_xor_prefixes`,
-        `clean_wip` and isabelle_semantics._execute_removal."""
+        enumerated set is `delete`, `update_expr`, `declare_interpretation`,
+        `Gate_Writer.put_interpretation`, `repair_xor_prefixes`, `clean_wip`
+        and isabelle_semantics._execute_removal."""
         invalidate_vectors([key])
         with self._ensure_env().begin(write=True) as txn:
             txn.put(key, self._encode(record))
@@ -852,6 +853,33 @@ class _Semantic_DB:
             vals[2] = new_expr
             invalidate_vectors([key])
             txn.put(key, msgpack.packb(vals))  # type: ignore
+
+    def declare_interpretation(self, key: universal_key, text: str) -> bool:
+        """Write the interpretation a theory declares for a proof method (AoA's
+        `AoA_tactics` declaration; docs/TACTIC_DESIGN.md in Isa-Mini): the
+        record under `key` gets its kind and name from the key, `expr` None and
+        `interpretation` the normalized text.  A record already carrying that
+        text is left alone, vectors included; otherwise the vectors are
+        invalidated first (ordering rule 1) and the record is written
+        copy-up-then-modify through `_put_fields` with `create`, so an existing
+        record keeps its other fields.  Returns whether it wrote.
+
+        METHOD keys only: a declaration is the one source of a method's
+        interpretation (the pipeline never indexes the methods of Main), which
+        holds for no other kind."""
+        entity = destruct_key(key)
+        if entity.kind != EntityKind.METHOD:
+            raise ValueError(
+                f"declare_interpretation: not a proof-method key: {entity.kind.label} {entity.name!r}")
+        text = normalize_interpretation(text)
+        with self._ensure_env().begin(write=True) as txn:
+            raw = self._raw_for_update(txn, key)
+            if raw is not None and self._decode(raw).interpretation == text:
+                return False
+            invalidate_vectors([key])
+            self._put_fields(txn, key, {"kind": EntityKind.METHOD, "name": entity.name,
+                                        "expr": None, "interpretation": text}, create=True)
+            return True
 
     def query(self, key: universal_key, with_pretty: bool = False,
               live_name: 'str | None' = None) -> str | None:
@@ -1465,6 +1493,14 @@ class _Semantic_DB:
 
 Semantic_DB = _Semantic_DB()
 SemanticRecord = _Semantic_DB.Record
+
+
+def normalize_interpretation(text: str) -> str:
+    """The stored and shown form of a declared interpretation: Isabelle's
+    `\\<...>` symbols as Unicode, every run of whitespace (newlines included)
+    one space.  Idempotent, so the DB record and the agent's prompt, each
+    normalizing on its own, are byte-identical."""
+    return " ".join(pretty_unicode(text).split())
 
 
 # --- the two live-name substitution rules (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.1) ---
