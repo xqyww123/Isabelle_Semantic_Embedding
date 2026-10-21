@@ -20,5 +20,6 @@ session Semantic_Embedding_Test = Semantic_Embedding +
     Interpretation_Lock_Test
     Command_At_Position_Test
     Entity_Position_Test
+    Plain_Text_Printing_Test
     Test_Sensitivity
     Test_All

@@ -52,9 +52,9 @@ end
 
 structure Premise_Embedding_Context_Info : CONTEXT_INFO = struct
 
-(* wide margin: embedded/serialized strings must not be line-wrapped
-   (Pretty.margin_default was removed in Isabelle2025-2) *)
-val string_of_pretty = Pretty.string_of_ops (Pretty.output_ops (SOME 100000))
+(* Pure's plain output (no markup written); the margin as wide as possible:
+   embedded/serialized strings must not be line-wrapped *)
+val string_of_pretty = Pretty.string_of_ops (Pretty.pure_output_ops (SOME 99999999))
 
 type buffer = string list Unsynchronized.ref
 fun mk_buffer () = Unsynchronized.ref []
@@ -123,28 +123,8 @@ fun extern_name_T ctxt =
     end
   end
 
-fun trim_markup msg =
-  let val segs = Unsynchronized.ref []
-      val s = size msg
-      val i = Unsynchronized.ref (s - 1)
-      val j = Unsynchronized.ref s
-      val mode = Unsynchronized.ref true
-   in while !i >= 0 do (
-       (if String.sub (msg, !i) = #"\005"
-        then let val m = !mode
-          in mode := not m
-           ; if m
-             then let val s' = !j - !i - 1
-               in if s' > 0
-                then segs := String.substring (msg, !i + 1, s') :: !segs
-                else ()
-              end
-             else j := !i
-          end
-        else ())
-      ; i := !i - 1)
-    ; String.concat (!segs)
-  end
+(* the visible text of a string carrying markup *)
+val trim_markup = Protocol_Message.clean_output
 
 fun string_of_term ctxt =
     let val ctxt' = ctxt
@@ -155,7 +135,6 @@ fun string_of_term ctxt =
               |> Config.put Printer.show_question_marks false
      in Syntax.pretty_term ctxt'
      #> string_of_pretty
-     #> trim_markup
     end
 
 fun put_term ctxt =
@@ -195,7 +174,6 @@ fun string_of_typ ctxt =
               |> Config.put Printer.show_question_marks false
      in Syntax.pretty_typ ctxt'
      #> string_of_pretty
-     #> trim_markup
     end
 fun put_type ctxt buf typ = put buf (string_of_typ ctxt typ)
 

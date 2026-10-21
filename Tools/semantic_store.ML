@@ -530,36 +530,6 @@ end (*local MessagePack*)
 
 (* --- Utilities --- *)
 
-fun trim_markup msg =
-  let
-    val len = size msg
-    val i = Unsynchronized.ref 0
-    val visible = Unsynchronized.ref true
-    val start = Unsynchronized.ref 0
-    val parts = Unsynchronized.ref ([] : string list)
-  in
-    while !i < len do
-      let val c = String.sub (msg, !i) in
-        if c = #"\005" then
-          (if !visible then
-             (if !start < !i then
-                parts := String.substring (msg, !start, !i - !start) :: !parts
-              else ();
-              visible := false)
-           else
-             (visible := true;
-              start := !i + 1);
-           i := !i + 1)
-        else
-          (if not (!visible) then () else ();
-           i := !i + 1)
-      end;
-    (if !visible andalso !start < len then
-       parts := String.substring (msg, !start, len - !start) :: !parts
-     else ());
-    String.concat (rev (!parts))
-  end
-
 fun strip_trailing_begin src =
   let
     val len = size src
@@ -573,6 +543,11 @@ fun strip_trailing_begin src =
     else src
   end
 
+(* Pure's plain output: no markup is written, so no hidden body (a typing
+   element's type) can leak into the text; the margin as wide as possible, as
+   embedded/serialized strings must not be line-wrapped. *)
+val string_of_pretty = Pretty.string_of_ops (Pretty.pure_output_ops (SOME 99999999))
+
 fun string_of_term ctxt =
     let val ctxt' = ctxt
               |> Config.put Printer.show_types false
@@ -580,19 +555,14 @@ fun string_of_term ctxt =
               |> Config.put Printer.show_markup false
               |> Config.put Printer.show_structs false
               |> Config.put Printer.show_question_marks true
-     (* wide margin: embedded/serialized strings must not be line-wrapped *)
-     in Syntax.pretty_term ctxt'
-     #> Pretty.string_of_ops (Pretty.output_ops (SOME 100000))
-     #> trim_markup
+     in Syntax.pretty_term ctxt' #> string_of_pretty
     end
 
 fun string_of_typ ctxt =
     let val ctxt' = ctxt
               |> Config.put Printer.show_sorts true
               |> Config.put Printer.show_markup false
-     in Syntax.pretty_typ ctxt'
-     #> Pretty.string_of_ops (Pretty.output_ops (SOME 100000))
-     #> trim_markup
+     in Syntax.pretty_typ ctxt' #> string_of_pretty
     end
 
 (* --- Main orchestration --- *)
