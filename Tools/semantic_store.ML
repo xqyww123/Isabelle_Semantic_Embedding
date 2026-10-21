@@ -543,10 +543,8 @@ fun strip_trailing_begin src =
     else src
   end
 
-(* Pure's plain output: no markup is written, so no hidden body (a typing
-   element's type) can leak into the text; the margin as wide as possible, as
-   embedded/serialized strings must not be line-wrapped. *)
-val string_of_pretty = Pretty.string_of_ops (Pretty.pure_output_ops (SOME 99999999))
+(* plain text: embedded/serialized strings carry no markup and no line breaks *)
+val string_of_pretty = RPC_Pretty.plain_string
 
 fun string_of_term ctxt =
     let val ctxt' = ctxt

@@ -166,8 +166,8 @@ fun print_typ_full_sort ctxt =
               |> Config.put Printer.show_structs false
               |> Config.put Printer.show_question_marks true
               |> Config.put Printer.show_brackets false
-     in Syntax.string_of_typ ctxt'
-     #> Premise_Embedding_Context_Info.trim_markup
+     in Syntax.pretty_typ ctxt'
+     #> RPC_Pretty.plain_string
     end
 
 fun add_typs (Abs (name,typ,X)) rets = add_typs X (insert (op =) (name,typ) rets)

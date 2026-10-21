@@ -35,6 +35,13 @@ local
   val printed = Premise_Embedding_Context_Info.string_of_term ctxt t
 in
   val _ = check ("the plain printer gives " ^ quote printed) (printed = "0 + x = x")
+  val _ = ["natural", "pretty"] |> List.app (fn f =>
+    let val s = RPC_Pretty.string_of_term f (Context.Proof ctxt) t
+    in check ("RPC_Pretty.string_of_term " ^ quote f ^ " gives " ^ quote s) (s = "0 + x = x") end)
+  val long = Syntax.read_term ctxt
+    "(0 + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x) = x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x"
+  val _ = check "a long term is printed on one line"
+    (not (exists (fn c => c = #"\n") (String.explode (RPC_Pretty.plain_string (Syntax.pretty_term ctxt long)))))
   val _ = check "no markup character in the printed text"
     (not (exists (fn c => c = #"\005" orelse c = #"\006") (String.explode printed)))
 end

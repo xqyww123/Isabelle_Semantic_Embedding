@@ -52,9 +52,8 @@ end
 
 structure Premise_Embedding_Context_Info : CONTEXT_INFO = struct
 
-(* Pure's plain output (no markup written); the margin as wide as possible:
-   embedded/serialized strings must not be line-wrapped *)
-val string_of_pretty = Pretty.string_of_ops (Pretty.pure_output_ops (SOME 99999999))
+(* plain text: embedded/serialized strings carry no markup and no line breaks *)
+val string_of_pretty = RPC_Pretty.plain_string
 
 type buffer = string list Unsynchronized.ref
 fun mk_buffer () = Unsynchronized.ref []
