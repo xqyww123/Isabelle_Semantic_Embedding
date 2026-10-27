@@ -8,7 +8,8 @@ through it (`_definition_of_name`).
    success of `universal_key_and_name_of` is SOME, except a fixed variable
    asked as a constant. Each item also states its expected fields.
 2. `_definition_of_name` through `interpret_file_callbacks`' actual list, for
-   a constant, a theorem and a theorem collection.
+   a constant, a theorem and a theorem collection, and under a (file, offset)
+   context, which only the list's PIDE unpacker decodes.
 
 This script hosts the RPC host itself on 127.0.0.1:27182. Prerequisite: a REPL
 server on 127.0.0.1:6666 that loads Semantic_Embedding, started with
@@ -64,11 +65,14 @@ CORPUS = [
 ]
 FIXED = {(K.CONSTANT, "rp_fixed", "fixed")}   # resolves by universal_key_of, NONE here
 
-# (kind, name, a substring of the defining command's source)
+# (kind, name, ctxt, a substring of the defining command's source)
 DEFINITIONS = [
-    (K.CONSTANT, "Fun.id", "definition id"),
-    (K.THEOREM, "Fun.monoI", "lemma monoI"),
-    (K.THEOREM_COLLECTION, "Groups.ac_simps", "named_theorems ac_simps"),
+    (K.CONSTANT, "Fun.id", None, "definition id"),
+    (K.THEOREM, "Fun.monoI", None, "lemma monoI"),
+    (K.THEOREM_COLLECTION, "Groups.ac_simps", None, "named_theorems ac_simps"),
+    # fails only when the list cannot decode a (file, offset) context; an
+    # unresolvable one falls back to the default context
+    (K.CONSTANT, "Fun.id", ("/nonexistent_probe_file.thy", 1), "definition id"),
 ]
 
 failures: list[str] = []
@@ -86,8 +90,8 @@ async def differential(arg, connection):
         except (UndefinedEntity, IsabelleError):
             reference = None
         if entry is None:
-            if reference is not None and (kind, name, ctxt) not in FIXED:
-                failures.append(f"{label}: resolver NONE but reference {reference[1]!r}")
+            if (reference is not None) != ((kind, name, ctxt) in FIXED):
+                failures.append(f"{label}: resolver NONE, reference {reference}")
             if expected is not None:
                 failures.append(f"{label}: expected SOME, got NONE")
             continue
@@ -110,12 +114,12 @@ async def differential(arg, connection):
 async def definition_of_name(arg, connection):
     from Isabelle_Semantic_Embedding.semantics import _definition_of_name
     ran.add("definition_of_name")
-    for kind, name, needle in DEFINITIONS:
-        result = await _definition_of_name(connection, kind, name)
+    for kind, name, ctxt, needle in DEFINITIONS:
+        result = await _definition_of_name(connection, kind, name, ctxt=ctxt)
         if result is None:
-            failures.append(f"definition of {kind.name} {name!r}: None")
+            failures.append(f"definition of {kind.name} {name!r} @{ctxt}: None")
         elif needle not in result[0]:
-            failures.append(f"definition of {kind.name} {name!r}: {result[0][:120]!r} lacks {needle!r}")
+            failures.append(f"definition of {kind.name} {name!r} @{ctxt}: {result[0][:120]!r} lacks {needle!r}")
     return len(DEFINITIONS)
 
 

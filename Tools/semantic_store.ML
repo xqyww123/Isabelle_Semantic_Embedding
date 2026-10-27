@@ -39,10 +39,10 @@ signature SEMANTIC_STORE = sig
   (* The callbacks a live interpret_file RPC carries: `interpret_file_callbacks config_cb
      context` -- the run's one Config.lookup callback (built by interpret_with_parallel
      from the context the driver was read from, so the prefilter's embedding model is the
-     one the user declared, never the cone node's default) and the by-name callbacks of
-     the node being interpreted (Context.entries_of_names, which show_defs resolves
-     definitions through; no enumeration callback).  Exposed so a test can assert what
-     is on the list. *)
+     one the user declared, never the cone node's default) and Context.entries_of_names
+     of the node being interpreted (show_defs resolves definitions through it; the list
+     holds no entity enumeration callback).  Exposed so a test can assert what is on
+     the list. *)
   val interpret_file_callbacks : Remote_Procedure_Calling.callback' -> Context.generic ->
         Remote_Procedure_Calling.callback' list
 

@@ -57,7 +57,7 @@ ML \<open>
    user's context and threads the callback VALUE down, so a cone node's context cannot
    serve it.  What is left to assert is the list itself: the callback is on it, and
    once -- the RPC layer resolves a duplicated name by list order, so a second
-   Config.lookup among the entity callbacks would decide the answer silently.  And
+   Config.lookup on the list would decide the answer silently.  And
    Context.entries_of_names is on it: without it show_defs loses every definition
    silently (_append_definition swallows the error).  No Python, no LLM. *)
 ML \<open>
