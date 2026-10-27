@@ -39,8 +39,10 @@ signature SEMANTIC_STORE = sig
   (* The callbacks a live interpret_file RPC carries: `interpret_file_callbacks config_cb
      context` -- the run's one Config.lookup callback (built by interpret_with_parallel
      from the context the driver was read from, so the prefilter's embedding model is the
-     one the user declared, never the cone node's default) and the entity callbacks of
-     the node being interpreted.  Exposed so a test can assert what is on the list. *)
+     one the user declared, never the cone node's default) and the by-name callbacks of
+     the node being interpreted (Context.entries_of_names, which show_defs resolves
+     definitions through; no enumeration callback).  Exposed so a test can assert what
+     is on the list. *)
   val interpret_file_callbacks : Remote_Procedure_Calling.callback' -> Context.generic ->
         Remote_Procedure_Calling.callback' list
 
@@ -1011,7 +1013,7 @@ fun process_facts_into_cache (context : Context.generic)
                 Long_Name.is_hidden (Name_Space.intern fact_space name)
              then []
              else let
-               val epos = Context_Callbacks.entry_def_pos e
+               val epos = Context_Callbacks.entry_def_pos (#pos e)
                val n = length thms
              in map_index (fn (i, thm) =>
                let val thm' = Thm.transfer thy thm
@@ -1241,7 +1243,7 @@ fun process_dynamic_facts_into_cache (context : Context.generic)
                             stamps for every other Fixed entry.  The live query
                             path serves the def_pos with every cached hit. *)
                          ({uk = uk, name = Context_Callbacks.Fixed nm,
-                           pos = Context_Callbacks.entry_def_pos e,
+                           pos = Context_Callbacks.entry_def_pos (#pos e),
                            thm = thm', theories = theories},
                           j + 1, #pos e, entity)
                    | NONE => invented (entity, uk))
@@ -1812,16 +1814,12 @@ fun interpret_file_callbacks (config_cb : Remote_Procedure_Calling.callback')
     val desugar_cb = Explain_Term.make_desugar_callback context
     val resolve_notation_cb = Explain_Term.make_resolve_notation_callback context
     (* pu, not su: the query tool's show_defs threads a (file, offset)
-       context through entities_of into these callbacks; the static
-       unpacker accepts only nil and would fail to decode it. *)
-    val {constants, theorems, types, classes, locales, named_theorems, methods,
-         introduction_rules, elimination_rules,
-         induction_rules, case_split_rules} = make_entity_callbacks context pu
+       context through Context.entries_of_names; the static unpacker
+       accepts only nil and would fail to decode it. *)
+    val entries_of_names_cb = Context_Callbacks.make_entries_of_names_callback pu
   in
     [uk_cb, theory_info_cb, desugar_cb, resolve_notation_cb, config_cb,
-     constants, theorems, types, classes, locales, named_theorems, methods,
-     introduction_rules, elimination_rules,
-     induction_rules, case_split_rules]
+     entries_of_names_cb]
   end
 
 (* The send half of interpret': build the tool callbacks and hand the enumerated

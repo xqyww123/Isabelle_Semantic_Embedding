@@ -57,8 +57,9 @@ ML \<open>
    user's context and threads the callback VALUE down, so a cone node's context cannot
    serve it.  What is left to assert is the list itself: the callback is on it, and
    once -- the RPC layer resolves a duplicated name by list order, so a second
-   Config.lookup among the entity callbacks would decide the answer silently.  No
-   Python, no LLM. *)
+   Config.lookup among the entity callbacks would decide the answer silently.  And
+   Context.entries_of_names is on it: without it show_defs loses every definition
+   silently (_append_definition swallows the error).  No Python, no LLM. *)
 ML \<open>
   val config_cb =
     Config.make_config_lookup_callback
@@ -66,6 +67,7 @@ ML \<open>
   val names =
     map #name (Semantic_Store.interpret_file_callbacks config_cb (Context.Proof \<^context>))
   val _ = \<^assert> (length (filter (fn n => n = "Config.lookup") names) = 1)
+  val _ = \<^assert> (member (op =) names "Context.entries_of_names")
 \<close>
 
 end

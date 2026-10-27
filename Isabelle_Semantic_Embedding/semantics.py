@@ -1688,57 +1688,43 @@ def _strip_trailing_begin(source: str) -> str:
     return _TRAILING_BEGIN_RE.sub('', source)
 
 
-async def _get_definition_with_pos(
-    connection: Connection, kind: EntityKind, uk: universal_key,
-    ctxt: Any = None,
+async def _definition_at(
+    connection: Connection, pos: IsabellePosition,
 ) -> tuple[str, IsabellePosition] | None:
-    """Look up the source code and position of the command defining an entity.
-
-    Enumerates the kind's entities live to find the definition position
-    (a full enumeration RPC per call — the enumeration cache was retired
-    2026-08-26, see archive/plans/INFRA_FILTER_REWORK_PLAN.md §18), then calls
-    command_at_position to retrieve the source. A non-None *ctxt* resolves
-    the enumeration under that (file, offset) context.
-
-    Returns ``(source, cmd_pos)`` where *cmd_pos* is an
-    `IsabellePosition` for the command start (symbol offset), or ``None``
-    if the position or source is unavailable.
-    """
-    from Isabelle_RPC_Host.context import entities_of
+    """The source of the command at *pos* and the position of its start
+    (symbol offset), or ``None`` when no command is found there.  The one
+    place a definition position becomes text."""
     from .hover import command_at_position
-    entries, _, _ = await entities_of(connection, [kind], ctxt=ctxt)
-    pos = None
-    for key, _, p in entries:
-        if key == uk:
-            pos = p
-            break
-    if pos is None:
-        return None
     cmd = await command_at_position(pos, connection)
     if cmd is None:
         return None
     source, start_offset, _ = cmd
     # Strip trailing "begin" keyword (part of class/locale/context command spans)
-    source = _strip_trailing_begin(source)
-    source = pretty_unicode(source)
-    cmd_pos = IsabellePosition(0, start_offset, pos.file)
-    return (source, cmd_pos)
+    source = pretty_unicode(_strip_trailing_begin(source))
+    return (source, IsabellePosition(0, start_offset, pos.file))
+
+
+async def _definition_of_name(
+    connection: Connection, kind: EntityKind, name: str,
+    ctxt: Any = None,
+) -> tuple[str, IsabellePosition] | None:
+    """`_definition_at` of the position `Context.entries_of_names` resolves
+    *name* of *kind* to, or ``None`` when the name or its position is unknown.
+    A non-None *ctxt* resolves the name under that (file, offset) context."""
+    [entry] = await connection.callback(
+        "Context.entries_of_names", (ctxt, [(int(kind), name)]))
+    pos = IsabellePosition.from_def_pos(entry[2]) if entry is not None else None
+    return await _definition_at(connection, pos) if pos is not None else None
 
 
 async def _get_definition_source(
-    connection: Connection, kind: EntityKind, uk: universal_key,
+    connection: Connection, kind: EntityKind, name: str,
     ctxt: Any = None,
 ) -> str | None:
-    """Look up the source code of the command defining an entity.
-
-    Convenience wrapper around `_get_definition_with_pos` that discards
-    the position.
-    """
-    result = await _get_definition_with_pos(connection, kind, uk, ctxt=ctxt)
-    if result is None:
-        return None
-    source, _ = result
-    return source
+    """The source of the command defining *name* of *kind*
+    (`_definition_of_name` without the position)."""
+    result = await _definition_of_name(connection, kind, name, ctxt=ctxt)
+    return result[0] if result is not None else None
 
 
 async def query_by_name_raw(
@@ -1765,12 +1751,12 @@ async def query_by_name_raw(
 
 
 async def _append_definition(
-    sem: str, connection: Connection, kind: EntityKind, uk: universal_key,
+    sem: str, connection: Connection, kind: EntityKind,
     name: str, log: Any, ctxt: Any = None,
 ) -> str:
-    """Append the source of the command defining *uk* to *sem* (best-effort)."""
+    """Append the source of the command defining *name* to *sem* (best-effort)."""
     try:
-        src = await _get_definition_source(connection, kind, uk, ctxt=ctxt)
+        src = await _get_definition_source(connection, kind, name, ctxt=ctxt)
     except Exception:
         log.debug("show_defs failed for %r", name, exc_info=True)
         return sem
@@ -1826,7 +1812,7 @@ async def _try_resolve_syntax_token(
                 f'or `desugar_and_explain` for more details.)')
         if show_defs:
             result = await _append_definition(
-                result, connection, EntityKind.CONSTANT, uk, const_name, log,
+                result, connection, EntityKind.CONSTANT, const_name, log,
                 ctxt=ctxt)
         return result
     return None
@@ -1887,7 +1873,7 @@ def mk_query_by_name_tool(
             if uk in hidden_keys:
                 return refused(typed)
             if args.get("show_defs", False):
-                sem = await _append_definition(sem, connection, tag, uk, name, log,
+                sem = await _append_definition(sem, connection, tag, name, log,
                                                ctxt=ctxt)
             return _mk_ret(_noted(sem))
         except LookupError as e:
@@ -1900,7 +1886,7 @@ def mk_query_by_name_tool(
                     if uk in hidden_keys:
                         return refused(typed)
                     if args.get("show_defs", False):
-                        sem = await _append_definition(sem, connection, tag, uk, short, log)
+                        sem = await _append_definition(sem, connection, tag, short, log)
                     return _mk_ret(_noted(f"The {name} is undefined, but we find:\n{sem}"))
                 except IsabelleInterrupt:
                     raise
