@@ -222,20 +222,12 @@ signature SEMANTIC_STORE = sig
      * (Universal_Key.universal_key option * Universal_Key.universal_key option * string) option
      * Universal_Key.constituent list * string option) list * Entity_Position.report
 
-  (* Context callbacks with infra filters and theorem cache baked in.
-     Computes infra filters once and returns all entity callbacks. *)
-  val make_entity_callbacks : Context.generic -> Context_Callbacks.context_unpacker ->
-    {constants: Remote_Procedure_Calling.callback',
-     theorems: Remote_Procedure_Calling.callback',
-     types: Remote_Procedure_Calling.callback',
-     classes: Remote_Procedure_Calling.callback',
-     locales: Remote_Procedure_Calling.callback',
-     named_theorems: Remote_Procedure_Calling.callback',
-     methods: Remote_Procedure_Calling.callback',
-     introduction_rules: Remote_Procedure_Calling.callback',
-     elimination_rules: Remote_Procedure_Calling.callback',
-     induction_rules: Remote_Procedure_Calling.callback',
-     case_split_rules: Remote_Procedure_Calling.callback'}
+  (* The eleven entity enumeration callbacks, with infra filters and theorem cache
+     baked in.  The predicate keeps proof methods by name, on top of the infra
+     filter.  Build them once per call_command: each callback owns the catalog of
+     that request. *)
+  val make_entity_callbacks : Context.generic -> (string -> bool) ->
+    Context_Callbacks.context_unpacker -> Remote_Procedure_Calling.callback' list
 
   val strip_trailing_begin : string -> string
 end
@@ -1013,7 +1005,6 @@ fun process_facts_into_cache (context : Context.generic)
                 Long_Name.is_hidden (Name_Space.intern fact_space name)
              then []
              else let
-               val epos = Context_Callbacks.entry_def_pos (#pos e)
                val n = length thms
              in map_index (fn (i, thm) =>
                let val thm' = Thm.transfer thy thm
@@ -1032,7 +1023,6 @@ fun process_facts_into_cache (context : Context.generic)
                        collect path (get_theorems_with_positions), so the cached
                        QUERY name matches the collect name for multi-thm facts. *)
                     name = Context_Callbacks.Fixed (name, if n = 1 then 0 else i + 1),
-                    pos = epos,
                     thm = thm',
                     theories = theories
                   } : Context_Callbacks.cached_thm_entry option
@@ -1062,7 +1052,7 @@ fun classify_rule_entries (is_infra_induct_thm : string * thm -> bool)
   let
     fun retag (e : Context_Callbacks.cached_thm_entry) tag : Context_Callbacks.cached_thm_entry =
       {uk = Universal_Key.retag_thm_key (#uk e) tag,
-       name = #name e, pos = #pos e, thm = #thm e, theories = #theories e}
+       name = #name e, thm = #thm e, theories = #theories e}
     fun classify (e : Context_Callbacks.cached_thm_entry) =
       case #name e of
         Context_Callbacks.Fixed (base, _) =>
@@ -1085,9 +1075,9 @@ fun classify_rule_entries (is_infra_induct_thm : string * thm -> bool)
 (* Enumerate the members of all visible non-infra dynamic collections
    (named_theorems + raw add_thms_dynamic collections such as
    derivative_eq_intros) as cached_thm_entry.  A member whose name hint
-   resolves in the GLOBAL fact space carries that name (Fixed) and its real
-   position (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.4); otherwise it carries
-   name = Member_of_Dynamic (collection full name) and NO position.  The
+   resolves in the GLOBAL fact space carries that name (Fixed,
+   archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.4); otherwise it carries
+   name = Member_of_Dynamic (collection full name).  The
    Position.T component of the result is the adopted name's declaration
    position (Position.none where nothing was adopted).  Identity is the
    content-addressed uk.  A plain single pass (runs once per AoA prep,
@@ -1216,7 +1206,7 @@ fun process_dynamic_facts_into_cache (context : Context.generic)
                     end
                 fun invented (entity, uk) =
                   ({uk = uk, name = Context_Callbacks.Member_of_Dynamic coll,
-                    pos = ("", 0, 0), thm = thm', theories = theories}
+                    thm = thm', theories = theories}
                    : Context_Callbacks.cached_thm_entry, j + 1, Position.none, entity)
                 (* The re-check under the ADOPTED name takes the BASE fact name,
                    #1 nm, never the Thm_Name.print rendering: "F(2)" is not a
@@ -1237,13 +1227,7 @@ fun process_dynamic_facts_into_cache (context : Context.generic)
                      SOME (nm, e) =>
                        if infra (#1 nm, thm') then invented (entity, uk)
                        else
-                         (* The cached def_pos and the tuple's Position.T are two
-                            projections of the ONE name-space entry, written
-                            together -- exactly what process_facts_into_cache
-                            stamps for every other Fixed entry.  The live query
-                            path serves the def_pos with every cached hit. *)
                          ({uk = uk, name = Context_Callbacks.Fixed nm,
-                           pos = Context_Callbacks.entry_def_pos (#pos e),
                            thm = thm', theories = theories},
                           j + 1, #pos e, entity)
                    | NONE => invented (entity, uk))
@@ -1278,7 +1262,8 @@ fun dedup_against existing new_entries =
 
 (* Convenience callbacks with infra filters and theorem cache baked in.
    Processes any uncached facts at creation time so callbacks see 0 uncached. *)
-fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_Callbacks.context_unpacker) =
+fun make_entity_callbacks (init_context: Context.generic) (keep_method: string -> bool)
+    (ctxt_unpack: Context_Callbacks.context_unpacker) =
   let (* Populate coercion-transparent matching ignore set (idempotent). *)
       val _ = List.app (fn n => Strhashtab.update Context_Callbacks.coercion_ignores (n, ())) [
         "Nat.semiring_1_class.of_nat",
@@ -1379,7 +1364,7 @@ fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_
       val induct_members = members (fn Universal_Key.Induction_Rule _ => true | _ => false)
       val case_members   = members (fn Universal_Key.Case_Split_Rule _ => true | _ => false)
       (* Theorem members deduped against the static set so a member that is also a
-         static fact keeps the static (Fixed) name/position. *)
+         static fact keeps the static (Fixed) name. *)
       val combined_entries = static_combined @ dedup_against static_combined theorem_members
       val thm_cache = SOME (combined_entries, current_facts)
       (* Per-kind rule caches: persistent buckets (Thm_Cache, built incrementally by
@@ -1392,28 +1377,29 @@ fun make_entity_callbacks (init_context: Context.generic) (ctxt_unpack: Context_
       val induct_static = cached_induct @ delta_induct
       val case_static   = cached_case   @ delta_case
       fun rule_cache static mems = SOME (static @ dedup_against static mems, current_facts)
-  in {
-    constants = Context_Callbacks.make_constants_callback (SOME (not o is_uninterpreted_const)) ctxt_unpack,
-    theorems = Context_Callbacks.make_theorems_callback (SOME (not o is_infra_thm)) thm_cache ctxt_unpack,
-    types = Context_Callbacks.make_types_callback (SOME (not o is_infra_type)) ctxt_unpack,
-    classes = Context_Callbacks.make_classes_callback (SOME (not o is_infra_class)) ctxt_unpack,
-    locales = Context_Callbacks.make_locales_callback (SOME (not o is_infra_locale)) ctxt_unpack,
-    named_theorems = Context_Callbacks.make_theorem_collection_callback
+  in [
+    Context_Callbacks.make_constants_callback (SOME (not o is_uninterpreted_const)) ctxt_unpack,
+    Context_Callbacks.make_theorems_callback (SOME (not o is_infra_thm)) thm_cache ctxt_unpack,
+    Context_Callbacks.make_types_callback (SOME (not o is_infra_type)) ctxt_unpack,
+    Context_Callbacks.make_classes_callback (SOME (not o is_infra_class)) ctxt_unpack,
+    Context_Callbacks.make_locales_callback (SOME (not o is_infra_locale)) ctxt_unpack,
+    Context_Callbacks.make_theorem_collection_callback
       collection_member_thms (SOME (not o is_infra_dynamic_fact)) ctxt_unpack,
-    methods = Context_Callbacks.make_methods_callback (SOME (not o is_infra_method)) ctxt_unpack,
-    introduction_rules = Context_Callbacks.make_introduction_rules_callback
+    Context_Callbacks.make_methods_callback
+      (SOME (fn name => keep_method name andalso not (is_infra_method name))) ctxt_unpack,
+    Context_Callbacks.make_introduction_rules_callback
       extract_intro_rules Theory_Structure.is_introduction_rule_name (K true)
       (SOME (not o is_infra_thm)) (rule_cache intro_static intro_members) ctxt_unpack,
-    elimination_rules = Context_Callbacks.make_elimination_rules_callback
+    Context_Callbacks.make_elimination_rules_callback
       extract_elim_rules Theory_Structure.is_elimination_rule_name (K true)
       (SOME (not o is_infra_thm)) (rule_cache elim_static elim_members) ctxt_unpack,
-    induction_rules = Context_Callbacks.make_induction_rules_callback
+    Context_Callbacks.make_induction_rules_callback
       extract_induct_net Theory_Structure.is_induction_rule_name Theory_Structure.has_rule_shape
       (SOME (not o is_infra_induct_thm)) (rule_cache induct_static induct_members) ctxt_unpack,
-    case_split_rules = Context_Callbacks.make_case_split_rules_callback
+    Context_Callbacks.make_case_split_rules_callback
       extract_case_split_net Theory_Structure.is_case_split_rule_name Theory_Structure.has_rule_shape
       (SOME (not o is_infra_thm)) (rule_cache case_static case_members) ctxt_unpack
-  } end
+  ] end
 
 (* Python marks an exception message as ALREADY human-readable by prefixing it with
    this string (semantic_interpretation.py: USER_ERROR_MARKER).  For such a failure --
@@ -2505,18 +2491,13 @@ fun embed_all_missing (context : Context.generic) : unit =
 fun query_knn (context : Context.generic) =
   let
     val su = Context_Callbacks.static_context_unpacker context
-    val {constants, theorems, types, classes, locales, named_theorems, methods,
-         introduction_rules, elimination_rules,
-         induction_rules, case_split_rules} = make_entity_callbacks context su
-    val callbacks = [
-      constants, theorems, types, classes, locales, named_theorems, methods,
-      introduction_rules, elimination_rules,
-      induction_rules, case_split_rules,
+    val other_callbacks = [
       make_interpret_theory_callback su,
       Context_Callbacks.make_theory_long_name_callback su,
       Config.make_config_lookup_callback su
     ]
-    val cmd : (string * int * Universal_Key.entity_kind list *
+    (* the entity callbacks are built per call: each call is its own call_command *)
+    fun cmd callbacks : (string * int * Universal_Key.entity_kind list *
                search_domain * string list * string list * string list * string list * string,
                (real * Universal_Key.entity) list * string list)
               Remote_Procedure_Calling.command = {
@@ -2537,7 +2518,8 @@ fun query_knn (context : Context.generic) =
   in
     fn {query_text, k, kinds, domain, term_patterns, type_patterns,
         theories_include, name_contains, target_type} =>
-      Remote_Procedure_Calling.call_command cmd
+      Remote_Procedure_Calling.call_command
+        (cmd (make_entity_callbacks context (K true) su @ other_callbacks))
         (query_text, k, kinds, domain, term_patterns, type_patterns,
          theories_include, name_contains, target_type)
   end

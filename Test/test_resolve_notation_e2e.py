@@ -48,7 +48,6 @@ let
   val context = Context.Proof \<^context>
   val resolve_cb = Explain_Term.make_resolve_notation_callback context
   val pu = PIDE_State.position_context_unpacker context
-  val constants_cb = Context_Callbacks.make_constants_callback NONE pu
   val _ = L "Created callbacks\n"
 
   (* 3. RPC commands targeting the Python relays *)
@@ -63,11 +62,12 @@ let
     callback = [resolve_cb],
     timeout = SOME (Time.fromSeconds 30)
   }
-  val entities_cmd : ((string * int) option, int) command = {
+  (* an enumeration callback is built per call_command, as at the production sites *)
+  fun entities_cmd () : ((string * int) option, int) command = {
     name = "test.entities_with_ctxt",
     arg_schema = packOption (packPair (packString, packInt)),
     ret_schema = unpackInt,
-    callback = [constants_cb],
+    callback = [Context_Callbacks.make_constants_callback NONE pu],
     timeout = SOME (Time.fromSeconds 60)
   }
 
@@ -118,11 +118,11 @@ let
      An unresolvable position must fall back to the default context and
      enumerate normally — with the old nil-only unpacker this raised. *)
   val _ = L "\n=== Test 5: entities_of under tuple ctxt ===\n"
-  val cnt = call_command entities_cmd (SOME ("/nonexistent_probe_file.thy", 1))
+  val cnt = call_command (entities_cmd ()) (SOME ("/nonexistent_probe_file.thy", 1))
   val _ = L ("  count(tuple ctxt) = " ^ string_of_int cnt ^ "\n")
   val _ = if cnt > 0 then L "  PASS\n"
           else error "Test 5 FAILED: empty enumeration under tuple ctxt"
-  val cnt' = call_command entities_cmd NONE
+  val cnt' = call_command (entities_cmd ()) NONE
   val _ = L ("  count(nil ctxt) = " ^ string_of_int cnt' ^ "\n")
   val _ = if cnt' > 0 then L "  PASS\n"
           else error "Test 5 FAILED: empty enumeration under nil ctxt"

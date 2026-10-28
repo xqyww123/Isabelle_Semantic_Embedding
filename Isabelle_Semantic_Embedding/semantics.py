@@ -2376,7 +2376,7 @@ class Semantic_Vector_Store(Vector_Store):
             if self.connection is None:
                 return [], warnings, 0
             from Isabelle_RPC_Host.context import entities_of
-            entries, branch_local, warnings = await entities_of(self.connection, kinds,
+            entries, warnings = await entities_of(self.connection, kinds,
                                      theories_not_include=await excluded_theory_names(self.connection),
                                      term_patterns=term_patterns,
                                      type_patterns=type_patterns,
@@ -2385,14 +2385,14 @@ class Semantic_Vector_Store(Vector_Store):
                                      target_type=target_type,
                                      ctxt=ctxt)
             candidates = [uk for uk, _, _ in entries]
-            for uk, name, _ in entries:
+            for uk, name, is_local in entries:
                 candidate_names[uk] = name
-            is_local_map.update(branch_local)
+                is_local_map[uk] = is_local
         elif isinstance(domain, Semantic_Vector_Store.ContextExtended):
             if self.connection is None:
                 return [], warnings, 0
             from Isabelle_RPC_Host.context import entities_of
-            entries, branch_local, warnings = await entities_of(self.connection, kinds,
+            entries, warnings = await entities_of(self.connection, kinds,
                                      theories_not_include=await excluded_theory_names(self.connection),
                                      term_patterns=term_patterns,
                                      type_patterns=type_patterns,
@@ -2401,9 +2401,9 @@ class Semantic_Vector_Store(Vector_Store):
                                      target_type=target_type,
                                      ctxt=ctxt)
             candidates = [uk for uk, _, _ in entries]
-            for uk, name, _ in entries:
+            for uk, name, is_local in entries:
                 candidate_names[uk] = name
-            is_local_map.update(branch_local)
+                is_local_map[uk] = is_local
             seen = set(candidates)
             kind_set = set(kinds)
             for rec in domain.extra:
@@ -2678,7 +2678,7 @@ class Semantic_Vector_Store(Vector_Store):
             stamp = await self._thy_stamp(thy_key) if is_WIP(thy_key) else None
             if not force and self.is_thy_embedded(thy_key, stamp):
                 continue
-            entries, _is_local, _warnings = await entities_of(self.connection, EntityKind.ALL, # type: ignore
+            entries, _warnings = await entities_of(self.connection, EntityKind.ALL, # type: ignore
                                theory=thy_name, the_theory_only=True)
             keys = [k for k, _, _ in entries]
             await self.embed_keys(keys, force=force)
