@@ -8,11 +8,18 @@
    unrelated sessions, because Isabelle reads every registered ROOT at startup.
 
    Run these with an explicit -d, e.g.
-       isabelle build -d . -d Test Semantic_Embedding_Test *)
+       ISABELLE_EVENT_LOG_DIR=$(mktemp -d) isabelle build -d . -d Test Semantic_Embedding_Test
+   (the variable: Link_Layer_Closure_Test and Link_Finder_Cache_Test write event-log
+   records and refuse to run without a scratch directory, LINK_LAYER_PLAN.md D69) *)
 
 session Semantic_Embedding_Test = Semantic_Embedding +
   sessions
     Performant_Isabelle_HOL
+    (* the link finder's standard contexts (Link_Finder_Test); the AFP must be registered *)
+    "HOL-Algebra"
+    Complete_Non_Orders
+    Jacobson_Basic_Algebra
+    Saturation_Framework
   theories
     Infra_Decl_Test
     SSymb_Infra_Test
@@ -20,6 +27,24 @@ session Semantic_Embedding_Test = Semantic_Embedding +
     Interpretation_Lock_Test
     Command_At_Position_Test
     Entity_Position_Test
+    Link_Finder_Cons_Lazy
+    Link_Finder_Cons_Bound
+    Link_Finder_Cons_Attack
+    Link_Finder_Cons_NPQ
+    Link_Finder_Cons_PQR
+    Link_Finder_Cons_Paths
+    Link_Finder_Cons_K
+    Link_Finder_Cons_Blocks
+    Link_Finder_Cons_R11
+    Link_Finder_Test
     Plain_Text_Printing_Test
+    Link_Layer_Closure_Test
+    Link_Finder_Verdicts_Test
+    Link_Finder_Cons_Roots
+    Link_Finder_Entities_Test
     Test_Sensitivity
     Test_All
+  (* last and alone, nothing forked: its pins read process-wide counters and pass
+     links from one command to a later one (LINK_LAYER_PLAN.md §8 item 4) *)
+  theories [parallel_proofs = 0]
+    Link_Finder_Cache_Test

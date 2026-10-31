@@ -23,7 +23,34 @@ from .base import logger_of as _logger_of
 
 from ._vecarith import encode_q15, gather_addrs, top_k_q15_gather, Q15_SCALE
 
-_EMBED_CACHE_TTL = 3 * 86400  # 3 days
+_EMBED_CACHE_TTL = 3 * 86400  # 3 days: entity texts
+# The derived vectors of linked local facts (LINK_LAYER_PLAN.md §4.2, D26) live
+# in the same cache, keyed by their composed document text, for 7 days.
+DERIVED_VECTOR_TTL = 7 * 86400
+
+# The cache's size cap, in GiB, from the environment (D26): a number, decimals
+# allowed, default 6.  An unparsable value is an error, never a silent default
+# (the env_bool rule of _user_config.py).  When the cap is reached diskcache
+# evicts the least recently stored entries whatever their expiry, which the
+# user accepts for derived vectors.
+EMBED_CACHE_SIZE_ENV = "EMBEDDING_CACHE_SIZE_GIB"
+_EMBED_CACHE_SIZE_GIB_DEFAULT = 6.0
+
+
+def embed_cache_size_bytes() -> int:
+    raw = os.getenv(EMBED_CACHE_SIZE_ENV)
+    if raw is None or raw.strip() == "":
+        gib = _EMBED_CACHE_SIZE_GIB_DEFAULT
+    else:
+        try:
+            gib = float(raw)
+        except ValueError:
+            raise ValueError(
+                f"{EMBED_CACHE_SIZE_ENV}={raw!r} is not a number of GiB "
+                f"(e.g. 6 or 0.5).") from None
+        if gib <= 0:
+            raise ValueError(f"{EMBED_CACHE_SIZE_ENV}={raw!r} must be positive.")
+    return int(gib * 1024 * 1024 * 1024)
 
 _MAX_ERROR_BODY = 500  # chars of provider response body kept in a warning
 
@@ -317,12 +344,14 @@ class Embedding_Provider(HTTP_Provider):
             os.makedirs(cache_dir, exist_ok=True)
             Embedding_Provider._cache = diskcache.Cache(
                 os.path.join(cache_dir, "embed_cache"),
-                size_limit=2 * 1024 * 1024 * 1024)
+                size_limit=embed_cache_size_bytes())
         return Embedding_Provider._cache
 
     async def _embed_cached(self, text: list[str],
-                      backend: 'Callable[[list[str]], Awaitable[EmbedResult]]') -> EmbedResult:
-        """Per-string cache lookup, chunk misses, call backend with retry, cache incrementally."""
+                      backend: 'Callable[[list[str]], Awaitable[EmbedResult]]',
+                      expire: int = _EMBED_CACHE_TTL) -> EmbedResult:
+        """Per-string cache lookup, chunk misses, call backend with retry, cache
+        incrementally; a miss is written with ``expire`` seconds of life."""
         cache = self._get_cache()
         results: list[np.ndarray | None] = [None] * len(text)
         misses: list[tuple[int, str]] = []
@@ -372,7 +401,7 @@ class Embedding_Provider(HTTP_Provider):
                     f"failed after 10 retries") from last_err
             total_tokens += embed_result.total_tokens
             for (i, t), vec in zip(chunk, embed_result.vectors):
-                cache.set((self._cache_key_prefix, t), vec.tobytes(), expire=_EMBED_CACHE_TTL)
+                cache.set((self._cache_key_prefix, t), vec.tobytes(), expire=expire)
                 results[i] = vec
         return EmbedResult(np.stack(results), total_tokens)  # type: ignore
 
@@ -455,15 +484,18 @@ class Embedding_Provider(HTTP_Provider):
 
     async def embed(self, text: list[str], *, role: str = "document",
                     kinds_phrase: str | None = None,
-                    task_override: str | None = None) -> EmbedResult:
+                    task_override: str | None = None,
+                    expire: int = _EMBED_CACHE_TTL) -> EmbedResult:
         """Embed texts, always using cache. ``role`` ('document' for corpus text,
         'query' for a search query) selects the per-model template applied first;
         ``kinds_phrase`` fills a query template's {kinds} slot (ignored for documents);
-        ``task_override`` replaces the whole query task sentence (experience pass)."""
+        ``task_override`` replaces the whole query task sentence (experience pass);
+        ``expire`` is the cache life of a newly embedded text (``DERIVED_VECTOR_TTL``
+        for the derived vectors of linked local facts)."""
         text = self._apply_template(text, role, kinds_phrase, task_override)
         total_chars = sum(len(t) for t in text)
         await self._log(f"[Embedding] {self.model}: embedding {len(text)} texts, {total_chars} chars")
-        result = await self._embed_cached(text, self._embed)
+        result = await self._embed_cached(text, self._embed, expire)
         await self._log(f"[Embedding] {self.model}: done, total_tokens={result.total_tokens}")
         return self._normalize(result)
 
@@ -474,12 +506,14 @@ class Embedding_Provider(HTTP_Provider):
         return await self._embed(text)
 
     async def embed_batch(self, text: list[str], *, role: str = "document",
-                          kinds_phrase: str | None = None) -> EmbedResult:
-        """Embed a large batch of texts, always using cache. See ``embed`` for ``role``/``kinds_phrase``."""
+                          kinds_phrase: str | None = None,
+                          expire: int = _EMBED_CACHE_TTL) -> EmbedResult:
+        """Embed a large batch of texts, always using cache. See ``embed`` for
+        ``role``/``kinds_phrase``/``expire``."""
         text = self._apply_template(text, role, kinds_phrase)
         total_chars = sum(len(t) for t in text)
         await self._log(f"[Embedding Batch] {self.model}: embedding {len(text)} texts, {total_chars} chars")
-        result = await self._embed_cached(text, self._embed_batch_or_fallback)
+        result = await self._embed_cached(text, self._embed_batch_or_fallback, expire)
         await self._log(f"[Embedding Batch] {self.model}: done, total_tokens={result.total_tokens}")
         return self._normalize(result)
 
@@ -1421,6 +1455,18 @@ class Vector_Store(ABC):
         Returns the keys that are now stored. Default: none recovered."""
         return []
 
+    async def query_vector(self, query: np.ndarray | str, *,
+                           kinds_phrase: str | None = None) -> np.ndarray:
+        """The vector of a search query: a string is embedded with the query
+        template (Instruct/query: prefix) and ``kinds_phrase``; corpus text is
+        embedded as role="document" elsewhere."""
+        if not isinstance(query, str):
+            return query
+        if self.connection is not None:
+            await self.connection.tracing(f"[Semantic_Embedding] embedding query: {query!r}")
+        return (await self.emb_provider.embed(
+            [query], role="query", kinds_phrase=kinds_phrase)).vectors[0]
+
     async def topk(self, query: np.ndarray | str, domain: list[key], k: int,
                    *, kinds_phrase: str | None = None,
                    ctxt: Any = None,
@@ -1440,17 +1486,7 @@ class Vector_Store(ABC):
         # The one reliably connection-aware point every query passes through:
         # relay anything _get_lmdb_env logged with no connection in hand.
         await flush_store_warnings(self.connection)
-        if isinstance(query, str):
-            if self.connection is not None:
-                await self.connection.tracing(f"[Semantic_Embedding] embedding query: {query!r}")
-            # A string input to topk is a search query -> use the query template
-            # (Instruct/query: prefix) with the caller's kinds_phrase. Corpus text
-            # is embedded as role="document" elsewhere. lookup() keeps passing the
-            # *string* here, so its reranker gate (isinstance(query, str)) is unaffected.
-            query = (await self.emb_provider.embed(
-                [query], role="query", kinds_phrase=kinds_phrase)).vectors[0]
-
-        query_q15 = encode_q15(query)
+        query_q15 = encode_q15(await self.query_vector(query, kinds_phrase=kinds_phrase))
         # The scan runs in a worker thread; ctypes releases the GIL for the kernel
         # call, so the event loop keeps running instead of freezing for the scan.
         # Missing keys fall out of the gather itself — probing for them up front

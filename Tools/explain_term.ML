@@ -1,10 +1,48 @@
 signature EXPLAIN_TERM = sig
+  (* The one-line plain-text printers of a stored record's expr; a link's
+     texts (Link_Finder) use the same printer. *)
+  val string_of_term : Proof.context -> term -> string
+  val string_of_typ : Proof.context -> typ -> string
   val raw_lambda_printer : Proof.context -> term -> string
+  (* the constants of the terms that the filter keeps, in order of first
+     occurrence, each once: the first occurrence and its universal key *)
+  val collect_constants : (string -> bool) -> Context.generic -> term list ->
+    (term * Universal_Key.universal_key) list
   val make_desugar_callback : Context.generic -> Remote_Procedure_Calling.callback'
   val make_resolve_notation_callback : Context.generic -> Remote_Procedure_Calling.callback'
 end
 
 structure Explain_Term : EXPLAIN_TERM = struct
+
+(* --- Plain-text printers --- *)
+
+(* plain text: embedded/serialized strings carry no markup and no line breaks *)
+val string_of_pretty = RPC_Pretty.plain_string
+
+(* the name, eta-contraction and abbreviation options at their defaults, so that
+   a context's `declare [[names_long]]` does not reach a text (LINK_LAYER_PLAN.md
+   §4.2, D54) *)
+fun string_of_term ctxt =
+    let val ctxt' = ctxt
+              |> Config.put Printer.show_types false
+              |> Config.put Printer.show_sorts false
+              |> Config.put Printer.show_markup false
+              |> Config.put Printer.show_structs false
+              |> Config.put Printer.show_question_marks true
+              |> Config.put Name_Space.names_long false
+              |> Config.put Name_Space.names_short false
+              |> Config.put Name_Space.names_unique true
+              |> Config.put Syntax_Trans.eta_contract true
+              |> Config.put Proof_Context.show_abbrevs true
+     in Syntax.pretty_term ctxt' #> string_of_pretty
+    end
+
+fun string_of_typ ctxt =
+    let val ctxt' = ctxt
+              |> Config.put Printer.show_sorts true
+              |> Config.put Printer.show_markup false
+     in Syntax.pretty_typ ctxt' #> string_of_pretty
+    end
 
 (* --- Compact term printer --- *)
 
@@ -73,6 +111,17 @@ fun raw_lambda_printer ctxt t =
 
 (* --- Constant extraction and filtering --- *)
 
+fun collect_constants keep context ts =
+  let
+    val seen = Strhashtab.empty 64
+    fun add (c as Const (name, _)) acc =
+          if Strhashtab.defined seen name orelse not (keep name) then acc
+          else
+            let val _ = Strhashtab.update seen (name, ())
+            in (c, Universal_Key.key_of NONE context (Universal_Key.Constant name)) :: acc end
+      | add _ acc = acc
+  in rev (fold (Term.fold_aterms add) ts []) end
+
 (* Collect the constants worth ANNOTATING for the interpretation agent:
    infrastructure constants and Isabelle standard-library constants
    (declared in Main or its ancestors) are dropped — the agent knows the
@@ -82,7 +131,6 @@ fun raw_lambda_printer ctxt t =
 fun extract_nontrivial_constants (ctxt : Proof.context) (checked_term : term)
     : (string * Word8Vector.vector) list =
   let
-    val thy = Proof_Context.theory_of ctxt
     val context = Context.Proof ctxt
     val const_space = Consts.space_of (Proof_Context.consts_of ctxt)
     val {is_uninterpreted_const, ...} = Infra_Filter.gen_infra_filters context
@@ -99,18 +147,11 @@ fun extract_nontrivial_constants (ctxt : Proof.context) (checked_term : term)
         NONE => false
       | SOME entry => Strhashtab.defined main_thy_ancestors (#theory_long_name entry)
 
-    val seen = Strhashtab.empty 64
-    val consts = Term.fold_aterms (fn Const(name, _) =>
-        (fn acc =>
-          if Strhashtab.defined seen name then acc
-          else if is_uninterpreted_const name then acc
-          else if is_base_const name then acc
-          else
-            let val _ = Strhashtab.update seen (name, ())
-                val uk = Universal_Key.key_of NONE context (Universal_Key.Constant name)
-            in (name, uk) :: acc end)
-      | _ => I) checked_term []
-  in rev consts end
+  in
+    collect_constants (fn name => not (is_uninterpreted_const name orelse is_base_const name))
+      context [checked_term]
+    |> map (fn (c, uk) => (#1 (dest_Const c), uk))
+  end
 
 
 (* --- RPC callback factories --- *)

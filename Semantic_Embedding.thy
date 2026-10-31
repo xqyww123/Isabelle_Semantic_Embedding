@@ -12,6 +12,7 @@ ML_file \<open>Tools/infra_filter.ML\<close>
 ML_file \<open>Tools/explain_term.ML\<close>
 ML_file \<open>Tools/entity_position.ML\<close>
 ML_file \<open>Tools/theory_structure.ML\<close>
+ML_file \<open>Tools/link_finder.ML\<close>
 ML_file \<open>Tools/locale_instance.ML\<close>
 ML_file \<open>Tools/semantic_digest.ML\<close>
 ML_file \<open>Tools/semantic_store.ML\<close>

@@ -282,3 +282,24 @@ def top_k_q15_gather(
     if rc != 0:
         raise RuntimeError(f"top_k_q15_gather failed with rc={rc}")
     return out_idx, recover_cos(out_scores, D, target_norm)
+
+
+def top_k_q15_rows(
+    matrix: np.ndarray,
+    query: np.ndarray,
+    D: int,
+    k: int,
+    *,
+    target_norm: float = TARGET_NORM,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``top_k_q15_gather`` over the rows of an in-memory Q1.15 matrix, so that
+    stored and derived vectors have one scorer (LINK_LAYER_PLAN.md §4.2, C23).
+
+    ``matrix`` must be a C-contiguous int16 array of shape (N, D); as a parameter
+    it stays alive for the whole kernel call, which meets the kernel's caller
+    contract here.  Returns what ``top_k_q15_gather`` returns."""
+    if (matrix.dtype != np.int16 or matrix.ndim != 2 or matrix.shape[1] != D
+            or not matrix.flags["C_CONTIGUOUS"]):
+        raise ValueError(f"matrix must be a C-contiguous int16 array of shape (N, {D})")
+    addrs = np.uintp(matrix.ctypes.data) + np.arange(matrix.shape[0], dtype=np.uintp) * np.uintp(2 * D)
+    return top_k_q15_gather(addrs, query, D, k, target_norm=target_norm)

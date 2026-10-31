@@ -44,10 +44,13 @@ def experience_document_text(patterns: list[str], goal_description: str) -> str:
 
 def entity_document_text(rec: 'SemanticRecord') -> str:
     """Document text for a library entity (constant/type/theorem/rule/...): its
-    pretty-printed ``kind name: expr`` plus its interpretation.  Precondition:
-    ``rec.interpretation is not None`` (callers guard before dispatch)."""
+    pretty-printed ``kind name: expr`` plus its interpretation, and, for the
+    display record of a linked fact, its entities block (LINK_LAYER_PLAN.md
+    §2, D50).  Precondition: ``rec.interpretation is not None`` (callers guard
+    before dispatch)."""
     assert rec.interpretation is not None
-    return rec.pretty_print + "\n" + rec.interpretation
+    text = rec.pretty_print + "\n" + rec.interpretation
+    return text if rec.entities_block is None else text + "\n" + rec.entities_block
 
 
 def document_text_of(rec: 'SemanticRecord') -> str | None:

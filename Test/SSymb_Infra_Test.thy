@@ -18,8 +18,8 @@ ML \<open>
   val _ = \<^assert> (is_infra_type "SSymb.symbol")
   (* SSymb's own facts: no record, by the theory marking (the bucket name covers both
      markings; the assertion also pins that no earlier rule fires first) *)
-  val _ = \<^assert> (infra_thm_rule ("SSymb.mk_symbol_cong", @{thm SSymb.mk_symbol_cong})
-                    = SOME "infra_theory")
+  val _ = \<^assert> (infra_thm_rule ("SSymb.symbol_digit_inject",
+                       @{thm SSymb.symbol_digit_inject(1)}) = SOME "infra_theory")
   (* a downstream theorem mentioning symbols: kept, no cascade *)
   val _ = \<^assert> (is_none (infra_thm_rule ("SSymb_Infra_Test.sym_lemma", @{thm sym_lemma})))
 \<close>

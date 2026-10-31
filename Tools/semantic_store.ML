@@ -19,15 +19,15 @@ signature SEMANTIC_STORE = sig
      If with_pretty is true, prepends the pretty-printed formal signature. *)
   val query_semantics : Context.generic -> Universal_Key.entity -> bool -> semantics option
 
-  (* Interpret all uninterpreted ancestor theories of the current context,
-     plus the current proof context if applicable. Calls Python via RPC
-     to generate plain-English translations using a Claude agent. *)
+  (* Interpret all uninterpreted ancestor theories of the current context's
+     theory.  Calls Python via RPC to generate plain-English translations using a
+     Claude agent. *)
   (* Concurrency width is the session's own -o threads=N (Multithreading.max_threads). *)
   val interpret : bool -> Context.generic -> unit
-  (* The first context is where the run reads `Semantic_Embedding.interpretation_driver`;
+  (* The context is where the run reads `Semantic_Embedding.interpretation_driver`;
      it is read once, here, and carried down to every cone node as data.  Pass the
-     context the USER declared it in -- which is not always one of the roots. *)
-  val interpret_with_parallel : Context.generic -> bool -> Context.generic list -> unit option
+     context the USER declared it in; the roots are theories. *)
+  val interpret_with_parallel : Context.generic -> bool -> theory list -> unit option
   (* The interpretation lock (SEMANTIC_CHANGE_GATE_PLAN.md §8): run `body` as the one
      live interpretation run on this database, or return NONE at once if another run
      holds the lock (D8: try once, never wait).  interpret_with_parallel is wrapped in
@@ -57,16 +57,15 @@ signature SEMANTIC_STORE = sig
      implementation.  Level 1 filters the ancestor cone of `roots` down to the theories
      still needing interpretation (one `Semantic_Store.is_interpreted` RPC per cone
      node); level 2 enumerates each one's entities and has Python count its seed set.
-     A Proof root is additionally enumerated as itself (the live path's proof
-     channel), mirroring interpret_with_parallel.  Returns (long names of the due
-     theories, the entity count).  The count is the sum of the cone's seed sets
+     Returns (long names of the due theories, the entity count).  The count is the
+     sum of the cone's seed sets
      (see dry_run_payload) against the store as it stands before the run; the live
      run can send more (CHANGED verdicts enrol dependents) or fewer (an ancestor
      theory's UNCHANGED verdict walls off a dependent counted here); exact at zero
      (SEMANTIC_CHANGE_GATE_PLAN.md §5.2).  Counts only: no
      LLM call, no cost written, and no theory marked interpreted -- the same theories
      stay due until a live run completes (write-back discipline 3). *)
-  val dry_run : bool -> Context.generic list -> string list * int
+  val dry_run : bool -> theory list -> string list * int
   (* Level 2 alone, one theory, no level-1 due-filter -- exposed for sizing
      measurements (archive/plans/INFRA_FILTER_REWORK_PLAN.md step 4). *)
   val dry_run' : Context.generic -> int
@@ -95,16 +94,17 @@ signature SEMANTIC_STORE = sig
      archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.2), semantic digest, dependency edges.  `tie_break_degraded` says the source-order offsets behind
      the theorem dedup are not real, so the surviving occurrence -- and hence its
      position -- may be the wrong one (§8.6).  Exposed for tests. *)
-  val enumerate_entries : Context.generic ->
-    {file_path: string, theory_longname: string,
-     theory_key: Universal_Key.universal_key,
-     entries: (Universal_Key.entity * string * string
-               * Entity_Position.entity_position option * Word8Vector.vector * string
-               * (Word8Vector.vector option * Word8Vector.vector option * string) option
-               * Universal_Key.constituent list * string option
-               * Word8Vector.vector option * Word8Vector.vector list) list,
-     position_report: Entity_Position.report,
+  type wire_entry =
+    Universal_Key.entity * string * string * Entity_Position.entity_position option
+    * Universal_Key.universal_key * string
+    * (Universal_Key.universal_key option * Universal_Key.universal_key option * string) option
+    * Universal_Key.constituent list * string option
+    * Word8Vector.vector option * Word8Vector.vector list
+  type payload =
+    {file_path: string, theory_longname: string, theory_key: Universal_Key.universal_key,
+     entries: wire_entry list, position_report: Entity_Position.report,
      tie_break_degraded: bool}
+  val enumerate_entries : Context.generic -> payload
 
   (* The position backfill (archive/plans/ENTITY_POSITION_PLAN.md §8): give the records already
      collected from the AFP their entity positions, with no LLM involved.  Route A
@@ -139,8 +139,8 @@ signature SEMANTIC_STORE = sig
 
   (* Create a callback that Python can invoke to interpret theories by name
      (short or long).  Argument (context, names, force, dry_run, include_context);
-     include_context adds the caller's context to the roots AS IS (a Proof
-     context stays a Proof root -- the aoa-startup context-root ruling, §8);
+     include_context adds the background theory of the caller's context to the
+     roots;
      dry_run = true runs `dry_run` above on those roots and returns its
      (theory long names, entity count) report, dry_run = false interprets
      (via interpret_with_parallel) and returns ([], ~1) -- a live run reports
@@ -222,10 +222,20 @@ signature SEMANTIC_STORE = sig
      * (Universal_Key.universal_key option * Universal_Key.universal_key option * string) option
      * Universal_Key.constituent list * string option) list * Entity_Position.report
 
-  (* The eleven entity enumeration callbacks, with infra filters and theorem cache
-     baked in.  The predicate keeps proof methods by name, on top of the infra
-     filter.  Build them once per call_command: each callback owns the catalog of
-     that request. *)
+  (* LINK_LAYER_PLAN.md §8 step 5 (A1): the finder's links of the context; when the finder
+     fails, no links and a warning naming the failure, and an event-log record when it is
+     a resource exhaustion (D69).  A proper interrupt (a cancellation, a timeout)
+     propagates. *)
+  val degrade_links : (Proof.context -> 'a list) -> Proof.context -> 'a list
+  (* LINK_LAYER_PLAN.md §4.2: the callback "Semantic_Store.links" (argument unit)
+     returning the context's (local key, link) list, computed on its first call through
+     degrade_links and kept for the lifetime of the retrieval closure that holds it *)
+  val make_links_callback : Proof.context -> Remote_Procedure_Calling.callback'
+
+  (* The retrieval closure: the eleven entity enumeration callbacks, with infra
+     filters and theorem cache baked in, plus "Semantic_Store.links".  The
+     predicate keeps proof methods by name, on top of the infra filter.  Build
+     them once per call_command: each callback owns the catalog of that request. *)
   val make_entity_callbacks : Context.generic -> (string -> bool) ->
     Context_Callbacks.context_unpacker -> Remote_Procedure_Calling.callback' list
 
@@ -537,26 +547,6 @@ fun strip_trailing_begin src =
     else src
   end
 
-(* plain text: embedded/serialized strings carry no markup and no line breaks *)
-val string_of_pretty = RPC_Pretty.plain_string
-
-fun string_of_term ctxt =
-    let val ctxt' = ctxt
-              |> Config.put Printer.show_types false
-              |> Config.put Printer.show_sorts false
-              |> Config.put Printer.show_markup false
-              |> Config.put Printer.show_structs false
-              |> Config.put Printer.show_question_marks true
-     in Syntax.pretty_term ctxt' #> string_of_pretty
-    end
-
-fun string_of_typ ctxt =
-    let val ctxt' = ctxt
-              |> Config.put Printer.show_sorts true
-              |> Config.put Printer.show_markup false
-     in Syntax.pretty_typ ctxt' #> string_of_pretty
-    end
-
 (* --- Main orchestration --- *)
 
 local
@@ -654,8 +644,8 @@ fun build_entries (context : Context.generic)
   let
     val thy = Context.theory_of context
     val ctxt = Context.cases Proof_Context.init_global I context
-    val pp = string_of_term ctxt
-    val pp_typ = string_of_typ ctxt
+    val pp = Explain_Term.string_of_term ctxt
+    val pp_typ = Explain_Term.string_of_typ ctxt
     (* An entry's expr when it is computed here -- a theorem-alike's statement, a
        constant's type, "" for the kinds that store none -- and NONE for the kinds
        whose expr is the source of the command that declared them: types, classes,
@@ -994,17 +984,13 @@ fun process_facts_into_cache (context : Context.generic)
   let
     val thy = Context.theory_of context
     val all_facts = Context.cases Global_Theory.facts_of Proof_Context.facts_of context
-    val fact_space = Facts.space_of all_facts
   in
     maps (fn (name, thms) =>
-      let val entry_opt = Context_Callbacks.entry_of_fact all_facts name
+      let val entry_opt = Context_Callbacks.accessible_entry_of_fact all_facts name
       in case entry_opt of
            NONE => []
-         | SOME e =>
-             if #concealed e orelse
-                Long_Name.is_hidden (Name_Space.intern fact_space name)
-             then []
-             else let
+         | SOME _ =>
+             let
                val n = length thms
              in map_index (fn (i, thm) =>
                let val thm' = Thm.transfer thy thm
@@ -1260,6 +1246,54 @@ fun dedup_against existing new_entries =
   in filter (fn e => not (Bytehashtab.defined seen (#uk e))) new_entries end
 
 
+(* The wire form of a link (§2): (template key, statement, source locale, (note,
+   index), params, rewrites, entities); the level stays in ML. *)
+local open MessagePackBinIO.Pack in
+(*D41: (verdict code, parameter name, instance text); code 2, rev 4's
+  Type_Fixed, is never sent*)
+fun pack_verdict Link_Finder.Unchanged = 0
+  | pack_verdict Link_Finder.Renamed = 1
+  | pack_verdict Link_Finder.Instantiated = 3
+
+fun pack_link_param ({verdict, name, text}: Link_Finder.param) = (pack_verdict verdict, name, text)
+
+fun pack_link ({template, statement, source, note, params, rewrites, entities, level = _}
+      : Link_Finder.link) =
+  packTuple7 (Universal_Key.pack_universal_key, packString, packString,
+      packPair (packString, packInt),
+      packList (packTuple3 (packInt, packString, packString) o pack_link_param),
+      packList (packPair (packString, packString)),
+      packList (packPair (packString, Universal_Key.pack_universal_key)))
+    (template, statement, source, note, params, rewrites, entities)
+
+(*Isabelle_Thread's capture turns a raw Interrupt into Interrupt_Breakdown when the
+  thread's break flag is unset (resource exhaustion), which degrades and is recorded in
+  the event log (D69); caught here because mk_callback would answer a breakdown as an
+  interrupt and re-raise it*)
+fun degrade_links finder ctxt =
+  (case Exn.capture_body (fn () => finder ctxt) of
+    Exn.Res links => links
+  | Exn.Exn exn =>
+      if Exn.is_interrupt_proper exn then Exn.reraise exn
+      else
+        (Exception_Log.record_breakdown "Semantic_Store.links" exn;
+         warning ("No links in this context: the link finder failed: " ^
+           (if Exn.is_interrupt_breakdown exn then "resource exhaustion (Interrupt_Breakdown)"
+            else Runtime.exn_message exn));
+         []))
+
+fun make_links_callback ctxt =
+  let val links = Lazy.lazy (fn () => degrade_links Link_Finder.links ctxt) in
+    Remote_Procedure_Calling.mk_callback {
+      name = "Semantic_Store.links",
+      on_interrupt = Remote_Procedure_Calling.Reraise,
+      arg_schema = MessagePackBinIO.Unpack.unpackUnit,
+      ret_schema = packList (packPair (Universal_Key.pack_universal_key, pack_link)),
+      function = fn () => Lazy.force links,
+      timeout = NONE}
+  end
+end
+
 (* Convenience callbacks with infra filters and theorem cache baked in.
    Processes any uncached facts at creation time so callbacks see 0 uncached. *)
 fun make_entity_callbacks (init_context: Context.generic) (keep_method: string -> bool)
@@ -1398,7 +1432,8 @@ fun make_entity_callbacks (init_context: Context.generic) (keep_method: string -
       (SOME (not o is_infra_induct_thm)) (rule_cache induct_static induct_members) ctxt_unpack,
     Context_Callbacks.make_case_split_rules_callback
       extract_case_split_net Theory_Structure.is_case_split_rule_name Theory_Structure.has_rule_shape
-      (SOME (not o is_infra_thm)) (rule_cache case_static case_members) ctxt_unpack
+      (SOME (not o is_infra_thm)) (rule_cache case_static case_members) ctxt_unpack,
+    make_links_callback (Context.proof_of init_context)
   ] end
 
 (* Python marks an exception message as ALREADY human-readable by prefixing it with
@@ -1421,12 +1456,27 @@ fun interpretation_rpc_error message =
     SOME human => error human
   | NONE => error (String.concat ["Semantic interpretation RPC failed: ", message]))
 
+(* --- The interpreter payload: the wire entry and one interpret_file call --- *)
+
+type wire_entry =
+  Universal_Key.entity * string * string * Entity_Position.entity_position option
+  * Universal_Key.universal_key * string
+  * (Universal_Key.universal_key option * Universal_Key.universal_key option * string) option
+  * Universal_Key.constituent list * string option
+  * Word8Vector.vector option * Word8Vector.vector list
+
+(* One interpreter call (the interpret_file payload). *)
+type payload =
+  {file_path: string, theory_longname: string, theory_key: Universal_Key.universal_key,
+   entries: wire_entry list, position_report: Entity_Position.report,
+   tie_break_degraded: bool}
+
 (* The enumerate half of interpret' (CHECK_OUTDATE_PLAN.md §8's two-piece split):
    steps 1-6 -- enumerate the context's entities, build the wire entries, run the
    label-uniqueness assert -- with no LLM-side effect.  Shared verbatim by the live
    path (interpret') and the dry run (dry_run_payload), so both see the same
    entities. *)
-fun enumerate_entries (context : Context.generic) =
+fun enumerate_entries (context : Context.generic) : payload =
   let
     (* 1. Get theory information *)
     val thy = Context.theory_of context
@@ -1805,7 +1855,7 @@ fun interpret_file_callbacks (config_cb : Remote_Procedure_Calling.callback')
     val entries_of_names_cb = Context_Callbacks.make_entries_of_names_callback pu
   in
     [uk_cb, theory_info_cb, desugar_cb, resolve_notation_cb, config_cb,
-     entries_of_names_cb]
+     entries_of_names_cb, make_links_callback (Context.proof_of context)]
   end
 
 (* The send half of interpret': build the tool callbacks and hand the enumerated
@@ -1817,8 +1867,7 @@ fun interpret_file_callbacks (config_cb : Remote_Procedure_Calling.callback')
    context, carried down for the same reason (interpret_file_callbacks). *)
 fun send_for_interpretation (driver : string) (config_cb : Remote_Procedure_Calling.callback')
       (context : Context.generic)
-      {file_path, theory_longname, theory_key, entries, position_report = _,
-       tie_break_degraded = _} : usage * usage =
+      ({file_path, theory_longname, theory_key, entries, ...} : payload) : usage * usage =
   let
     val cmd = make_interpret_file_cmd (interpret_file_callbacks config_cb context)
 
@@ -1842,8 +1891,9 @@ fun send_for_interpretation (driver : string) (config_cb : Remote_Procedure_Call
   end
 
 fun interpret' (driver : string) (config_cb : Remote_Procedure_Calling.callback')
-    (context : Context.generic) : usage * usage =
-  let val payload = enumerate_entries context
+    (thy : theory) : usage * usage =
+  let val context = Context.Theory thy
+      val payload = enumerate_entries context
   in
     if null (#entries payload) then (zero_usage, zero_usage)
     else send_for_interpretation driver config_cb context payload
@@ -1855,8 +1905,8 @@ fun interpret' (driver : string) (config_cb : Remote_Procedure_Calling.callback'
    changed / uncached entities.  Their dependents are not counted -- whether a change
    propagates is decided by the semantic change gate after re-interpretation, which a
    dry run never runs.  Exact at zero.  No driver is involved: nothing runs. *)
-fun dry_run_payload {file_path, theory_longname, theory_key, entries,
-                     position_report = _, tie_break_degraded = _} : int =
+fun dry_run_payload ({file_path, theory_longname, theory_key, entries, ...} : payload)
+    : int =
   if null entries then 0
   else
     Remote_Procedure_Calling.call_command interpret_file_dry_run_cmd
@@ -1996,7 +2046,7 @@ fun interpret_cone (driver : string) (config_cb : Remote_Procedure_Calling.callb
     fun body thy () =
       if skip_interpreted force thy then (zero_usage, zero_usage)
       else
-        let val r = interpret' driver config_cb (Context.Theory thy)
+        let val r = interpret' driver config_cb thy
             val _ = mark_interpreted thy
         in r end
     fun add2 ((c1, h1), (c2, h2)) = (add_usage (c1, c2), add_usage (h1, h2))
@@ -2170,63 +2220,23 @@ fun plan_interpretation (force : bool) (roots : theory list) : theory list =
 (* Mode 4 / dry run -- see the signature comment.  Level 2 reuses schedule_dag for
    parallelism only: dry bodies neither mark nor skip (level 1 already picked the work
    set), and enumeration does not depend on ancestors' interpretation state, so the
-   edges merely bound concurrency the same way a live run's do.
-   Roots are Context.generic, mirroring interpret_with_parallel: a Proof root is
-   additionally enumerated as itself, sequentially -- exactly the entities the
-   live path would hand the proof channel (never skipped, never marked). *)
-fun dry_run (force : bool) (roots : Context.generic list) : string list * int =
+   edges merely bound concurrency the same way a live run's do. *)
+fun dry_run (force : bool) (roots : theory list) : string list * int =
   let
-    val work = plan_interpretation force (map Context.theory_of roots)
+    val work = plan_interpretation force roots
     val m = length work
     val _ =
       if m = 0 then ()
       else writeln (String.concat [
         "[Semantic_Embedding] Enumerating and cache-filtering entities of ",
         string_of_int m, (if m = 1 then " theory..." else " theories...")])
-    val proofs = filter (fn Context.Proof _ => true | _ => false) roots
-    (* Theory channel: enumerate once per theory, count via the RPC, and KEEP
-       the enumerated uks.  No uk may be counted twice inside one dry run, or n
-       overstates the seed set: the proof channel below must
-       never re-count a uk this channel already counted -- the proof-context
-       enumeration is subtractive only for static theorems, while
-       constants/types/classes/locales/collections/methods/rules re-enumerate
-       with identical uks, which the live run pays once (theory channel writes
-       first, the proof channel's copies are cache-filtered) but a plain sum
-       here counted twice (review R2). *)
-    val work_results =
+    (* Theory channel: enumerate once per theory and count via the RPC. *)
+    val counts =
       schedule_dag "Semantic_Store.dry_run"
-        (fn thy => fn () =>
-           let val payload = enumerate_entries (Context.Theory thy)
-           in (dry_run_payload payload, map #5 (#entries payload)) end)
+        (fn thy => fn () => dry_run_payload (enumerate_entries (Context.Theory thy)))
         work
-    val n_work = fold (fn (n, _) => fn acc => n + acc) work_results 0
-    val counted =
-      let
-        val size = fold (fn (_, uks) => fn a => a + length uks) work_results 16
-        val tab = Bytehashtab.empty size
-      in
-        List.app (fn (_, uks) =>
-          List.app (fn uk => Bytehashtab.update tab (uk, ())) uks) work_results;
-        tab
-      end
-    (* Proof channel: only entries no work theory enumerated.  If the Proof
-       root's background theory is NOT in `work` (already interpreted and
-       skipped), nothing was collected for it and its entries pass through
-       untouched -- exactly the entities the live proof channel would pay for. *)
-    val pcounts = proofs |> map (fn ctxt =>
-      let
-        val {file_path, theory_longname, theory_key, entries, position_report,
-             tie_break_degraded} = enumerate_entries ctxt
-        val entries' =
-          filter_out (fn e => Bytehashtab.defined counted (#5 e)) entries
-      in
-        dry_run_payload {file_path = file_path, theory_longname = theory_longname,
-                         position_report = position_report,
-                         tie_break_degraded = tie_break_degraded,
-                         theory_key = theory_key, entries = entries'}
-      end)
   in
-    (map Context.theory_long_name work, fold (curry op +) pcounts n_work)
+    (map Context.theory_long_name work, fold (curry op +) counts 0)
   end
 
 (* --- the interpretation lock (SEMANTIC_CHANGE_GATE_PLAN.md §8) --- *)
@@ -2282,19 +2292,17 @@ fun check_embedding_service (config_cb : Remote_Procedure_Calling.callback') : u
     interpretation_rpc_error message
 
 (* Interpret the merged ancestor cone of `roots` under one DAG, at the width the REPL was
-   started with (-o threads=N). A `Context.Proof` root additionally has its own proof-local
-   entities interpreted, last and sequentially, and is never marked (a proof context has no
-   theory hash). *)
+   started with (-o threads=N). *)
 (* `cfg_context` is the context whose `declare [[Semantic_Embedding.interpretation_driver]]`
-   governs this run.  It is a SEPARATE parameter rather than `hd roots` because the roots
-   are not always where the user declared it: make_interpret_theory_callback resolves its
-   roots from theory NAMES, so `map Context.Theory` there would throw away the caller's
-   context — and with it the declaration.  Resolving here, once, is also what keeps the
-   whole cone on one driver (see interpretation_driver's comment). *)
+   governs this run.  It is a SEPARATE parameter because the roots are theories, which do
+   not carry a declaration made in a proof or a local theory (and
+   make_interpret_theory_callback resolves its roots from theory NAMES).  Resolving here,
+   once, is also what keeps the whole cone on one driver (see interpretation_driver's
+   comment). *)
 local
 
 fun interpret_with_parallel' (cfg_context : Context.generic) (force : bool)
-      (roots : Context.generic list) : unit =
+      (roots : theory list) : unit =
   let
     val driver = Config.get_generic cfg_context interpretation_driver
     (* The run's one Config.lookup callback, built here from the same context as the
@@ -2302,17 +2310,13 @@ fun interpret_with_parallel' (cfg_context : Context.generic) (force : bool)
        for it. *)
     val config_cb = Config.make_config_lookup_callback
                       (Context_Callbacks.static_context_unpacker cfg_context)
-    val cone = collect_cone (map Context.theory_of roots)
+    val cone = collect_cone roots
     (* Same set plan_interpretation reports, by construction: the command shows the user
        a count, then this runs the work.  `cone` itself is still needed below -- interpret_cone
        turns its already-interpreted nodes into relay tasks so a work node waits for its
        uninterpreted transitive ancestors. *)
     val work = filter_out (skip_interpreted force) cone
-    val proofs = filter (fn Context.Proof _ => true | _ => false) roots
-    (* count includes the proof contexts, matching the old guard which folded them
-       into `contexts` *)
-    val n_units = length work + length proofs
-    (* Read the flag off the first root; with no roots there is nothing to report. *)
+    val n_units = length work
     (* Progress the user asked for, not opt-in diagnostics -- so NOT the
        Semantic_Store_verbose-gated `vtracing` (with the gate off this run reported nothing
        at all in Isabelle, which is how a silent failure stayed silent), and NOT `tracing`
@@ -2333,19 +2337,10 @@ fun interpret_with_parallel' (cfg_context : Context.generic) (force : bool)
     val _ = if n_units = 0 then () else check_embedding_service config_cb
 
     (* Nothing to do (the common resume case): do not build a graph or fork relay tasks. *)
-    val (ttotal, thist) =
+    val (total, hist) =
       if null work then (zero_usage, zero_usage)
       else interpret_cone driver config_cb force cone
 
-    (* Proof contexts run LAST and sequentially; interpreted but never marked. *)
-    val (ptotal, phist) =
-      fold (fn ctx => fn (acc, hacc) =>
-        let val (cur, cum) = interpret' driver config_cb ctx
-        in (add_usage (acc, cur), add_usage (hacc, cum)) end)
-      proofs (zero_usage, zero_usage)
-
-    val total = add_usage (ttotal, ptotal)
-    val hist = add_usage (thist, phist)
     val _ = vtr (String.concat [
         "[Semantic_Embedding] Done: ", Int.toString n_units, " theories. This run cost ",
         fmt_usage total, "; everything spent on these theories so far: ",
@@ -2367,10 +2362,10 @@ val lock_busy_error =
   "run_semantic_interpretation: another semantic interpretation run is in progress on \
   \this database. Wait for it to finish, then run the command again."
 
-(* No caller in the repository; run_semantic_interpretation is the one user command
-   on this path, so its text is reused deliberately (D17). *)
+(* Called by Interpretation_Lock_Test only; run_semantic_interpretation is the one user
+   command on this path, so its text is reused deliberately (D17). *)
 fun interpret force context =
-  (case interpret_with_parallel context force [context] of
+  (case interpret_with_parallel context force [Context.theory_of context] of
     SOME () => ()
   | NONE => error lock_busy_error)
 
@@ -2390,23 +2385,16 @@ fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpa
     function = fn (context, names, force, dry, include_context) =>
       let
         val named = map (Theory_Hash.resolve_theory context) names
+        (* include_context adds the background theory of the caller's context
+           (CHECK_OUTDATE_PLAN.md §8 "aoa 启动的 context 根", its "包含当前 theory 自身"
+           half): no fact of a proof context is interpreted, they are linked at query
+           time (LINK_LAYER_PLAN.md D9, D39, D58, §4.2). *)
+        val roots = named @ (if include_context then [Context.theory_of context] else [])
         (* As in interpret_command.ML:63 and semantic_interpretation_app.ML: push the
            hash->name map to Python before interpreting, or Python cannot resolve the
            ancestor theories the cone sweeps in.  store_theory_hash walks
            Theory.nodes_of, so the roots cover the whole cone. *)
-        val _ = List.app Theory_Hash.store_theory_hash named
-        (* include_context: the caller's context joins the roots AS IS -- a
-           Proof/local-theory context is NOT demoted to its theory
-           (CHECK_OUTDATE_PLAN.md §8 "aoa 启动的 context 根"): before `end`, a
-           locale block's lemmas exist only in the local context, where only
-           the proof channel's subtractive enumeration can see them.  Repeat
-           cost is bounded by uk-level caching. *)
-        val _ =
-          if include_context
-          then Theory_Hash.store_theory_hash (Context.theory_of context)
-          else ()
-        val roots =
-          map Context.Theory named @ (if include_context then [context] else [])
+        val _ = List.app Theory_Hash.store_theory_hash roots
       in
         if dry then dry_run force roots
         else

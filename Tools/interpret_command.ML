@@ -98,7 +98,7 @@ fun run (force : bool) names state =
        enrols dependents) or fewer (an ancestor theory's UNCHANGED verdict walls off a
        dependent counted here; SEMANTIC_CHANGE_GATE_PLAN.md §5.2); exact at zero.  The
        theory names only show the user the scope. *)
-    val (work_names, n) = Semantic_Store.dry_run force (map Context.Theory roots)
+    val (work_names, n) = Semantic_Store.dry_run force roots
     val m = length work_names
 
     (* Phase 2: whole-DB vector completion (missing-only) for the configured embedding
@@ -151,8 +151,7 @@ fun run (force : bool) names state =
            only the command's own context sees a `declare
            [[Semantic_Embedding.interpretation_driver]]` made above this command. *)
         fun go () =
-          (case Semantic_Store.interpret_with_parallel (Context.Proof ctxt) force
-                  (map Context.Theory roots) of
+          (case Semantic_Store.interpret_with_parallel (Context.Proof ctxt) force roots of
             SOME () => embed_phase ()
           | NONE => error Semantic_Store.lock_busy_error)
       in

@@ -103,52 +103,24 @@ def _resolve_driver_and_model(from_isabelle: str):
 
 # --- Entity kinds and the agent's addressing labels ---
 
-_KIND_CONSTANT = 1
-_KIND_THEOREM = 2
-_KIND_TYPE = 3
-_KIND_CLASS = 4
-_KIND_LOCALE = 5
-_KIND_THEOREM_COLLECTION = 6
-_KIND_METHOD = 7
-_KIND_INTRODUCTION_RULE = 0x12
-_KIND_ELIMINATION_RULE = 0x22
-_KIND_INDUCTION_RULE = 0x32
-_KIND_CASE_SPLIT_RULE = 0x42
-# The agent echoes these labels back through the `answer` tool (its `type`
-# enum is this table's values) and they are matched by `_label`.
-_KIND_PROMPT_LABELS = {
-    _KIND_CONSTANT: "constant",
-    _KIND_THEOREM: "lemma",
-    _KIND_TYPE: "type",
-    _KIND_CLASS: "typeclass",
-    _KIND_LOCALE: "locale",
-    _KIND_THEOREM_COLLECTION: "named theorem bundles",
-    _KIND_METHOD: "proof method",
-    _KIND_INTRODUCTION_RULE: "introduction rule",
-    _KIND_ELIMINATION_RULE: "elimination rule",
-    _KIND_INDUCTION_RULE: "induction rule",
-    _KIND_CASE_SPLIT_RULE: "case-split rule",
-}
-
-# Module-load invariants for the agent addressing scheme (see `_label`).  The
-# ML side (Universal_Key.entity_kind_int) and this dict must agree: every
-# interpretable entity kind needs exactly one title, and titles must be
-# injective — the agent echoes the title back to address an entry, so two kinds
-# sharing a title would make answers ambiguous, and a missing kind would route
-# to the dead "unknown" branch.  Asserting here makes such drift fail fast at
-# import rather than only on a coincidental runtime collision.  THEORY (0) and
-# EXPERIENCE (8) are excluded: theory entities are never interpreted, and an
-# experience carries its own goal_description as the interpretation (it is
-# written directly, never produced by this deformalization pipeline).
+# The kinds the interpreter never sees: theory entities are never
+# interpreted, and an experience carries its own goal_description as the
+# interpretation (it is written directly, never produced by this
+# deformalization pipeline).
 _NON_INTERPRETABLE_KINDS = (EntityKind.THEORY, EntityKind.EXPERIENCE)
+# The agent echoes these labels back through the `answer` tool (its `type`
+# enum is this table's values) and they are matched by `_label`.  Derived from
+# EntityKind's own labels, so a kind added in Isabelle_RPC is addressable here
+# without a second table to keep in step (the ML side's
+# Universal_Key.entity_kind_int lists the same ints).
+_KIND_PROMPT_LABELS = {
+    int(k): k.label for k in EntityKind if k not in _NON_INTERPRETABLE_KINDS}
+
+# Titles must be injective: the agent echoes the title back to address an
+# entry, so two kinds sharing a title would make answers ambiguous.
 assert len(set(_KIND_PROMPT_LABELS.values())) == len(_KIND_PROMPT_LABELS), (
     "_KIND_PROMPT_LABELS titles must be injective (the agent addresses entries "
     "by title + name)")
-assert set(_KIND_PROMPT_LABELS) == {
-    k.value for k in EntityKind if k not in _NON_INTERPRETABLE_KINDS
-}, ("_KIND_PROMPT_LABELS keys must cover exactly the interpretable EntityKind "
-    "ints (all kinds except THEORY and EXPERIENCE); it has drifted from "
-    "Universal_Key.entity_kind_int")
 
 _BATCH_SIZE = 20
 
@@ -261,19 +233,27 @@ Report exactly one verdict through `mcp__isabelle_semantics__verdict` \
 with a one-sentence reason), then stop."""
 
 
-def _label(e: Entry) -> str:
-    """The agent-facing addressing label for an entry: kind-title + name.
+def _label_key(e: Entry) -> 'tuple[str, str]':
+    """The agent-facing address of an entry: (kind title, name).
 
     This is the ONLY handle the agent has to address an entry (it echoes
-    ``{type, name}`` back through the ``answer`` tool).  It must be IDENTICAL
-    everywhere it is formed — the prompt the agent reads (`format_entries` /
-    `_pretty_print_entry`) and the answer-routing map `_label_to_idx` — so
-    the label the agent echoes round-trips to the right entry.  Use `.get(...,
-    "unknown")` (not `[...]`) so the key matches what `format_entries` shows."""
-    return f"{_KIND_PROMPT_LABELS.get(e.kind, 'unknown')} {e.name}"
+    ``{type, name}`` back through the ``answer`` tool), so the routing map
+    `_label_to_idx` is keyed by this pair and the prompt shows the same two
+    strings (`_entry_head`).  Use `.get(..., "unknown")` (not `[...]`) so the
+    key matches what the prompt shows."""
+    return (_KIND_PROMPT_LABELS.get(e.kind, 'unknown'), e.name)
 
 
-def _pretty_print_entry(e: Entry) -> str:
+def _label(e: Entry) -> str:
+    """The address as one string, for logs and messages."""
+    return " ".join(_label_key(e))
+
+
+def _entry_head(e: Entry) -> str:
+    """The head line of an entry as the prompt and every printer show it:
+    `<title> <name>: <statement>` (no statement part for an entity without
+    one).  One function, so the prompt, the retry prompt and the pretty
+    printer cannot drift apart."""
     pp = _label(e)
     if e.prop_str:
         pp += f": {e.prop_str}"
@@ -282,7 +262,7 @@ def _pretty_print_entry(e: Entry) -> str:
 
 class Entry(NamedTuple):
     """A single entity to interpret."""
-    kind: int            # _KIND_CONSTANT, _KIND_THEOREM, etc.
+    kind: int            # the EntityKind int (Universal_Key.entity_kind_int)
     name: str            # fully qualified name (Unicode)
     prop_str: str        # printed proposition / type signature (Unicode); stored as expr
     # where the entity is declared, as (portable symbolic file path, line, byte
@@ -462,13 +442,13 @@ class AgentTask:
         # side (Semantic_Store, (entity-kind, name) assert) guarantees
         # uniqueness, so this only ever fires on a genuine regression.
         self.results: list[str | None] = [None] * len(entries)
-        self._label_to_idx: dict[str, int] = {}
+        self._label_to_idx: dict[tuple[str, str], int] = {}
         for i, e in enumerate(entries):
-            key = _label(e)
+            key = _label_key(e)
             if key in self._label_to_idx:
                 j = self._label_to_idx[key]
                 raise ValueError(
-                    f"duplicate interpretation label {key!r} at entries {j} and {i} "
+                    f"duplicate interpretation label {_label(e)!r} at entries {j} and {i} "
                     f"(uks {bytes(entries[j].universal_key).hex()} and "
                     f"{bytes(e.universal_key).hex()}); (kind,name) labels must be "
                     f"unique to be addressable by the agent")
@@ -763,9 +743,7 @@ class InterpretationTask(AgentTask):
         prev_prov: 'tuple[str | None, str | None]' = (None, None)
         for i in indices:
             e = self.entries[i]
-            line = (f"  [line {e.line_number}] " if e.line_number > 0 else "  ") + _label(e)
-            if e.prop_str:
-                line += f": {e.prop_str}"
+            line = (f"  [line {e.line_number}] " if e.line_number > 0 else "  ") + _entry_head(e)
             if e.prompt_extra:
                 extra, prev_prov = self._collapse_provenance(e.prompt_extra, prev_prov)
                 # indent the extra context block under the entry line
@@ -911,7 +889,7 @@ def mk_answer_tool(task: InterpretationTask) -> SdkMcpTool[Any]:
         errors = []
         count = 0
         for item in args["interpretations"]:
-            key = f"{item['type']} {item['name']}"
+            key = (item['type'], item['name'])
             # Address by the label->entry-index map: it indexes the FULL
             # `entries` list (a lookup through a deduplicated label list once
             # wrote translations onto neighbouring entries' universal_keys).
@@ -919,7 +897,7 @@ def mk_answer_tool(task: InterpretationTask) -> SdkMcpTool[Any]:
             # starts no gate.
             idx = task._label_to_idx.get(key)
             if idx is None or task.state[idx] == _NOT_ENROLLED:
-                errors.append(f"Unknown entry: {key!r}")
+                errors.append(f"Unknown entry: {' '.join(key)!r}")
                 continue
             # Strip lone UTF-16 surrogates the model occasionally emits mid math-
             # alphanumeric glyph (e.g. a bare U+D835 with no low half).  They
@@ -929,7 +907,7 @@ def mk_answer_tool(task: InterpretationTask) -> SdkMcpTool[Any]:
             # "no low surrogate in string", wedging the whole file.
             trans = re.sub(r"[\ud800-\udfff]", "", item["translation"])
             task.on_answer(idx, trans)
-            _log.info("answer: %s = %s", key, trans)
+            _log.info("answer: %s = %s", " ".join(key), trans)
             count += 1
         remaining = task.unanswered_in_batch()
         cs = "" if count == 1 else "s"
@@ -1763,7 +1741,7 @@ async def interpret_file(
     driver_name, driver_cls, model = _resolve_driver_and_model(driver)
 
     # Build Unicode pretty-prints for all entries
-    pretty_prints = [_pretty_print_entry(e) for e in entries]
+    pretty_prints = [_entry_head(e) for e in entries]
     n_cached = n - len(seeds)
     # Say what is about to happen in words, not internal vocabulary: "entries/cached/to
     # interpret" means nothing to someone watching from a theory buffer.

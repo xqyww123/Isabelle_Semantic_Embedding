@@ -138,51 +138,32 @@ in
 end
 \<close>
 
-subsection \<open>Dry-run metering: a Proof root's uks are not double-counted (R2)\<close>
+subsection \<open>Dry-run metering: a live root theory is due, and its own uncached entities are counted\<close>
 
-definition r2_dedup_probe :: nat where "r2_dedup_probe = 0"
+definition dry_run_probe :: nat where "dry_run_probe = 0"
 
 ML \<open>
-(* The dry run is the system's one workload metering (the quote must equal the
-   live work).  A Proof root riding with its own background theory must not
-   re-count that theory's entities: the proof-context enumeration is
-   subtractive only for static theorems, so constants etc. re-enumerate with
-   identical uks -- the live run pays once via the cache filter, and since R2
-   the dry run's proof channel is filtered against the theory channel's
-   enumerated uks.  r2_dedup_probe above is certainly uncached, so before the
-   fix the two quotes below differed by at least one. *)
+(* The dry run is the system's one workload metering.  A live root theory is in
+   its own work set, and its own entities (dry_run_probe and its _def, uncached)
+   are counted.  NB the quotes are RPC rounds against the shared store: this probe
+   follows the test-exclusivity discipline -- never run it concurrently with a
+   live interpretation. *)
 let
   val _ = Remote_Procedure_Calling.load ["Isabelle_Semantic_Embedding"]
   val thy = \<^theory>
-  val ctxt = \<^context>
-  (* Vacuity guard 3 -- the discriminator itself (round-2 implementation
-     review): the dedup is only observable on an UNCACHED uk enumerated by
-     both channels.  r2_dedup_probe is a constant of THIS theory, so both
-     channels enumerate it; assert it is really absent from the store.
-     NB the two quotes below are separate RPC rounds against the shared
-     store: this probe follows the test-exclusivity discipline -- never run
-     it concurrently with a live interpretation. *)
   val _ =
     (case Semantic_Store.query_semantics (Context.Theory thy)
-            (Universal_Key.Constant "Test_All.r2_dedup_probe") false of
+            (Universal_Key.Constant "Test_All.dry_run_probe") false of
       NONE => ()
-    | SOME _ => error "Test_All: probe vacuous -- r2_dedup_probe already cached")
-  val (works, n_thy) = Semantic_Store.dry_run false [Context.Theory thy]
-  val (_, n_both) =
-    Semantic_Store.dry_run false [Context.Theory thy, Context.Proof ctxt]
+    | SOME _ => error "Test_All: probe vacuous -- dry_run_probe already cached")
+  val (works, _) = Semantic_Store.dry_run false [thy]
+  val own = Semantic_Store.dry_run' (Context.Theory thy)
 in
-  writeln ("dry-run metering: theory-only = " ^ string_of_int n_thy ^
-           ", theory+proof = " ^ string_of_int n_both);
-  (* Vacuity guards (the S-suite lesson: an assertion satisfiable through an
-     unrelated path proves nothing).  The discriminating precondition is that
-     the CURRENT theory is in the work set with something uncached in it. *)
+  writeln ("dry-run metering of the current theory: " ^ string_of_int own);
   if member (op =) works (Context.theory_long_name thy) then ()
-  else error "Test_All: probe vacuous -- current theory not in the work set";
-  if n_thy > 0 then ()
-  else error "Test_All: probe vacuous -- nothing uncached (r2_dedup_probe should be)";
-  if n_both = n_thy then writeln "  proof-channel dedup: OK"
-  else error ("Test_All: the quote drifts when the Proof root rides along: " ^
-              string_of_int n_thy ^ " vs " ^ string_of_int n_both)
+  else error "Test_All: the current theory is not in the work set";
+  if own > 0 then ()
+  else error "Test_All: the current theory's uncached entities are not counted"
 end
 \<close>
 

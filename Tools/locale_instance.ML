@@ -13,9 +13,10 @@
   - Locale.registrations_of yields, per locale, the registration morphisms as
     composite closures (parameter instantiation $> defines/rewrites mixins $>
     export) exactly as stored when the interpretation command ran.
-  - Replaying the locale's notes (Locale.locale_notes) through such a closure
-    with Morphism.fact reproduces the registered instance theorems verbatim
-    (alpha-convertible props), including defines-folded and rewritten forms.
+  - Replaying the locale's notes through such a closure with Morphism.fact
+    (Link_Finder.replay_notes, the replay shared with the link finder)
+    reproduces the registered instance theorems verbatim (alpha-convertible
+    props), including defines-folded and rewritten forms.
   - Matching is content-first: the 15-byte thm128 digest of a replayed
     proposition is compared against the digest embedded in each entry's
     universal key (bytes 17..31 of a 32-byte theorem key).  A name check is
@@ -24,11 +25,12 @@
     registration would have produced; digest-only hits are reported after
     name-confirmed ones and suppressed entirely when no name confirms
     (hand-written lemma alpha-equal to an instance, or degenerate collapse).
-  - The exported global template fact is located via the note theorem's name
-    hint when present (lemma/lemmas/assumes notes) and otherwise by
-    reconstructing the qualified name from the note binding (definition /
-    function / inductive package notes carry no hint but reconstruct
-    reliably, locale name + Binding.long_name_of).
+  - The exported global template fact is named by Link_Finder.template_name
+    (through replay_notes), the one place that computes a template's global
+    name: the note theorem's
+    name hint when present (lemma/lemmas/assumes notes), otherwise
+    <defining theory>.<locale base name>.<note> (definition / function /
+    inductive package notes carry no hint).
 
   Value-level mismatches (digest or name not confirmed) degrade to "not
   detected" and the entry falls back to the ordinary interpretation pipeline.
@@ -97,16 +99,6 @@ fun qualifier_admissible _ "" = true
 fun name_matches name suffix =
   name = suffix orelse String.isSuffix ("." ^ suffix) name
 
-(* --- locale pruning: keep locales sharing a note base name with the entries --- *)
-
-fun candidate_locales thy base_set =
-  Name_Space.get_names (Locale.locale_space thy)
-  |> filter (fn locale_name =>
-       Locale.locale_notes thy locale_name
-       |> exists (fn (_, facts) => facts |> exists (fn ((b, _), _) =>
-            let val n = Binding.name_of b
-            in n <> "" andalso Symtab.defined base_set n end)))
-
 (* --- main detection --- *)
 
 fun detect thy entries =
@@ -117,14 +109,14 @@ fun detect thy entries =
     val thm_names = map_filter (fn (name, SOME _) => SOME name | _ => NONE) keyed
     val base_set = Symtab.make_set (map Long_Name.base_name thm_names)
     val middles = thm_names |> map middle_of |> distinct (op =)
-    val cands = candidate_locales thy base_set
+    val cands = Link_Finder.candidate_locales thy base_set
 
     val table : provenance list Bytehashtab.table = Bytehashtab.empty 256
     fun add_prov d p =
       Bytehashtab.update table
         (d, p :: the_default [] (Bytehashtab.lookup table d))
 
-    fun replay_registration locale_name params notes (_, phi0) =
+    fun add_registration locale_name (_, phi0) =
       let
         val phi = Morphism.set_context thy phi0
         val qualifier = Morphism.binding_prefix phi |> map #1 |> space_implode "."
@@ -132,56 +124,36 @@ fun detect thy entries =
         if not (qualifier_admissible middles qualifier) then ()
         else
           let
-            val inst_params = params |> map (fn ((n, T), _) =>
-              (n, Morphism.term phi (Free (n, T))))
-            fun replay_note ((b, _) : Attrib.binding, gs) =
-              let val base = Binding.name_of b in
-                if base = "" then ()
-                else
-                  let
-                    val src_thms = maps #1 gs
-                    val replayed = Morphism.fact phi src_thms
-                    val binding_lname = Binding.long_name_of b
-                    val expected_suffix =
-                      if qualifier = "" then binding_lname
-                      else qualifier ^ "." ^ binding_lname
-                    (* lemma/lemmas/assumes notes carry the global fact name
-                       as name hint; definitional package notes do not and
-                       are reconstructed from the binding path. *)
-                    val template_name =
-                      (case src_thms of
-                         th :: _ =>
-                           if Thm.has_name_hint th
-                           then #1 (Thm.get_name_hint th)
-                           else Long_Name.append locale_name binding_lname
-                       | [] => Long_Name.append locale_name binding_lname)
-                    val n = length replayed
-                    val aligned_thms =
-                      (case try (Global_Theory.get_thms thy) template_name of
-                         SOME gthms => if length gthms = n then SOME gthms else NONE
-                       | NONE => NONE)
-                    val _ = replayed |> map_index (fn (i, rthm) =>
-                      add_prov (Universal_Key.thm_digest15 rthm)
-                        {locale_name = locale_name,
-                         qualifier = qualifier,
-                         inst_params = inst_params,
-                         template_name = template_name,
-                         template_thm = Option.map (fn gthms => nth gthms i) aligned_thms,
-                         template_index = if n = 1 then 0 else i + 1,
-                         expected_suffix = expected_suffix})
-                  in () end
+            val inst_params =
+              Link_Finder.parameter_images thy locale_name phi |> map (apfst #1)
+            fun add_note {binding, template_name, replayed} =
+              let
+                val binding_lname = Binding.long_name_of binding
+                val expected_suffix =
+                  if qualifier = "" then binding_lname else qualifier ^ "." ^ binding_lname
+                val n = length replayed
+                (* the finder's look-up: an inaccessible template (e.g. a
+                   function package's F.induct inside a locale) gets NONE *)
+                val template =
+                  (case Link_Finder.template_global_fact thy template_name of
+                     SOME gthms => if length gthms = n then SOME gthms else NONE
+                   | NONE => NONE)
+              in
+                replayed |> map_index I |> List.app (fn (i, rthm) =>
+                  add_prov (Universal_Key.thm_digest15 rthm)
+                    {locale_name = locale_name,
+                     qualifier = qualifier,
+                     inst_params = inst_params,
+                     template_name = template_name,
+                     template_thm = Option.map (fn gthms => nth gthms i) template,
+                     template_index = if n = 1 then 0 else i + 1,
+                     expected_suffix = expected_suffix})
               end
-          in
-            notes |> List.app (fn (_, facts) => List.app replay_note facts)
-          end
+          in List.app add_note (Link_Finder.replay_notes thy locale_name phi) end
       end
 
     val _ = cands |> List.app (fn locale_name =>
-      let
-        val regs = Locale.registrations_of ctx locale_name
-        val params = Locale.params_of thy locale_name
-        val notes = Locale.locale_notes thy locale_name
-      in List.app (replay_registration locale_name params notes) regs end)
+      List.app (add_registration locale_name) (Locale.registrations_of ctx locale_name))
 
     fun resolve (_, NONE) = []
       | resolve (name, SOME d) =

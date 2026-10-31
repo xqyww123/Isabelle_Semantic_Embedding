@@ -122,6 +122,14 @@ to `$(isabelle getenv -b ISABELLE_HOME_USER)/etc/settings`, then restart Isabell
 
 The `Gemini_Embedding` driver additionally falls back to `GEMINI_API_KEY`.
 
+### 5.5 Embedding text cache
+
+Every embedded text is cached on disk (`embed_cache` under the semantic DB directory), so a text is sent to the embedding endpoint once. The cache's size cap is set in the same settings file by
+```
+EMBEDDING_CACHE_SIZE_GIB=6  # size cap of the embedding text cache, in GiB
+```
+(default 6; decimals allowed). Entity texts stay for 3 days, the derived vectors of the local facts the link layer links at query time for 7 days; when the cap is reached, the least recently stored entries are evicted first, whatever their age, and are re-embedded when next needed.
+
 ## 6. The database
 
 All data lives in the following directory:

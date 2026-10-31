@@ -112,7 +112,7 @@ val _ = register_streaming_app "Semantic_Store.collect" (fn cin =>
     val cfg_context = (case thys of thy :: _ => Context.Theory thy
                         | [] => Context.Theory (Thy_Info.get_theory "Pure"))
   in
-    (case Semantic_Store.interpret_with_parallel cfg_context force (map Context.Theory thys) of
+    (case Semantic_Store.interpret_with_parallel cfg_context force thys of
       SOME () => ()
     | NONE => error
         "Semantic_Store.collect: another semantic interpretation run is in progress on \

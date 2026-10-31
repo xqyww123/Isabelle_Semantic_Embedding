@@ -28,7 +28,7 @@ from .semantic_embedding import (Vector_Store, Embedding_Provider, make_embeddin
                                  _embed_tracing_gated,
                                  invalidate_vectors, user_vector_store_envs,
                                  vector_store_names)
-from ._vecarith import library_path as _vector_library_path
+from ._vecarith import library_path as _vector_library_path, encode_q15, top_k_q15_rows
 
 from .base import ToolCall_ret, mk_ret as _mk_ret, logger_of as _logger_of
 from .hover import resolve_context_at
@@ -367,6 +367,11 @@ class _Semantic_DB:
         # Tracked kinds of WIP records only; None everywhere else and on every
         # record written before this field existed (read as CHANGED, §3).
         baseline_interpretation: 'str | None' = None
+        # A display record's entities block (ai-artifacts/LINK_LAYER_PLAN.md §2, D50):
+        # document_text_of appends it and no renderer prints it -- the mirror image
+        # of `experience`.  None on every stored record: a display record is built
+        # per query and never stored, so _encode refuses a record that carries one.
+        entities_block: 'str | None' = None
 
         @property
         def pretty_print(self) -> str:
@@ -529,6 +534,8 @@ class _Semantic_DB:
 
     @staticmethod
     def _encode(record: 'Record') -> bytes:
+        if record.entities_block is not None:
+            raise AssertionError(f"the display record {record.name!r} is never stored")
         prov_map = None
         if record.locale_provenance is not None:
             prov_map = {}
@@ -794,10 +801,12 @@ class _Semantic_DB:
         Writers that do NOT come through here must invalidate explicitly; the
         enumerated set is `delete`, `update_expr`, `declare_interpretation`,
         `Gate_Writer.put_interpretation`, `repair_xor_prefixes`, `clean_wip`
-        and isabelle_semantics._execute_removal."""
+        and isabelle_semantics._execute_removal.  The record is encoded before
+        anything is written, so a record _encode refuses changes nothing."""
+        raw = self._encode(record)
         invalidate_vectors([key])
         with self._ensure_env().begin(write=True) as txn:
-            txn.put(key, self._encode(record))
+            txn.put(key, raw)
 
     def delete(self, key: universal_key) -> bool:
         """Delete a record by key: write a TOMBSTONE (plan L8) -- uniform, with no
@@ -1008,7 +1017,7 @@ class _Semantic_DB:
     # in this set may NEVER take the raw-put path below: changing it changes
     # what the record's vector should be, with no invalidation to notice.
     _EMBEDDED_DOC_FIELDS = frozenset(
-        {"kind", "name", "expr", "interpretation", "goal_patterns"})
+        {"kind", "name", "expr", "interpretation", "goal_patterns", "entities_block"})
 
     @staticmethod
     def _check_raw_put_grant(who: str, fields: 'Iterable[str]') -> None:
@@ -1122,7 +1131,9 @@ class _Semantic_DB:
         far: `position` (archive/plans/ENTITY_POSITION_PLAN.md L6, approved explicitly for
         the entity-position migration); `from_collection`
         (archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §4 open item 1, approved explicitly
-        for migrate_from_collection.py on 2026-08-19).
+        for migrate_from_collection.py on 2026-08-19); `locale_provenance`
+        (ai-artifacts/TEMPLATE_UK_MIGRATION_PLAN.md E6, approved 2026-10-30, for the
+        migration's pointer rewrites and the one-off repair).
 
         BATCHED, not one transaction: a single write transaction rewriting the
         whole store overruns LMDB's dirty-page list and rolls everything back
@@ -1379,19 +1390,65 @@ class _Semantic_DB:
                 result.append(key)
         return result
 
-    def _migrate_constituent_records(self, old_hash: bytes, new_hash: bytes) -> int:
+    @staticmethod
+    def _moved_constituents(consts: 'list[tuple[str, bytes]]', old_hash: bytes,
+                            new_hash: bytes) -> 'tuple[list[tuple[str, bytes]], bytes] | None':
+        """`consts` with old_hash replaced by new_hash, and their XOR prefix; None
+        when old_hash is not among them.  A migration's one prefix computation: a
+        record's own new key and the `template_uk` naming it both come from here."""
+        from Isabelle_RPC_Host.universal_key import xor_theory_prefix
+        if not any(h == old_hash for _, h in consts):
+            return None
+        new_consts = [(n, new_hash if h == old_hash else h) for n, h in consts]
+        return new_consts, xor_theory_prefix([h for _, h in new_consts])
+
+    def _moved_provenance(self, txn: Any, prov: Provenance, old_hash: bytes,
+                          new_hash: bytes, memo: 'dict[bytes, bytes]') -> Provenance:
+        """The pointers of `prov` after the migration from old_hash to new_hash
+        (TEMPLATE_UK_MIGRATION_PLAN.md §3.1 item 2).  A `template_uk` moves to its
+        target's new key when the target, read in `txn` (the user layer), is a
+        record whose constituents mention old_hash; a `locale_uk` under old_hash's
+        prefix moves to new_hash's, where _copy_prefix copies the locale's record.
+        Any other pointer stays.  `memo` caches the template moves of one scan."""
+        tuk = prov.template_uk
+        if tuk is not None:
+            if tuk not in memo:
+                raw = txn.get(tuk)
+                consts = (None if raw is None or is_tombstone(raw)
+                          else self._decode(bytes(raw)).theory_constituents)
+                moved = (self._moved_constituents(consts, old_hash, new_hash)
+                         if consts else None)
+                memo[tuk] = moved[1] + tuk[16:] if moved else tuk
+            tuk = memo[tuk]
+        luk = prov.locale_uk
+        if luk is not None and luk[:16] == old_hash:
+            luk = new_hash + luk[16:]
+        return prov._replace(template_uk=tuk, locale_uk=luk)
+
+    def _migrate_constituent_records(self, old_hash: bytes, new_hash: bytes
+                                     ) -> 'tuple[int, list[tuple[str, list[bytes]]]]':
         """Rekey XOR-prefixed records (theorem/rule AND experience) whose
-        constituents mention old_hash.
+        constituents mention old_hash, and move the stored pointers that name a
+        moved record (TEMPLATE_UK_MIGRATION_PLAN.md §3.1), in one scan.
 
         Replaces old_hash with new_hash in the constituent list, recomputes
         the XOR prefix, and copies the record (and any vector-store entries)
-        under the new key.  Old entries are left in place, mirroring
-        _copy_prefix's copy semantics.  Experience records always carry a
-        constituent list, so they never trip the legacy-record guard below."""
-        from Isabelle_RPC_Host.universal_key import (
-            is_xor_prefixed_key, xor_theory_prefix, EntityKind)
+        under the new key, its pointers moved.  Old entries are left in place,
+        mirroring _copy_prefix's copy semantics.  A record that is not rekeyed
+        but whose pointer moves is rewritten in place by raw put, its vectors
+        untouched (the `locale_provenance` grant, backfill_field).  Experience
+        records always carry a constituent list, so they never trip the
+        legacy-record guard below.
+
+        Returns the number of rekeyed records and, for each rekeyed record with
+        a pointer, its theory (the first component of its name) and its new
+        pointers, for _try_migrate's warning."""
+        from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key, EntityKind
         env = self._ensure_env()
         rekeys: list[tuple[bytes, bytes, bytes]] = []
+        in_place: list[tuple[bytes, Provenance]] = []
+        holders: list[tuple[str, list[bytes]]] = []
+        memo: dict[bytes, bytes] = {}
         # Experience keys additionally live in the (separate) inverted index,
         # keyed by their constituent hashes — rekeying moves them there too.
         # (old_key, new_key, old_hashes, new_hashes)
@@ -1408,22 +1465,35 @@ class _Semantic_DB:
                     raise ValueError(
                         f"XOR-prefixed record {key.hex()} has no constituent list "
                         "(pre-XOR legacy theorem/rule record); run migrate_xor_thm_keys.py first")
-                if not any(h == old_hash for _, h in rec.theory_constituents):
+                prov = rec.locale_provenance
+                new_prov = (None if prov is None
+                            else self._moved_provenance(txn, prov, old_hash, new_hash, memo))
+                moved = self._moved_constituents(rec.theory_constituents, old_hash, new_hash)
+                if moved is None:
+                    if new_prov is not None and new_prov != prov:
+                        in_place.append((key, new_prov))
                     continue
-                new_consts = [(n, new_hash if h == old_hash else h)
-                              for n, h in rec.theory_constituents]
-                new_key = xor_theory_prefix([h for _, h in new_consts]) + key[16:]
-                rekeys.append((key, new_key,
-                               self._encode(rec._replace(theory_constituents=new_consts))))
+                new_consts, prefix = moved
+                new_key = prefix + key[16:]
+                rekeys.append((key, new_key, self._encode(
+                    rec._replace(theory_constituents=new_consts, locale_provenance=new_prov))))
+                if new_prov is not None:
+                    pointers = [p for p in (new_prov.template_uk, new_prov.locale_uk)
+                                if p is not None]
+                    if pointers:
+                        holders.append((rec.name.split(".")[0], pointers))
                 if key[16] == int(EntityKind.EXPERIENCE):
                     exp_rekeys.append((key, new_key,
                                        [h for _, h in rec.theory_constituents],
                                        [h for _, h in new_consts]))
-        if not rekeys:
-            return 0
-        with env.begin(write=True) as txn:
-            for _, new_key, new_val in rekeys:
-                txn.put(new_key, new_val)
+        if in_place:
+            self._check_raw_put_grant("_migrate_constituent_records", ("locale_provenance",))
+        if rekeys or in_place:
+            with env.begin(write=True) as txn:
+                for _, new_key, new_val in rekeys:
+                    txn.put(new_key, new_val)
+                for key, prov in in_place:
+                    self._put_fields(txn, key, {"locale_provenance": prov})
         if exp_rekeys:
             from .experience_index import Experience_Index
             for old_key, new_key, old_hashes, new_hashes in exp_rekeys:
@@ -1435,12 +1505,16 @@ class _Semantic_DB:
                     v = vtxn.get(old_key)
                     if v is not None:
                         vtxn.put(new_key, bytes(v))
-        return len(rekeys)
+        return len(rekeys), holders
 
     def _try_migrate(self, new_key: universal_key) -> bool:
         import Isabelle_Semantic_Embedding.theory_hash_registry as theory_hash_registry
 
         new_hash = bytes(new_key[:16])
+        # Never into a WIP hash (TEMPLATE_UK_MIGRATION_PLAN.md E13): it names the theory, not
+        # its content, WIP's change gate re-judges the copies, and clean_wip deletes them.
+        if is_WIP(new_hash):
+            return False
         raw = theory_hash_registry._get_raw(new_hash)
         if raw is None:
             return False
@@ -1477,17 +1551,32 @@ class _Semantic_DB:
         if old_hash is None:
             return False
 
-        n = self._copy_prefix(sem_env, old_hash, new_hash)
+        # Theorem/rule AND experience records reference theories through their
+        # constituent lists, not their key prefix — rekey them by XOR recomputation.
+        # The semantics _copy_prefix runs last: its one transaction carries the
+        # theory-status record, so a crash before it leaves the new hash
+        # unfinished and the next is_interpreted runs the whole migration again
+        # (TEMPLATE_UK_MIGRATION_PLAN.md §3.1 item 5).
+        n_thm, holders = self._migrate_constituent_records(old_hash, new_hash)
 
         for venv in _iter_vector_store_envs():      # THE enumerator (plan §3.2)
             self._copy_prefix(venv, old_hash, new_hash)
 
-        # Theorem/rule AND experience records reference theories through their
-        # constituent lists, not their key prefix — rekey them by XOR recomputation.
-        n_thm = self._migrate_constituent_records(old_hash, new_hash)
+        n = self._copy_prefix(sem_env, old_hash, new_hash)
 
         print(f"Migrated {n} entries and {n_thm} constituent records for {new_name} "
               f"from {old_hash.hex()[:12]}… to {new_hash.hex()[:12]}…")
+
+        # Only now: a moved locale_uk names the record the last step wrote.
+        pointers = [p for _, ps in holders for p in ps]
+        found = dict(zip(pointers, self.contains(pointers)))
+        dangling = [thy for thy, ps in holders if not all(found[p] for p in ps)]
+        if dangling:
+            theories = sorted(set(dangling))
+            shown = ", ".join(theories[:10]) + (
+                f" and {len(theories) - 10} more" if len(theories) > 10 else "")
+            print(f"Warning: {len(dangling)} records migrated for {new_name} point to a "
+                  f"template or locale that has no record (their theories: {shown})")
         return True
 
 
@@ -1942,8 +2031,8 @@ async def update_interpretations(connection: Connection,
                                  ctxt: Any = None) -> None:
     """The interpretation policy shell (CHECK_OUTDATE_PLAN.md §8): gate, dry
     run, threshold, question -- wrapped around the Semantic_Store cone callback.
-    The two callers are aoa startup (`ask_user=True`, context included as an
-    as-is root) and `_auto_embed`'s point fix (`ask_user=False`, an explicit
+    The two callers are aoa startup (`ask_user=True`, the context's background
+    theory included as a root) and `_auto_embed`'s point fix (`ask_user=False`, an explicit
     theory-name list, no context root); the `run_semantic_interpretation`
     command deliberately does NOT go through here (explicit intent gets no
     threshold, it has its own dialog).
@@ -2436,6 +2525,21 @@ class Semantic_Vector_Store(Vector_Store):
             candidates = [dk for dk in domain.keys if destruct_key(dk).kind in kind_set]
         else:
             raise TypeError(f"Unknown domain type: {type(domain)}")
+        # The link layer (LINK_LAYER_PLAN.md §4.2), over the domains that enumerate
+        # the retrieval closure: the listing hides every template any link of a
+        # candidate key names (B6); a candidate with a link and no record of its
+        # own is shown by its display record and ranked by its derived vector.
+        from .links import NO_LINKS, retrieval_closure
+        closure = (retrieval_closure(self.connection)
+                   if not isinstance(domain, Semantic_Vector_Store.Restricted) else NO_LINKS)
+        listing = await closure.listing(candidates)
+        candidates = listing.candidates
+        linked: dict[universal_key, SemanticRecord] = {}
+        with_link = [uk for uk in candidates if listing.link_of(uk) is not None]
+        if with_link:
+            for uk, own in zip(with_link, Semantic_DB.contains(with_link)):
+                if not own:
+                    linked[uk] = listing.record(uk, candidate_names[uk])  # type: ignore[assignment]
         # Experience-memory track: availability + hit_rate (Python-driven, §3/§5).
         # Only when EXPERIENCE is among the requested kinds and the query is a
         # string (experiences are ranked by their own embedded query).
@@ -2452,10 +2556,10 @@ class Semantic_Vector_Store(Vector_Store):
             known.  apply_live_name (module level) is UNCONDITIONAL here: every
             record was surfaced by this query's own live enumeration, whose
             name is the handle the agent will cite back (§2.1's table)."""
-            rec = Semantic_DB[uk]
-            if rec is not None:
-                return apply_live_name(rec, candidate_names.get(uk))
             name = candidate_names.get(uk)
+            rec = listing.record(uk, name)
+            if rec is not None:
+                return apply_live_name(rec, name)
             if name is not None:
                 return SemanticRecord(EntityKind(uk[16]), name, None, None)
             return None
@@ -2477,11 +2581,19 @@ class Semantic_Vector_Store(Vector_Store):
         # reaches entities_of (no per-kind callback), so `candidates` is entity-only.
         entity_kinds = [kk for kk in kinds if kk != EntityKind.EXPERIENCE]
         top: list[tuple[universal_key, float]] = []
-        if candidates:
-            top = await self.topk(query, candidates, fetch_k,
-                                   kinds_phrase=render_kinds(entity_kinds),
-                                   ctxt=ctxt,
-                                   interpret_in_auto_embed=interpret_in_auto_embed)
+        stored = [uk for uk in candidates if uk not in linked]
+        derived = {uk: t for uk, rec in linked.items()
+                   if (t := document_text_of(rec)) is not None}
+        entity_query = query
+        if derived:
+            # one query vector for the store's scan and the derived vectors
+            entity_query = await self.query_vector(query, kinds_phrase=render_kinds(entity_kinds))
+            top = await self._derived_topk(closure, entity_query, derived, fetch_k)
+        if stored:
+            top = top + await self.topk(entity_query, stored, fetch_k,
+                                        kinds_phrase=render_kinds(entity_kinds),
+                                        ctxt=ctxt,
+                                        interpret_in_auto_embed=interpret_in_auto_embed)
         if exp_hit and query_str is not None:
             from . import embedding_config as _ecfg
             exp_qvec = (await self.emb_provider.embed(
@@ -2505,7 +2617,7 @@ class Semantic_Vector_Store(Vector_Store):
         if reranker is not None and query_str is not None and len(top) > 1:
             doc_entries: list[tuple[universal_key, SemanticRecord, str]] = []
             for uk, _score in top:
-                rec = Semantic_DB[uk]
+                rec = listing.record(uk, candidate_names.get(uk))
                 if rec is not None:
                     # The reranker scores the SAME canonical document that was embedded
                     # (document_text_of), per kind -- not a third, divergent text (D1).
@@ -2579,6 +2691,16 @@ class Semantic_Vector_Store(Vector_Store):
                 nonlocal_quota -= 1
         scored.sort(key=lambda x: x[0], reverse=True)
         return scored[:k], warnings, total
+
+    async def _derived_topk(self, closure: Any, query: np.ndarray,
+                            texts: dict[universal_key, str],
+                            k: int) -> list[tuple[universal_key, float]]:
+        """The k best linked candidates by their derived vectors (``texts``: each
+        one's composed document text), scored by the kernel ``topk`` uses."""
+        keys = list(texts)
+        rows = await closure.derived_vectors(self.emb_provider, [texts[uk] for uk in keys])
+        idx, cos = top_k_q15_rows(rows, encode_q15(query), self.dimension, k)
+        return [(keys[int(i)], float(c)) for i, c in zip(idx, cos)]
 
     async def embed_records(self, items: 'list[tuple[universal_key, SemanticRecord]]',
                             *, force: bool = False) -> int:

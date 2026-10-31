@@ -243,6 +243,22 @@ def test_topk_is_exact_at_any_buffer_alignment(offset):
     assert np.all(np.diff(cos) <= 0), "scores must come back descending"
 
 
+def test_rows_scorer_is_the_kernel_over_the_rows():
+    """top_k_q15_rows (the derived vectors' scorer, LINK_LAYER_PLAN.md §4.2, C23)
+    runs the kernel over an in-memory matrix's rows: the oracle's top k in
+    descending order, so derived and stored scores merge on one axis."""
+    rng = np.random.default_rng(11)
+    n, k = 200, 9
+    domain, query = random_q15(rng, n, D), random_q15(rng, D)
+    idx, cos = V.top_k_q15_rows(domain, query, D, k)
+    ref = reference_dot(domain, query)
+    assert ref[idx].tolist() == sorted(ref.tolist(), reverse=True)[:k]
+    assert np.array_equal(cos, V.recover_cos(ref[idx], D))
+    for bad in (domain.astype(np.int32), domain[:, : D - 1].copy(), domain[::2], domain.reshape(-1)):
+        with pytest.raises(ValueError):
+            V.top_k_q15_rows(bad, query, D, k)
+
+
 def test_no_excluded_candidate_beats_the_kth():
     rng = np.random.default_rng(6)
     n, k = 500, 7

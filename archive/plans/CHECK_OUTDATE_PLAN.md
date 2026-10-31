@@ -518,6 +518,7 @@ Semantic_Embedding.thy:20 演示行）。**Sledgehammer_Embedding 不经此路**
 - 命令 interpret_command.ML:65 的 `plan_interpretation` 调用点升级为 dry run。
 
 **aoa 启动的 context 根（2026-07-27 深夜裁定：包含自身 + 原样形态）**：
+- Superseded in part by `ai-artifacts/LINK_LAYER_PLAN.md` (§4.1, D9, D39, D58): the root is the context's background theory (the "原样形态" half below is superseded, the "包含当前 theory 自身" half stands); no fact of a proof context is interpreted; local facts are linked at query time (§4.2).
 - **包含当前 theory 自身**——semantics.py:1435 的既有排除定性为待修缺陷：不解释
   最新实体（刚写的定义/引理）恰恰会让当前的 `by aoa` 失去最需要的检索支持；
   草稿多付的 LLM 钱是为"帮到正在做的工作"付的，值。serial 判据在活 theory 上
