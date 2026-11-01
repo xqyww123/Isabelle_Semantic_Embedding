@@ -16,18 +16,15 @@ import pytest
 import Isabelle_Semantic_Embedding.semantic_embedding as SE
 import Isabelle_Semantic_Embedding.semantics as S
 from Isabelle_RPC_Host.universal_key import EntityKind, xor_theory_prefix
-from layered_db import cache, mk_system, reg, reset_singletons, write_user, write_user_registry  # noqa: F401
+from layered_db import (  # noqa: F401
+    STORE, cache, mk_system, record, reg, reset_singletons, state, thm, write_user,
+    write_user_registry)
 
 # Theory hashes; byte 0's LSB is the WIP bit.
 A0, A1 = bytes.fromhex("22" * 16), bytes.fromhex("24" * 16)   # theory A, migrated
 B0, B1 = bytes.fromhex("88" * 16), bytes.fromhex("8b" * 16)   # theory B, given a WIP hash
 D0, D1 = bytes.fromhex("aa" * 16), bytes.fromhex("ac" * 16)   # theory D, only a locale moves
 X, C = bytes.fromhex("44" * 16), bytes.fromhex("66" * 16)    # theories that do not move
-STORE = "vector_test.lmdb"
-
-
-def thm(hashes: list[bytes], suffix: bytes) -> bytes:
-    return xor_theory_prefix(hashes) + bytes([int(EntityKind.THEOREM)]) + suffix.ljust(15, b"\0")
 
 
 def moved(key: bytes, hashes: list[bytes]) -> bytes:
@@ -53,13 +50,6 @@ H7 = thm([C], b"h7")
 HD = thm([C], b"hd")
 TB = thm([B0], b"TB")
 HB = thm([B0, X], b"hb")
-
-
-def record(name: str, consts: 'list | None', template: 'bytes | None' = None,
-           locale: 'bytes | None' = None, kind: EntityKind = EntityKind.THEOREM) -> bytes:
-    prov = None if template is None and locale is None else S.Provenance(template, locale)
-    return S.Semantic_DB._encode(S.SemanticRecord(
-        kind, name, "P", "meaning", locale_provenance=prov, theory_constituents=consts))
 
 
 def build(cache) -> None:
@@ -194,9 +184,9 @@ def test_embed_status_record_copied_with_its_tokens(cache, capsys):
 def test_wip_target_refused_and_nothing_written(cache, capsys):
     """E13: a WIP new hash is not a migration target."""
     build(cache)
-    before = _state(cache)
+    before = state(cache)
     assert not S.Semantic_DB._try_migrate(B1)
-    assert _state(cache) == before
+    assert state(cache) == before
     assert capsys.readouterr().out == ""
 
 
@@ -207,14 +197,6 @@ def test_theory_d_only_an_in_place_rewrite(cache, capsys):
     assert pointers(HD) == (None, D1 + LOCD[16:])
     out = capsys.readouterr().out
     assert "Migrated" in out and "Warning" not in out
-
-
-def _state(cache) -> dict:
-    with S.Semantic_DB._ensure_env().begin() as txn:
-        records = {bytes(k): bytes(v) for k, v in txn.cursor()}
-    with SE._get_lmdb_env(str(cache / STORE)).begin() as txn:
-        vectors = {bytes(k): bytes(v) for k, v in txn.cursor()}
-    return {"records": records, "vectors": vectors}
 
 
 def test_crash_after_the_rewrites_is_retried_to_the_same_state(cache, tmp_path, monkeypatch,
@@ -240,7 +222,7 @@ def test_crash_after_the_rewrites_is_retried_to_the_same_state(cache, tmp_path, 
     assert not S.Semantic_DB.is_thy_interpreted(A1)   # the status not yet written
     # the RPC's body; it never reads its connection
     assert asyncio.run(S._is_interpreted((A1, None, None), None))  # type: ignore
-    crashed = _state(cache)
+    crashed = state(cache)
 
     reset_singletons()
     clean = tmp_path / "clean"
@@ -248,4 +230,4 @@ def test_crash_after_the_rewrites_is_retried_to_the_same_state(cache, tmp_path, 
     monkeypatch.setenv("SEMANTIC_DB_DIR", str(clean))
     build(clean)
     assert S.Semantic_DB._try_migrate(A1)
-    assert crashed == _state(clean)
+    assert crashed == state(clean)

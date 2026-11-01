@@ -2,7 +2,8 @@
 ``SEMANTIC_DB_DIR`` (and a fake ``sys.prefix``, so a real conda payload on the
 dev machine can never leak in), with all the package's singleton LMDB
 environments closed before and after -- py-lmdb allows sequential
-close-and-reopen of one path, just never two concurrent opens.
+close-and-reopen of one path, just never two concurrent opens.  Also the
+records, keys and store snapshots the tests build their worlds from.
 
 A plain module, not a conftest.py: pytest would load a conftest beside
 test_vecarith.py, which CI runs against a --no-deps install.
@@ -19,6 +20,9 @@ import pytest
 import Isabelle_Semantic_Embedding.semantic_embedding as SE
 import Isabelle_Semantic_Embedding.semantics as S
 import Isabelle_Semantic_Embedding.snapshot_sync as SS
+from Isabelle_RPC_Host.universal_key import EntityKind, xor_theory_prefix
+
+STORE = "vector_test.lmdb"
 
 
 def reset_singletons() -> None:
@@ -78,3 +82,25 @@ def write_user_registry(entries: dict[bytes, bytes]) -> None:
     with open_theory_hash_store().begin(write=True) as txn:
         for k, v in entries.items():
             txn.put(k, v)
+
+
+def thm(hashes: list[bytes], suffix: bytes) -> bytes:
+    return xor_theory_prefix(hashes) + bytes([int(EntityKind.THEOREM)]) + suffix.ljust(15, b"\0")
+
+
+def record(name: str, consts: 'list | None', template: 'bytes | None' = None,
+           locale: 'bytes | None' = None, kind: EntityKind = EntityKind.THEOREM,
+           qualifier: 'str | None' = None) -> bytes:
+    prov = (None if template is None and locale is None
+            else S.Provenance(template, locale, qualifier))
+    return S.Semantic_DB._encode(S.SemanticRecord(
+        kind, name, "P", "meaning", locale_provenance=prov, theory_constituents=consts))
+
+
+def state(cache) -> dict:
+    """Every record of the user layer and every vector of the store `STORE`."""
+    with S.Semantic_DB._ensure_env().begin() as txn:
+        records = {bytes(k): bytes(v) for k, v in txn.cursor()}
+    with SE._get_lmdb_env(str(cache / STORE)).begin() as txn:
+        vectors = {bytes(k): bytes(v) for k, v in txn.cursor()}
+    return {"records": records, "vectors": vectors}
