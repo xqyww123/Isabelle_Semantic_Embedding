@@ -235,9 +235,18 @@ signature SEMANTIC_STORE = sig
   (* The retrieval closure: the eleven entity enumeration callbacks, with infra
      filters and theorem cache baked in, plus "Semantic_Store.links".  The
      predicate keeps proof methods by name, on top of the infra filter.  Build
-     them once per call_command: each callback owns the catalog of that request. *)
+     them once per call_command: each callback owns the catalog of that request.
+     In a query context other than the build-time one, the theorem-like callbacks'
+     LIVE pass (the facts the build-time snapshot lacks and, in a rule callback, the
+     whole classical / Induct net) and every name of the name-space callbacks are
+     judged by that context's own infra filter, built on its first query and kept
+     until a query on another such context; the CACHED pass keeps the build-time
+     verdicts (INFRA_FILTER_CLASS_VARIANT_PLAN.md §4.9). *)
   val make_entity_callbacks : Context.generic -> (string -> bool) ->
     Context_Callbacks.context_unpacker -> Remote_Procedure_Calling.callback' list
+  (* how many infra filters the retrieval closures have built for a query context,
+     process-wide (the tests' counter) *)
+  val query_filter_builds : unit -> int
 
   val strip_trailing_begin : string -> string
 end
@@ -1294,6 +1303,13 @@ fun make_links_callback ctxt =
   end
 end
 
+val query_filter_builds_var = Synchronized.var "Semantic_Store.query_filter_builds" 0
+fun query_filter_builds () = Synchronized.value query_filter_builds_var
+
+fun same_context (Context.Theory a, Context.Theory b) = Context.eq_thy (a, b)
+  | same_context (Context.Proof a, Context.Proof b) = pointer_eq (a, b)
+  | same_context _ = false
+
 (* Convenience callbacks with infra filters and theorem cache baked in.
    Processes any uncached facts at creation time so callbacks see 0 uncached. *)
 fun make_entity_callbacks (init_context: Context.generic) (keep_method: string -> bool)
@@ -1308,11 +1324,29 @@ fun make_entity_callbacks (init_context: Context.generic) (keep_method: string -
         "Extended_Nat.enat",
         "Extended_Real.ereal.ereal",
         "Extended_Nonnegative_Real.ennreal"]
-      val {is_uninterpreted_const, is_infra_thm, is_infra_induct_thm,
-           is_infra_type, is_infra_class, is_infra_locale,
-           is_infra_dynamic_fact, is_infra_method,
-           is_declared_infra_thm, ...} =
-        Infra_Filter.gen_infra_filters init_context
+      val build_filters = Infra_Filter.gen_infra_filters init_context
+      val {is_infra_thm, is_infra_induct_thm, is_infra_dynamic_fact,
+           is_declared_infra_thm, ...} = build_filters
+      (* The filter of a query context: the build-time one for the build-time context
+         itself, else the one memo entry, reused only for the same context object and
+         replaced on any other (one entry keeps no old proof context alive).  Not
+         Proof_Data: a derived context would inherit a filter built before its facts. *)
+      val memo = Synchronized.var "Semantic_Store.query_filters" NONE
+      fun fresh ctx =
+        let val filters = Lazy.lazy (fn () =>
+              (Synchronized.change query_filter_builds_var (fn n => n + 1);
+               Infra_Filter.gen_infra_filters ctx))
+        in (filters, SOME (ctx, filters)) end
+      fun filters_of ctx =
+        if same_context (ctx, init_context) then build_filters
+        else
+          Synchronized.change_result memo (fn entry =>
+            (case entry of
+              SOME (ctx', filters) =>
+                if same_context (ctx, ctx') then (filters, entry) else fresh ctx
+            | NONE => fresh ctx))
+          |> Lazy.force
+      fun judged_by f = SOME (fn ctx => f (filters_of ctx))
       val {entries = cached_entries0, intro = cached_intro0, elim = cached_elim0,
            induct = cached_induct0, case_ = cached_case0, facts = cached_facts} =
         Thm_Cache.get (Context.theory_of init_context)
@@ -1412,27 +1446,31 @@ fun make_entity_callbacks (init_context: Context.generic) (keep_method: string -
       val case_static   = cached_case   @ delta_case
       fun rule_cache static mems = SOME (static @ dedup_against static mems, current_facts)
   in [
-    Context_Callbacks.make_constants_callback (SOME (not o is_uninterpreted_const)) ctxt_unpack,
-    Context_Callbacks.make_theorems_callback (SOME (not o is_infra_thm)) thm_cache ctxt_unpack,
-    Context_Callbacks.make_types_callback (SOME (not o is_infra_type)) ctxt_unpack,
-    Context_Callbacks.make_classes_callback (SOME (not o is_infra_class)) ctxt_unpack,
-    Context_Callbacks.make_locales_callback (SOME (not o is_infra_locale)) ctxt_unpack,
+    Context_Callbacks.make_constants_callback
+      (judged_by (fn fs => not o #is_uninterpreted_const fs)) ctxt_unpack,
+    Context_Callbacks.make_theorems_callback
+      (judged_by (fn fs => not o #is_infra_thm fs)) thm_cache ctxt_unpack,
+    Context_Callbacks.make_types_callback (judged_by (fn fs => not o #is_infra_type fs)) ctxt_unpack,
+    Context_Callbacks.make_classes_callback (judged_by (fn fs => not o #is_infra_class fs)) ctxt_unpack,
+    Context_Callbacks.make_locales_callback (judged_by (fn fs => not o #is_infra_locale fs)) ctxt_unpack,
     Context_Callbacks.make_theorem_collection_callback
-      collection_member_thms (SOME (not o is_infra_dynamic_fact)) ctxt_unpack,
+      collection_member_thms (judged_by (fn fs => not o #is_infra_dynamic_fact fs)) ctxt_unpack,
     Context_Callbacks.make_methods_callback
-      (SOME (fn name => keep_method name andalso not (is_infra_method name))) ctxt_unpack,
+      (judged_by (fn fs => fn name => keep_method name andalso not (#is_infra_method fs name)))
+      ctxt_unpack,
     Context_Callbacks.make_introduction_rules_callback
       extract_intro_rules Theory_Structure.is_introduction_rule_name (K true)
-      (SOME (not o is_infra_thm)) (rule_cache intro_static intro_members) ctxt_unpack,
+      (judged_by (fn fs => not o #is_infra_thm fs)) (rule_cache intro_static intro_members) ctxt_unpack,
     Context_Callbacks.make_elimination_rules_callback
       extract_elim_rules Theory_Structure.is_elimination_rule_name (K true)
-      (SOME (not o is_infra_thm)) (rule_cache elim_static elim_members) ctxt_unpack,
+      (judged_by (fn fs => not o #is_infra_thm fs)) (rule_cache elim_static elim_members) ctxt_unpack,
     Context_Callbacks.make_induction_rules_callback
       extract_induct_net Theory_Structure.is_induction_rule_name Theory_Structure.has_rule_shape
-      (SOME (not o is_infra_induct_thm)) (rule_cache induct_static induct_members) ctxt_unpack,
+      (judged_by (fn fs => not o #is_infra_induct_thm fs)) (rule_cache induct_static induct_members)
+      ctxt_unpack,
     Context_Callbacks.make_case_split_rules_callback
       extract_case_split_net Theory_Structure.is_case_split_rule_name Theory_Structure.has_rule_shape
-      (SOME (not o is_infra_thm)) (rule_cache case_static case_members) ctxt_unpack,
+      (judged_by (fn fs => not o #is_infra_thm fs)) (rule_cache case_static case_members) ctxt_unpack,
     make_links_callback (Context.proof_of init_context)
   ] end
 

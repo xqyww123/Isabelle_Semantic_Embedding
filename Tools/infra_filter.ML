@@ -453,35 +453,20 @@ fun gen_infra_filters (context : Context.generic) =
     val class_pred_set =
       Strhashtab.make_set (map Logic.const_of_class (Sign.all_classes thy))
 
-    (* Rule class_variant's kill set: the locale-level twins of type-class
-       operations, enumerated from the class package's OWN operations registry
-       (Class.these_operations).  Each entry's key is the class-namespace
-       constant "A.B_class.c"; stripping the `_class` suffix off its qualifier
-       gives the foundational locale twin "A.B.c".  The two are declared as a
-       pair in one foundation step in the same theory, so the derived name can
-       only denote that twin or no constant at all.  Only the `class` target
-       machinery registers operations -- `interpretation P: L ...` copies never
-       contribute -- so a human interpretation prefix colliding with a genuine
-       class prefix (Algebra_Aux's `interpretation field_class: field ...`,
-       AFP Elliptic_Locale's likewise) cannot condemn the interpreted locale's
-       general constants.  The `_class` SUFFIX test on the qualifier is a
-       correctness guard, not a heuristic: parameter entries conform, and
-       extra-qualified keys ("A.B_class.q.c") must be skipped, matching the
-       old gate's behaviour on them.  `Class.is_class` drops Axclass-only
-       classes (e.g. HOL.type): they carry no Class data and would make
-       these_operations raise. *)
-    val has_class_variant_set =
-      Strhashtab.make_set (map_filter (fn (key, _) =>
-        let val qual = Long_Name.qualifier key
-        in if String.isSuffix "_class" qual
-           then SOME (String.concat [
-                  String.substring (qual, 0, size qual - 6), ".",
-                  Long_Name.base_name key])
-           else NONE
-        end)
-        (Class.these_operations thy
-          (filter (Class.is_class thy) (Sign.all_classes thy))))
-    fun has_class_variant name = Strhashtab.defined has_class_variant_set name
+    (* Class-definition theorems (`*_dict`, e.g. Orderings.ord_class.max_dict): the
+       statement of a definition of Class.these_defs with its two sides swapped,
+       compared up to bound names (Termtab's order ignores them).  `Class.is_class`
+       drops Axclass-only classes (e.g. HOL.type): they carry no Class data and
+       would make these_defs raise. *)
+    val class_def_statements =
+      Class.these_defs thy (filter (Class.is_class thy) (Sign.all_classes thy))
+      |> map_filter (fn th =>
+           (case Thm.prop_of th of
+              Const (\<^const_name>\<open>Pure.eq\<close>, T) $ lhs $ rhs =>
+                SOME (Const (\<^const_name>\<open>Pure.eq\<close>, T) $ rhs $ lhs)
+            | _ => NONE))
+      |> Termtab.make_set
+    val is_class_definition = Termtab.defined class_def_statements
 
     fun is_declared_const name = can (Consts.the_constraint consts) name
 
@@ -520,7 +505,6 @@ fun gen_infra_filters (context : Context.generic) =
               ("internal_prefix", fn () => exists (fn pfx => String.isPrefix pfx name) internal_prefixes),
               ("pre_bnf_prefix",  fn () => exists (fn pfx => String.isPrefix pfx name) pre_prefixes),
               ("inst_infix",      fn () => exists (fn infix_ => String.isSubstring infix_ name) inst_infixes),
-              ("class_variant",   fn () => has_class_variant name),
               ("quotient_typedef", fn () => Strhashtab.defined quotient_typedef_infra name),
               ("adt_record",      fn () => exists (fn pfx => String.isPrefix pfx name) adt_record_prefixes
                                            andalso on_bnf_origin_pos name),
@@ -597,15 +581,8 @@ fun gen_infra_filters (context : Context.generic) =
               | NONE => false)
 
     fun is_inductive_infra_thm full_name =
-      let val base = Long_Name.base_name full_name
-      in
-        if String.isSuffix "_def" base
-        then check_inductive
-               (String.substring (full_name, 0, size full_name - 4))
-        else if base = "cong"
-        then check_inductive (Long_Name.qualifier full_name)
-        else false
-      end
+      String.isSuffix "_def" (Long_Name.base_name full_name)
+      andalso check_inductive (String.substring (full_name, 0, size full_name - 4))
 
     (* --- Proposition content check --- *)
 
@@ -648,6 +625,13 @@ fun gen_infra_filters (context : Context.generic) =
            | NONE =>
                first_rule
                  [("internal_class", fn () => is_internal_class (Thm.prop_of thm)),
+                  ("class_definition", fn () => is_class_definition (Thm.prop_of thm)),
+                  (* the simplifier's `c.cong`, `c params \<equiv> c params`, protecting a
+                     constant defined in a locale or class target (Pure/simplifier.ML,
+                     add_foundation_cong); a hand-written congruence rule such as
+                     sum.cong has premises *)
+                  ("simplifier_cong", fn () => Long_Name.base_name full_name = "cong"
+                                               andalso Thm.is_reflexive thm),
                   ("too_big", fn () => smart_size_of_term (Thm.prop_of thm) > 1000)])
     fun is_infra_thm x = is_some (infra_thm_rule x)
 

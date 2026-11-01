@@ -22,6 +22,7 @@ session Semantic_Embedding_Test = Semantic_Embedding +
     Saturation_Framework
   theories
     Infra_Decl_Test
+    Infra_Released_Test
     SSymb_Infra_Test
     Interpretation_Driver_Config_Test
     Interpretation_Lock_Test
@@ -44,6 +45,10 @@ session Semantic_Embedding_Test = Semantic_Embedding +
     Link_Finder_Entities_Test
     Test_Sensitivity
     Test_All
+  (* alone, nothing forked: its pins read a process-wide closure and build counter
+     (INFRA_FILTER_CLASS_VARIANT_PLAN.md §4.9) *)
+  theories [parallel_proofs = 0]
+    Infra_Live_Pass_Test
   (* last and alone, nothing forked: its pins read process-wide counters and pass
      links from one command to a later one (LINK_LAYER_PLAN.md §8 item 4) *)
   theories [parallel_proofs = 0]
