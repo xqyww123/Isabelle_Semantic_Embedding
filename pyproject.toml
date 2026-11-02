@@ -78,7 +78,8 @@ dependencies = [
     # and mcp's httpx<1.0.0 would silently become our ceiling.
     "httpx",
     "diskcache",
-    "claude-agent-sdk",
+    # Every driver builds a tool server with its create_sdk_mcp_server, which runs on mcp 2 from 0.2.140 on.
+    "claude-agent-sdk>=0.2.140",
     "pyyaml",
     # snapshot_sync's install lock: a cross-platform advisory file lock (fcntl on POSIX,
     # msvcrt on Windows). Arrives transitively via huggingface-hub, but snapshot_sync
@@ -94,8 +95,9 @@ dependencies = [
 # The Codex interpretation backend.  Optional because it pulls the codex binary
 # (openai-codex-cli-bin, ~129 MB): a user who interprets with Claude Code should
 # not carry it.  Pinned exactly -- the SDK ships against one binary version and
-# the protocol is self-described as experimental.
-codex = ["openai-codex==0.144.4"]
+# the protocol is self-described as experimental.  mcp and uvicorn serve the tools
+# to the Codex subprocess over loopback HTTP (interpretation_driver/mcp_server.py).
+codex = ["openai-codex==0.144.4", "mcp>=1.26,<3", "uvicorn"]
 
 [project.urls]
 "Homepage" = "https://github.com/xqyww123/Premise_Embedding"

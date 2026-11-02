@@ -315,7 +315,7 @@ requirements:
     # against.  The base package keeps a constant name at a per-release version, so
     # unbounded lets conda's newest-wins resolution pair this with a future Isabelle it
     # was never built for.
-    - isabelle >=2025.2,<2025.3
+    - isabelle >=2026,<2026.1
     # ROOT:1  session Semantic_Embedding = HOL + sessions Isabelle_RPC Performant_Isabelle_ML
     # Session dependencies pyproject.toml cannot express.  isabelle-rpc is ALSO a pyproject
     # dependency, and it comes from conda.qiyuan.me, not conda-forge.
@@ -360,7 +360,8 @@ requirements:
     - numpy
     - httpx
     - diskcache
-    - claude-agent-sdk
+    # Every driver builds a tool server with its create_sdk_mcp_server, which runs on mcp 2 from 0.2.140 on.
+    - claude-agent-sdk >=0.2.140
     #
     # The Codex interpretation backend is DELIBERATELY absent.  It is a pip extra
     # (`Isabelle_Semantic_Embedding[codex]`) and stays one; a conda user who wants it

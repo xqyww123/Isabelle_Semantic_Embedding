@@ -26,10 +26,11 @@ import asyncio
 import contextlib
 import logging
 import socket
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import uvicorn
-from mcp import types
+from claude_agent_sdk import create_sdk_mcp_server
 from mcp.server.lowlevel import Server as MCPServer
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
@@ -44,57 +45,14 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-# --- result translation -----------------------------------------------------
-
-def _content_block(block: Any) -> types.ContentBlock | None:
-    """One block of a tool's `ToolCall_ret` as MCP content."""
-    if not isinstance(block, dict):
-        return None
-    kind = block.get("type")
-    if kind == "text":
-        return types.TextContent(type="text", text=str(block.get("text", "")))
-    if kind == "image":
-        return types.ImageContent(type="image", data=block.get("data", ""),
-                                  mimeType=block.get("mimeType", "image/png"))
-    if kind == "resource":
-        return types.EmbeddedResource(type="resource", resource=block["resource"])
-    return None
-
-
-def to_call_tool_result(ret: Any) -> types.CallToolResult:
-    """Translate a tool handler's return value into an MCP tool result.
-
-    The handlers return the Claude Agent SDK's private `ToolCall_ret` shape
-    (`base.mk_ret`): a plain dict, snake_case, `{"content": [...],
-    "is_error"?: bool}`.  MCP's low-level server does NOT recognise it -- handed
-    a bare dict it treats the whole thing as *structured* content, renders the
-    body as `json.dumps(..., indent=2)` text, and hardcodes `isError` to False.
-
-    Both consequences are silent and both damage the run: the answer tool
-    returns the batch's still unanswered entries in its result, so the model
-    would receive its work wrapped in JSON with the newlines escaped, and an error flagged by
-    `desugar_and_explain` would arrive looking like a success.  The Claude Code
-    path is spared only because `create_sdk_mcp_server` does this translation
-    internally, where this server cannot reach it -- hence this function.
-    """
-    blocks = ret.get("content", []) if isinstance(ret, dict) else []
-    content = [b for b in (_content_block(x) for x in blocks) if b is not None]
-    if not content:
-        # Never hand back an empty result: to the model that is indistinguishable
-        # from a tool that did nothing.
-        content = [types.TextContent(type="text", text=repr(ret))]
-    return types.CallToolResult(
-        content=content,
-        isError=bool(ret.get("is_error", False)) if isinstance(ret, dict) else False)
-
-
 # --- one MCP server per interpretation session ------------------------------
 
 def build_mcp_server(tools: list["SdkMcpTool[Any]"],
                      task: "AgentTask") -> MCPServer:
-    """An MCP server exposing `tools`; `task` supplies the connection their
-    progress reporting needs (the tools themselves close over their task)."""
-    by_name = {t.name: t for t in tools}
+    """An MCP server exposing `tools`: `create_sdk_mcp_server`'s, the one the
+    Claude Code path runs in process, so both paths run the same tool code;
+    `task` supplies the connection their progress reporting needs (the tools
+    themselves close over their task)."""
 
     def bind_context() -> None:
         """Re-establish the ambient state a tool handler expects.
@@ -108,25 +66,13 @@ def build_mcp_server(tools: list["SdkMcpTool[Any]"],
         if task.connection is not None:
             Connection.set_current(task.connection)
 
-    server: MCPServer = MCPServer(SERVER_NAME)
+    def bound(tool: "SdkMcpTool[Any]") -> "SdkMcpTool[Any]":
+        async def handler(arguments: Any) -> dict[str, Any]:
+            bind_context()
+            return await tool.handler(arguments)
+        return replace(tool, handler=handler)
 
-    @server.list_tools()
-    async def _list_tools() -> list[types.Tool]:
-        return [types.Tool(name=t.name, description=t.description,
-                           inputSchema=t.input_schema)
-                for t in tools]
-
-    @server.call_tool()
-    async def _call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
-        tool = by_name.get(name)
-        if tool is None:
-            return types.CallToolResult(
-                content=[types.TextContent(type="text", text=f"Unknown tool: {name}")],
-                isError=True)
-        bind_context()
-        return to_call_tool_result(await tool.handler(arguments))
-
-    return server
+    return create_sdk_mcp_server(SERVER_NAME, tools=[bound(t) for t in tools])["instance"]
 
 
 class _ManagedMCPApp:
