@@ -13,12 +13,12 @@ about that artifact:
     download the ``.conda``, extract its payload, validate, and atomically swap
     it into ``<cache>/system/``.  Manual and explicit: there is NO automatic
     download anywhere (L19);
-  * **export** -- the artifact producer, executed by CI (L18): rewrite the
+  * **export** -- the artifact producer, run by the release (L7): rewrite the
     input DB into a publishable payload with tombstones dropped, a freshly
     built system experience index, and a stamped manifest, then run the gates.
 
-One data source, one artifact (L7/L18): Hugging Face holds the dev-synced
-working DB (``manage_data.py update``); the release workflow turns it into the
+One data source, one artifact (L7): Hugging Face holds the dev-synced
+working DB (``manage_data.py update``); the release turns it into the
 conda package on conda.qiyuan.me; conda users install/update it through the
 solver and everyone else through ``isabelle-semantics pull``.
 
@@ -727,7 +727,7 @@ def install_system_db(*, force: bool = False, channel: str = CHANNEL_URL) -> Non
 
 
 # ---------------------------------------------------------------------------
-# export -- the artifact producer, executed by CI (L18)
+# export -- the artifact producer, run by the release (L7)
 # ---------------------------------------------------------------------------
 
 _EXPORT_BATCH = 10_000     # keys per write transaction of the compacting rewrite

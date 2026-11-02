@@ -16,7 +16,6 @@ Subcommands:
   embed     Embed interpreted entities lacking a vector for MODEL, whole DB (offline)
   status    Show the system and user layers (offline)
   pull      Install/update the system DB from the conda channel (manual, explicit)
-  release   Dispatch the CI release workflow (soft HF-freshness check first)
   export    Rewrite the store into a publishable payload (CI/offline)
 """
 import argparse
@@ -992,7 +991,7 @@ def cmd_fsck(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
-# status / pull / release / export  (the snapshot artifact surfaces)
+# status / pull / export  (the snapshot artifact surfaces)
 # ---------------------------------------------------------------------------
 
 def _run_fail_fast(fn, *a, **kw) -> None:
@@ -1004,14 +1003,6 @@ def _run_fail_fast(fn, *a, **kw) -> None:
         fn(*a, **kw)
     except SnapshotError as e:
         print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-def _confirm() -> bool:
-    try:
-        return input("\nConfirm? [y/N] ").strip().lower() == "y"
-    except (EOFError, KeyboardInterrupt):
-        print("\nAborted.")
         sys.exit(1)
 
 
@@ -1065,128 +1056,6 @@ def cmd_export(args: argparse.Namespace) -> None:
     _require_db()
     from Isabelle_Semantic_Embedding import snapshot_sync
     _run_fail_fast(snapshot_sync.export, args.outdir)
-
-
-# The HF dev-sync source of the published snapshot (see manage_data.py at the
-# repo root; the release workflow downloads exactly this file).
-HF_DATASET = "ANTPG/MLML-data"
-HF_DB_FILE = "contrib/Semantic_Embedding/Isabelle_Semantic_Embedding.tar.zst"
-RELEASE_WORKFLOW = "release-semantic-db"
-RELEASE_REPO = "xqyww123/isabelle-packaging-ci"
-
-
-def _hf_db_last_modified():
-    """When the HF copy of the semantic DB last changed, or None if unknowable."""
-    from huggingface_hub import HfApi
-    api = HfApi()
-    try:
-        [info] = api.get_paths_info(HF_DATASET, [HF_DB_FILE],
-                                    repo_type="dataset", expand=True)
-        if info.last_commit is not None:
-            return info.last_commit.date
-    except Exception:
-        pass
-    return api.repo_info(HF_DATASET, repo_type="dataset").last_modified
-
-
-def _local_db_last_modified() -> 'float | None':
-    """Max mtime over the local stores' data files, or None with no store."""
-    latest = None
-    if not os.path.isdir(CACHE_DIR):
-        return None
-    for entry in os.listdir(CACHE_DIR):
-        if not (entry.endswith(".lmdb")
-                and (entry == "semantics.lmdb" or entry.startswith("vector_")
-                     or entry == "experience_index.lmdb"
-                     or entry == "theory_hash.lmdb")):
-            continue
-        data = os.path.join(CACHE_DIR, entry, "data.mdb")
-        if os.path.isfile(data):
-            mtime = os.path.getmtime(data)
-            latest = mtime if latest is None else max(latest, mtime)
-    return latest
-
-
-def cmd_release(args: argparse.Namespace) -> None:
-    """The soft checklist (L13), then the workflow dispatch.
-
-    The release publishes the HF state, so the ONLY local check is freshness:
-    when the local stores look newer than the last HF upload, warn (wording
-    §14) and let the user confirm; when the comparison is unverifiable, say so
-    and ask the same confirmation.
-
-    INTERACTIVE-ONLY, deliberately with no --yes escape hatch: the prompt
-    count varies with environment state (the freshness question is
-    conditional), so a piped answer binds positionally to whichever question
-    happens to come first — `echo y |` could answer "Publish for real?" and
-    fire an unattended REAL release.  Publishing is a human's call."""
-    import datetime as _dt
-    import subprocess
-
-    if not sys.stdin.isatty():
-        print("Error: release is interactive-only — run it from a terminal.",
-              file=sys.stderr)
-        sys.exit(1)
-
-    local = _local_db_last_modified()
-    try:
-        remote = _hf_db_last_modified()
-    except Exception as e:
-        remote = None
-        reason = str(e)
-    else:
-        reason = None
-
-    if local is not None and remote is not None:
-        local_dt = _dt.datetime.fromtimestamp(local, tz=_dt.timezone.utc)
-        if local_dt > remote:
-            print(f"The local database looks NEWER than the last Hugging Face upload\n"
-                  f"(local last modified {local_dt:%Y-%m-%d %H:%M}; "
-                  f"HF revision from {remote:%Y-%m-%d %H:%M}).\n"
-                  f"The release publishes the HF state — your local changes would "
-                  f"NOT be included.\n"
-                  f"Run `manage_data.py update` first to include them.")
-            print("\nRelease the HF state anyway? [y/N] ", end="")
-            if input().strip().lower() != "y":
-                print("Aborted.")
-                return
-    elif remote is None:
-        print(f"Could not check the Hugging Face upload date"
-              f"{f' ({reason})' if reason else ''} — the freshness of the "
-              f"release input is unverified.")
-        print("\nRelease the HF state anyway? [y/N] ", end="")
-        if input().strip().lower() != "y":
-            print("Aborted.")
-            return
-
-    # Real release or dry run?  The workflow's dry_run input DEFAULTS TO TRUE
-    # (a bare dispatch publishes nothing), so the flag must be explicit either
-    # way -- a green dry run reading as a completed release was the failure
-    # mode this question exists to prevent.
-    print("\nPublish for real? [y/N]  (N = dry run: CI builds and validates, "
-          "nothing is published)", end=" ")
-    try:
-        real = input().strip().lower() == "y"
-    except (EOFError, KeyboardInterrupt):
-        print("\nAborted.")
-        return
-    flag = "dry_run=false" if real else "dry_run=true"
-
-    import shutil as _shutil
-    if _shutil.which("gh") is None:
-        print("`gh` is not available; dispatch manually:\n"
-              f"    gh workflow run {RELEASE_WORKFLOW} --repo {RELEASE_REPO} -f {flag}\n"
-              "(dry_run=true builds and validates on CI without publishing)")
-        return
-    print(f"Dispatching the release workflow ({RELEASE_WORKFLOW}"
-          f"{'' if real else ', dry run'})...")
-    r = subprocess.run(["gh", "workflow", "run", RELEASE_WORKFLOW,
-                        "--repo", RELEASE_REPO, "-f", flag])
-    if r.returncode != 0:
-        print(f"Error: `gh workflow run` exited {r.returncode}.", file=sys.stderr)
-        sys.exit(1)
-    print("Dispatched." if real
-          else "Dispatched (dry run; nothing will be published).")
 
 
 # ---------------------------------------------------------------------------
@@ -1607,11 +1476,6 @@ def main() -> None:
              "for. Run automatically when the semantic database is installed; "
              "always exits 0.")
 
-    # release
-    p_release = sub.add_parser("release",
-        help="Dispatch the CI release workflow (publishes the Hugging Face state "
-             "as the isabelle-semantic-data conda package); soft freshness check first")
-
     # export
     p_export = sub.add_parser("export",
         help="Rewrite the store at SEMANTIC_DB_DIR into a publishable system-DB "
@@ -1626,8 +1490,7 @@ def main() -> None:
     {"collect": cmd_collect, "list": cmd_list, "remove": cmd_remove,
      "prune": cmd_prune, "orphans": cmd_orphans,
      "reindex": cmd_reindex, "fsck": cmd_fsck, "embed": cmd_embed,
-     "status": cmd_status, "pull": cmd_pull, "release": cmd_release,
-     "export": cmd_export,
+     "status": cmd_status, "pull": cmd_pull, "export": cmd_export,
      "post-install-system-db": cmd_post_install_system_db}[args.command](args)
 
 
