@@ -301,10 +301,12 @@ jobs:
           set -euo pipefail
           # conda-forge IS required here: this package run-depends on python and python
           # libraries from there.  conda.qiyuan.me carries isabelle, isabelle-rpc,
-          # isabelle-performant-ml and rocksdict.
+          # isabelle-performant-ml and rocksdict.  The package is named with the local
+          # channel: by bare name conda silently installs the published build whenever this
+          # one cannot be solved.
           echo "local channel: $CHURL"
           conda create -y -n v -c "$CHURL" -c https://conda.qiyuan.me -c conda-forge \
-            --override-channels isabelle-semantic-embedding
+            --override-channels "$CHURL::isabelle-semantic-embedding"
           conda list -n v | grep -E 'isabelle|rocksdict|python '
 
       - name: "The component is REGISTERED (read it, do not infer)"
