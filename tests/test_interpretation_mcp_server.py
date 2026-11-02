@@ -1,9 +1,8 @@
 """The Codex driver's HTTP server for the interpretation tools
 (`interpretation_driver/mcp_server.py`), driven over loopback HTTP by the
-installed `mcp`'s own client in each MCP era it serves: the handshake
-(`initialize`), and on mcp 2 also 2026-07-28 (`server/discover`).  Results
-are read in the wire form, whose keys are the same on both mcp majors.  The
-tools and the task are stand-ins; no Isabelle, no model.
+`mcp` client in both MCP eras: the handshake (`initialize`) and 2026-07-28
+(`server/discover`).  Results are read in the wire form.  The tools and the
+task are stand-ins; no Isabelle, no model.
 Run with  python -m pytest contrib/Semantic_Embedding/tests/test_interpretation_mcp_server.py
 """
 import asyncio
@@ -17,7 +16,7 @@ from mcp.client.streamable_http import streamable_http_client
 from Isabelle_RPC_Host import Connection
 from Isabelle_Semantic_Embedding.interpretation_driver.mcp_server import InterpretationMCPServer
 
-ERAS = ["handshake", "2026-07-28"] if hasattr(ClientSession, "discover") else ["handshake"]
+ERAS = ["handshake", "2026-07-28"]
 
 CONNECTION = object()                   # the stand-in task's connection
 SCHEMA = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"],
@@ -60,7 +59,7 @@ def served(era, calls):
         try:
             url = await server.register_session(server.allocate_session_id(), TOOLS, Task())  # type: ignore[arg-type]
             async with streamable_http_client(url) as (read, write, *_), ClientSession(read, write) as client:
-                await (client.initialize() if era == "handshake" else client.discover())  # type: ignore[attr-defined]
+                await (client.initialize() if era == "handshake" else client.discover())
                 return await calls(client)
         finally:
             await server.shutdown()

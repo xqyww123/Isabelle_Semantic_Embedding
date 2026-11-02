@@ -83,7 +83,8 @@ class _ManagedMCPApp:
     lifetime."""
 
     def __init__(self, mcp_server: MCPServer) -> None:
-        self._manager = StreamableHTTPSessionManager(app=mcp_server, stateless=False)
+        # a handshake-era session lives until its client ends it
+        self._manager = StreamableHTTPSessionManager(app=mcp_server, stateless=False, session_idle_timeout=None)
         self._task: asyncio.Task | None = None
         self._ready = asyncio.Event()
         self._stop = asyncio.Event()

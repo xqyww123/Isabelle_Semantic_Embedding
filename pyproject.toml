@@ -97,7 +97,7 @@ dependencies = [
 # not carry it.  Pinned exactly -- the SDK ships against one binary version and
 # the protocol is self-described as experimental.  mcp and uvicorn serve the tools
 # to the Codex subprocess over loopback HTTP (interpretation_driver/mcp_server.py).
-codex = ["openai-codex==0.144.4", "mcp>=1.26,<3", "uvicorn"]
+codex = ["openai-codex==0.144.4", "mcp>=2.3,<3", "uvicorn"]
 
 [project.urls]
 "Homepage" = "https://github.com/xqyww123/Premise_Embedding"
