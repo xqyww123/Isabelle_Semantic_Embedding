@@ -299,9 +299,9 @@ jobs:
       - name: Create the environment
         run: |
           set -euo pipefail
-          # conda-forge IS required here, unlike the pure-session components: this package
-          # run-depends on python and fourteen python libraries.  conda.qiyuan.me carries
-          # isabelle, isabelle-rpc, isabelle-performant-ml and rocksdict.
+          # conda-forge IS required here: this package run-depends on python and python
+          # libraries from there.  conda.qiyuan.me carries isabelle, isabelle-rpc,
+          # isabelle-performant-ml and rocksdict.
           echo "local channel: $CHURL"
           conda create -y -n v -c "$CHURL" -c https://conda.qiyuan.me -c conda-forge \
             --override-channels isabelle-semantic-embedding
