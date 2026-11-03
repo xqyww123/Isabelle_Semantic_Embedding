@@ -156,7 +156,7 @@ jobs:
             --recipe conda/recipe.yaml \
             --output-dir out \
             --build-num "${{ inputs.build_number || '0' }}" \
-            -c https://conda.qiyuan.me -c conda-forge
+            -c https://conda-ci.qiyuan.me -c conda-forge
           find out -name '*.conda' -print
 
       - name: "Sanity: the payload really contains both halves"
@@ -305,7 +305,7 @@ jobs:
           # channel: by bare name conda silently installs the published build whenever this
           # one cannot be solved.
           echo "local channel: $CHURL"
-          conda create -y -n v -c "$CHURL" -c https://conda.qiyuan.me -c conda-forge \
+          conda create -y -n v -c "$CHURL" -c https://conda-ci.qiyuan.me -c conda-forge \
             --override-channels "$CHURL::isabelle-semantic-embedding"
           conda list -n v | grep -E 'isabelle|rocksdict|python '
 
