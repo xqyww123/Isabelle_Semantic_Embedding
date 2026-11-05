@@ -361,7 +361,7 @@ local
         val path_text =
           "theory CAP_Path_Import\n  imports " ^ quote fixture_import ^ "\nbegin\n\n" ^
           "definition cap_p :: nat where \"cap_p = 0\"\n\ncap_fixture_cmd cap_arg\n\nend\n"
-        val file = Path.append dir (Path.basic "CAP_Path_Import.thy")
+        val file = Path.append dir (Path.basic \<^unchecked_name>\<open>CAP_Path_Import.thy\<close>)
         val _ = File.write file path_text
         val pos =
           Position.make0 0 (offset_in path_text "cap_fixture_cmd cap_arg") 0 ""
