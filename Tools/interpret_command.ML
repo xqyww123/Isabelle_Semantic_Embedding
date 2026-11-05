@@ -7,18 +7,20 @@ Semantic_Store.embed_all_missing embeds every interpreted record in the whole DB
 still missing a vector for the configured embedding model.
 
 Frontend behavior (DIALOGUE_RESPONDER_DETECTION_PLAN.md section 2.6).  The
-confirmation dialog blocks on Active.dialog, whose only responder in the whole
-Isabelle tree is jEdit (Tools/jEdit/src/active.scala:100), so the command
-probes the attached frontend at entry (Isabelle_RPC's
-Dialogue.frontend_identity):
+confirmation dialog blocks on Active.dialog.  Two frontends can answer one:
+Isabelle/jEdit (Tools/jEdit/src/active.scala:102-103 in Misc_Handler) and
+Isabelle/VSCode when its client renders HTML output (vscode_html_output;
+Tools/VSCode/src/language_server.scala:571-588 in markup_action), which the probe
+does not check -- so only jEdit counts; the command probes the attached frontend at
+entry (Isabelle_RPC's Dialogue.frontend_identity):
   - batch forms (`isabelle build`, Isa-REPL, Headless server/dump/update, bare
     ML process) ERROR OUT immediately -- semantic interpretation of theories
     is by design performed only under an interactive frontend: a command
     executed by a batch build carries no live consent for the LLM/embedding
     spend, and the fuse fires independently of the cache state;
   - jEdit gets the confirmation dialog as always;
-  - an interactive-but-dialog-incapable frontend (VSCode) or an unknown one
-    proceeds without asking: the live invocation itself is the consent
+  - any other interactive frontend (VSCode, which the probe does not count) or an
+    unknown one proceeds without asking: the live invocation itself is the consent
     (ruling: no extra notice printed -- the normal report suffices).
 Batch collection goes through the `Semantic_Store.collect` REPL app instead
 (semantic_interpretation_app.ML).
@@ -171,9 +173,9 @@ fun run (force : bool) names state =
             | _ => writeln "[Semantic_Embedding] Aborted.")
           end
         else
-          (* Q2: no dialog can be answered here, yet the frontend is interactive
-             (VSCode) or unknown -- the live invocation is the consent; same
-             report, no extra notice, no dialog markup (see header). *)
+          (* Q2: no frontend the probe counts as a dialog responder, yet the frontend
+             is interactive (VSCode) or unknown -- the live invocation is the consent;
+             same report, no extra notice, no dialog markup (see header). *)
           (writeln info; go ())
       end
   end

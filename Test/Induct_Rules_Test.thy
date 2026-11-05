@@ -59,15 +59,15 @@ let
     if has_thm thm induct_rules
     then writeln ("  [OK] " ^ label ^ " found in induction rules")
     else error (label ^ " NOT found in induction rules")
-  ) [(@{thm color.induct}, "color.induct"),
-     (@{thm reachable.inducts}, "reachable.inducts")]
+  ) [(@{thm color.induct}, \<^unchecked_name>\<open>color.induct\<close>),
+     (@{thm reachable.inducts}, \<^unchecked_name>\<open>reachable.inducts\<close>)]
 
   val _ = List.app (fn (thm, label) =>
     if has_thm thm case_rules
     then writeln ("  [OK] " ^ label ^ " found in case-split rules")
     else error (label ^ " NOT found in case-split rules")
-  ) [(@{thm color.exhaust}, "color.exhaust"),
-     (@{thm reachable.cases}, "reachable.cases")]
+  ) [(@{thm color.exhaust}, \<^unchecked_name>\<open>color.exhaust\<close>),
+     (@{thm reachable.cases}, \<^unchecked_name>\<open>reachable.cases\<close>)]
 
   (* Universal key construction: all 32 bytes *)
   val _ = List.app (fn (name, _, thm) =>

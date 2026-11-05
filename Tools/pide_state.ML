@@ -7,8 +7,12 @@ Access PIDE document state via Scala functions:
   - goto_definition: resolve entity reference at a position to its definition position
   - hover_message: extract tooltip information at a position
   - entity_at_position: return (kind, fully_qualified_name) of entity at a position
-  - command_at_position: return source code of the command at a position
+  - command_at_position: return source code of the command at a position, in a context
   - commands_at_positions: the same for a whole batch, one round trip for the resolution
+  - make_command_at_position_callback: command_at_position as an RPC callback with a
+    fixed context
+The cut of a file on disk needs a context: its keyword table comes from the theories the
+context sees, then from Build's registry.
 *)
 
 signature PIDE_STATE =
@@ -37,8 +41,10 @@ sig
 
   (* Given a position (file + offset), return the source code of the command
      at that location together with its span (start_offset, end_offset) in the file.
-     Tries live PIDE state first, falls back to session export DB. *)
-  val command_at_position: Position.T -> (string * int * int) option
+     Tries live PIDE state first (nodes PIDE parsed; a heap theory file is answered from
+     its session DB even while an editor has it open), then the session export DB, then
+     the cut of the file on disk under the context's keywords. *)
+  val command_at_position: Context.generic -> Position.T -> (string * int * int) option
 
   (* The same for a whole batch: ONE absolutize round trip for the list, then per
      position the same live-PIDE / export-DB resolution, and every cut of a file
@@ -50,19 +56,30 @@ sig
      costs a few ms of fixed overhead per call whatever the payload (measured:
      about 4 ms for the position resolution, 1-2 ms for the source lookup, on a
      transport floor of about 0.6 ms), so a caller with many positions batches. *)
-  val commands_at_positions: Position.T list -> (string * int * int) option list
+  val commands_at_positions: Context.generic -> Position.T list ->
+    (string * int * int) option list
+
+  (* command_at_position as the RPC callback pide_state.command_at_position, wire
+     (file, offset), cutting under the context it was built with.  Per call, not global:
+     its answer depends on a context (see the rule at the global registrations below). *)
+  val make_command_at_position_callback: Context.generic -> Remote_Procedure_Calling.callback'
 
   (* Cut a (possibly WIP) theory file into its command spans (source, start, end),
-     1-based file-global symbol offsets, with local Outer_Syntax.  This backs
-     commands_at_positions for files no live PIDE state or export DB answers for;
-     a file that is not a .thy has no command spans and yields [] without a parse. *)
-  val command_spans_of_file: string -> (string * int * int) list
+     1-based file-global symbol offsets, with local Outer_Syntax under the context's
+     keywords.  This backs commands_at_positions for files no live PIDE state or export
+     DB answers for; a file that is not a .thy has no command spans and yields [] without
+     a parse. *)
+  val command_spans_of_file: Context.generic -> string -> (string * int * int) list
 
-  (* The re-cut of a degenerate whole-file dump (source, start s) into the single
-     command containing the file-global symbol `offset`: NONE on a miss, never the
-     dump itself.  Exposed for testing the whole-theory-leak fix: that branch
-     cannot be driven from a live theory, so it is unit-tested on a synthetic dump. *)
-  val recut_dump_source: string -> string -> int -> int -> (string * int * int) option
+  (* The re-cut of a whole-file dump (source, start s) into the single command
+     containing the file-global symbol `offset`: NONE on a miss, never the dump itself.
+     Exposed for testing the whole-theory-leak guard: that branch cannot be driven from a
+     batch build, so it is unit-tested on a synthetic dump. *)
+  val recut_dump_source: Context.generic -> string -> string -> int -> int ->
+    (string * int * int) option
+
+  (* expand_path, then the PLATFORM form: the path a Python receiver can open *)
+  val rpc_path: string -> string
 
   (* Convert between symbol offset and line:column via Python RPC.
      Requires the Isabelle_RPC Python host to be running. *)
@@ -73,10 +90,11 @@ sig
      Each entry is (session_name, db_path). *)
   val get_session_databases: unit -> (string * string) list
 
-  (* Given a file path and symbol offset, return the PIDE command ID of the
-     command at that position.  Returns NONE if not in a live PIDE node.
-     Only works for live theories, not heap-image theories. *)
-  val command_id_at_position: string -> int -> int option
+  (* The live PIDE node holding the file, by the name PIDE gave it (the key
+     Document.command_exec needs), and the id of its command at the symbol offset.
+     NONE if no live node holds the file or no command covers the offset; heap
+     theories have none. *)
+  val command_id_at_position: string -> int -> (string * int) option
 
   (* Given a file path and symbol offset, attempt to extract the Toplevel.state
      of the command at that position via Document.command_exec.
@@ -87,11 +105,17 @@ sig
 
   (* Given a file path and symbol offset, attempt to extract the Context.generic
      at that position.
-     Fallback chain: live PIDE -> (if re_eval_cache) re-evaluation cache -> NONE *)
-  val context_at_position: context_at_position_cfg -> string -> int -> Context.generic option
+     Fallback chain: live PIDE -> (if re_eval_cache) re-evaluation cache -> NONE.
+     The re-evaluation replays the file's theory, found as theory_of_file finds it with
+     the context given. *)
+  val context_at_position: context_at_position_cfg -> Context.generic -> string -> int ->
+    Context.generic option
 
-  (* Find the loaded theory whose master .thy file matches the given path. *)
-  val theory_of_file: string -> string option
+  (* The finished theory whose master .thy file is the given file (same base name, then
+     the same OS file): among those the context sees, then in Build's registry of
+     session-build and heap theories.  The context's own unfinished theory is not
+     answered, so a replay never re-runs the command that asked. *)
+  val theory_of_file: Context.generic -> string -> theory option
 
   (* Msgpack unpacker that reads an optional (file, offset) pair from the wire.
      NONE -> returns the fallback context.
@@ -105,7 +129,7 @@ struct
 
 fun save_thy_files () =
   let
-    val yxml = Scala.function1 "pide_state.save_thy_files" "";
+    val yxml = \<^scala>\<open>pide_state.save_thy_files\<close> "";
   in
     YXML.parse_body yxml |> XML.Decode.list XML.Decode.string
   end;
@@ -130,7 +154,7 @@ fun absolutize_id_based_pos {write_to_temp_file} positions =
         let
           val input_body =
             XML.Encode.list (XML.Encode.pair XML.Encode.int XML.Encode.int) to_resolve;
-          val yxml = Scala.function1 "pide_state.resolve_positions"
+          val yxml = \<^scala>\<open>pide_state.resolve_positions\<close>
             (YXML.string_of_body input_body);
           val answers =
             YXML.parse_body yxml
@@ -175,9 +199,10 @@ fun absolutize_id_based_pos {write_to_temp_file} positions =
    is `C:\...`, which fails the `isPrefix "/"` test, falls through to Path.explode, and
    raises: Path.check_elem rejects `:` and `\`.  Four SCALA callbacks reach this --
    hover_message, goto_definition, entity_at_position, command_at_position -- so on
-   Windows they threw rather than degraded.  Those four want the result in Isabelle's
-   INTERNAL form, which is what this returns: pide_state.scala matches it against
-   `version.nodes … _.node` and feeds it to `Path.explode`.
+   Windows they threw rather than degraded.  Scala itself accepts any spelling and never
+   raises: PIDE_Query.live_node matches the exact node name, then the same file, and the
+   DB route goes through PIDE_Query.node_path.  The INTERNAL form this returns is what ML
+   needs: the key of the per-call cut table, and File.read.
 
    The two RPC consumers are NOT these: offset_to_line_column and line_column_to_offset
    send the string over MessagePack to position.py, which does `os.path.realpath` and
@@ -185,11 +210,11 @@ fun absolutize_id_based_pos {write_to_temp_file} positions =
    rpc_path, which composes this function with a conversion back to platform form.
 
    ML_System.standard_path is the sanctioned normalisation for a string from outside
-   Isabelle's path world (Isabelle uses it that way at Pure/General/file.ML:76 for the OS
-   cwd, and Pure/ML/exn_properties.ML:27 for PolyML's messages).  It is shape-agnostic --
-   C:\x, C:/x and /cygdrive/c/x all normalise, `~~/...` passes through untouched -- and
-   on non-Windows it is `fn path => path`, so every line below behaves exactly as before
-   on Linux and macOS.
+   Isabelle's path world (Isabelle uses it that way at Pure/General/path.ML:242-245 in
+   val absolute for the OS cwd, and Pure/ML/exn_properties.ML:27 for PolyML's
+   messages).  It is shape-agnostic -- C:\x, C:/x and /cygdrive/c/x all normalise,
+   `~~/...` passes through untouched -- and on non-Windows it is `fn path => path`, so
+   every line below behaves exactly as before on Linux and macOS.
 
    Note the fast path is applied to the NORMALISED string, which is the point: a Windows
    platform path becomes /cygdrive/c/... and then takes the fast path, as it should. *)
@@ -200,12 +225,16 @@ fun expand_path s =
       if String.isPrefix "/" s andalso not (Char.contains s #"$")
         andalso not (String.isSubstring "./" s)
       then s
-      else File.absolute_path (Path.explode s) |> Path.implode
+      else File.absolute_path (Path.explode s)
     end;
 
-(* File path and offset of a position that has been through absolutize_id_based_pos *)
+(* File path and offset of a position that has been through absolutize_id_based_pos.
+   Total: a file expand_path cannot expand (an undefined variable, a character Path.explode
+   rejects) maps to "", which every caller answers NONE, instead of raising for the whole
+   batch it belongs to. *)
 fun file_offset_of pos =
-  (the_default "" (Position.file_of pos) |> expand_path, the_default 0 (Position.offset_of pos));
+  (the_default "" (try expand_path (the_default "" (Position.file_of pos))),
+   the_default 0 (Position.offset_of pos));
 
 (* Extract file path and offset from a Position.T, absolutizing if needed *)
 fun pos_file_offset pos =
@@ -218,7 +247,7 @@ fun goto_definition_pide file_path symbol_offset =
     val input_body =
       XML.Encode.pair XML.Encode.string XML.Encode.int
         (file_path, symbol_offset);
-    val yxml = Scala.function1 "pide_state.goto_definition"
+    val yxml = \<^scala>\<open>pide_state.goto_definition\<close>
       (YXML.string_of_body input_body);
     val (def_file, (def_line, (def_offset, def_end_offset))) =
       YXML.parse_body yxml
@@ -235,7 +264,7 @@ fun hover_message_pide file_path symbol_offset =
     val input_body =
       XML.Encode.pair XML.Encode.string XML.Encode.int
         (file_path, symbol_offset);
-    val yxml = Scala.function1 "pide_state.hover_message"
+    val yxml = \<^scala>\<open>pide_state.hover_message\<close>
       (YXML.string_of_body input_body);
     val msg = if YXML.detect yxml
       then (warning "hover_message: unexpected YXML markup in result";
@@ -252,7 +281,7 @@ local open MessagePackBinIO.Pack MessagePackBinIO.Unpack in
 
 val offset_to_line_column_cmd :
     (string * int, (int * int)) Remote_Procedure_Calling.command = {
-  name = "position.offset_to_line_column",
+  name = \<^unchecked_name>\<open>position.offset_to_line_column\<close>,
   arg_schema = packPair (packString, packInt),
   ret_schema = unpackPair (unpackInt, unpackInt),
   callback = [],
@@ -261,7 +290,7 @@ val offset_to_line_column_cmd :
 
 val line_column_to_offset_cmd :
     (string * int * int, int) Remote_Procedure_Calling.command = {
-  name = "position.line_column_to_offset",
+  name = \<^unchecked_name>\<open>position.line_column_to_offset\<close>,
   arg_schema = packTuple3 (packString, packInt, packInt),
   ret_schema = unpackInt,
   callback = [],
@@ -318,7 +347,7 @@ fun entity_at_position_pide file_path symbol_offset =
     val input_body =
       XML.Encode.pair XML.Encode.string XML.Encode.int
         (file_path, symbol_offset);
-    val yxml = Scala.function1 "pide_state.entity_at_position"
+    val yxml = \<^scala>\<open>pide_state.entity_at_position\<close>
       (YXML.string_of_body input_body);
     val (kind, name) =
       YXML.parse_body yxml
@@ -340,7 +369,7 @@ fun command_at_position_pide file_path symbol_offset =
     val input_body =
       XML.Encode.pair XML.Encode.string XML.Encode.int
         (file_path, symbol_offset);
-    val yxml = Scala.function1 "pide_state.command_at_position"
+    val yxml = \<^scala>\<open>pide_state.command_at_position\<close>
       (YXML.string_of_body input_body);
     val (source, (start_offset, end_offset)) =
       YXML.parse_body yxml
@@ -358,63 +387,64 @@ fun command_at_position_pide file_path symbol_offset =
 val get_session_databases : unit -> (string * string) list =
   let
     val cache = Synchronized.cache (fn () =>
-      Scala.function1 "pide_state.get_session_databases" ""
+      \<^scala>\<open>pide_state.get_session_databases\<close> ""
       |> YXML.parse_body
       |> XML.Decode.list (XML.Decode.pair XML.Decode.string XML.Decode.string));
   in fn () => Synchronized.cache_eval {persistent = false} cache end;
 
+(* The Scala call stays outside any \<^try>: a jar/ML mismatch of the reply fails loudly. *)
 fun command_id_at_position file_path symbol_offset =
-  let
-    val input_body =
-      XML.Encode.pair XML.Encode.string XML.Encode.int
-        (file_path, symbol_offset);
-    val yxml = Scala.function1 "pide_state.command_id_at_position"
-      (YXML.string_of_body input_body);
-    val cmd_id = YXML.parse_body yxml |> XML.Decode.int;
-  in if cmd_id = 0 then NONE else SOME cmd_id end;
+  \<^scala>\<open>pide_state.command_id_at_position\<close>
+    (YXML.string_of_body (XML.Encode.pair XML.Encode.string XML.Encode.int
+      (file_path, symbol_offset)))
+  |> YXML.parse_body
+  |> XML.Decode.option (XML.Decode.pair XML.Decode.string XML.Decode.int);
+
+(* Takes the node name Scala matched, never the caller's spelling of the file:
+   Document.command_exec knows a node only by the name PIDE gave it. *)
+fun command_state (node_name, cmd_id) =
+  \<^try>\<open>
+    Document.command_exec (Document.state ()) node_name cmd_id
+    |> Option.map (Command.eval_result_state o #1)
+    catch _ => NONE\<close>;
 
 fun toplevel_state_at_position file_path symbol_offset =
-  case command_id_at_position file_path symbol_offset of
-    NONE => NONE
-  | SOME cmd_id =>
-      \<^try>\<open>
-        case Document.command_exec (Document.state ()) file_path cmd_id of
-          NONE => NONE
-        | SOME (eval, _) => SOME (Command.eval_result_state eval)
-        catch _ => NONE
-      \<close>;
+  Option.mapPartial command_state (command_id_at_position file_path symbol_offset);
 
 
 (* --- Re-evaluation cache for finished theories --- *)
 
-(* The FILE PROPERTY Position.file sets (position.ML:148 -- `label` is a separate field,
-   read elsewhere in this file via Position.label_of).
+(* The FILE PROPERTY Position.file sets (position.ML:149 in file_props -- `label` is a
+   separate field, read elsewhere in this file via Position.label_of).
 
-   Isabelle has TWO conventions for it, and this picks one deliberately.  The loader path
-   uses the symbolic form (`~~/src/...`): Build/resources.ML:315,334, ML/ml_context.ML:216
-   and Thy/thy_info.ML:368 all spell it `Position.file (File.symbolic_path path)`.  The
-   PIDE path instead labels with the document node name: PIDE/document.ML:773,
-   PIDE/command.ML:64, Build/resources.ML:340.  Since these positions are produced by
-   re-lexing a file we just read from disk -- a loader-shaped act, not a document-node one
-   -- the symbolic form is the closer fit, and it is what makes messages readable
-   (File.symbolic_path folds prefixes listed in ISABELLE_DIRECTORIES, file.ML:51).
+   Isabelle has TWO conventions for it, and this picks one deliberately.  A file read
+   uses the symbolic form (`~~/src/...`): Build/resources.ML:386 in read_file_node and
+   ML/ml_context.ML:277 in eval_file spell it `Position.file (File.symbolic_path path)`.
+   A document node instead labels with its node name: PIDE/document.ML:797 in
+   presentation_context, PIDE/command.ML:66 in blob_file, Build/resources.ML:392 in
+   read_file_node.  Since these positions are produced by re-lexing a file we just read
+   from disk -- a file read, not a document node -- the symbolic form is the closer fit,
+   and it is what makes messages readable (File.symbolic_path folds prefixes listed in
+   ISABELLE_DIRECTORIES, file.ML:51).
    Either way this is cosmetic: the offsets are independent of the name, verified.
 
    FALLS BACK to the raw string, deliberately.  This value is display text -- it reaches
    error messages and PIDE markup, and callers here only ever read Position.offset_of
-   back out -- while Path.explode rejects ' ? * < > | " (path.ML:71), every one of them
-   legal in a POSIX filename.  A strict version would turn a cosmetic improvement into a
-   hard failure on Linux for such a file.  So: nicer name when it is derivable, the raw
-   string when it is not.  (Not *exactly* the previous behaviour in every case -- where
-   explode succeeds on a degenerate input the string is rewritten, e.g. "" becomes "."
-   and "./Foo.thy" becomes "Foo.thy".  None of these reach here: File.read rejects them
-   first.) *)
+   back out -- while Path.explode rejects ' ? * < > | " (path.ML:73 in val illegal_char),
+   every one of them legal in a POSIX filename.  A strict version would turn a cosmetic
+   improvement into a hard failure on Linux for such a file.  So: nicer name when it is
+   derivable, the raw string when it is not.  (Not *exactly* the previous behaviour in
+   every case -- where explode succeeds on a degenerate input the string is rewritten,
+   e.g. "" becomes "." and "./Foo.thy" becomes "Foo.thy".  None of these reach here:
+   File.read rejects them first.) *)
 fun file_label file_path =
   the_default file_path
     (try (File.symbolic_path o Path.explode o ML_System.standard_path) file_path);
 
-(* Cache: file_path -> sorted list of (symbol_offset, Toplevel.state).
-   Populated on first access by re-evaluating the theory from its parents.
+(* Cache: file_path -> the theory value replayed (its identifier) and the sorted list of
+   (symbol_offset, Toplevel.state) it gave.  An entry serves only the theory value it was
+   replayed from; another value of the same file (a reload, another context's view) is
+   replayed again and replaces it.
 
    KEYED ON THE NORMALISED PATH.  The same file arrives from the wire spelled either way
    on Windows (`C:\...` as Python sends it, `/cygdrive/c/...` after normalisation), and a
@@ -422,21 +452,22 @@ fun file_label file_path =
    build_reeval_cache replays an entire theory, so a spurious miss costs minutes.
    Identity on Linux and macOS, where the two spellings coincide. *)
 fun cache_key file_path = ML_System.standard_path file_path;
-val reeval_cache : (int * Toplevel.state) list Symtab.table Synchronized.var =
-  Synchronized.var "PIDE_State.reeval_cache" Symtab.empty;
+val reeval_cache :
+    {theory: Context.id, entries: (int * Toplevel.state) list} Symtab.table Synchronized.var =
+  Synchronized.var \<^unchecked_name>\<open>PIDE_State.reeval_cache\<close> Symtab.empty;
 
-fun lookup_reeval_cache file_path symbol_offset =
-  case Symtab.lookup (Synchronized.value reeval_cache) (cache_key file_path) of
-    NONE => NONE
-  | SOME entries =>
-      let fun find [] = NONE
-            | find [(off, st)] = if symbol_offset >= off then SOME st else NONE
-            | find ((off1, st1) :: (rest as (off2, _) :: _)) =
-                if symbol_offset >= off1 andalso symbol_offset < off2 then SOME st1
-                else find rest
-      in find entries end;
+(* The theories a file lookup searches, in tiers: those the context sees (its own theory
+   included), then Build's registry, which holds only theories committed at the end of a
+   session build or loaded from a heap -- it misses those the context sees from the session
+   being built, from PIDE, or from Isa-REPL.  The first tier with a hit answers. *)
+fun known_theories context =
+  [Theory.nodes_of (Context.theory_of context),
+   map_filter Build.lookup_theory (Build.all_theories ())];
 
-(* Find the loaded theory whose master file matches the given path.
+(* Context.get_theory refuses a theory's own name while it is unfinished *)
+fun finished thy = can (Context.get_theory {long = true} thy) (Context.theory_long_name thy);
+
+(* The theory in `tiers` whose master file is the given file.
 
    `file_path` arrives from OUTSIDE ML: Python sends it back as the `context_at` hint,
    having received it from us as Theory_Structure.get_theory_file_path, which is
@@ -444,41 +475,52 @@ fun lookup_reeval_cache file_path symbol_offset =
    `C:\...`, and Path.explode rejects `:` and `\` (Path.check_elem).  On Linux and macOS
    ML_System.standard_path is the identity, so the round trip was invisible.
 
-   SCOPE, precisely: this fixes the callers that reach theory_of_file -- the
-   position_context_unpacker / context_at_position route, and build_reeval_cache, which
-   calls theory_of_file OUTSIDE its own \<^try> and so genuinely crashed.  It does NOT
-   cover hover_message, goto_definition, entity_at_position or command_at_position:
-   those reach the same platform string through `expand_path`, which was fixed separately
-   (see its own comment above).  Do not read this comment as covering them.
+   SCOPE, precisely: this covers every caller of file_theory -- theory_of_file (the
+   position_context_unpacker / context_at_position route, and reeval_entries) and
+   keywords_of_wip_file (the cut of a file on disk behind command_at_position).  The
+   Scala lookups of hover_message, goto_definition, entity_at_position and
+   command_at_position reach the same platform string through `expand_path`, which was
+   fixed separately (see its own comment above).
 
    Why ML_System.standard_path is the right tool for a string from outside Isabelle's
    path world, and why it is a no-op on Linux and macOS: see expand_path's comment above.
    The reasoning is identical and is not repeated here. *)
-(* NONE, not an exception, when the path will not explode.  Path.explode rejects
-   ' * ? < > | " and a mid-element $ (path.ML:71) -- all legal in a POSIX filename, and
-   Isabelle itself opens such files happily (verified: a theory under a directory named
-   Don't_Touch loads clean).  standard_path only removes the WINDOWS-specific offenders
-   `:` and `\`; it does nothing about these, on any platform.
+(* NONE, not an exception, when the path will not explode or names no file ("/", a bare
+   undefined $VAR).  Path.explode rejects ' * ? < > | " and a mid-element $ (path.ML:73
+   in val illegal_char) -- all legal in a POSIX filename, and Isabelle itself opens such
+   files happily (verified: a theory under a directory named Don't_Touch loads clean).
+   standard_path only removes the WINDOWS-specific offenders `:` and `\`; it does nothing
+   about these, on any platform.
 
-   This used to raise, and build_reeval_cache calls it OUTSIDE its own \<^try> (below), so
+   This used to raise, and reeval_entries calls it OUTSIDE any \<^try> (below), so
    the error escaped to the RPC boundary as an unexplained "Illegal character" for anyone
-   whose project sat under such a directory.  The return type was already string option
+   whose project sat under such a directory.  The return type was already an option
    and every caller already handles NONE, so NONE is both the honest and the cheap
-   answer. *)
-fun theory_of_file file_path =
-  case try (Path.explode o ML_System.standard_path) file_path of
-    NONE => NONE
-  | SOME target =>
+   answer.
+
+   SAME FILE, not the same spelling: the master directory is stored folded
+   (Resources.begin_theory keeps File.symbolic_path: ~~/src/HOL, ~/..., $AFP/...), the
+   target arrives expanded, and either may run through a symlink.  So a candidate must
+   have the target's file name (base name ^ ".thy", which also keeps the cost to the few
+   theories of that name) and then be the same OS file (File.eq, which is total). *)
+fun file_theory tiers file_path =
   let
-    fun matches name =
-      \<^try>\<open>
-        let val thy = Thy_Info.get_theory name
-            val dir = Resources.master_directory thy
-            val thy_file = Path.append dir (Path.basic (Long_Name.base_name name ^ ".thy"))
-        in thy_file = target end
-        catch _ => false
-      \<close>
-  in List.find matches (Thy_Info.get_names ()) end;
+    fun target_and_name s =
+      let val target = Path.explode (ML_System.standard_path s)
+      in (target, Path.file_name target) end
+    fun theory_file thy =
+      Path.append (Resources.master_directory thy)
+        (Path.basic (Context.theory_base_name thy ^ ".thy"))
+    fun same_file (target, name) thy =
+      Context.theory_base_name thy ^ ".thy" = name andalso
+        (case try theory_file thy of SOME file => File.eq (file, target) | NONE => false)
+  in
+    (case try target_and_name file_path of
+      NONE => NONE
+    | SOME target => get_first (find_first (same_file target)) tiers)
+  end;
+
+fun theory_of_file context = file_theory (map (filter finished) (known_theories context));
 
 
 (* --- WIP command-span path (B1 cross-line completion) ---
@@ -492,48 +534,55 @@ fun theory_of_file file_path =
    Coordinate contract: the returned (start, end) are 1-based, file-global
    *symbol* offsets, matching the live branch (src/scala/pide_state.scala:104
    uses var pos = 1).  We obtain this by lexing with Position.file, whose offset starts
-   at 1 (Pure/General/position.ML:163) -- independently of the name it is given, so
-   file_label's fallback cannot affect the coordinate contract. *)
+   at 1 (Pure/General/position.ML:166 in fun file) -- independently of the name it is
+   given, so file_label's fallback cannot affect the coordinate contract. *)
 
 (* Keywords for lexing the WIP file:
-     1. preferred: the real theory matched by theory_of_file, via
-        Thy_Header.get_keywords (Thy_Info.get_theory name);
-     2. fallback: read the file header, merge the keywords of its (loaded)
-        import theories with the header's own keyword declarations
-        (cf. Pure/Thy/thy_info.ML:297-299). *)
-fun keywords_of_wip_file file_path text =
-  case theory_of_file file_path of
-    SOME thy_name => Thy_Header.get_keywords (Thy_Info.get_theory thy_name)
+     1. preferred: the theory file_theory finds for the file in the context's tiers,
+        unfiltered (the context's own unfinished theory included), via
+        Thy_Header.get_keywords;
+     2. fallback: read the file header, merge the keywords of its known import
+        theories with the header's own keyword declarations
+        (cf. Pure/Build/build.ML:204-206 in eval_thy). *)
+fun keywords_of_wip_file context file_path text =
+  let val tiers = known_theories context in
+  case file_theory tiers file_path of
+    SOME thy => Thy_Header.get_keywords thy
   | NONE =>
       let
         val text_pos = Position.file (file_label file_path)
         val header = Thy_Header.read text_pos text
-        (* resolve each import to a loaded theory by base-name match *)
-        val loaded = Thy_Info.get_names ()
+        (* An import by its exact long name, the first tier that has it; only when no tier
+           has it, by base name, in the first tier with any candidate -- one candidate is
+           used, several mean we cannot tell which one is meant, so we skip (warning)
+           rather than pick one and merge the wrong keywords.  The lookup never falls
+           through past an ambiguity. *)
         fun resolve_import (imp, _) =
-          let val base = Long_Name.base_name imp in
-            case Thy_Info.lookup_theory imp of
-              SOME thy => SOME thy
-            | NONE =>
-                (* base-name fallback: only when it is unambiguous.  If several
-                   loaded theories share the base name we cannot tell which one
-                   is meant, so we skip (warning) rather than silently pick one
-                   and risk merging the wrong keywords. *)
-                (case filter (fn n => Long_Name.base_name n = base) loaded of
-                   [n] => Thy_Info.lookup_theory n
-                 | [] => NONE
-                 | ns =>
-                     (warning ("PIDE_State.keywords_of_wip_file: ambiguous import " ^
-                        quote imp ^ " matches multiple loaded theories " ^
-                        commas_quote ns ^ "; skipping"); NONE))
-          end
+          (case get_first (find_first (fn thy => Context.theory_long_name thy = imp)) tiers of
+            SOME thy => SOME thy
+          | NONE =>
+              let
+                (* a path import ("~~/src/HOL/Nat", "../A") names its theory by the file *)
+                val base = Long_Name.base_name (the_default imp (try Thy_Header.import_name imp))
+                fun candidates tier =
+                  filter (fn thy => Context.theory_base_name thy = base) tier
+              in
+                (case find_first (not o null) (map candidates tiers) of
+                  NONE => NONE
+                | SOME [thy] => SOME thy
+                | SOME thys =>
+                    (warning ("PIDE_State.keywords_of_wip_file: ambiguous import " ^
+                      quote imp ^ " matches multiple known theories " ^
+                      commas_quote (map Context.theory_long_name thys) ^ "; skipping"); NONE))
+              end)
         val parents = map_filter resolve_import (#imports header)
         val base_kws =
           fold (curry Keyword.merge_keywords o Thy_Header.get_keywords) parents
             Keyword.empty_keywords
       in
         Keyword.add_keywords (#keywords header) base_kws
-      end;
+      end
+  end;
 
 (* Cut the command spans of a WIP file.
    Returns (source, start_sym_off, end_sym_off) for each real Command_Span,
@@ -546,15 +595,15 @@ fun keywords_of_wip_file file_path text =
    then degrades to a single-line search).  Harmless in practice: query offsets
    land inside commands and hover/definition never probe whitespace. *)
 (* Cut a theory source TEXT into command spans (source, start_sym_off,
-   end_sym_off) via local Outer_Syntax.  Pure function of (file_path, text):
-   file_path only seeds the lexing Position and the keyword resolution. *)
-fun command_spans_of_text file_path text : (string * int * int) list =
+   end_sym_off) via local Outer_Syntax.  file_path only seeds the lexing Position
+   and, with the context, the keyword resolution. *)
+fun command_spans_of_text context file_path text : (string * int * int) list =
   \<^try>\<open>
     let
       val tpos = Position.file (file_label file_path)
-      val kws = keywords_of_wip_file file_path text
+      val kws = keywords_of_wip_file context file_path text
       val toks = Token.explode kws tpos text
-      val spans = Outer_Syntax.parse_spans toks
+      val spans = Outer_Syntax.parse_spans (Keyword.command_kind kws) toks
       fun is_command span =
         case Command_Span.kind span of Command_Span.Command_Span _ => true | _ => false
       fun span_entry span =
@@ -594,23 +643,28 @@ fun command_spans_of_text file_path text : (string * int * int) list =
    warning per entity, so such files are answered [] without a parse. *)
 fun is_thy_file file = String.isSuffix ".thy" file;
 
-(* A degenerate export-DB snapshot dumps the WHOLE theory file as one command's
-   source (Build.read_theory rebuilds the theory as a single Command.unparsed; a
-   whole-file COMMAND_SPAN then makes try_substring return everything), reporting
-   its start s <= 1.  Cutting that dump is the disk cut of the file from symbol s
-   on, so the two share one cutter: `text` is `file` from `base` on, and the spans
-   come back in file-global offsets. *)
-fun command_spans_of_text_from file base text =
-  map (fn (src, s, e) => (src, base + s - 1, base + e - 1)) (command_spans_of_text file text);
+(* A whole-file dump: Scala answering the WHOLE theory file as one command's source,
+   with start s <= 1.  The cause (measured 2026-11-03) is a heap theory opened in an
+   editor: PIDE keeps such a loaded-theory node as one Command.unparsed of the whole file
+   and never parses it (Isabelle2026 thy_syntax.scala:150-200, 407-422), and the live
+   branch answered from it -- not a degenerate export-DB snapshot, as this comment used to
+   say (184k sampled export-DB answers held no dump).  The Scala lookup now skips
+   loaded-theory nodes, so this guard should no longer fire; it stays until its removal is
+   measured.  Cutting a dump is the disk cut of the file from symbol s on, so the two
+   share one cutter: `text` is `file` from `base` on, and the spans come back in
+   file-global offsets. *)
+fun command_spans_of_text_from context file base text =
+  map (fn (src, s, e) => (src, base + s - 1, base + e - 1))
+    (command_spans_of_text context file text);
 
-fun command_spans_of_file file_path : (string * int * int) list =
+fun command_spans_of_file context file_path : (string * int * int) list =
   if not (is_thy_file file_path) then []
   else
     (* standard_path: file_path arrives from the wire and is a PLATFORM path on Windows.
        Without it Path.explode raises and the \<^try> below turns that into [] plus a
        warning naming this function -- so command spans degrade to nothing there, with the
        cause visible only to whoever reads the warnings. *)
-    \<^try>\<open>command_spans_of_text_from file_path 1
+    \<^try>\<open>command_spans_of_text_from context file_path 1
         (File.read (Path.explode (ML_System.standard_path file_path)))
       catch exn =>
         (warning ("PIDE_State.command_spans_of_file: " ^ Runtime.exn_message exn); [])\<close>;
@@ -626,9 +680,9 @@ fun span_at offset dump_spans disk_spans =
     SOME r => SOME r
   | NONE => find_span offset (disk_spans ()));
 
-fun recut_dump_source file source s offset =
-  span_at offset (SOME (command_spans_of_text_from file s source))
-    (fn () => command_spans_of_file file);
+fun recut_dump_source context file source s offset =
+  span_at offset (SOME (command_spans_of_text_from context file s source))
+    (fn () => command_spans_of_file context file);
 
 (* What one position still needs after the live-PIDE / export-DB answer: nothing,
    or span_at over the cuts of `file` and of the dump Scala returned, if any. *)
@@ -636,7 +690,7 @@ datatype outcome =
     Settled of (string * int * int) option
   | Needs_Cut of {file: string, dump: (string * int) option, offset: int};
 
-fun commands_at_positions positions =
+fun commands_at_positions context positions =
   let
     fun outcome (file, offset) =
       if file = "" orelse offset = 0 then Settled NONE
@@ -656,14 +710,17 @@ fun commands_at_positions positions =
     val cuts =
       fold (fn Settled _ => I
              | Needs_Cut {file, dump, ...} =>
-                Symtab.map_default (file, {disk = Lazy.lazy (fn () => command_spans_of_file file), dumps = []})
+                Symtab.map_default
+                  (file,
+                    {disk = Lazy.lazy (fn () => command_spans_of_file context file), dumps = []})
                   (fn (cs as {disk, dumps}) =>
                     (case dump of
                       NONE => cs
                     | SOME (text, base) =>
                         if AList.defined (op =) dumps text then cs
                         else {disk = disk, dumps =
-                          (text, Lazy.lazy (fn () => command_spans_of_text_from file base text)) :: dumps})))
+                          (text, Lazy.lazy (fn () =>
+                            command_spans_of_text_from context file base text)) :: dumps})))
         outcomes Symtab.empty
     fun lookup {file, dump, offset} =
       let val {disk, dumps} = the (Symtab.lookup cuts file) in
@@ -675,58 +732,99 @@ fun commands_at_positions positions =
     outcomes |> map (fn Settled r => r | Needs_Cut c => lookup c)
   end;
 
-val command_at_position = singleton commands_at_positions;
+fun command_at_position context = singleton (commands_at_positions context);
+
+fun make_command_at_position_callback context : Remote_Procedure_Calling.callback' =
+  let open MessagePackBinIO.Pack MessagePackBinIO.Unpack in
+    Remote_Procedure_Calling.mk_callback {
+      name = \<^unchecked_name>\<open>pide_state.command_at_position\<close>,
+      on_interrupt = Remote_Procedure_Calling.Reraise,
+      arg_schema = unpackPair (unpackString, unpackInt),
+      ret_schema = packOption (packTuple3 (packString, packInt, packInt)),
+      function = fn (file, offset) =>
+        command_at_position context (Position.make0 0 offset 0 "" file ""),
+      (* none, as make_links_callback: cutting a large file takes its time *)
+      timeout = NONE
+    }
+  end;
 
 
-fun build_reeval_cache file_path =
-  case theory_of_file file_path of
-    NONE =>
-      (warning ("PIDE_State.build_reeval_cache: no loaded theory for " ^ file_path); [])
-  | SOME thy_name =>
-      \<^try>\<open>
-        let
-          val thy = Thy_Info.get_theory thy_name
-          (* standard_path for the same reason as command_spans_of_file above: a raw
-             platform path raises here, and this function's \<^try> turns that into []
-             plus a warning -- the re-eval cache just stops working on Windows. *)
-          val path = Path.explode (ML_System.standard_path file_path)
-          val text = File.read path
-          (* No try around symbolic_path here -- but NOT because holding a Path.T makes it
-             total.  It is not: symbolic_path runs Path.expand, which calls getenv_strict
-             and errors on an unset variable (path.ML:228-236), so a filename containing
-             `$` would raise.  It is safe only because File.read on the line above runs
-             the same Path.expand and raises first.  Reordering these two lines would make
-             that live; file_label exists for the sites that have no such predecessor. *)
-          val text_pos = Position.file (File.symbolic_path path)
-          val header = Thy_Header.read text_pos text
-          val parents = Theory.parents_of thy
-          val master_dir = Resources.master_directory thy
-          val fresh_thy = Resources.begin_theory master_dir header parents
-          val trs = Outer_Syntax.parse_text fresh_thy (K fresh_thy) text_pos text
+(* Replay `thy` from its file and its parents: the (offset, state) entries of its commands.
+   Recorded in reeval_cache for this theory value only. *)
+fun build_reeval_cache thy file_path =
+  \<^try>\<open>
+    let
+      (* standard_path for the same reason as command_spans_of_file above: a raw
+         platform path raises here, and this function's \<^try> turns that into []
+         plus a warning -- the re-eval cache just stops working on Windows. *)
+      val path = Path.explode (ML_System.standard_path file_path)
+      val text = File.read path
+      (* No try around symbolic_path here -- but NOT because holding a Path.T makes it
+         total.  It is not: symbolic_path runs Path.expand, which calls getenv_strict and
+         errors on an unset variable (path.ML:232-240 in eval and expand), so a filename
+         containing `$` would raise.  It is safe only because File.read on the line above
+         runs the same Path.expand and raises first.  Reordering these two lines would
+         make that live; file_label exists for the sites that have no such predecessor. *)
+      val node = File.symbolic_path path
+      val text_pos = Position.file node
+      val header = Thy_Header.read text_pos text
+      (* As Build's loader does (build.ML:280 in load_thy, 220-222 in eval_thy), with the
+         header read here and the parents and long name of the theory being replayed: the
+         header holds only the base name, and Universal_Key and Theory_Hash read the
+         theory's name, so the replay's keys match those of the real theory. *)
+      val fresh_thy =
+        Resources.begin_theory
+         {name = {node = node, master_dir = Resources.master_directory thy,
+            theory = Context.theory_long_name thy},
+          pos = #2 (#name header), imports = [], options = #options header,
+          keywords = #keywords header, condition_bad = (false, ""), errors = [],
+          initiators = []}
+          (Theory.parents_of thy)
+      val trs =
+        Outer_Syntax.parse_text fresh_thy (K {skip_theory = false, theory = fresh_thy})
+          text_pos text
 
-          val init_state = Toplevel.make_state NONE
-          val (_, entries_rev) = fold (fn tr => fn (st, acc) =>
-            let val st' = Toplevel.command_exception true tr st
-                val offset = the_default 0 (Position.offset_of (Toplevel.pos_of tr))
-            in if offset > 0 andalso not (Toplevel.is_ignored tr)
-               then (st', (offset, st') :: acc)
-               else (st', acc)
-            end) trs (init_state, [])
-          val entries = rev entries_rev
-          val _ = writeln ("PIDE_State: cached " ^ string_of_int (length entries) ^
-            " states for " ^ thy_name)
-        in
-          Synchronized.change reeval_cache (Symtab.update (cache_key file_path, entries));
-          entries
+      fun step tr (st, acc) =
+        let val st' = Toplevel.command_exception tr st
+            val offset = the_default 0 (Position.offset_of (Toplevel.pos_of tr))
+        in if offset > 0 andalso not (Toplevel.is_ignored tr)
+           then (st', (offset, st') :: acc)
+           else (st', acc)
         end
-        catch exn => (warning ("PIDE_State.build_reeval_cache: " ^ Runtime.exn_message exn); [])
-      \<close>;
+      (* Under the header's options (build.ML:278-298 in load_thy) and in interactive
+         mode, as 2025-2's `Toplevel.command_exception true` was (toplevel.ML:650 in
+         begin_proof spells that `Interactive.setmp true`): a quick_and_dirty `sorry`
+         replays instead of failing the whole replay. *)
+      val (_, entries_rev) =
+        Options.strict_thread_update (Options.update_no_pos (#options header))
+          (Interactive.setmp true (fold step trs)) (Toplevel.make_state NONE, [])
+      val entries = rev entries_rev
+      val _ = writeln ("PIDE_State: cached " ^ string_of_int (length entries) ^
+        " states for " ^ Context.theory_long_name thy)
+    in
+      Synchronized.change reeval_cache (Symtab.update (cache_key file_path,
+        {theory = Context.theory_identifier thy, entries = entries}));
+      entries
+    end
+    catch exn => (warning ("PIDE_State.build_reeval_cache: " ^ Runtime.exn_message exn); [])
+  \<close>;
 
-fun reeval_context_at_position file_path symbol_offset =
+(* The replay of the theory the context finds for the file: the cached entries when they
+   were replayed from this very theory value, else a fresh replay (passed the theory found,
+   not looked up again). *)
+fun reeval_entries context file_path =
+  (case theory_of_file context file_path of
+    NONE => (warning ("PIDE_State.reeval_entries: no loaded theory for " ^ file_path); [])
+  | SOME thy =>
+      (case Symtab.lookup (Synchronized.value reeval_cache) (cache_key file_path) of
+        SOME {theory, entries} =>
+          if theory = Context.theory_identifier thy then entries
+          else build_reeval_cache thy file_path
+      | NONE => build_reeval_cache thy file_path));
+
+fun reeval_context_at_position context file_path symbol_offset =
   let
-    val entries = case Symtab.lookup (Synchronized.value reeval_cache) (cache_key file_path) of
-        SOME e => e
-      | NONE => build_reeval_cache file_path
+    val entries = reeval_entries context file_path
   in
     case entries of [] => NONE | _ =>
       let fun find [] = NONE
@@ -745,13 +843,13 @@ fun reeval_context_at_position file_path symbol_offset =
 
 type context_at_position_cfg = {re_eval_cache: bool};
 
-fun context_at_position (cfg : context_at_position_cfg) file_path symbol_offset =
+fun context_at_position (cfg : context_at_position_cfg) context file_path symbol_offset =
   case toplevel_state_at_position file_path symbol_offset of
     SOME st =>
       \<^try>\<open>SOME (Context.Proof (Toplevel.context_of st)) catch _ => NONE\<close>
   | NONE =>
       if #re_eval_cache cfg
-      then reeval_context_at_position file_path symbol_offset
+      then reeval_context_at_position context file_path symbol_offset
       else NONE;
 
 fun position_context_unpacker (fallback : Context.generic)
@@ -763,7 +861,7 @@ fun position_context_unpacker (fallback : Context.generic)
     in case pos_opt of
         NONE => (fallback, src')
       | SOME (file, offset) =>
-          (case context_at_position {re_eval_cache = true} file offset of
+          (case context_at_position {re_eval_cache = true} fallback file offset of
             SOME ctx => (ctx, src')
           | NONE => (fallback, src'))
     end
@@ -771,12 +869,15 @@ fun position_context_unpacker (fallback : Context.generic)
 
 end;
 
-(* Register RPC callbacks so Python can call the auto functions *)
+(* Register RPC callbacks so Python can call the auto functions.  The rule: a callback is
+   global only if its answer reads Scala state alone and looks up no theory.  So
+   pide_state.command_at_position, which cuts files under a context's keywords, is per call
+   (PIDE_State.make_command_at_position_callback), installed by whoever has the context. *)
 local open MessagePackBinIO.Pack MessagePackBinIO.Unpack in
 
 val _ = Theory.setup (Context.theory_map (
   Remote_Procedure_Calling.register_global_callback {
-      name = "pide_state.goto_definition",
+      name = \<^unchecked_name>\<open>pide_state.goto_definition\<close>,
       on_interrupt = Remote_Procedure_Calling.Reraise,
       arg_schema = unpackPair (unpackString, unpackInt),
       ret_schema = packOption (packTuple4 (packString, packInt, packInt, packInt)),
@@ -792,7 +893,7 @@ val _ = Theory.setup (Context.theory_map (
       timeout = SOME (Time.fromSeconds 10)
     }
   #> Remote_Procedure_Calling.register_global_callback {
-      name = "pide_state.hover_message",
+      name = \<^unchecked_name>\<open>pide_state.hover_message\<close>,
       on_interrupt = Remote_Procedure_Calling.Reraise,
       arg_schema = unpackPair (unpackString, unpackInt),
       ret_schema = packOption packString,
@@ -801,7 +902,7 @@ val _ = Theory.setup (Context.theory_map (
       timeout = SOME (Time.fromSeconds 10)
     }
   #> Remote_Procedure_Calling.register_global_callback {
-      name = "pide_state.entity_at_position",
+      name = \<^unchecked_name>\<open>pide_state.entity_at_position\<close>,
       on_interrupt = Remote_Procedure_Calling.Reraise,
       arg_schema = unpackPair (unpackString, unpackInt),
       ret_schema = packOption (packPair (packString, packString)),
@@ -810,16 +911,7 @@ val _ = Theory.setup (Context.theory_map (
       timeout = SOME (Time.fromSeconds 10)
     }
   #> Remote_Procedure_Calling.register_global_callback {
-      name = "pide_state.command_at_position",
-      on_interrupt = Remote_Procedure_Calling.Reraise,
-      arg_schema = unpackPair (unpackString, unpackInt),
-      ret_schema = packOption (packTuple3 (packString, packInt, packInt)),
-      function = fn (file, offset) =>
-        PIDE_State.command_at_position (Position.make0 0 offset 0 "" file ""),
-      timeout = SOME (Time.fromSeconds 10)
-    }
-  #> Remote_Procedure_Calling.register_global_callback {
-      name = "pide_state.get_session_databases",
+      name = \<^unchecked_name>\<open>pide_state.get_session_databases\<close>,
       on_interrupt = Remote_Procedure_Calling.Reraise,
       arg_schema = unpackUnit,
       ret_schema = packList (packPair (packString, packString)),

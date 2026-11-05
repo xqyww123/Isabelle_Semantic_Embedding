@@ -86,17 +86,17 @@ fun register_streaming_app name body =
 
    Deliberately does NOT read the names itself.  Every app drains its whole protocol
    FIRST and only then does work that can fail, as the original collect app did: an
-   exception raised here -- Thy_Info.get_theory on a bad name, or a wedged RPC host
+   exception raised here -- Build.get_theory on a bad name, or a wedged RPC host
    in `load` -- would otherwise leave the client's remaining msgpack values unread in
    the socket, and the next command on that connection would unpack them as itself. *)
 fun resolve_roots thy_names =
   let
-    val thys = map Thy_Info.get_theory thy_names
+    val thys = map Build.get_theory thy_names
     val _ = List.app Theory_Hash.store_theory_hash thys
     val _ = Remote_Procedure_Calling.load ["Isabelle_Semantic_Embedding"]
   in thys end
 
-val _ = register_streaming_app "Semantic_Store.collect" (fn cin =>
+val _ = register_streaming_app \<^unchecked_name>\<open>Semantic_Store.collect\<close> (fn cin =>
   let
     fun read unpacker =
       let val (ret, cin') = doUnpack unpacker (!cin)
@@ -110,7 +110,7 @@ val _ = register_streaming_app "Semantic_Store.collect" (fn cin =>
        practice this path is driven by `semantics_manage collect --driver`, which
        outranks the declaration. *)
     val cfg_context = (case thys of thy :: _ => Context.Theory thy
-                        | [] => Context.Theory (Thy_Info.get_theory "Pure"))
+                        | [] => Context.Theory (Build.get_theory "Pure"))
   in
     (case Semantic_Store.interpret_with_parallel cfg_context force thys of
       SOME () => ()
@@ -120,7 +120,7 @@ val _ = register_streaming_app "Semantic_Store.collect" (fn cin =>
         \to finish, then retry.")
   end)
 
-val _ = register_streaming_app "Semantic_Store.backfill_positions" (fn cin =>
+val _ = register_streaming_app \<^unchecked_name>\<open>Semantic_Store.backfill_positions\<close> (fn cin =>
   let
     fun read unpacker =
       let val (ret, cin') = doUnpack unpacker (!cin)

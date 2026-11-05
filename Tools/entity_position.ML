@@ -48,7 +48,7 @@ fun portable_path path =
    can shift a column.  Symbol.explode folds "\r\n" to a single "\n", which
    only shortens the run-up to a line start -- and the column is measured from
    that line start.  It also decodes the pseudo-UTF8 "\192"+control pair to one
-   byte; no .thy file in Isabelle2025-2 or afp-2026-05-13 contains a \192 byte
+   byte; no .thy file in Isabelle2026 or afp-2026-10-26 contains a \192 byte
    at all. *)
 fun scan_columns text targets =
   let

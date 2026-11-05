@@ -33,7 +33,7 @@ ML \<open>
           SOME r => SOME r
         | NONE =>
             if Time.now () < deadline
-            then (OS.Process.sleep (Time.fromMilliseconds 50); go ())
+            then (Time.sleep (Time.fromMilliseconds 50); go ())
             else NONE)
     in go () end
   fun free_within secs = is_some (lock_within secs (fn () => ()))
@@ -92,7 +92,7 @@ ML \<open>
             Exn.capture (fn () =>
               lock_within 5 (fn () =>
                 (Synchronized.change state (K Holding);
-                 OS.Process.sleep (Time.fromSeconds 30)))) ()
+                 Time.sleep (Time.fromSeconds 30)))) ()
         in
           Synchronized.change state (K (Done
             (case res of

@@ -115,7 +115,7 @@ fun extern_name_T ctxt =
       val qualifier = Context.theory_base_name (Proof_Context.theory_of ctxt) ^ "."
    in fn name =>
     let val ret = Name_Space.extern ctxt space name
-        val _ = if name = "Product_Type.prod" then () else ()
+        val _ = if name = \<^type_name>\<open>Product_Type.prod\<close> then () else ()
      in if String.isPrefix qualifier ret orelse String.isPrefix "??." ret
       then Long_Name.base_name name
       else ret

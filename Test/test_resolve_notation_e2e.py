@@ -41,7 +41,7 @@ let
 
   (* 1. Load the Python test relay module *)
   val _ = L "Loading Python test module...\n"
-  val _ = load ["Isabelle_Semantic_Embedding.test_resolve_notation_callback"]
+  val _ = load [\<^unchecked_name>\<open>Isabelle_Semantic_Embedding.test_resolve_notation_callback\<close>]
   val _ = L "  OK\n"
 
   (* 2. Create the callbacks under test *)
@@ -53,7 +53,7 @@ let
   (* 3. RPC commands targeting the Python relays *)
   val resolve_cmd : ((string * int) option * string,
                      (string * Word8Vector.vector * string) option) command = {
-    name = "test.resolve_notation_roundtrip",
+    name = \<^unchecked_name>\<open>test.resolve_notation_roundtrip\<close>,
     arg_schema = packPair (
       packOption (packPair (packString, packInt)),
       packString),
@@ -64,7 +64,7 @@ let
   }
   (* an enumeration callback is built per call_command, as at the production sites *)
   fun entities_cmd () : ((string * int) option, int) command = {
-    name = "test.entities_with_ctxt",
+    name = \<^unchecked_name>\<open>test.entities_with_ctxt\<close>,
     arg_schema = packOption (packPair (packString, packInt)),
     ret_schema = unpackInt,
     callback = [Context_Callbacks.make_constants_callback NONE pu],
@@ -78,7 +78,7 @@ let
       SOME (name, uk, compact) =>
         (L ("  name=" ^ name ^ " uk_len=" ^ string_of_int (Word8Vector.length uk)
             ^ " compact=" ^ compact ^ "\n");
-         if name <> "Orderings.ord_class.less_eq"
+         if name <> \<^const_name>\<open>less_eq\<close>
          then error ("Test 1 FAILED: unexpected name " ^ name)
          else if Word8Vector.length uk = 0
          then error "Test 1 FAILED: empty uk"

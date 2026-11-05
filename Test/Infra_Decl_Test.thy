@@ -15,9 +15,9 @@ ML \<open>
   val {is_uninterpreted_const, is_infra_type, is_infra_thm, is_declared_infra_thm, ...} =
     Infra_Filter.gen_infra_filters (Context.Proof \<^context>)
   val _ = \<^assert> (is_none is_declared_infra_thm)
-  val _ = \<^assert> (not (is_uninterpreted_const "List.rev"))
-  val _ = \<^assert> (not (is_infra_type "List.list"))
-  val _ = \<^assert> (not (is_infra_thm ("Infra_Decl_Test.foo", @{thm foo})))
+  val _ = \<^assert> (not (is_uninterpreted_const \<^const_name>\<open>List.rev\<close>))
+  val _ = \<^assert> (not (is_infra_type \<^type_name>\<open>List.list\<close>))
+  val _ = \<^assert> (not (is_infra_thm (\<^unchecked_name>\<open>Infra_Decl_Test.foo\<close>, @{thm foo})))
 \<close>
 
 (* infra_constant: marks the constant AND cascades to theorems mentioning it *)
@@ -25,9 +25,9 @@ declare [[infra_constant List.rev]]
 ML \<open>
   val {is_uninterpreted_const, is_infra_thm, infra_const_rule, ...} =
     Infra_Filter.gen_infra_filters (Context.Proof \<^context>)
-  val _ = \<^assert> (is_uninterpreted_const "List.rev")
-  val _ = \<^assert> (infra_const_rule "List.rev" = Infra_Filter.Infra "declared")
-  val _ = \<^assert> (is_infra_thm ("Infra_Decl_Test.foo", @{thm foo}))   (* cascade: foo mentions rev *)
+  val _ = \<^assert> (is_uninterpreted_const \<^const_name>\<open>List.rev\<close>)
+  val _ = \<^assert> (infra_const_rule \<^const_name>\<open>List.rev\<close> = Infra_Filter.Infra "declared")
+  val _ = \<^assert> (is_infra_thm (\<^unchecked_name>\<open>Infra_Decl_Test.foo\<close>, @{thm foo}))   (* cascade: foo mentions rev *)
 \<close>
 
 (* infra_constant del: undoes both the constant and the cascade *)
@@ -35,8 +35,8 @@ declare [[infra_constant del List.rev]]
 ML \<open>
   val {is_uninterpreted_const, is_infra_thm, is_declared_infra_thm, ...} =
     Infra_Filter.gen_infra_filters (Context.Proof \<^context>)
-  val _ = \<^assert> (not (is_uninterpreted_const "List.rev"))
-  val _ = \<^assert> (not (is_infra_thm ("Infra_Decl_Test.foo", @{thm foo})))
+  val _ = \<^assert> (not (is_uninterpreted_const \<^const_name>\<open>List.rev\<close>))
+  val _ = \<^assert> (not (is_infra_thm (\<^unchecked_name>\<open>Infra_Decl_Test.foo\<close>, @{thm foo})))
   val _ = \<^assert> (is_none is_declared_infra_thm)
 \<close>
 
@@ -46,9 +46,9 @@ declare [[uninterpreted_constant List.rev]]
 ML \<open>
   val {is_uninterpreted_const, is_infra_thm, is_declared_infra_thm, infra_const_rule, ...} =
     Infra_Filter.gen_infra_filters (Context.Proof \<^context>)
-  val _ = \<^assert> (is_uninterpreted_const "List.rev")
-  val _ = \<^assert> (infra_const_rule "List.rev" = Infra_Filter.Uninterpreted "declared")
-  val _ = \<^assert> (not (is_infra_thm ("Infra_Decl_Test.foo", @{thm foo})))
+  val _ = \<^assert> (is_uninterpreted_const \<^const_name>\<open>List.rev\<close>)
+  val _ = \<^assert> (infra_const_rule \<^const_name>\<open>List.rev\<close> = Infra_Filter.Uninterpreted "declared")
+  val _ = \<^assert> (not (is_infra_thm (\<^unchecked_name>\<open>Infra_Decl_Test.foo\<close>, @{thm foo})))
   val _ = \<^assert> (is_none is_declared_infra_thm)
 \<close>
 
@@ -56,44 +56,44 @@ ML \<open>
 declare [[infra_constant List.rev]]
 ML \<open>
   val {is_infra_thm, is_declared_infra_thm, ...} = Infra_Filter.gen_infra_filters (Context.Proof \<^context>)
-  val _ = \<^assert> (is_infra_thm ("Infra_Decl_Test.foo", @{thm foo}))
-  val _ = \<^assert> (the is_declared_infra_thm ("Infra_Decl_Test.foo", @{thm foo}))
+  val _ = \<^assert> (is_infra_thm (\<^unchecked_name>\<open>Infra_Decl_Test.foo\<close>, @{thm foo}))
+  val _ = \<^assert> (the is_declared_infra_thm (\<^unchecked_name>\<open>Infra_Decl_Test.foo\<close>, @{thm foo}))
 \<close>
 declare [[uninterpreted_constant List.rev]]
 ML \<open>
   val {is_infra_thm, ...} = Infra_Filter.gen_infra_filters (Context.Proof \<^context>)
-  val _ = \<^assert> (not (is_infra_thm ("Infra_Decl_Test.foo", @{thm foo})))
+  val _ = \<^assert> (not (is_infra_thm (\<^unchecked_name>\<open>Infra_Decl_Test.foo\<close>, @{thm foo})))
 \<close>
 
 (* del of either attribute clears the verdict *)
 declare [[infra_constant del List.rev]]
 ML \<open>
   val {is_uninterpreted_const, ...} = Infra_Filter.gen_infra_filters (Context.Proof \<^context>)
-  val _ = \<^assert> (not (is_uninterpreted_const "List.rev"))
+  val _ = \<^assert> (not (is_uninterpreted_const \<^const_name>\<open>List.rev\<close>))
 \<close>
 
 (* infra_type + del *)
 declare [[infra_type List.list]]
 ML \<open>
   val {is_infra_type, ...} = Infra_Filter.gen_infra_filters (Context.Proof \<^context>)
-  val _ = \<^assert> (is_infra_type "List.list")
+  val _ = \<^assert> (is_infra_type \<^type_name>\<open>List.list\<close>)
 \<close>
 declare [[infra_type del List.list]]
 ML \<open>
   val {is_infra_type, ...} = Infra_Filter.gen_infra_filters (Context.Proof \<^context>)
-  val _ = \<^assert> (not (is_infra_type "List.list"))
+  val _ = \<^assert> (not (is_infra_type \<^type_name>\<open>List.list\<close>))
 \<close>
 
 (* infra_thm (attached fact attribute) + del *)
 declare foo[infra_thm]
 ML \<open>
   val {is_infra_thm, ...} = Infra_Filter.gen_infra_filters (Context.Proof \<^context>)
-  val _ = \<^assert> (is_infra_thm ("Infra_Decl_Test.foo", @{thm foo}))
+  val _ = \<^assert> (is_infra_thm (\<^unchecked_name>\<open>Infra_Decl_Test.foo\<close>, @{thm foo}))
 \<close>
 declare foo[infra_thm del]
 ML \<open>
   val {is_infra_thm, ...} = Infra_Filter.gen_infra_filters (Context.Proof \<^context>)
-  val _ = \<^assert> (not (is_infra_thm ("Infra_Decl_Test.foo", @{thm foo})))
+  val _ = \<^assert> (not (is_infra_thm (\<^unchecked_name>\<open>Infra_Decl_Test.foo\<close>, @{thm foo})))
 \<close>
 
 (* trivially-shaped theorem: warns but is still honoured (stored/matched) *)
@@ -101,7 +101,7 @@ lemma triv: "(x::nat) = x" by simp
 declare triv[infra_thm]
 ML \<open>
   val {is_infra_thm, ...} = Infra_Filter.gen_infra_filters (Context.Proof \<^context>)
-  val _ = \<^assert> (is_infra_thm ("Infra_Decl_Test.triv", @{thm triv}))
+  val _ = \<^assert> (is_infra_thm (\<^unchecked_name>\<open>Infra_Decl_Test.triv\<close>, @{thm triv}))
 \<close>
 
 (* the persistent-cache re-filter with its gate OPEN (a theorem is declared): an
@@ -110,8 +110,8 @@ declare [[uninterpreted_constant List.rev]]
 ML \<open>
   val {is_declared_infra_thm, ...} = Infra_Filter.gen_infra_filters (Context.Proof \<^context>)
   val declared = the is_declared_infra_thm
-  val _ = \<^assert> (declared ("Infra_Decl_Test.triv", @{thm triv}))
-  val _ = \<^assert> (not (declared ("Infra_Decl_Test.foo", @{thm foo})))
+  val _ = \<^assert> (declared (\<^unchecked_name>\<open>Infra_Decl_Test.triv\<close>, @{thm triv}))
+  val _ = \<^assert> (not (declared (\<^unchecked_name>\<open>Infra_Decl_Test.foo\<close>, @{thm foo})))
 \<close>
 declare [[uninterpreted_constant del List.rev]]
 
@@ -127,9 +127,9 @@ ML \<open>
   val ctxt = \<^context>
   val {is_infra_thm, ...} = Infra_Filter.gen_infra_filters (Context.Proof ctxt)
   (* the exported instance, both as antiquotation and as the collector enumerates it *)
-  val _ = \<^assert> (is_infra_thm ("Infra_Decl_Test.I.ax", @{thm I.ax}))
+  val _ = \<^assert> (is_infra_thm (\<^unchecked_name>\<open>Infra_Decl_Test.I.ax\<close>, @{thm I.ax}))
   val i_ax = Facts.dest_static false [] (Proof_Context.facts_of ctxt)
-        |> filter (fn (nm, _) => String.isSuffix "I.ax" nm)
+        |> filter (fn (nm, _) => String.isSuffix \<^unchecked_name>\<open>I.ax\<close> nm)
   val _ = \<^assert> (not (null i_ax))
   val _ = \<^assert> (forall (fn (nm, ths) => forall (fn th => is_infra_thm (nm, th)) ths) i_ax)
 \<close>

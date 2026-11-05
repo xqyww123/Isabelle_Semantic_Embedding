@@ -1,5 +1,7 @@
 # Go-to-Definition from Session Export Database
 
+> Investigated under Isabelle2024; paths, line numbers and counts refer to that release.
+
 ## Overview
 
 Isabelle's Ctrl-Click "go to definition" navigation works in editors (jEdit, VSCode) via

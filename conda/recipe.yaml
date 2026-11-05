@@ -331,7 +331,12 @@ requirements:
     #
     # (Superseded floor, kept for the record: >=0.4.1 was for
     # Tools/semantic_store.ML calling Theory_Hash.process_id, absent from 0.4.0.)
-    - isabelle-rpc >=0.5.0
+    #
+    # >=0.5.3, not >=0.5.0: Semantic_Store.declaring_commands reads
+    # Context_Callbacks.entry_of_name's pos as a raw Position.T (0.5.3 keeps it raw so a
+    # command-id position can still be resolved); against 0.5.0-0.5.2, where pos is the
+    # flattened triple, the session does not compile.
+    - isabelle-rpc >=0.5.3
     # The performant-ml series this session is built and tested against: moved from
     # 0.1.x to 0.2.x with 0.5.0, together with isabelle-rpc (same reason there: a 0.1.x
     # cap would leave isabelle-minilang unsolvable next to auto-sledgehammer 0.2.0).

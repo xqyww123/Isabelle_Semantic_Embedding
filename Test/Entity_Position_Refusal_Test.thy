@@ -53,7 +53,7 @@ local
      file is for drivers that cannot capture writeln output *)
   val evidence_path =
     Path.append (Path.explode (getenv_strict "ISABELLE_TMP"))
-      (Path.basic "t9_refusal_evidence.txt")
+      (Path.basic \<^unchecked_name>\<open>t9_refusal_evidence.txt\<close>)
 
   val lines = Unsynchronized.ref ([] : string list)
   fun log s = (lines := s :: ! lines; writeln s)
@@ -94,8 +94,10 @@ local
 
   (* ---- the refusal target: a persistent single-theory cone ---- *)
   val fixture0 =
-    Resources.begin_theory (Path.explode "~~/src/HOL")
-      (Thy_Header.make ("HOL.Fun", Position.none) [] [])
+    Resources.begin_theory
+     {name = {node = "", master_dir = Path.explode "~~/src/HOL", theory = \<^unchecked_name>\<open>HOL.Fun\<close>},
+      pos = Position.none, imports = [], options = [], keywords = [],
+      condition_bad = (false, ""), errors = [], initiators = []}
       [\<^theory>\<open>Pure\<close>]
   (* Global facts must be closed ("Illegal fixed variable" otherwise), hence
      the forall_intr: \<And>x. x \<equiv> x and \<And>A. PROP A \<Longrightarrow> PROP A. *)

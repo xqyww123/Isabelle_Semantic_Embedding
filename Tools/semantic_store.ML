@@ -39,10 +39,11 @@ signature SEMANTIC_STORE = sig
   (* The callbacks a live interpret_file RPC carries: `interpret_file_callbacks config_cb
      context` -- the run's one Config.lookup callback (built by interpret_with_parallel
      from the context the driver was read from, so the prefilter's embedding model is the
-     one the user declared, never the cone node's default) and Context.entries_of_names
-     of the node being interpreted (show_defs resolves definitions through it; the list
-     holds no entity enumeration callback).  Exposed so a test can assert what is on
-     the list. *)
+     one the user declared, never the cone node's default), Semantic_Store.declaring_commands
+     of the node being interpreted (show_defs resolves definitions through it) and
+     pide_state.command_at_position with that node's context (the definition and hover
+     tools cut its file with it); the list holds no entity enumeration callback.  Exposed
+     so a test can assert what is on the list. *)
   val interpret_file_callbacks : Remote_Procedure_Calling.callback' -> Context.generic ->
         Remote_Procedure_Calling.callback' list
 
@@ -222,6 +223,20 @@ signature SEMANTIC_STORE = sig
      * (Universal_Key.universal_key option * Universal_Key.universal_key option * string) option
      * Universal_Key.constituent list * string option) list * Entity_Position.report
 
+  (* The declaring command of each (kind, name), resolved and cut in the one context given:
+     SOME (source without a trailing `begin`, file as a Python receiver opens it, start
+     symbol offset), NONE when the name does not resolve or no command is found.  Each item
+     on its own: one that raises gives NONE and does not end the others.  A name resolves
+     only through an entry of the context's theory or an ancestor, so its file is one the
+     context's tiers hold, and an entity of a PIDE node (a command-id position) is found
+     too. *)
+  val declaring_commands : Context.generic -> (Universal_Key.entity_kind * string) list ->
+    (string * string * int) option list
+  (* declaring_commands as the callback "Semantic_Store.declaring_commands", wire
+     (ctxt, [(kind, name)]), each reply item an optional (source, file, start) *)
+  val make_declaring_commands_callback :
+    Context_Callbacks.context_unpacker -> Remote_Procedure_Calling.callback'
+
   (* LINK_LAYER_PLAN.md §8 step 5 (A1): the finder's links of the context; when the finder
      fails, no links and a warning naming the failure, and an event-log record when it is
      a resource exhaustion (D69).  A proper interrupt (a cancellation, a timeout)
@@ -233,7 +248,8 @@ signature SEMANTIC_STORE = sig
   val make_links_callback : Proof.context -> Remote_Procedure_Calling.callback'
 
   (* The retrieval closure: the eleven entity enumeration callbacks, with infra
-     filters and theorem cache baked in, plus "Semantic_Store.links".  The
+     filters and theorem cache baked in, plus "Semantic_Store.links" and
+     "Semantic_Store.declaring_commands" (the definitions of what was retrieved).  The
      predicate keeps proof methods by name, on top of the infra filter.  Build
      them once per call_command: each callback owns the catalog of that request.
      In a query context other than the build-time one, the theorem-like callbacks'
@@ -291,22 +307,26 @@ val _ = Config.register_rpc_option "auto_interpret_for_embedding"
 
 val embedding_driver = Attrib.setup_config_string
   \<^binding>\<open>embedding_driver\<close> (K "")
-val _ = Config.register_rpc_option "Semantic_Embedding.embedding_driver"
+val _ = Config.register_rpc_option
+          \<^unchecked_name>\<open>Semantic_Embedding.embedding_driver\<close>
           (Config.string_value embedding_driver)
 
 val embedding_base_url = Attrib.setup_config_string
   \<^binding>\<open>embedding_base_url\<close> (K "")
-val _ = Config.register_rpc_option "Semantic_Embedding.embedding_base_url"
+val _ = Config.register_rpc_option
+          \<^unchecked_name>\<open>Semantic_Embedding.embedding_base_url\<close>
           (Config.string_value embedding_base_url)
 
 val embedding_model = Attrib.setup_config_string
   \<^binding>\<open>embedding_model\<close> (K "")
-val _ = Config.register_rpc_option "Semantic_Embedding.embedding_model"
+val _ = Config.register_rpc_option
+          \<^unchecked_name>\<open>Semantic_Embedding.embedding_model\<close>
           (Config.string_value embedding_model)
 
 val reranker_model = Attrib.setup_config_string
   \<^binding>\<open>reranker_model\<close> (K "")
-val _ = Config.register_rpc_option "Semantic_Embedding.reranker_model"
+val _ = Config.register_rpc_option
+          \<^unchecked_name>\<open>Semantic_Embedding.reranker_model\<close>
           (Config.string_value reranker_model)
 
 (* Agent backend + model for semantic interpretation, as one "<Driver>[.<model>]"
@@ -357,7 +377,7 @@ local open MessagePackBinIO.Pack MessagePackBinIO.Unpack in
 fun query_semantics_by_key (key : Universal_Key.universal_key)
     (with_pretty : bool) : string option =
   Remote_Procedure_Calling.call_command
-    {name = "Semantic_Store.query",
+    {name = \<^unchecked_name>\<open>Semantic_Store.query\<close>,
      arg_schema = packPair (packBytes, packBool),
      ret_schema = unpackOption unpackString,
      callback = [], timeout = NONE}
@@ -375,14 +395,14 @@ fun query_semantics (context : Context.generic) (entity : Universal_Key.entity)
    (the one the pipeline scanned), never re-resolved by name or context. *)
 fun is_interpreted' (key : Universal_Key.universal_key, pid : string, serial : int) : bool =
   Remote_Procedure_Calling.call_command
-    {name = "Semantic_Store.is_interpreted",
+    {name = \<^unchecked_name>\<open>Semantic_Store.is_interpreted\<close>,
      arg_schema = packTuple3 (packBytes, packString, packInt), ret_schema = unpackBool,
      callback = [], timeout = NONE}
     (key, pid, serial)
 
 fun mark_interpreted' (key : Universal_Key.universal_key, pid : string, serial : int) : unit =
   Remote_Procedure_Calling.call_command
-    {name = "Semantic_Store.mark_interpreted",
+    {name = \<^unchecked_name>\<open>Semantic_Store.mark_interpreted\<close>,
      arg_schema = packTuple3 (packBytes, packString, packInt), ret_schema = unpackUnit,
      callback = [], timeout = NONE}
     (key, pid, serial)
@@ -397,7 +417,7 @@ fun mark_interpreted (thy : theory) : unit =
 
 fun clean_wip () : int =
   Remote_Procedure_Calling.call_command
-    {name = "Semantic_Store.clean_wip",
+    {name = \<^unchecked_name>\<open>Semantic_Store.clean_wip\<close>,
      arg_schema = packUnit, ret_schema = unpackInt,
      callback = [], timeout = NONE}
     ()
@@ -418,7 +438,7 @@ val base_theory_names = map Context.theory_long_name base_theories
 
 val _ = Theory.setup (Context.theory_map (
   Remote_Procedure_Calling.register_global_callback {
-    name = "Semantic_Store.excluded_theory_names",
+    name = \<^unchecked_name>\<open>Semantic_Store.excluded_theory_names\<close>,
     on_interrupt = Remote_Procedure_Calling.Reraise,
     arg_schema = MessagePackBinIO.Unpack.unpackUnit,
     ret_schema = MessagePackBinIO.Pack.packList MessagePackBinIO.Pack.packString,
@@ -465,7 +485,7 @@ in
 
 val check_theorem_name_in_file_cmd :
     (string * string list, (int * int) list) Remote_Procedure_Calling.command = {
-  name = "Semantic_Store.check_theorem_name_in_file",
+  name = \<^unchecked_name>\<open>Semantic_Store.check_theorem_name_in_file\<close>,
   arg_schema = packPair (packString, packList packString),
   ret_schema = unpackList (unpackPair (unpackInt, unpackInt)),
   callback = [],
@@ -482,7 +502,7 @@ fun make_interpret_file_cmd callbacks :
                 * Word8Vector.vector option * Word8Vector.vector list) list},
      semantics option list * string list * usage * usage)
     Remote_Procedure_Calling.command = {
-  name = "Semantic_Store.interpret_file",
+  name = \<^unchecked_name>\<open>Semantic_Store.interpret_file\<close>,
   arg_schema = pack_arg,
   ret_schema = unpackTuple4 (unpackList (unpackOption unpackString),
                              unpackList unpackString,
@@ -506,7 +526,7 @@ val interpret_file_dry_run_cmd :
                 * Universal_Key.constituent list * string option
                 * Word8Vector.vector option * Word8Vector.vector list) list},
      int) Remote_Procedure_Calling.command = {
-  name = "Semantic_Store.interpret_file_dry_run",
+  name = \<^unchecked_name>\<open>Semantic_Store.interpret_file_dry_run\<close>,
   arg_schema = pack_arg,
   ret_schema = unpackInt,
   callback = [],
@@ -527,7 +547,7 @@ val backfill_positions_cmd :
     ({theory_longname: string,
       entries: (Universal_Key.universal_key * Entity_Position.entity_position option) list},
      int * int) Remote_Procedure_Calling.command = {
-  name = "Semantic_Store.backfill_positions",
+  name = \<^unchecked_name>\<open>Semantic_Store.backfill_positions\<close>,
   arg_schema =
     (fn {theory_longname, entries} =>
       packPair (packString,
@@ -555,6 +575,32 @@ fun strip_trailing_begin src =
     then String.substring (src, 0, if last >= 5 then last - 5 else 0)
     else src
   end
+
+(* The commands at `positions` in `context`, parallel to the list: SOME (source without a
+   trailing `begin`, the file in RPC form, start).  ONE absolutize round trip; an id it
+   could not resolve still has no file and is masked as Position.none, which
+   commands_at_positions answers NONE -- otherwise its own absolutize would send the id
+   again. *)
+fun commands_of_positions context positions =
+  let
+    val abs = PIDE_State.absolutize_id_based_pos {write_to_temp_file = false} positions
+    val masked =
+      map (fn pos => if is_some (Position.file_of pos) then pos else Position.none) abs
+    fun file_of pos =
+      the_default "" (try PIDE_State.rpc_path (the_default "" (Position.file_of pos)))
+  in
+    map2 (fn pos =>
+        Option.map (fn (src, start, _) => (strip_trailing_begin src, file_of pos, start)))
+      abs (PIDE_State.commands_at_positions context masked)
+  end
+
+fun declaring_commands context items =
+  items
+  |> map (fn item =>
+       (case Option.join (try (Context_Callbacks.entry_of_name context) item) of
+         SOME {pos, ...} => pos
+       | NONE => Position.none))
+  |> commands_of_positions context
 
 (* --- Main orchestration --- *)
 
@@ -624,7 +670,7 @@ fun entry_ord ((s1 : int option, e1), (s2, e2)) =
 
 val contains_cmd
     : (Universal_Key.universal_key list, bool list) Remote_Procedure_Calling.command = {
-  name = "Semantic_Store.contains",
+  name = \<^unchecked_name>\<open>Semantic_Store.contains\<close>,
   arg_schema = MessagePackBinIO.Pack.packList Universal_Key.pack_universal_key,
   ret_schema = MessagePackBinIO.Unpack.unpackList MessagePackBinIO.Unpack.unpackBool,
   callback = [],
@@ -659,8 +705,9 @@ fun build_entries (context : Context.generic)
        constant's type, "" for the kinds that store none -- and NONE for the kinds
        whose expr is the source of the command that declared them: types, classes,
        locales, collections, methods.  Those sources come from ONE
-       PIDE_State.commands_at_positions call for the whole batch below; the same
-       NONE both requests an entry's position there and consumes the answer. *)
+       commands_of_positions call for the whole batch below (shared with
+       declaring_commands); the same NONE both requests an entry's position there and
+       consumes the answer. *)
     fun statement kind thm =
       SOME (pp (Thm.prop_of thm)
         handle ERROR msg =>
@@ -684,9 +731,8 @@ fun build_entries (context : Context.generic)
     val computed = map (computed_expr o #1) raw
     val exprs =
       map2 (fn NONE => (fn (_, _, pos, _) => pos) | SOME _ => K Position.none) computed raw
-      |> PIDE_State.commands_at_positions
-      |> map2 (fn SOME e => K e | NONE => (fn SOME (src, _, _) => strip_trailing_begin src | NONE => ""))
-           computed
+      |> commands_of_positions context
+      |> map2 (fn SOME e => K e | NONE => (fn SOME (src, _, _) => src | NONE => "")) computed
     (* Extra prompt-only context (never stored as expr).  For a theorem
        collection, show up to 10 current member propositions so the agent can
        describe the collection's purpose; members are deliberately kept out of
@@ -1224,7 +1270,7 @@ fun process_dynamic_facts_into_cache (context : Context.generic)
                        else
                          ({uk = uk, name = Context_Callbacks.Fixed nm,
                            thm = thm', theories = theories},
-                          j + 1, #pos e, entity)
+                          j + 1, Name_Space.entry_pos e, entity)
                    | NONE => invented (entity, uk))
             in
               if Bytehashtab.defined pset uk0 then []  (* only_new: inherited -> drop all kinds *)
@@ -1285,7 +1331,7 @@ fun degrade_links finder ctxt =
   | Exn.Exn exn =>
       if Exn.is_interrupt_proper exn then Exn.reraise exn
       else
-        (Exception_Log.record_breakdown "Semantic_Store.links" exn;
+        (Exception_Log.record_breakdown \<^unchecked_name>\<open>Semantic_Store.links\<close> exn;
          warning ("No links in this context: the link finder failed: " ^
            (if Exn.is_interrupt_breakdown exn then "resource exhaustion (Interrupt_Breakdown)"
             else Runtime.exn_message exn));
@@ -1294,16 +1340,28 @@ fun degrade_links finder ctxt =
 fun make_links_callback ctxt =
   let val links = Lazy.lazy (fn () => degrade_links Link_Finder.links ctxt) in
     Remote_Procedure_Calling.mk_callback {
-      name = "Semantic_Store.links",
+      name = \<^unchecked_name>\<open>Semantic_Store.links\<close>,
       on_interrupt = Remote_Procedure_Calling.Reraise,
       arg_schema = MessagePackBinIO.Unpack.unpackUnit,
       ret_schema = packList (packPair (Universal_Key.pack_universal_key, pack_link)),
       function = fn () => Lazy.force links,
       timeout = NONE}
   end
+
+fun make_declaring_commands_callback (ctxt_unpack : Context_Callbacks.context_unpacker) =
+  Remote_Procedure_Calling.mk_callback {
+    name = \<^unchecked_name>\<open>Semantic_Store.declaring_commands\<close>,
+    on_interrupt = Remote_Procedure_Calling.Reraise,
+    arg_schema = MessagePackBinIO.Unpack.unpackPair (ctxt_unpack,
+      MessagePackBinIO.Unpack.unpackList (MessagePackBinIO.Unpack.unpackPair
+        (Universal_Key.unpack_entity_kind, MessagePackBinIO.Unpack.unpackString))),
+    ret_schema = packList (packOption (packTuple3 (packString, packString, packInt))),
+    function = fn (context, items) => declaring_commands context items,
+    timeout = NONE}
 end
 
-val query_filter_builds_var = Synchronized.var "Semantic_Store.query_filter_builds" 0
+val query_filter_builds_var =
+  Synchronized.var \<^unchecked_name>\<open>Semantic_Store.query_filter_builds\<close> 0
 fun query_filter_builds () = Synchronized.value query_filter_builds_var
 
 fun same_context (Context.Theory a, Context.Theory b) = Context.eq_thy (a, b)
@@ -1316,14 +1374,14 @@ fun make_entity_callbacks (init_context: Context.generic) (keep_method: string -
     (ctxt_unpack: Context_Callbacks.context_unpacker) =
   let (* Populate coercion-transparent matching ignore set (idempotent). *)
       val _ = List.app (fn n => Strhashtab.update Context_Callbacks.coercion_ignores (n, ())) [
-        "Nat.semiring_1_class.of_nat",
-        "Int.ring_1_class.of_int",
-        "Rat.field_char_0_class.of_rat",
-        "Real_Vector_Spaces.of_real",
-        "Rings.zero_neq_one_class.of_bool",
-        "Extended_Nat.enat",
-        "Extended_Real.ereal.ereal",
-        "Extended_Nonnegative_Real.ennreal"]
+        \<^const_name>\<open>Nat.semiring_1_class.of_nat\<close>,
+        \<^const_name>\<open>Int.ring_1_class.of_int\<close>,
+        \<^unchecked_name>\<open>Rat.field_char_0_class.of_rat\<close>,
+        \<^unchecked_name>\<open>Real_Vector_Spaces.of_real\<close>,
+        \<^const_name>\<open>Rings.zero_neq_one_class.of_bool\<close>,
+        \<^unchecked_name>\<open>Extended_Nat.enat\<close>,
+        \<^unchecked_name>\<open>Extended_Real.ereal.ereal\<close>,
+        \<^unchecked_name>\<open>Extended_Nonnegative_Real.ennreal\<close>]
       val build_filters = Infra_Filter.gen_infra_filters init_context
       val {is_infra_thm, is_infra_induct_thm, is_infra_dynamic_fact,
            is_declared_infra_thm, ...} = build_filters
@@ -1331,7 +1389,7 @@ fun make_entity_callbacks (init_context: Context.generic) (keep_method: string -
          itself, else the one memo entry, reused only for the same context object and
          replaced on any other (one entry keeps no old proof context alive).  Not
          Proof_Data: a derived context would inherit a filter built before its facts. *)
-      val memo = Synchronized.var "Semantic_Store.query_filters" NONE
+      val memo = Synchronized.var \<^unchecked_name>\<open>Semantic_Store.query_filters\<close> NONE
       fun fresh ctx =
         let val filters = Lazy.lazy (fn () =>
               (Synchronized.change query_filter_builds_var (fn n => n + 1);
@@ -1471,7 +1529,9 @@ fun make_entity_callbacks (init_context: Context.generic) (keep_method: string -
     Context_Callbacks.make_case_split_rules_callback
       extract_case_split_net Theory_Structure.is_case_split_rule_name Theory_Structure.has_rule_shape
       (judged_by (fn fs => not o #is_infra_thm fs)) (rule_cache case_static case_members) ctxt_unpack,
-    make_links_callback (Context.proof_of init_context)
+    make_links_callback (Context.proof_of init_context),
+    (* for AoA's and PlainAgent's retrieval to render definitions (Isa-Mini retrieval.py) *)
+    make_declaring_commands_callback ctxt_unpack
   ] end
 
 (* Python marks an exception message as ALREADY human-readable by prefixing it with
@@ -1888,12 +1948,13 @@ fun interpret_file_callbacks (config_cb : Remote_Procedure_Calling.callback')
     val desugar_cb = Explain_Term.make_desugar_callback context
     val resolve_notation_cb = Explain_Term.make_resolve_notation_callback context
     (* pu, not su: the query tool's show_defs threads a (file, offset)
-       context through Context.entries_of_names; the static unpacker
+       context through Semantic_Store.declaring_commands; the static unpacker
        accepts only nil and would fail to decode it. *)
-    val entries_of_names_cb = Context_Callbacks.make_entries_of_names_callback pu
+    val declaring_commands_cb = make_declaring_commands_callback pu
   in
     [uk_cb, theory_info_cb, desugar_cb, resolve_notation_cb, config_cb,
-     entries_of_names_cb, make_links_callback (Context.proof_of context)]
+     declaring_commands_cb, PIDE_State.make_command_at_position_callback context,
+     make_links_callback (Context.proof_of context)]
   end
 
 (* The send half of interpret': build the tool callbacks and hand the enumerated
@@ -1997,16 +2058,17 @@ fun collect_cone (roots : theory list) : theory list =
 fun skip_interpreted (force : bool) thy = not force andalso is_interpreted thy
 
 (* Fork one Future per cone node under Isabelle's own DAG scheduler, and join.
-   This is Thy_Info.schedule_theories (Pure/Thy/thy_info.ML:252-270) -- the code Isabelle
-   uses to load theories in parallel -- specialised to per-node deps: Graph.schedule folds
-   the cone in topological order and hands each node its immediate predecessors' futures,
-   Task_Queue (a Task_Graph underneath) enforces transitivity, and the worker pool bounds
-   concurrency at Multithreading.max_threads () = the REPL's -o threads=N.
+   This is Build.schedule_theories (Pure/Build/build.ML:168-176 in schedule_theories) --
+   the code Isabelle uses to load theories in parallel -- specialised to per-node deps:
+   Graph.schedule folds the cone in topological order and hands each node its immediate
+   predecessors' futures, Task_Queue (a Task_Graph underneath) enforces transitivity, and
+   the worker pool bounds concurrency at Multithreading.max_threads () = the REPL's
+   -o threads=N.
 
-   Failure policy is HARD CRASH, and Future supplies it: a job that raises cancels the shared
-   `grp`, so every later task runs with ok = false and its body never executes
-   (future.ML:230-245, 446-454); Par_Exn.release_first then reraises the first genuine
-   (non-interrupt) exception (par_exn.ML:50-56).
+   Failure policy is HARD CRASH, and Future supplies it: a job that raises cancels the
+   shared `grp`, so every later task runs with ok = false and its body never executes
+   (future.ML:230-245 in worker_exec, 448-458 in future_job); Par_Exn.release_first then
+   reraises the first genuine (non-interrupt) exception (par_exn.ML:50-56).
 
    `body` is a parameter so the scheduler can be exercised by a test with a cheap body,
    with no network and no LLM spend. *)
@@ -2090,7 +2152,8 @@ fun interpret_cone (driver : string) (config_cb : Remote_Procedure_Calling.callb
     fun add2 ((c1, h1), (c2, h2)) = (add_usage (c1, c2), add_usage (h1, h2))
   in
     fold (fn r => fn acc => add2 (acc, r))
-      (schedule_dag "Semantic_Store.interpret" body cone) (zero_usage, zero_usage)
+      (schedule_dag \<^unchecked_name>\<open>Semantic_Store.interpret\<close> body cone)
+      (zero_usage, zero_usage)
   end
 
 (* --- the position backfill (archive/plans/ENTITY_POSITION_PLAN.md §8) --- *)
@@ -2224,8 +2287,8 @@ fun backfill_cone (roots : theory list) : backfill_report =
   let
     val total =
       fold (fn r => fn acc => add_backfill (acc, r))
-        (schedule_dag "Semantic_Store.backfill_positions" (fn thy => fn () => backfill_theory thy)
-           (collect_cone roots))
+        (schedule_dag \<^unchecked_name>\<open>Semantic_Store.backfill_positions\<close>
+           (fn thy => fn () => backfill_theory thy) (collect_cone roots))
         no_backfill
     val _ =
       if #refused total = 0 andalso #line_mismatch total = 0
@@ -2270,7 +2333,7 @@ fun dry_run (force : bool) (roots : theory list) : string list * int =
         string_of_int m, (if m = 1 then " theory..." else " theories...")])
     (* Theory channel: enumerate once per theory and count via the RPC. *)
     val counts =
-      schedule_dag "Semantic_Store.dry_run"
+      schedule_dag \<^unchecked_name>\<open>Semantic_Store.dry_run\<close>
         (fn thy => fn () => dry_run_payload (enumerate_entries (Context.Theory thy)))
         work
   in
@@ -2280,7 +2343,7 @@ fun dry_run (force : bool) (roots : theory list) : string list * int =
 (* --- the interpretation lock (SEMANTIC_CHANGE_GATE_PLAN.md §8) --- *)
 
 val try_acquire_cmd : (unit, bool) Remote_Procedure_Calling.command = {
-  name = "Semantic_Store.try_acquire_interpretation_lock",
+  name = \<^unchecked_name>\<open>Semantic_Store.try_acquire_interpretation_lock\<close>,
   arg_schema = MessagePackBinIO.Pack.packUnit,
   ret_schema = MessagePackBinIO.Unpack.unpackBool,
   callback = [], timeout = NONE}
@@ -2321,7 +2384,7 @@ fun with_interpretation_lock (body : unit -> 'a) : 'a option =
    surfaces, as interpret_file's would. *)
 fun check_embedding_service (config_cb : Remote_Procedure_Calling.callback') : unit =
   Remote_Procedure_Calling.call_command
-    {name = "Semantic_Store.check_embedding_service",
+    {name = \<^unchecked_name>\<open>Semantic_Store.check_embedding_service\<close>,
      arg_schema = MessagePackBinIO.Pack.packUnit,
      ret_schema = MessagePackBinIO.Unpack.unpackUnit,
      callback = [config_cb],
@@ -2359,8 +2422,8 @@ fun interpret_with_parallel' (cfg_context : Context.generic) (force : bool)
        Semantic_Store_verbose-gated `vtracing` (with the gate off this run reported nothing
        at all in Isabelle, which is how a silent failure stayed silent), and NOT `tracing`
        either: tracing is capped by `editor_tracing_messages` (default 1000) and exceeding
-       it pops Isabelle's own blocking "Tracing paused" dialog (isabelle_process.ML:35-60),
-       which a large cone would hit.  writeln has no such cap. *)
+       it pops Isabelle's own blocking "Tracing paused" dialog (isabelle_process.ML:29-54 in
+       update_tracing), which a large cone would hit.  writeln has no such cap. *)
     fun vtr msg = writeln msg
     (* Opening block: says what the run is FOR, in words.  Emitted once, before any
        parallel work, so it is the one multi-line message that cannot be interleaved. *)
@@ -2410,7 +2473,7 @@ fun interpret force context =
 fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpacker)
     : Remote_Procedure_Calling.callback' =
   Remote_Procedure_Calling.mk_callback {
-    name = "Semantic_Store.interpret_theories",
+    name = \<^unchecked_name>\<open>Semantic_Store.interpret_theories\<close>,
     on_interrupt = Remote_Procedure_Calling.Reraise,
     arg_schema = MessagePackBinIO.Unpack.unpackTuple5
       (ctxt_unpack,
@@ -2505,7 +2568,7 @@ fun pack_search_domain ContextAll =
 
 fun embed_all_missing (context : Context.generic) : unit =
   Remote_Procedure_Calling.call_command
-    {name = "Semantic_Embedding.embed_all_missing",
+    {name = \<^unchecked_name>\<open>Semantic_Embedding.embed_all_missing\<close>,
      arg_schema = packUnit,
      ret_schema = unpackUnit,
      (* Config.lookup is a per-command callback, NOT global: without it the Python
@@ -2527,7 +2590,7 @@ fun query_knn (context : Context.generic) =
                search_domain * string list * string list * string list * string list * string,
                (real * Universal_Key.entity) list * string list)
               Remote_Procedure_Calling.command = {
-      name = "Semantic_Embedding.query_knn",
+      name = \<^unchecked_name>\<open>Semantic_Embedding.query_knn\<close>,
       arg_schema = packTuple9 (packString, packInt,
                      packList Universal_Key.pack_entity_kind',
                      pack_search_domain,

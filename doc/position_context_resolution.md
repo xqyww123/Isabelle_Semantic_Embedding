@@ -1,5 +1,11 @@
 # Position-Based Context Resolution for `query`
 
+> A dated record.  Since the Isabelle2026 port (2026-11): `command_id_at_position : string -> int ->
+> (string * int) option` returns the live node's own name with the command id, and
+> `toplevel_state_at_position` passes that name to `Document.command_exec`; the Scala side finds the
+> live node by its name or as the same file (`PIDE_Query.live_node`), skipping loaded-theory nodes;
+> `theory_of_file` takes a `Context.generic` and finds the file by base name, then `File.eq`.
+
 **Commit**: `336808d` on `contrib/Semantic_Embedding`
 **Date**: 2026-05-21
 

@@ -1,8 +1,12 @@
 """
 Go-to-definition and hover message for Isabelle entities.
 
-Calls into Isabelle/ML which delegates to Scala. The Scala side tries the live
-PIDE runtime first, then falls back to session export databases.
+Calls into Isabelle/ML which delegates to Scala. The Scala side answers from
+the live PIDE node holding the file when there is one (a node PIDE parsed: a
+heap theory file an editor merely opens is not one, so its session DB answers
+it), else from the session export databases.  `pide_state.command_at_position`
+is a per-call callback: it needs a hosting ML command that installed
+`PIDE_State.make_command_at_position_callback` (interpret_file does).
 """
 
 import os
@@ -28,8 +32,8 @@ async def goto_definition(
     """Given a cursor position, return the definition position.
 
     Returns (def_file, def_line, def_offset, def_end_offset) or None.
-    The Scala side tries the live PIDE runtime first, then falls back to
-    session export databases for compiled theories.
+    The Scala side answers from the live PIDE node holding the file when there
+    is one, else from the session export database of a compiled theory.
     """
     if connection is None:
         return None
@@ -52,7 +56,11 @@ async def command_at_position(
 
     Returns (source, start_offset, end_offset) or None.
     Offsets are 1-based Isabelle symbol offsets within the file.
-    Tries live PIDE state first, falls back to session export DB.
+    Answers from the live PIDE node holding the file when there is one, else
+    from the session export DB; when neither answers, from the cut of the file
+    on disk under the context the hosting command installed
+    `PIDE_State.make_command_at_position_callback` with; None when no hosting
+    command installed it.
     """
     if connection is None:
         return None
@@ -73,8 +81,8 @@ async def hover_message(
 ) -> Optional[str]:
     """Given a cursor position, return the hover tooltip text.
 
-    The Scala side tries the live PIDE runtime first, then falls back to
-    session export databases for compiled theories.
+    The Scala side answers from the live PIDE node holding the file when there
+    is one, else from the session export database of a compiled theory.
     """
     if connection is None:
         return None

@@ -40,7 +40,7 @@ let
 
   (* 1. Load the Python test relay module *)
   val _ = L "Loading Python test module...\n"
-  val _ = load ["Isabelle_Semantic_Embedding.test_desugar_callback"]
+  val _ = load [\<^unchecked_name>\<open>Isabelle_Semantic_Embedding.test_desugar_callback\<close>]
   val _ = L "  OK\n"
 
   (* 2. Create the dynamic desugar callback *)
@@ -51,7 +51,7 @@ let
   (* 3. Define an RPC command targeting the Python relay *)
   val test_cmd : ((string * int) option * string,
                   string * (string * Word8Vector.vector) list) command = {
-    name = "test.desugar_roundtrip",
+    name = \<^unchecked_name>\<open>test.desugar_roundtrip\<close>,
     arg_schema = packPair (
       packOption (packPair (packString, packInt)),
       packString),

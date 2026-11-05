@@ -132,7 +132,7 @@ fun links_digest F =
     val links = Link_Finder.links_of F;
     val (link_text, rewrite_text) = link_lines links;
     val ls = map #2 links;
-    fun digest lines = SHA1.rep (SHA1.digest (cat_lines lines));
+    fun digest lines = Message_Digest.rep (SHA1.digest (cat_lines lines));
   in
     (length ls, digest link_text, length (filter (fn l => not (null (#rewrites l))) ls),
      fold (fn l => fn n => n + length (#rewrites l)) ls 0, digest rewrite_text)

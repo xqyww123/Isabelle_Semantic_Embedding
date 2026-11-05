@@ -73,9 +73,9 @@ local
 in
   val _ = [("UB", "S0"), ("UB2", "S0"), ("cX", "cS"), ("cXr", "cS")]
     |> List.app (fn (loc, S) => linked thy loc [S])
-  val _ = E "vConv" "local.E.GF.vs_note"
+  val _ = E "vConv" \<^unchecked_name>\<open>local.E.GF.vs_note\<close>
     "local.E.GF.vs_note#0: Level 2 vS::vs_note#2 @[E.GF] [g \<circ> f]"
-  val _ = E "vConv" "local.E.FG.vs_note"
+  val _ = E "vConv" \<^unchecked_name>\<open>local.E.FG.vs_note\<close>
     "local.E.FG.vs_note#0: Level 2 vS::vs_note#2 @[E.FG] [f \<circ> g]"
   val _ = List.app (fn loc => linked thy loc ["CS"]) ["Zb", "C2a", "C3a", "C2b", "C3b"]
 end

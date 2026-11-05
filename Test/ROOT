@@ -8,7 +8,7 @@
    unrelated sessions, because Isabelle reads every registered ROOT at startup.
 
    Run these with an explicit -d, e.g.
-       ISABELLE_EVENT_LOG_DIR=$(mktemp -d) isabelle build -d . -d Test Semantic_Embedding_Test
+       ISABELLE_EVENT_LOG_DIR=$(mktemp -d) isabelle build -d . -D Test
    (the variable: Link_Layer_Closure_Test and Link_Finder_Cache_Test write event-log
    records and refuse to run without a scratch directory, LINK_LAYER_PLAN.md D69) *)
 
@@ -45,11 +45,28 @@ session Semantic_Embedding_Test = Semantic_Embedding +
     Link_Finder_Entities_Test
     Test_Sensitivity
     Test_All
-  (* alone, nothing forked: its pins read a process-wide closure and build counter
-     (INFRA_FILTER_CLASS_VARIANT_PLAN.md §4.9) *)
+
+(* A theory whose pins read process-wide state gets a session, i.e. an ML process, of its
+   own, in a directory of its own (no two sessions share one).  A `theories` clause of its
+   own is not enough: Isabelle2026 splits a session's theories into separate runs only
+   where their ML-process options differ (build_job.scala:465-475), and parallel_proofs
+   is not one of them; threads = 1 is, but it would serialise Link_Finder_Cache_Test's
+   Par_List / Lazy.consolidate calls.  The parent is Semantic_Embedding, with
+   Semantic_Embedding_Test only under `sessions`: the test session stays a leaf, so its
+   heap is not stored (build_process.scala:95 in store_heap). *)
+
+(* nothing forked: its pins read a process-wide closure and build counter
+   (INFRA_FILTER_CLASS_VARIANT_PLAN.md §4.9) *)
+session Semantic_Embedding_Test_Live_Pass in Live_Pass = Semantic_Embedding +
+  sessions
+    Semantic_Embedding_Test
   theories [parallel_proofs = 0]
     Infra_Live_Pass_Test
-  (* last and alone, nothing forked: its pins read process-wide counters and pass
-     links from one command to a later one (LINK_LAYER_PLAN.md §8 item 4) *)
+
+(* nothing forked: its pins read process-wide counters and pass links from one command
+   to a later one (LINK_LAYER_PLAN.md §8 item 4) *)
+session Semantic_Embedding_Test_Cache in Cache = Semantic_Embedding +
+  sessions
+    Semantic_Embedding_Test
   theories [parallel_proofs = 0]
     Link_Finder_Cache_Test

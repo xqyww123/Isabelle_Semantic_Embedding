@@ -140,13 +140,13 @@ in
   val _ = List.app (fn loc => linked thy loc ["S0"]) ["T2", "T1a", "T1b"]
   val _ = List.app (fn loc => linked thy loc ["S1"]) ["T4", "T3", "U"]
   val _ = linked thy "Bt" ["Ac"]
-  val _ = V "B" "local.zfoo" (Link_Finder.Linked Link_Finder.Level2)
-  val _ = V "B" "local.afoo" (Link_Finder.Linked Link_Finder.Level2)
-  val _ = V "B12" "local.z12foo" (Link_Finder.Linked Link_Finder.Level2)
-  val _ = V "B12r" "local.z12foo" (Link_Finder.Linked Link_Finder.Level3_Approximate)
-  val _ = V "Bt" "local.acst" (Link_Finder.Linked Link_Finder.Level2)
+  val _ = V "B" \<^unchecked_name>\<open>local.zfoo\<close> (Link_Finder.Linked Link_Finder.Level2)
+  val _ = V "B" \<^unchecked_name>\<open>local.afoo\<close> (Link_Finder.Linked Link_Finder.Level2)
+  val _ = V "B12" \<^unchecked_name>\<open>local.z12foo\<close> (Link_Finder.Linked Link_Finder.Level2)
+  val _ = V "B12r" \<^unchecked_name>\<open>local.z12foo\<close> (Link_Finder.Linked Link_Finder.Level3_Approximate)
+  val _ = V "Bt" \<^unchecked_name>\<open>local.acst\<close> (Link_Finder.Linked Link_Finder.Level2)
   (*A12: D22 cuts a true round; the fact gets an approximate link (D22's accepted loss)*)
-  val _ = V "A12" "local.z12foo" (Link_Finder.Linked Link_Finder.Level3_Approximate)
+  val _ = V "A12" \<^unchecked_name>\<open>local.z12foo\<close> (Link_Finder.Linked Link_Finder.Level3_Approximate)
   val (_, _, r) = report thy "A12"
   val _ = check "A12: one D22 cut" (#cuts r = 1)
 end

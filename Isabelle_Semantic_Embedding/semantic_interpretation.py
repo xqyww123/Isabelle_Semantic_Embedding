@@ -986,7 +986,7 @@ async def _report(msg: str, *, warn: bool = False) -> None:
 
     writeln, not tracing: tracing is capped by the `editor_tracing_messages` option
     (default 1000) and exceeding it pops Isabelle's own blocking "Tracing paused" dialog
-    (isabelle_process.ML:35-60).  A large cone would hit that.
+    (isabelle_process.ML:29-54 in update_tracing).  A large cone would hit that.
     """
     msg = f"[Semantic_Embedding] {msg}"
     (_log.warning if warn else _log.info)("%s", msg)

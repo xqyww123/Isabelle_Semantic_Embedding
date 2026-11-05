@@ -16,7 +16,7 @@ text \<open>Whole-pass digest coverage, cost and determinism over the Main cone.
   stays in budget.\<close>
 
 ML \<open>
-val main_thy = Thy_Info.get_theory "Main";
+val main_thy = \<^theory>\<open>Main\<close>;
 
 (* Mirror of semantic_store.ML enumerate_entries steps 1-2 for the two dominant
    kinds: per cone node, constants (theory-attributed) and static theorems, both
@@ -96,8 +96,8 @@ val _ =
     val fact_space = Facts.space_of (Global_Theory.facts_of main_thy)
     val const_space = Consts.space_of (Sign.consts_of main_thy)
     fun serial_in space n = #serial (Name_Space.the_entry space n)
-    val s_const = serial_in const_space "BNF_Def.rel_fun"
-    val s_def = serial_in fact_space "BNF_Def.rel_fun_def"
+    val s_const = serial_in const_space \<^const_name>\<open>BNF_Def.rel_fun\<close>
+    val s_def = serial_in fact_space \<^unchecked_name>\<open>BNF_Def.rel_fun_def\<close>
   in
     if s_const < s_def
     then writeln ("send order: rel_fun (" ^ string_of_int s_const ^
@@ -153,7 +153,7 @@ let
   val thy = \<^theory>
   val _ =
     (case Semantic_Store.query_semantics (Context.Theory thy)
-            (Universal_Key.Constant "Test_All.dry_run_probe") false of
+            (Universal_Key.Constant \<^const_name>\<open>Test_All.dry_run_probe\<close>) false of
       NONE => ()
     | SOME _ => error "Test_All: probe vacuous -- dry_run_probe already cached")
   val (works, _) = Semantic_Store.dry_run false [thy]

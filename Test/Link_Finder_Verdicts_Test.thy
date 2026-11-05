@@ -49,28 +49,31 @@ local open Link_Finder_Test
     end
   fun any _ = true
   val thy = \<^theory>
-  val algebra = Thy_Info.get_theory "HOL-Algebra.Algebra"
-  val jacobson = Thy_Info.get_theory "Jacobson_Basic_Algebra.Ring_Theory"
-  val VT = "Link_Finder_Verdicts_Test.VT"
+  val algebra = Context.get_theory {long = true} thy "HOL-Algebra.Algebra"
+  val jacobson = Context.get_theory {long = true} thy \<^unchecked_name>\<open>Jacobson_Basic_Algebra.Ring_Theory\<close>
+  val VT = \<^locale>\<open>Link_Finder_Verdicts_Test.VT\<close>
   fun unchanged name = [{verdict = U, name = name, text = name}]
 in
   val _ = check_all "verdicts"
    [("a renamed type variable: identity", fn () =>
-      shapes thy "Link_Finder_Verdicts_Test.VT_renamed_tvar" VT any = [(Identity, unchanged "M")]),
+      shapes thy \<^locale>\<open>Link_Finder_Verdicts_Test.VT_renamed_tvar\<close> VT any = [(Identity, unchanged "M")]),
     ("a type instance: identity", fn () =>
-      shapes thy "Link_Finder_Verdicts_Test.VT_nat" VT any = [(Identity, unchanged "M")]),
+      shapes thy \<^locale>\<open>Link_Finder_Verdicts_Test.VT_nat\<close> VT any = [(Identity, unchanged "M")]),
     ("bounded_linear: the links from linear are identities", fn () =>
-      shapes thy "Real_Vector_Spaces.bounded_linear" "Real_Vector_Spaces.linear" any =
+      shapes thy \<^locale>\<open>Real_Vector_Spaces.bounded_linear\<close>
+          \<^locale>\<open>Real_Vector_Spaces.linear\<close> any =
         [(Identity, unchanged "f")]),
     ("coset_notation in normal_subgroup: identity", fn () =>
-      shapes jacobson "Group_Theory.normal_subgroup" "Group_Theory.coset_notation" any =
+      shapes jacobson \<^locale>\<open>Group_Theory.normal_subgroup\<close>
+          \<^locale>\<open>Group_Theory.coset_notation\<close> any =
         [(Identity, [{verdict = U, name = "composition", text = "(\<cdot>)"}])]),
     ("is_order_A in galois_connection: identity", fn () =>
-      shapes algebra "Galois_Connection.galois_connection" "Galois_Connection.connection"
+      shapes algebra \<^locale>\<open>Galois_Connection.galois_connection\<close>
+          \<^locale>\<open>Galois_Connection.connection\<close>
         (fn n => n = "is_order_A") = [(Identity, unchanged "G")]),
     ("module_hom_id in vector_space: an identity link whose pure rewrites mixin is not shown (D62)", fn () =>
       let
-        val (_, F, _) = report thy "Vector_Spaces.vector_space"
+        val (_, F, _) = report thy \<^locale>\<open>Vector_Spaces.vector_space\<close>
         val ls = Link_Finder.links_of F |> map #2
           |> filter (fn l: Link_Finder.link => #note l = ("module_hom_id", 0))
       in
@@ -79,19 +82,25 @@ in
           null (#entities l)) ls
       end),
     ("a renaming with a new type: M is renamed to N", fn () =>
-      shapes thy "Link_Finder_Verdicts_Test.VT_renamed_nat" VT any =
+      shapes thy \<^locale>\<open>Link_Finder_Verdicts_Test.VT_renamed_nat\<close> VT any =
         [(Renaming, [{verdict = R, name = "M", text = "N"}])]),
     ("group_hom: G is renamed to H on the H side", fn () =>
-      member (op =) (shapes algebra "Group.group_hom" "Group.group" any)
+      member (op =)
+        (shapes algebra \<^locale>\<open>Group.group_hom\<close>
+          \<^locale>\<open>Group.group\<close> any)
         (Renaming, [{verdict = R, name = "G", text = "H"}])),
     ("Vector_Spaces.linear: scale is renamed to (*b)", fn () =>
-      member (op =) (shapes thy "Vector_Spaces.linear" "Modules.module" any)
+      member (op =)
+        (shapes thy \<^locale>\<open>Vector_Spaces.linear\<close>
+          \<^locale>\<open>Modules.module\<close> any)
         (Renaming, [{verdict = R, name = "scale", text = "(*b)"}])),
     ("a permutation of S's own parameters is a renaming", fn () =>
-      shapes thy "Link_Finder_Verdicts_Test.VP_swap" "Link_Finder_Verdicts_Test.VP" any =
+      shapes thy \<^locale>\<open>Link_Finder_Verdicts_Test.VP_swap\<close>
+          \<^locale>\<open>Link_Finder_Verdicts_Test.VP\<close> any =
         [(Renaming, [{verdict = R, name = "a", text = "b"}, {verdict = R, name = "b", text = "a"}])]),
     ("a for-variable: h is renamed to ?h", fn () =>
-      shapes thy "Link_Finder_Verdicts_Test.VH_for" "Link_Finder_Verdicts_Test.VH" any =
+      shapes thy \<^locale>\<open>Link_Finder_Verdicts_Test.VH_for\<close>
+          \<^locale>\<open>Link_Finder_Verdicts_Test.VH\<close> any =
         [(Renaming, [{verdict = R, name = "h", text = "?h"}])])]
 end
 \<close>

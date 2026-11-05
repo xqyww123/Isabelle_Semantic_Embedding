@@ -281,7 +281,7 @@ fun subst_morphism (table as (tys, ts): table) =
     val own = child_subst empty_subst table;
     val k = fold (Term.maxidx_typ o #2) tys (fold (Term.maxidx_term o #2) ts ~1) + 1;
   in
-    Morphism.morphism "Link_Finder.subst"
+    Morphism.morphism \<^unchecked_name>\<open>Link_Finder.subst\<close>
       {binding = [], typ = [K (subst_typ own o Logic.incr_tvar k)],
        term = [K (subst_term own o Logic.incr_indexes ([], k))], fact = []}
   end;
@@ -571,7 +571,7 @@ fun at_position fpos (c: candidate) = #pos c <> Position.none andalso #pos c = f
 
 fun fact_position ctxt =
   let val space = Facts.space_of (Proof_Context.facts_of ctxt)
-  in fn name => the_default Position.none (try (#pos o Name_Space.the_entry space) name) end;
+  in fn name => the_default Position.none (try (Name_Space.the_entry_pos space) name) end;
 
 (*the registration predicate (D52): no name hit is at the fact's position while
   some hit has a binding position, so a registration command, which sets every
@@ -789,7 +789,7 @@ fun ladder {thy, ctxt, notes, info: declaration -> info, W: walk, elements: elem
         | NONE => (el, NONE)));
 
     (*Level 3: the <c>_def notes of every walked node, nodes in their order*)
-    val eq_reflection = try (Global_Theory.get_thm thy) "HOL.eq_reflection";
+    val eq_reflection = try (Global_Theory.get_thm thy) \<^unchecked_name>\<open>HOL.eq_reflection\<close>;
     val stored_equations = Symtab.apply_unsynchronized_cache (fn src =>
       Symtab.fold (fn (_, ns) => fold (fn (k, b, ths) =>
           (case ths of
@@ -1146,11 +1146,11 @@ structure Cache = Proof_Data
     {texts: string lazy Syntax_Termtab.table,
      keys: Universal_Key.universal_key lazy Syntax_Termtab.table} Synchronized.var;
   fun init _ : T =
-    Synchronized.var "Link_Finder.cache"
+    Synchronized.var \<^unchecked_name>\<open>Link_Finder.cache\<close>
       {texts = Syntax_Termtab.empty, keys = Syntax_Termtab.empty};
 );
 
-val counts = Synchronized.var "Link_Finder.counters" {printed = 0, keyed = 0, unfinished = 0};
+val counts = Synchronized.var \<^unchecked_name>\<open>Link_Finder.counters\<close> {printed = 0, keyed = 0, unfinished = 0};
 fun counters () = Synchronized.value counts;
 fun count {printed = p, keyed = k, unfinished = u} =
   Synchronized.change counts (fn {printed, keyed, unfinished} =>
@@ -1241,7 +1241,7 @@ fun unprinted_links (F: finding) =
     val const_space = Consts.space_of (Proof_Context.consts_of ctxt);
     fun keep c =
       (case try (Name_Space.theory_name {long = true} const_space) c of
-        SOME thy_name => not (member (op =) ["Pure", "HOL.HOL"] thy_name)
+        SOME thy_name => not (member (op =) ["Pure", \<^unchecked_name>\<open>HOL.HOL\<close>] thy_name)
       | NONE => true);
     fun constants ts = Explain_Term.collect_constants keep (Context.Proof ctxt) (uncheck ts);
     val folded_constants = Syntax_Termtab.apply_unsynchronized_cache (constants o single);

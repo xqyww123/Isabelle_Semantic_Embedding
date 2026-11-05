@@ -59,7 +59,7 @@ let
     "return 'NOT_FOUND'"
   ])
   val _ = writeln ("Test 2 - HOL.True: " ^ r)
-  val _ = @{assert} (String.isSubstring "HOL.thy" r)
+  val _ = @{assert} (String.isSubstring \<^unchecked_name>\<open>HOL.thy\<close> r)
   val _ = @{assert} (String.isSubstring "line=" r)
 in writeln "Test 2: OK" end
 \<close>
@@ -87,7 +87,7 @@ ML \<open>
 (* Absolutize the position on ML side, then pass file+offset to Python *)
 let
   val const_space = Proof_Context.consts_of \<^context> |> Consts.space_of
-  val pos = #pos (Name_Space.the_entry const_space @{const_name Query_Test_Const})
+  val pos = Name_Space.the_entry_pos const_space @{const_name Query_Test_Const}
   val [abs_pos] = PIDE_State.absolutize_id_based_pos {write_to_temp_file = false} [pos]
   val file = the (Position.file_of abs_pos)
   val offset = the (Position.offset_of abs_pos)
@@ -137,14 +137,13 @@ let
     "return 'NOT_FOUND'"
   ])
   val _ = writeln ("Test 6 - refl: " ^ r)
-  val _ = @{assert} (String.isSubstring "HOL.thy" r)
+  val _ = @{assert} (String.isSubstring \<^unchecked_name>\<open>HOL.thy\<close> r)
 in writeln "Test 6: OK" end
 \<close>
 
 ML \<open>
 (* ---- Test 7: _get_definition_source for live PIDE entity ---- *)
-(* Currently returns None because entry_def_pos returns ("", 0, 0) for
-   ID-based positions. The show_defs pipeline would need absolutization. *)
+(* Pins the current answer for a live PIDE entity: None. *)
 let
   val SOME r = run_py (space_implode "\n" [
     "from Isabelle_Semantic_Embedding.semantics import _get_definition_source",
@@ -221,7 +220,7 @@ ML \<open>
    would produce once the pipeline handles live PIDE positions *)
 let
   val const_space = Proof_Context.consts_of \<^context> |> Consts.space_of
-  val pos = #pos (Name_Space.the_entry const_space @{const_name Query_Test_Const})
+  val pos = Name_Space.the_entry_pos const_space @{const_name Query_Test_Const}
   val [abs_pos] = PIDE_State.absolutize_id_based_pos {write_to_temp_file = false} [pos]
   val file = the (Position.file_of abs_pos)
   val offset = the (Position.offset_of abs_pos)
@@ -242,7 +241,7 @@ ML \<open>
 (* Demo 4: live PIDE lemma *)
 let
   val fact_space = Proof_Context.facts_of \<^context> |> Facts.space_of
-  val pos = #pos (Name_Space.the_entry fact_space "Query_Tool_Test.Query_Test_Lemma")
+  val pos = Name_Space.the_entry_pos fact_space \<^unchecked_name>\<open>Query_Tool_Test.Query_Test_Lemma\<close>
   val [abs_pos] = PIDE_State.absolutize_id_based_pos {write_to_temp_file = false} [pos]
   val file = the (Position.file_of abs_pos)
   val offset = the (Position.offset_of abs_pos)

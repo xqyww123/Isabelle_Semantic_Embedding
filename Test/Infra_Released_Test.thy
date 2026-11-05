@@ -26,26 +26,26 @@ local
 in
   val _ = check_all "the released entities and the two statement rules"
    [("a locale-form class operation is kept",
-       fn () => infra_const_rule "Orderings.ord.max" = Infra_Filter.Kept),
+       fn () => infra_const_rule \<^const_name>\<open>Orderings.ord.max\<close> = Infra_Filter.Kept),
     ("a note of a class's locale is not infrastructure",
-       fn () => is_none (rule "Lattices.linorder.le_max_iff_disj")),
+       fn () => is_none (rule \<^unchecked_name>\<open>Lattices.linorder.le_max_iff_disj\<close>)),
     ("an interpretation fact is not infrastructure",
-       fn () => is_none (rule "Infra_Released_Test.lp_rev.le_max_iff_disj")),
+       fn () => is_none (rule \<^unchecked_name>\<open>Infra_Released_Test.lp_rev.le_max_iff_disj\<close>)),
     ("a partial_function fact (ccpo.fixp) is not infrastructure",
-       fn () => is_none (rule "Partial_Function.option.fixp_induct_uc")),
+       fn () => is_none (rule \<^unchecked_name>\<open>Partial_Function.option.fixp_induct_uc\<close>)),
     ("a class-definition theorem is infrastructure",
-       fn () => rule "Orderings.ord_class.max_dict" = SOME "class_definition"),
+       fn () => rule \<^unchecked_name>\<open>Orderings.ord_class.max_dict\<close> = SOME "class_definition"),
     ("a theorem named *_dict that is not one is kept",
-       fn () => is_none (rule "Infra_Released_Test.lp_max_dict")),
+       fn () => is_none (rule \<^unchecked_name>\<open>Infra_Released_Test.lp_max_dict\<close>)),
     ("a simplifier .cong is infrastructure",
-       fn () => rule "Orderings.ord.max.cong" = SOME "simplifier_cong"),
+       fn () => rule \<^unchecked_name>\<open>Orderings.ord.max.cong\<close> = SOME "simplifier_cong"),
     ("a congruence rule named cong is kept",
-       fn () => is_none (rule "Groups_Big.comm_monoid_add_class.sum.cong")),
+       fn () => is_none (rule \<^unchecked_name>\<open>Groups_Big.comm_monoid_add_class.sum.cong\<close>)),
     ("a reflexive theorem not named cong is kept",
-       fn () => is_none (rule "Infra_Released_Test.lp_self")),
+       fn () => is_none (rule \<^unchecked_name>\<open>Infra_Released_Test.lp_self\<close>)),
     ("a locale-form _sumC constant falls to sumC_graph",
        fn () => infra_const_rule
-                  "Bit_Operations.linordered_euclidean_semiring_bit_operations.or_num_sumC" =
+                  \<^const_name>\<open>Bit_Operations.linordered_euclidean_semiring_bit_operations.or_num_sumC\<close> =
                 Infra_Filter.Infra "sumC_graph")]
 end
 \<close>

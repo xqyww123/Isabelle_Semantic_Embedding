@@ -1781,8 +1781,9 @@ async def _definition_at(
     connection: Connection, pos: IsabellePosition,
 ) -> tuple[str, IsabellePosition] | None:
     """The source of the command at *pos* and the position of its start
-    (symbol offset), or ``None`` when no command is found there.  The one
-    place a definition position becomes text."""
+    (symbol offset), or ``None`` when no command is found there or the hosting
+    command did not install `PIDE_State.make_command_at_position_callback`.
+    Only Isa-Mini's retrieval.py still calls it."""
     from .hover import command_at_position
     cmd = await command_at_position(pos, connection)
     if cmd is None:
@@ -1797,13 +1798,18 @@ async def _definition_of_name(
     connection: Connection, kind: EntityKind, name: str,
     ctxt: Any = None,
 ) -> tuple[str, IsabellePosition] | None:
-    """`_definition_at` of the position `Context.entries_of_names` resolves
-    *name* of *kind* to, or ``None`` when the name or its position is unknown.
-    A non-None *ctxt* resolves the name under that (file, offset) context."""
-    [entry] = await connection.callback(
-        "Context.entries_of_names", (ctxt, [(int(kind), name)]))
-    pos = IsabellePosition.from_def_pos(entry[2]) if entry is not None else None
-    return await _definition_at(connection, pos) if pos is not None else None
+    """The source of the command declaring *name* of *kind* and the position of
+    its start (symbol offset), or ``None`` when the name or its command is
+    unknown.  One call: `Semantic_Store.declaring_commands` resolves the name
+    and cuts its command in the same context, so an entity of a PIDE node
+    (whose position carries only a command id) is found too.  A non-None
+    *ctxt* resolves the name under that (file, offset) context."""
+    [answer] = await connection.callback(
+        "Semantic_Store.declaring_commands", (ctxt, [(int(kind), name)]))
+    if answer is None:
+        return None
+    source, file, start_offset = answer
+    return (pretty_unicode(source), IsabellePosition(0, start_offset, file))
 
 
 async def _get_definition_source(

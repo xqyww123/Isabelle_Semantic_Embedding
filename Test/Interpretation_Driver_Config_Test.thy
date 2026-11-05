@@ -58,16 +58,28 @@ ML \<open>
    serve it.  What is left to assert is the list itself: the callback is on it, and
    once -- the RPC layer resolves a duplicated name by list order, so a second
    Config.lookup on the list would decide the answer silently.  And
-   Context.entries_of_names is on it: without it show_defs loses every definition
-   silently (_append_definition swallows the error).  No Python, no LLM. *)
+   Semantic_Store.declaring_commands and the per-call pide_state.command_at_position are on
+   it, Context.entries_of_names no longer: without the first show_defs loses every
+   definition silently (_append_definition swallows the error), without the second the
+   definition and hover tools cut nothing.  No Python, no LLM. *)
 ML \<open>
   val config_cb =
     Config.make_config_lookup_callback
       (Context_Callbacks.static_context_unpacker (Context.Proof \<^context>))
   val names =
     map #name (Semantic_Store.interpret_file_callbacks config_cb (Context.Proof \<^context>))
-  val _ = \<^assert> (length (filter (fn n => n = "Config.lookup") names) = 1)
-  val _ = \<^assert> (member (op =) names "Context.entries_of_names")
+  val _ = \<^assert> (length (filter (fn n => n = \<^unchecked_name>\<open>Config.lookup\<close>) names) = 1)
+  val _ = \<^assert> (member (op =) names \<^unchecked_name>\<open>Semantic_Store.declaring_commands\<close>)
+  val _ = \<^assert> (member (op =) names \<^unchecked_name>\<open>pide_state.command_at_position\<close>)
+  val _ = \<^assert> (not (member (op =) names \<^unchecked_name>\<open>Context.entries_of_names\<close>))
+  (* the retrieval closure carries declaring_commands too (AoA, PlainAgent, query_knn) *)
+  val closure_names =
+    map #name (Semantic_Store.make_entity_callbacks (Context.Proof \<^context>) (K true)
+      (Context_Callbacks.static_context_unpacker (Context.Proof \<^context>)))
+  val _ = \<^assert> (member (op =) closure_names \<^unchecked_name>\<open>Semantic_Store.declaring_commands\<close>)
+  (* no context-free global may answer it: pide_state.command_at_position is per call *)
+  val _ = \<^assert> (is_none (Remote_Procedure_Calling.get_global_callback
+            \<^unchecked_name>\<open>pide_state.command_at_position\<close>))
 \<close>
 
 end

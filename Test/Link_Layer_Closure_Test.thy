@@ -115,12 +115,12 @@ local open Link_Layer_Closure_Test
   fun first name = AList.lookup (op =) links (key (Proof_Context.get_thm ctxt name)) |> Option.map source_note
 in
   val _ = check "zfoo and c.afoo share a key"
-    (key (Proof_Context.get_thm ctxt "zfoo") = key (Proof_Context.get_thm ctxt "c.afoo"))
+    (key (Proof_Context.get_thm ctxt "zfoo") = key (Proof_Context.get_thm ctxt \<^unchecked_name>\<open>c.afoo\<close>))
   val _ = check "LLB: two keys are shared by facts with different links" (check_shared_keys "LLB" ctxt = 2)
   val _ = check "bfoo comes first, before zfoo (the smaller name) and c.afoo (more qualifiers)"
-    (first "zfoo" = SOME ("Link_Layer_Closure_Test.LLD", "bfoo"))
+    (first "zfoo" = SOME (\<^locale>\<open>Link_Layer_Closure_Test.LLD\<close>, "bfoo"))
   val _ = check "ybar comes first, before c.xbar (fewer qualifiers before the smaller name)"
-    (first "ybar" = SOME ("Link_Layer_Closure_Test.LLA", "ybar"))
+    (first "ybar" = SOME (\<^locale>\<open>Link_Layer_Closure_Test.LLA\<close>, "ybar"))
 end
 \<close>
 
@@ -154,15 +154,16 @@ local open Link_Layer_Closure_Test
   val (_, r) = report_in ctxt "LLK"
   val key = Universal_Key.key_of_theorem' NONE (Context.Proof ctxt)
 in
-  val _ = check_element ctxt "LLK, the approximate link" (#elements r) "local.s.mfoo" 0
+  val _ = check_element ctxt "LLK, the approximate link" (#elements r) \<^unchecked_name>\<open>local.s.mfoo\<close> 0
     "local.s.mfoo#0: Level 3 approximate LLM::mfoo#3 @[s] [k]"
   val _ = check "s.mfoo and t.zfoo share a key"
-    (key (Proof_Context.get_thm ctxt "s.mfoo") = key (Proof_Context.get_thm ctxt "t.zfoo"))
+    (key (Proof_Context.get_thm ctxt \<^unchecked_name>\<open>s.mfoo\<close>) =
+      key (Proof_Context.get_thm ctxt \<^unchecked_name>\<open>t.zfoo\<close>))
   val _ = check "LLK: the shared key's links differ" (check_shared_keys "LLK" ctxt = 1)
   val _ = check "t.zfoo's Level 2 link comes first, before s.mfoo's approximate one (the smaller name)"
     (Option.map source_note
-      (AList.lookup (op =) (Link_Finder.links ctxt) (key (Proof_Context.get_thm ctxt "s.mfoo"))) =
-      SOME ("Link_Layer_Closure_Test.LLN", "zfoo"))
+      (AList.lookup (op =) (Link_Finder.links ctxt) (key (Proof_Context.get_thm ctxt \<^unchecked_name>\<open>s.mfoo\<close>))) =
+      SOME (\<^locale>\<open>Link_Layer_Closure_Test.LLN\<close>, "zfoo"))
 end
 \<close>
 
@@ -204,7 +205,7 @@ local open Link_Layer_Closure_Test
   val params =
     AList.lookup (op =) (Link_Finder.links \<^context>)
       (Universal_Key.key_of_theorem' NONE (Context.Proof \<^context>)
-        (Proof_Context.get_thm \<^context> "sum_list.Cons"))
+        (Proof_Context.get_thm \<^context> \<^unchecked_name>\<open>sum_list.Cons\<close>))
     |> Option.map #params
 in
   val _ = check "sum_list.Cons: f and z are renamed to (+) and 0"
@@ -255,7 +256,7 @@ fun check_degrade (degrade : (Proof.context -> links) -> Proof.context -> links)
       (case Exn.capture (degrade (raising Exn.Interrupt_Break)) ctxt of
         Exn.Exn exn => Exn.is_interrupt_break exn
       | Exn.Res _ => false)
-    fun sleeping (_: Proof.context) : links = (OS.Process.sleep (seconds 30.0); [])
+    fun sleeping (_: Proof.context) : links = (Time.sleep (seconds 30.0); [])
     val _ = check "A1: a finder stopped by a timeout propagates the timeout"
       (case Exn.capture (Timeout.apply (seconds 0.2) (degrade sleeping)) ctxt of
         Exn.Exn (Timeout.TIMEOUT _) => true
@@ -277,11 +278,11 @@ fun check_degrade (degrade : (Proof.context -> links) -> Proof.context -> links)
 fun links_records () =
   let
     val category = Path.append event_log (Path.basic "exception")
-    val suffix = "-" ^ string_of_int (ML_Pid.get ()) ^ ".xml"
+    val suffix = "-" ^ string_of_int (PolyML.ml_pid ()) ^ ".xml"
     val files =
       if File.is_dir category then filter (String.isSuffix suffix) (File.read_dir category)
       else []
-    val here = [("site", "Semantic_Store.links"),
+    val here = [("site", \<^unchecked_name>\<open>Semantic_Store.links\<close>),
       ("thread", Isabelle_Thread.print (Isabelle_Thread.self ()))]
     fun ours (XML.Elem (("record", props), _)) =
           forall (fn (k, v) => Properties.get props k = SOME v) here

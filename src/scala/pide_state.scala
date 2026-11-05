@@ -5,10 +5,13 @@ Scala functions for accessing PIDE document state from ML:
   - Save theory file contents (read-only: returns file/source pairs for ML to write)
   - Command ID to file+line position mapping
   - Go-to-definition: resolve entity reference at a position to its definition position
-    (live PIDE first, then DB fallback via Build.read_theory)
   - Hover message: extract tooltip information at a position
-    (live PIDE first, then DB fallback via Build.read_theory)
   - Command at position: retrieve source code of the command at a given position
+  - Command id at position: the live node's own name and the command's id
+The position queries answer from the live PIDE node holding the file (PIDE_Query.live_node:
+a node PIDE parsed, found by its name or as the same file), else, when there is no live
+node, from the build-time snapshot of the heap theory whose source the file is
+(DB_Snapshots); PIDE_Query.live_or_db picks the one route.
 */
 
 package isabelle.semantic_embedding
@@ -23,7 +26,7 @@ object PIDE_Query {
     * offset.  Returns the command and the 1-based symbol offset of its first
     * symbol (sym_pos), accumulating widths via command.span.symbol_length (the
     * authoritative symbol count) rather than chunk.range.stop (a char count). */
-  private def command_at_symbol_offset(
+  def command_at_symbol_offset(
     node: Document.Node, offset: Int
   ): Option[(Command, Int)] = {
     var pos = 1
@@ -37,6 +40,45 @@ object PIDE_Query {
     }
     found
   }
+
+  /** The file a node name denotes, as Document.Node.Name.path reads it, expanded.
+    * None if Path.explode or the expansion rejects it (an illegal character, an
+    * undefined variable). */
+  def node_path(name: Document.Node.Name): Option[Path] =
+    try { Some(name.path.expand) } catch { case ERROR(_) => None }
+
+  /** Same file, by the rule the ML file lookup uses: the same file name, then the
+    * same OS file (File.eq). */
+  def same_file(a: Document.Node.Name, b: Document.Node.Name): Boolean =
+    a.file_name.nonEmpty && a.file_name == b.file_name &&
+      ((node_path(a), node_path(b)) match {
+        case (Some(p), Some(q)) => File.eq(p, q)
+        case _ => false
+      })
+
+  /** The live node holding the file `file_path` names, as the graph's own Name: the node
+    * of exactly that name, else the first (in node-name order) that is the same file.
+    * Loaded-theory nodes are skipped: PIDE keeps a heap theory opened in an editor as one
+    * unparsed command of the whole file and never parses it (Isabelle2026
+    * thy_syntax.scala:307-311, 407-422); its session DB answers instead, as when no editor
+    * has it open.  The one place that lists candidate nodes.  Never raises. */
+  def live_node(resources: Resources, nodes: Document.Nodes, file_path: String)
+    : Option[Document.Node.Name] =
+  {
+    val target = Document.Node.Name(file_path)
+    def candidates = nodes.names_iterator.filterNot(name => resources.loaded_theory(name))
+    candidates.find(_ == target) orElse candidates.find(same_file(_, target))
+  }
+
+  /** The answer for the file `file_path` names, from exactly one route: `live` on the node
+    * live_node finds, else `db` (the build-time snapshot's answer).  A file with a live node
+    * never reaches the database, even where its live answer is empty. */
+  def live_or_db[A](resources: Resources, nodes: Document.Nodes, file_path: String)(
+    live: Document.Node.Name => A, db: => A): A =
+    live_node(resources, nodes, file_path) match {
+      case Some(name) => live(name)
+      case None => db
+    }
 
   private def symbol_offset_to_range(
     snapshot: Document.Snapshot, offset: Int
@@ -81,8 +123,9 @@ object PIDE_Query {
             case Position.Item_Def_File(name, line, def_range) =>
               Some((name, line, def_range.start, def_range.stop) :: acc)
             case Position.Item_Def_Id(id, def_range) =>
-              snapshot.find_command(id) match {
-                case Some((node, command)) =>
+              snapshot.get_command(id) match {
+                case Some(command) =>
+                  val node = snapshot.command_node(command)
                   val name = command.node_name.node
                   val preceding_symbols =
                     node.commands.iterator.takeWhile(_ != command)
@@ -122,9 +165,9 @@ object PIDE_Query {
 
     val results = snapshot.cumulate[(String, String)](
       range, ("", ""), Markup.Elements(Markup.ENTITY), _ => {
-        case (("", ""), Text.Info(_, XML.Elem(Markup.Entity(kind, name), _)))
-          if kind != "" && kind != Markup.ML_DEF =>
-          Some((kind, name))
+        case (("", ""), Text.Info(_, XML.Elem(Markup.Entity(entry), _)))
+          if entry.kind != "" && entry.kind != Markup.ML_DEF =>
+          Some((entry.kind, entry.name))
         case _ => None
       })
 
@@ -191,14 +234,12 @@ object PIDE_Query {
 
     val results = snapshot.cumulate[List[String]](
       range, Nil, tooltip_elements, _ => {
-        case (tips, Text.Info(_, XML.Elem(Markup.Entity(kind, name), _)))
-          if kind != "" && kind != Markup.ML_DEF =>
-          val kind1 = Word.implode(Word.explode('_', kind))
-          val txt =
-            if (name == "") kind1
-            else if (kind1 == "") name
-            else kind1 + " " + quote(name)
-          Some(txt :: tips)
+        // As Rendering.tooltips: one line per entity element, so a name with several
+        // positions (e.g. a constant made by a locale interpretation) gives one line
+        // per position, each with its def_label.
+        case (tips, Text.Info(_, XML.Elem(Markup.Entity(entry), _)))
+          if entry.kind != "" && entry.kind != Markup.ML_DEF =>
+          Some(entry.print() :: tips)
 
         case (tips, Text.Info(_, XML.Elem(Markup(name, _), body)))
           if name == Markup.TYPING || name == Markup.SORTING =>
@@ -220,188 +261,45 @@ object PIDE_Query {
 }
 
 
-/* DB snapshot loading and caching */
+/* Export-DB snapshots: Isabelle's own file -> heap theory -> build-time snapshot route */
 
 object DB_Snapshots {
-  // digest -> (session_name, theory_name)
-  private var digest_index: Map[String, (String, String)] = Map.empty
-  // base name (e.g. "Main") -> (session_name, theory_name)
-  // Fallback when file has been modified and digest no longer matches.
-  // Later sessions overwrite earlier ones, so the most derived ancestor wins.
-  private var name_index: Map[String, (String, String)] = Map.empty
-  private var indexed_sessions: Set[String] = Set.empty
+  /* The heap theory whose source is `file`: Isabelle's file-to-theory map
+     (Resources.find_theory, as JEdit_Resources.node_name uses it), restricted to what
+     Session.read_theory reads: parent_background's cumulative loaded theories.  So a file
+     is answered only from the build-time snapshot of the very theory the heap loaded from
+     it -- never by base name or content from another file, and never from the session a
+     batch build is building (parent_background excludes it). */
+  def heap_theory(resources: Resources, file: Path): Option[String] =
+    resources.find_theory(file.file).map(_.theory)
+      .filter(theory => resources.parent_background.base.loaded_theory(theory))
 
-  // theory_name -> snapshot
-  private var snapshot_cache: Map[String, Document.Snapshot] = Map.empty
+  // per Session (its heap): Session.read_theory's own cache is weak and cleared at GC
+  private val snapshots =
+    new java.util.WeakHashMap[Session, Map[String, Option[Document.Snapshot]]]
 
-  // Cached Store instance (shared Term.Cache for string interning across snapshots)
-  // One Session per Isabelle process, so this is effectively a singleton cache.
-  private var cached_store: Option[(Session, Store)] = None
-
-  private def get_store(session: Session): Store = synchronized {
-    cached_store match {
-      case Some((s, store)) if s eq session => store
-      case _ =>
-        val store = Store(session.session_options)
-        cached_store = Some((session, store))
-        store
-    }
-  }
-
-  // file_path -> sha1 digest (files are immutable once built)
-  private var file_digest_cache: Map[String, String] = Map.empty
-
-  private def file_digest(path: Path): String = synchronized {
-    val key = path.implode
-    file_digest_cache.get(key) match {
-      case Some(d) => d
-      case None =>
-        val d = SHA1.digest(path).toString
-        file_digest_cache += (key -> d)
-        d
-    }
-  }
-
-  private def index_session(store: Store, session_name: String): Unit = synchronized {
-    if (indexed_sessions.contains(session_name)) return
-    indexed_sessions += session_name
-
-    store.try_open_database(session_name, server_mode = false) match {
-      case Some(db) =>
-        try {
-          // (1) Source .thy rows: full symbolic path (a Sources primary key, hence UNIQUE)
-          // plus content digest.  Only name+digest columns — skip reading file bodies.
-          val src_rows = db.execute_query_statement(
-            Store.private_data.Sources.table.select(
-              List(Store.private_data.Sources.name, Store.private_data.Sources.digest),
-              sql = SQL.where_and(
-                Store.private_data.Sources.session_name.equal(session_name),
-                Store.private_data.Sources.name.ident + " LIKE '%.thy'")),
-            List.from[(String, String)],
-            res => (res.string(Store.private_data.Sources.name),
-                    res.string(Store.private_data.Sources.digest)))
-
-          // (2) Genuine theory long-names of THIS session.  A flat session compiles theories
-          // of other AFP entries directly via $AFP/<Entry>/*.thy; their exports keep the
-          // ORIGINAL prefix (Transitive_Models.Renaming), NOT <this session>.<base>.
-          val theory_names = Export.read_theory_names(db, session_name)
-
-          // (3) source-path -> genuine long-name, via each theory's own PIDE/files export.
-          // files0-head is byte-identical to a Sources.name (both are File.symbolic_path of the
-          // same theory node path, frozen into this db at build time — structural, verified on
-          // AFP-DEP1-0: 411/411 theories, all 13 duplicate bases).  A full path is UNIQUE, so
-          // theories sharing a base name (Transitive_Models.Renaming vs Forcing.Renaming in one
-          // flat session) each resolve to their own long-name — no ambiguity, nothing skipped.
-          // read_theory_names returns only THIS session's theories, so every FILES export lives
-          // in the already-open `db` (Session_Context.get would read the identical row): read it
-          // directly here, without opening a second handle to the same file or the ancestor
-          // hierarchy — avoids a redundant same-file open and a needless error_database throw
-          // surface, and keeps the whole index in the one db already opened at line 269.
-          val long_by_path: Map[String, String] =
-            (for {
-              tn <- theory_names.iterator
-              entry <- Export.read_entry(db, Export.Entry_Name(session_name, tn, Export.FILES),
-                                         store.cache).iterator
-              (_, path) <- XML.Decode.list(XML.Decode.pair(XML.Decode.int, XML.Decode.string))(
-                             entry.yxml()).headOption.iterator
-            } yield path -> tn).toMap
-
-          // (4) Base counts — used ONLY to keep the name-based FALLBACK conservative; the
-          // digest mapping below is precise regardless of any base-name collision.
-          val src_base_counts =
-            src_rows.groupBy { case (name, _) =>
-              Library.try_unsuffix(".thy", Path.explode(name).file_name).getOrElse("")
-            }.view.mapValues(_.size).toMap
-
-          // (5) Join each source .thy to its long-name by FULL PATH (collision-free).
-          for ((name, digest) <- src_rows) {
-            long_by_path.get(name) match {
-              case Some(theory_name) =>
-                // Primary lookup: precise for every theory, duplicate-base included.
-                digest_index += (digest -> (session_name, theory_name))
-                // Fallback (used only when a file was edited since the build, so its digest no
-                // longer matches): base-keyed, hence trustworthy only when the base is unique in
-                // this session — otherwise an edited file can't be told apart by base, so leave
-                // it to degrade to NONE rather than misroute to the wrong twin.
-                val base = Library.try_unsuffix(".thy", Path.explode(name).file_name).getOrElse("")
-                if (base.nonEmpty && src_base_counts.getOrElse(base, 0) == 1)
-                  name_index += (base -> (session_name, theory_name))
-              case None =>
-                // Source with no PIDE/files export (e.g. export_theory=false): it was NONE
-                // before and stays NONE — do not populate a known-unloadable mapping.
-                ()
-            }
+  private def read_theory(session: Session, theory: String): Option[Document.Snapshot] =
+    snapshots.synchronized {
+      val found = snapshots.get(session)
+      val cache = if (found == null) Map.empty[String, Option[Document.Snapshot]] else found
+      cache.getOrElse(theory, {
+        val result =
+          try { Some(session.read_theory(theory)) }
+          catch {
+            case exn: Exception if !Exn.is_interrupt(exn) =>
+              Output.warning("DB_Snapshots: " + Exn.message(exn)); None
           }
-        }
-        finally { db.close() }
-      case None =>
-        Output.warning("DB_Snapshots.index_session: " + session_name + " — no database found")
+        snapshots.put(session, cache + (theory -> result))
+        result
+      })
     }
-  }
 
-  private def load_snapshot(
-    store: Store,
-    session_name: String,
-    theory_name: String
-  ): Option[Document.Snapshot] = synchronized {
-    snapshot_cache.get(theory_name) match {
-      case some @ Some(_) => some
-      case None =>
-        try {
-          val result =
-            using(Export.open_session_context0(store, session_name)) { session_context =>
-              val theory_context = session_context.theory(theory_name)
-              Build.read_theory(theory_context)
-            }
-          result.foreach(snapshot => snapshot_cache += (theory_name -> snapshot))
-          result
-        }
-        catch {
-          case exn: Exception =>
-            Output.warning("DB_Snapshots.load_snapshot: exception — " + exn.getMessage)
-            None
-        }
-    }
-  }
-
-  def get_snapshot(session: Session, file_path: String): Option[Document.Snapshot] = {
-    val store = get_store(session)
-    val sessions_structure = session.resources.sessions_structure
-    val current_session = session.resources.session_base.session_name
-    val ancestors = sessions_structure.build_hierarchy(current_session)
-    // Also index immediate descendants of the base session that may have been
-    // previously built (e.g. the working project session).  build_hierarchy
-    // only covers ancestors; this covers one level up so that goto-definition
-    // can resolve into a sibling/child session's export DB.
-    val descendants =
-      if (sessions_structure.build_graph.defined(current_session))
-        sessions_structure.build_graph.imm_succs(current_session).toList
-      else Nil
-
-    for (name <- ancestors ::: descendants) index_session(store, name)
-
-    // Compute file digest and look up
-    val file = Path.explode(file_path)
-    if (!file.is_file) {
-      Output.warning("DB_Snapshots.get_snapshot: file does not exist: " + file.implode)
-      return None
-    }
-    val digest = file_digest(file)
-
-    digest_index.get(digest) match {
-      case Some((session_name, theory_name)) =>
-        load_snapshot(store, session_name, theory_name)
-      case None =>
-        // Fallback: file was modified since the heap was built — match by theory base name
-        val base = Library.try_unsuffix(".thy", file.file_name).getOrElse("")
-        if (base.nonEmpty) {
-          name_index.get(base).flatMap { case (session_name, theory_name) =>
-            load_snapshot(store, session_name, theory_name)
-          }
-        }
-        else None
-    }
-  }
+  def get_snapshot(session: Session, file_path: String): Option[Document.Snapshot] =
+    for {
+      path <- PIDE_Query.node_path(Document.Node.Name(file_path)).filter(_.is_file)
+      theory <- heap_theory(session.resources, path)
+      snapshot <- read_theory(session, theory)
+    } yield snapshot
 }
 
 
@@ -463,8 +361,9 @@ object Resolve_Positions extends Scala.Fun("pide_state.resolve_positions", threa
     val nodes_to_scan = new scala.collection.mutable.LinkedHashSet[Document.Node]
     for ((id, _) <- input) {
       if (!resolved.contains(id)) {
-        snapshot.find_command(id) match {
-          case Some((node, command)) =>
+        snapshot.get_command(id) match {
+          case Some(command) =>
+            val node = snapshot.command_node(command)
             resolved(id) = (node, command)
             nodes_to_scan += node
           case None =>
@@ -530,26 +429,11 @@ object Goto_Definition extends Scala.Fun("pide_state.goto_definition", thread = 
     val state = session.get_state()
     val version = state.recent_finished.version.get_finished
 
-    // Try live PIDE state first
-    val live_result: (String, Int, Int, Int) =
-      version.nodes.iterator.map(_._1).find(_.node == file_path) match {
-        case Some(node_name) =>
-          PIDE_Query.goto_definition(state.snapshot(node_name = node_name), offset)
-        case None => ("", 0, 0, 0)
-      }
-
-    // Fall back to DB if live returns nothing
     val result =
-      if (live_result != ("", 0, 0, 0)) live_result
-      else {
-        DB_Snapshots.get_snapshot(session, file_path) match {
-          case Some(snapshot) =>
-            PIDE_Query.goto_definition(snapshot, offset)
-          case None =>
-            Output.warning("Goto_Definition: no DB snapshot found")
-            ("", 0, 0, 0)
-        }
-      }
+      PIDE_Query.live_or_db(session.resources, version.nodes, file_path)(
+        name => PIDE_Query.goto_definition(state.snapshot(node_name = name), offset),
+        DB_Snapshots.get_snapshot(session, file_path)
+          .map(PIDE_Query.goto_definition(_, offset)).getOrElse(("", 0, 0, 0)))
 
     val body = {
       val (a, b, c, d) = result
@@ -575,23 +459,11 @@ object Hover_Message extends Scala.Fun("pide_state.hover_message", thread = true
     val state = session.get_state()
     val version = state.recent_finished.version.get_finished
 
-    // Try live PIDE state first
-    val live_result: String =
-      version.nodes.iterator.map(_._1).find(_.node == file_path) match {
-        case Some(node_name) =>
-          PIDE_Query.hover_message(state.snapshot(node_name = node_name), offset)
-        case None => ""
-      }
-
-    // Fall back to DB if live returns nothing
     val result =
-      if (live_result.nonEmpty) live_result
-      else {
-        DB_Snapshots.get_snapshot(session, file_path) match {
-          case Some(snapshot) => PIDE_Query.hover_message(snapshot, offset)
-          case None => ""
-        }
-      }
+      PIDE_Query.live_or_db(session.resources, version.nodes, file_path)(
+        name => PIDE_Query.hover_message(state.snapshot(node_name = name), offset),
+        DB_Snapshots.get_snapshot(session, file_path)
+          .map(PIDE_Query.hover_message(_, offset)).getOrElse(""))
 
     List(Bytes(YXML.string_of_body(XML.Encode.string(result))))
   }
@@ -611,21 +483,11 @@ object Entity_At_Position extends Scala.Fun("pide_state.entity_at_position", thr
     val state = session.get_state()
     val version = state.recent_finished.version.get_finished
 
-    val live_result: (String, String) =
-      version.nodes.iterator.map(_._1).find(_.node == file_path) match {
-        case Some(node_name) =>
-          PIDE_Query.entity_at_position(state.snapshot(node_name = node_name), offset)
-        case None => ("", "")
-      }
-
     val result =
-      if (live_result != ("", "")) live_result
-      else {
-        DB_Snapshots.get_snapshot(session, file_path) match {
-          case Some(snapshot) => PIDE_Query.entity_at_position(snapshot, offset)
-          case None => ("", "")
-        }
-      }
+      PIDE_Query.live_or_db(session.resources, version.nodes, file_path)(
+        name => PIDE_Query.entity_at_position(state.snapshot(node_name = name), offset),
+        DB_Snapshots.get_snapshot(session, file_path)
+          .map(PIDE_Query.entity_at_position(_, offset)).getOrElse(("", "")))
 
     val body = XML.Encode.pair(XML.Encode.string, XML.Encode.string)(result)
     List(Bytes(YXML.string_of_body(body)))
@@ -646,24 +508,12 @@ object Command_At_Position extends Scala.Fun("pide_state.command_at_position", t
     val state = session.get_state()
     val version = state.recent_finished.version.get_finished
 
-    // Try live PIDE state first
-    val live_result: (String, Int, Int) =
-      version.nodes.iterator.map(_._1).find(_.node == file_path) match {
-        case Some(node_name) =>
-          PIDE_Query.command_at_position(version.nodes(node_name), offset)
-        case None => ("", 0, 0)
-      }
-
-    // Fall back to DB if live returns nothing
+    // the node of the recent_finished version (version.nodes), not state.snapshot's
     val result =
-      if (live_result != ("", 0, 0)) live_result
-      else {
-        DB_Snapshots.get_snapshot(session, file_path) match {
-          case Some(snapshot) =>
-            PIDE_Query.command_at_position(snapshot, offset)
-          case None => ("", 0, 0)
-        }
-      }
+      PIDE_Query.live_or_db(session.resources, version.nodes, file_path)(
+        name => PIDE_Query.command_at_position(version.nodes(name), offset),
+        DB_Snapshots.get_snapshot(session, file_path)
+          .map(PIDE_Query.command_at_position(_, offset)).getOrElse(("", 0, 0)))
 
     val body = XML.Encode.pair(XML.Encode.string,
       XML.Encode.pair(XML.Encode.int, XML.Encode.int))(
@@ -681,7 +531,7 @@ object Get_Session_Databases extends Scala.Fun("pide_state.get_session_databases
   override def invoke(session: Session, args: List[Bytes]): List[Bytes] = {
     val store = Store(session.session_options)
     val sessions_structure = session.resources.sessions_structure
-    val current_session = session.resources.session_base.session_name
+    val current_session = session.resources.current_background.session_name
     val ancestors = sessions_structure.build_hierarchy(current_session)
 
     val results: List[(String, String)] = ancestors.flatMap { name =>
@@ -696,89 +546,6 @@ object Get_Session_Databases extends Scala.Fun("pide_state.get_session_databases
 }
 
 
-/* Feasibility probe: dump COMMAND_SPAN keyword + ENTITY def/ref markup
-   for the command at a given position.  Returns a human-readable string. */
-
-object Probe_Command_Header extends Scala.Fun("pide_state.probe_command_header", thread = true)
-  with Scala.Single_Fun
-{
-  val here = Scala_Project.here
-
-  override def invoke(session: Session, args: List[Bytes]): List[Bytes] = {
-    val (file_path, offset) =
-      XML.Decode.pair(XML.Decode.string, XML.Decode.int)(
-        YXML.parse_body(YXML.Source(args.head.text)))
-
-    val state = session.get_state()
-    val version = state.recent_finished.version.get_finished
-    val result = new StringBuilder
-
-    version.nodes.iterator.map(_._1).find(_.node == file_path) match {
-      case Some(node_name) =>
-        val node = version.nodes(node_name)
-        val snapshot = state.snapshot(node_name = node_name)
-
-        // Find command via node iteration
-        var pos = 1
-        var found: Option[(Command, Int)] = None
-        val it = node.commands.iterator
-        while (it.hasNext && found.isEmpty) {
-          val command = it.next()
-          val len = command.chunk.range.stop
-          if (offset >= pos && offset < pos + len)
-            found = Some((command, pos))
-          pos += len
-        }
-
-        found match {
-          case Some((command, cmd_pos)) =>
-            val len = command.chunk.range.stop
-            result.append("keyword (span.name): " + command.span.name + "\n")
-            result.append("source: " + command.source.take(100).replace("\n", "\\n") + "\n")
-            result.append("span: [" + cmd_pos + ", " + (cmd_pos + len) + ")\n")
-
-            // Search for all ENTITY markup in the command range
-            val cmd_range = Text.Range(cmd_pos - 1, cmd_pos - 1 + len)
-            val entities = snapshot.cumulate[List[(String, String, String)]](
-              cmd_range, Nil, Markup.Elements(Markup.ENTITY), _ => {
-                case (acc, Text.Info(_, XML.Elem(markup @ Markup(Markup.ENTITY, props), _))) =>
-                  val kind = Markup.Kind.get(props)
-                  val name = Markup.Name.get(props)
-                  val tag =
-                    if (Markup.Entity.Def.unapply(markup).isDefined) "DEF"
-                    else if (Markup.Entity.Ref.unapply(markup).isDefined) "REF"
-                    else "???"
-                  Some((kind, name, tag) :: acc)
-                case _ => None
-              })
-
-            entities match {
-              case Text.Info(_, ents) :: _ =>
-                result.append("entities (" + ents.length + "):\n")
-                for ((kind, name, tag) <- ents.reverse)
-                  result.append("  [" + tag + "] " + kind + " " + name + "\n")
-              case _ =>
-                result.append("entities: none\n")
-            }
-
-          case None =>
-            result.append("no command at offset " + offset + " in " + file_path)
-        }
-
-      case None =>
-        result.append("no live node for: " + file_path)
-    }
-
-    List(Bytes(YXML.string_of_body(XML.Encode.string(result.toString))))
-  }
-}
-
-
-/* Command ID at position: returns the PIDE command ID (Long) for the command
-   at a given symbol offset in a live PIDE node.  Returns 0 if not found.
-   Unlike command_at_position, this returns the command's internal ID rather
-   than its source text — used by ML to call Document.command_exec. */
-
 object Command_ID_At_Position extends Scala.Fun("pide_state.command_id_at_position", thread = true)
   with Scala.Single_Fun
 {
@@ -789,30 +556,16 @@ object Command_ID_At_Position extends Scala.Fun("pide_state.command_id_at_positi
       XML.Decode.pair(XML.Decode.string, XML.Decode.int)(
         YXML.parse_body(YXML.Source(args.head.text)))
 
-    val state = session.get_state()
-    val version = state.recent_finished.version.get_finished
+    val nodes = session.get_state().recent_finished.version.get_finished.nodes
+    // the node's own name with the id: Document.command_exec knows a node by that name only
+    val result: Option[(String, Long)] =
+      for {
+        name <- PIDE_Query.live_node(session.resources, nodes, file_path)
+        (command, _) <- PIDE_Query.command_at_symbol_offset(nodes(name), offset)
+      } yield (name.node, command.id)
 
-    // Live PIDE: iterate node.commands to find command containing offset
-    val live_result: Long =
-      version.nodes.iterator.map(_._1).find(_.node == file_path) match {
-        case Some(node_name) =>
-          val node = version.nodes(node_name)
-          var pos = 1
-          var result: Long = 0L
-          val it = node.commands.iterator
-          while (it.hasNext && result == 0L) {
-            val command = it.next()
-            val len = command.span.symbol_length
-            if (offset >= pos && offset < pos + len)
-              result = command.id
-            pos += len
-          }
-          result
-        case None => 0L
-      }
-
-    val body = XML.Encode.long(live_result)
-    List(Bytes(YXML.string_of_body(body)))
+    List(Bytes(YXML.string_of_body(
+      XML.Encode.option(XML.Encode.pair(XML.Encode.string, XML.Encode.long))(result))))
   }
 }
 
@@ -820,4 +573,4 @@ object Command_ID_At_Position extends Scala.Fun("pide_state.command_id_at_positi
 class PIDE_State_Functions extends Scala.Functions(
   Save_Thy_Files, Resolve_Positions, Goto_Definition, Hover_Message,
   Entity_At_Position, Command_At_Position, Get_Session_Databases,
-  Probe_Command_Header, Command_ID_At_Position)
+  Command_ID_At_Position)

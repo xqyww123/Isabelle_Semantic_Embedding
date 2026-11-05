@@ -42,7 +42,7 @@ local
 in
   val _ = List.app (fn loc => linked thy loc ["S0"]) ["T1", "Tp", "B", "B2", "Tb", "Ta", "Tc"]
   val (ctxt, _, r) = report thy "T1"
-  val _ = check_element ctxt "T1" (#elements r) "local.q.comm_twice" 0
+  val _ = check_element ctxt "T1" (#elements r) \<^unchecked_name>\<open>local.q.comm_twice\<close> 0
     "local.q.comm_twice#0: Level 2 S0::comm_twice#2 @[q] [\<lambda>x y. g y x]"
 end
 \<close>

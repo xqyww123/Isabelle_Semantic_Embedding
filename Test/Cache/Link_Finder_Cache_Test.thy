@@ -9,10 +9,10 @@
   process-wide, so the commands must run one at a time with no other theory
   calling the finder: the REPL runs them so, the checks in proofs are ML_prf
   (PIDE forks a diagnostic ML_val, not ML_prf), and Test/ROOT gives this theory
-  a last clause of its own with parallel_proofs = 0.
+  a session of its own with parallel_proofs = 0.
 *)
 theory Link_Finder_Cache_Test
-  imports Link_Finder_Test_Base
+  imports Semantic_Embedding_Test.Link_Finder_Test_Base
 begin
 
 ML \<open>
@@ -54,7 +54,7 @@ fun keys_of (k, l: Link_Finder.link) = [k, #template l];
 fun new_keys earlier ls = subtract (op =) (maps keys_of earlier) (distinct (op =) (maps keys_of ls));
 
 (*the links a call recorded under a label*)
-val seen = Synchronized.var "Cache_Test.seen"
+val seen = Synchronized.var \<^unchecked_name>\<open>Cache_Test.seen\<close>
   (Symtab.empty: (Universal_Key.universal_key * Link_Finder.link) list Symtab.table);
 fun see label ls = Synchronized.change seen (Symtab.update (label, ls));
 fun saw label =
@@ -186,8 +186,8 @@ local open Cache_Test
   val (ls, _) = links ctxt
 in
   val _ = check_alpha_variants "alpha variants met in two calls of one block" ctxt ls
-    [("av1", "Link_Finder_Cache_Test.AV.av1", "\<forall>x. P x"),
-     ("av2", "Link_Finder_Cache_Test.AV.av2", "\<forall>y. P y")]
+    [("av1", \<^unchecked_name>\<open>Link_Finder_Cache_Test.AV.av1\<close>, "\<forall>x. P x"),
+     ("av2", \<^unchecked_name>\<open>Link_Finder_Cache_Test.AV.av2\<close>, "\<forall>y. P y")]
 end
 \<close>
 
@@ -199,8 +199,8 @@ local open Cache_Test
   val (ls, _) = links ctxt
 in
   val _ = check_alpha_variants "alpha variants met first in one call" ctxt ls
-    [("av1", "Link_Finder_Cache_Test.AV.av1", "\<forall>x. P x"),
-     ("av2", "Link_Finder_Cache_Test.AV.av2", "\<forall>y. P y")]
+    [("av1", \<^unchecked_name>\<open>Link_Finder_Cache_Test.AV.av1\<close>, "\<forall>x. P x"),
+     ("av2", \<^unchecked_name>\<open>Link_Finder_Cache_Test.AV.av2\<close>, "\<forall>y. P y")]
 end
 \<close>
 
@@ -219,7 +219,8 @@ local open Cache_Test
   fun noted b s =
     let
       val th = Goal.prove lthy [] [] (Syntax.read_prop lthy s)
-        (fn {context, ...} => simp_tac (context addsimps [Proof_Context.get_thm context "allQ"]) 1)
+        (fn {context, ...} =>
+          simp_tac (Simplifier.add_simp (Proof_Context.get_thm context "allQ") context) 1)
     in #2 (Local_Theory.note ((Binding.name b, []), [th]) lthy) end
   val cx = noted "awx" "\<forall>x. Q x" and cy = noted "awy" "\<forall>y. Q y"
   val (lx, _) = links cx
@@ -280,7 +281,7 @@ local open Cache_Test
   val (ls, _) = links ctxt
   val (k, l) = the_link ls "triv"
   val fact = Proof_Context.get_thm ctxt "triv"
-  val template = Global_Theory.get_thm thy "Link_Finder_Cache_Test.L0.triv"
+  val template = Global_Theory.get_thm thy \<^unchecked_name>\<open>Link_Finder_Cache_Test.L0.triv\<close>
 in
   val _ = check_all "a fact and its template with one proposition"
    [("have one proposition", fn () => Thm.prop_of fact = Thm.prop_of template),
@@ -354,7 +355,7 @@ local open Cache_Test
 in
   val _ = see "cb3" ls
   val _ = check_all "an in-block sublocale between two calls"
-   [("gets its links", fn () => #source (#2 (the_link ls "cm")) = "Link_Finder_Cache_Test.CM"),
+   [("gets its links", fn () => #source (#2 (the_link ls "cm")) = \<^locale>\<open>Link_Finder_Cache_Test.CM\<close>),
     ("and only their new texts are printed and their new keys keyed", fn () =>
       p = length (new_texts earlier ls) andalso k = length (new_keys earlier ls))]
 end
@@ -388,7 +389,7 @@ proof -
     in
       val _ = check_all "a shadowing have"
        [("is Level 0", fn () =>
-          #outcome (the_element (#elements r) "local.fx" 0) = Link_Finder.Rebound),
+          #outcome (the_element (#elements r) \<^unchecked_name>\<open>local.fx\<close> 0) = Link_Finder.Rebound),
         ("gets no link and is never printed", fn () =>
           c = (0, 0, 0) andalso not (member (op =) (map (#statement o #2) ls) "f 0 + 0 = 0")),
         ("and the shadowed fact's link is gone", fn () =>
@@ -428,7 +429,9 @@ proof -
       val _ = see "i1" ls
       val _ = check_all "a proof interpretation"
        [("links its facts", fn () =>
-          subset (op =) (["local.i.ia", "local.i.ib"], linked_names ctxt)),
+          subset (op =)
+            ([\<^unchecked_name>\<open>local.i.ia\<close>,
+              \<^unchecked_name>\<open>local.i.ib\<close>], linked_names ctxt)),
         ("and prints only its new texts and keys only its new keys", fn () =>
           p = length (new_texts earlier ls) andalso k = length (new_keys earlier ls))]
     end
@@ -448,7 +451,9 @@ proof -
       val _ = see "i2" ls
       val _ = check_all "the same interpretation in a second proof"
        [("links its facts", fn () =>
-          subset (op =) (["local.i.ia", "local.i.ib"], linked_names ctxt)),
+          subset (op =)
+            ([\<^unchecked_name>\<open>local.i.ia\<close>,
+              \<^unchecked_name>\<open>local.i.ib\<close>], linked_names ctxt)),
         ("prints and keys nothing and gives the first proof's links", fn () =>
           c = (0, 0, 0) andalso ls = earlier)]
     end
@@ -468,8 +473,10 @@ proof -
       val _ = see "j" ls
       val _ = check_all "the interpretation under another prefix"
        [("links each fact under its own name", fn () =>
-          subset (op =) (["local.j.ia", "local.j.ib"], linked_names ctxt) andalso
-          not (member (op =) (linked_names ctxt) "local.i.ia")),
+          subset (op =)
+            ([\<^unchecked_name>\<open>local.j.ia\<close>,
+              \<^unchecked_name>\<open>local.j.ib\<close>], linked_names ctxt) andalso
+          not (member (op =) (linked_names ctxt) \<^unchecked_name>\<open>local.i.ia\<close>)),
         ("prints and keys nothing and gives the same links", fn () =>
           c = (0, 0, 0) andalso ls = earlier)]
     end
@@ -489,7 +496,9 @@ proof -
     in
       val _ = check_all "the interpretation with other rewrites"
        [("links the rewritten fact with its own statement", fn () =>
-          subset (op =) (["local.i.ia", "local.i.ib"], linked_names ctxt) andalso
+          subset (op =)
+            ([\<^unchecked_name>\<open>local.i.ia\<close>,
+              \<^unchecked_name>\<open>local.i.ib\<close>], linked_names ctxt) andalso
           #statement (#2 (the_link ls "ia")) = "1 = 1" andalso
           not (member (op =) statements "Suc 0 = Suc 0")),
         ("and prints only the new texts and keys only the new keys", fn () =>
@@ -513,7 +522,9 @@ proof -
       val _ = check_all "two interpretations in one proof"
        [("keep the first one's links", fn () => subset (op =) (first, ls)),
         ("and add the second one's", fn () =>
-          subset (op =) (["local.i.ia", "local.j.ia"], linked_names ctxt) andalso
+          subset (op =)
+            ([\<^unchecked_name>\<open>local.i.ia\<close>,
+              \<^unchecked_name>\<open>local.j.ia\<close>], linked_names ctxt) andalso
           exists (fn (_, l) => exists (fn p => #text p = "\<lambda>n. n + 2") (#params l)) ls)]
     end
   \<close>
@@ -609,15 +620,15 @@ ML \<open>
 structure Cache_Test_Printing =
 struct
   datatype mode = Off | Wait | Break;
-  val mode = Synchronized.var "Cache_Test_Printing.mode" Off;
+  val mode = Synchronized.var \<^unchecked_name>\<open>Cache_Test_Printing.mode\<close> Off;
   (*whether the waiting print has started, and whether it has stopped*)
-  val waiting = Synchronized.var "Cache_Test_Printing.waiting" (false, false);
+  val waiting = Synchronized.var \<^unchecked_name>\<open>Cache_Test_Printing.waiting\<close> (false, false);
   fun translation _ _ =
     (case Synchronized.change_result mode (fn m => (m, Off)) of
       Wait =>
         let
           val _ = Synchronized.change waiting (K (true, false));
-          val r = Exn.capture OS.Process.sleep (seconds 60.0);
+          val r = Exn.capture Time.sleep (seconds 60.0);
           val _ = Synchronized.change waiting (K (true, true));
         in Exn.release r; raise Match end
     | Break => raise Exn.Interrupt_Breakdown
@@ -654,7 +665,7 @@ local open Cache_Test Cache_Test_Printing
   val first = Future.join_result call
   (*the interrupted print has stopped, and its entry has been reset (lazy.ML:113-114)*)
   val stopped = await #2
-  val _ = OS.Process.sleep (seconds 1.0)
+  val _ = Time.sleep (seconds 1.0)
   val again = Exn.capture (fn () => #1 (links ctxt)) ()
   val (fresh_ls, _) = links (fresh thy "CU")
 in

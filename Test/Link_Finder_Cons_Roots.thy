@@ -45,11 +45,11 @@ sublocale s: KM k rewrites "KM.kh k = k" by (rule ext) (simp add: KM.kh_def)
 
 ML \<open>
 local open Link_Finder_Roots_Test
-  val (line, recognised, _, r) = run \<^context> "root key" "local.s.kfoo"
+  val (line, recognised, _, r) = run \<^context> "root key" \<^unchecked_name>\<open>local.s.kfoo\<close>
 in
   val _ = check ("root key: " ^ line) (line = "local.s.kfoo#0: Level 2 KM::kfoo#3 @[s] [k]")
   val _ = check "root key: the edge and the root give two nodes below the bottom" (#nodes r = 3)
-  val _ = check "root key: the sublocale wrote s.kfoo" (member (op =) recognised "local.s.kfoo")
+  val _ = check "root key: the sublocale wrote s.kfoo" (member (op =) recognised \<^unchecked_name>\<open>local.s.kfoo\<close>)
 end
 \<close>
 
@@ -59,7 +59,7 @@ ML \<open>
 local open Link_Finder_Roots_Test
   val (ctxt, _, r) = report \<^theory> "KL"
 in
-  val _ = check_element ctxt "Locale.init KL" (#elements r) "local.s.kfoo" 0
+  val _ = check_element ctxt "Locale.init KL" (#elements r) \<^unchecked_name>\<open>local.s.kfoo\<close> 0
     "local.s.kfoo#0: Level 3 approximate KM::kfoo#3 @[s] [k]"
 end
 \<close>
@@ -84,12 +84,12 @@ proof -
   interpret RA "\<lambda>x y. s y x" by unfold_locales (rule refl)
   ML_val \<open>
     local open Link_Finder_Roots_Test
-      val (line, recognised, _, _) = run \<^context> "interpret over an edge-reached name" "local.refl"
+      val (line, recognised, _, _) = run \<^context> "interpret over an edge-reached name" \<^unchecked_name>\<open>local.refl\<close>
     in
       val _ = check ("interpret over an edge-reached name: " ^ line)
         (line = "local.refl#0: Level 2 RA::refl#1 @[] [\<lambda>x y. s y x]")
       val _ = check "interpret over an edge-reached name: refl is recognised"
-        (member (op =) recognised "local.refl")
+        (member (op =) recognised \<^unchecked_name>\<open>local.refl\<close>)
     end
   \<close>
   show ?thesis ..
@@ -108,7 +108,7 @@ proof -
   interpret RD "\<lambda>x. Suc (Suc x)" by unfold_locales (rule refl)
   ML_val \<open>
     local open Link_Finder_Roots_Test
-      val (line, _, _, r) = run \<^context> "two interprets" "local.fd"
+      val (line, _, _, r) = run \<^context> "two interprets" \<^unchecked_name>\<open>local.fd\<close>
     in
       val _ = check ("two interprets: " ^ line)
         (line = "local.fd#0: Level 2 RD::fd#1 @[] [\<lambda>x. Suc (Suc x)]")
@@ -133,11 +133,11 @@ proof -
   have antisym: "x \<le> x" by simp
   ML_val \<open>
     local open Link_Finder_Roots_Test
-      val (line, recognised, level5, _) = run \<^context> "Level 0, have" "local.antisym"
+      val (line, recognised, level5, _) = run \<^context> "Level 0, have" \<^unchecked_name>\<open>local.antisym\<close>
     in
       val _ = check ("Level 0, have: " ^ line) (line = "local.antisym#0: Level 0")
       val _ = check "Level 0, have: antisym is neither recognised nor looked up by Level 5"
-        (not (member (op =) recognised "local.antisym") andalso not (member (op =) level5 "antisym"))
+        (not (member (op =) recognised \<^unchecked_name>\<open>local.antisym\<close>) andalso not (member (op =) level5 "antisym"))
       val _ = check "Level 0, have: no fact is recognised" (null recognised)
     end
   \<close>
@@ -152,7 +152,7 @@ lemma
 proof -
   ML_val \<open>
     local open Link_Finder_Roots_Test
-      val (line, _, level5, _) = run \<^context> "Level 0, assumes" "local.antisym"
+      val (line, _, level5, _) = run \<^context> "Level 0, assumes" \<^unchecked_name>\<open>local.antisym\<close>
     in
       val _ = check ("Level 0, assumes: " ^ line) (line = "local.antisym#0: Level 0")
       val _ = check "Level 0, assumes: Level 5 does not look antisym up"
@@ -211,18 +211,18 @@ proof -
       fun level2 name prefix = String.isPrefix (name ^ "#0: Level 2 " ^ prefix) (line name)
       val R = Link_Finder.Renamed
       val s_key =
-        Universal_Key.key_of_theorem' NONE (Context.Proof ctxt) (Proof_Context.get_thm ctxt "s.e.ax")
+        Universal_Key.key_of_theorem' NONE (Context.Proof ctxt) (Proof_Context.get_thm ctxt \<^unchecked_name>\<open>s.e.ax\<close>)
     in
       val _ = check_all "B19"
-       [("p: Level 2", fn () => level2 "local.p.e.ax" "B19A::ax#1 @[p.e]"),
-        ("p: two schematic variables", fn () => vars "local.p.e.ax" = 2),
-        ("q: Level 2", fn () => level2 "local.q.e.ax" "B19A'::ax#1 @[q.e]"),
-        ("q: two schematic variables", fn () => vars "local.q.e.ax" = 2),
-        ("q: no free variable", fn () => null (fold Term.add_frees (instance "local.q.e.ax") [])),
-        ("r: Level 2", fn () => level2 "local.r.e.ax" "B19C::ax#1 @[r.e]"),
-        ("r: two schematic variables", fn () => vars "local.r.e.ax" = 2),
-        ("s: Level 2", fn () => level2 "local.s.e.ax" "B19C::ax#1 @[s.e]"),
-        ("s: two schematic variables", fn () => vars "local.s.e.ax" = 2),
+       [("p: Level 2", fn () => level2 \<^unchecked_name>\<open>local.p.e.ax\<close> "B19A::ax#1 @[p.e]"),
+        ("p: two schematic variables", fn () => vars \<^unchecked_name>\<open>local.p.e.ax\<close> = 2),
+        ("q: Level 2", fn () => level2 \<^unchecked_name>\<open>local.q.e.ax\<close> "B19A'::ax#1 @[q.e]"),
+        ("q: two schematic variables", fn () => vars \<^unchecked_name>\<open>local.q.e.ax\<close> = 2),
+        ("q: no free variable", fn () => null (fold Term.add_frees (instance \<^unchecked_name>\<open>local.q.e.ax\<close>) [])),
+        ("r: Level 2", fn () => level2 \<^unchecked_name>\<open>local.r.e.ax\<close> "B19C::ax#1 @[r.e]"),
+        ("r: two schematic variables", fn () => vars \<^unchecked_name>\<open>local.r.e.ax\<close> = 2),
+        ("s: Level 2", fn () => level2 \<^unchecked_name>\<open>local.s.e.ax\<close> "B19C::ax#1 @[s.e]"),
+        ("s: two schematic variables", fn () => vars \<^unchecked_name>\<open>local.s.e.ax\<close> = 2),
         ("s: a renaming, both parameters renamed", fn () =>
           (case AList.lookup (op =) (Link_Finder.links_of F) s_key of
             SOME l => kind l = Link_Finder.Renaming andalso map #verdict (#params l) = [R, R]

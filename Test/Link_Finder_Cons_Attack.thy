@@ -77,15 +77,15 @@ in
   val _ = ["EB", "EB2"] |> List.app (fn loc =>
     let val (_, _, r) = report thy loc
     in check (loc ^ ": eafoo at Level 2")
-      (#outcome (the_element (#elements r) "local.eafoo" 0) = Link_Finder.Linked Link_Finder.Level2) end)
+      (#outcome (the_element (#elements r) \<^unchecked_name>\<open>local.eafoo\<close> 0) = Link_Finder.Linked Link_Finder.Level2) end)
   val _ = List.app (fn loc => linked thy loc ["HS"]) ["H", "HC", "HC2", "H0", "HC0"]
   val _ = report thy "D2"
   val _ = List.app (fn loc => linked thy loc ["ordering"]) ["D3", "D4", "D5"]
   val (ctxt, _, r) = report thy "PM"
-  val _ = check_element ctxt "PM" (#elements r) "local.sw.pmfoo" 0
+  val _ = check_element ctxt "PM" (#elements r) \<^unchecked_name>\<open>local.sw.pmfoo\<close> 0
     "local.sw.pmfoo#0: Level 2 PM::pmfoo#0 @[sw] [b, a]"
   val (ctxt, _, r) = report thy "PU"
-  val _ = check_element ctxt "PU" (#elements r) "local.pufoo" 0
+  val _ = check_element ctxt "PU" (#elements r) \<^unchecked_name>\<open>local.pufoo\<close> 0
     "local.pufoo#0: Level 2 PU::pufoo#0 @[] [a, b]"
 end
 \<close>

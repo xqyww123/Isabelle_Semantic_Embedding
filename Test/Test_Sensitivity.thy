@@ -2,7 +2,7 @@ theory Test_Sensitivity
   imports HOL.Record Isabelle_RPC.Remote_Procedure_Calling
 begin
 
-ML_file \<open>/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Tools/semantic_digest.ML\<close>
+ML_file \<open>../Tools/semantic_digest.ML\<close>
 
 text \<open>SENSITIVITY suite.  Determinism and resolution-coverage tests both pass
   trivially on a digest that ignores content; only these assertions catch a
@@ -35,9 +35,11 @@ subsection \<open>S1 constant: an abbreviation's right-hand side\<close>
 
 ML \<open>
 check "S1a  Set.range depends on Set.image (its rhs)"
-  (mentions (Universal_Key.Constant "Set.range") "Set.image");
+  (mentions (Universal_Key.Constant \<^const_abbrev>\<open>Set.range\<close>)
+    \<^const_name>\<open>Set.image\<close>);
 check "S1b  HOL.not_equal depends on HOL.eq (its rhs)"
-  (mentions (Universal_Key.Constant "HOL.not_equal") "HOL.eq");
+  (mentions (Universal_Key.Constant \<^const_abbrev>\<open>HOL.not_equal\<close>)
+    \<^const_name>\<open>HOL.eq\<close>);
 \<close>
 
 subsection \<open>S2 constant: axioms of an axiomatized constant\<close>
@@ -45,19 +47,21 @@ subsection \<open>S2 constant: axioms of an axiomatized constant\<close>
 ML \<open>
 (* mem_Collect_eq relates member and Collect, so each must reach the other. *)
 check "S2a  Set.member depends on Set.Collect (via mem_Collect_eq)"
-  (mentions (Universal_Key.Constant "Set.member") "Set.Collect");
+  (mentions (Universal_Key.Constant \<^const_name>\<open>Set.member\<close>)
+    \<^const_name>\<open>Set.Collect\<close>);
 check "S2b  Set.Collect depends on Set.member (via Collect_mem_eq)"
-  (mentions (Universal_Key.Constant "Set.Collect") "Set.member");
+  (mentions (Universal_Key.Constant \<^const_name>\<open>Set.Collect\<close>)
+    \<^const_name>\<open>Set.member\<close>);
 (* HOL.The is DECLARED at HOL.thy:92-94 and axiomatised separately at :229, so
    its spec item carries no terms and never enters the Item_Net index --
    retrieve_global cannot see it; only a get_global scan can. *)
 check "S2c  HOL.The reaches its separately-stated axiom"
-  (length (Semantic_Digest.own_defining_axioms env "HOL.The") > 0);
+  (length (Semantic_Digest.own_defining_axioms env \<^const_name>\<open>HOL.The\<close>) > 0);
 (* ...and the axiom source must NOT drag in downstream instances. *)
 check "S2d  plus picks up no downstream instance rule"
-  (null (Semantic_Digest.own_defining_axioms env "Groups.plus_class.plus"));
+  (null (Semantic_Digest.own_defining_axioms env \<^const_name>\<open>Groups.plus_class.plus\<close>));
 check "S2e  less_eq picks up no downstream instance rule"
-  (null (Semantic_Digest.own_defining_axioms env "Orderings.ord_class.less_eq"));
+  (null (Semantic_Digest.own_defining_axioms env \<^const_name>\<open>Orderings.ord_class.less_eq\<close>));
 \<close>
 
 subsection \<open>S3 locale: assumes, defines, parents, parameters\<close>
@@ -76,21 +80,21 @@ let
       SOME (_, ds) => ds | NONE => []
 in
   check "S3a  Groups.semigroup depends on something from its assumes"
-    (length (deps_of (Universal_Key.Locale "Groups.semigroup")) > 1);
+    (length (deps_of (Universal_Key.Locale \<^locale>\<open>Groups.semigroup\<close>)) > 1);
   (* parent edge: abel_semigroup has a predicate parent AND its own assumes --
      the exact shape that lost its parent edge when hyp_spec_of replaced
      axioms_of *)
   check "S3b  Groups.abel_semigroup has a LocaleK edge to its parent"
     (exists (fn (k, _) => k = Universal_Key.LocaleK)
-       (deps_of (Universal_Key.Locale "Groups.abel_semigroup")));
+       (deps_of (Universal_Key.Locale \<^locale>\<open>Groups.abel_semigroup\<close>)));
   check "S3c  sens_child has a LocaleK edge to sens_parent"
     (exists (fn (k, m) => k = Universal_Key.LocaleK andalso
-                          m = "Test_Sensitivity.sens_parent")
-       (deps2 "Test_Sensitivity.sens_child"));
+                          m = \<^locale>\<open>Test_Sensitivity.sens_parent\<close>)
+       (deps2 \<^locale>\<open>Test_Sensitivity.sens_child\<close>));
   (* defines: Element.Defines is part of hyp_spec and must not be dropped *)
   check "S3d  sens_def reaches its defines body (depends on Groups.plus)"
-    (exists (fn (_, m) => m = "Groups.plus_class.plus")
-       (deps2 "Test_Sensitivity.sens_def"))
+    (exists (fn (_, m) => m = \<^const_name>\<open>Groups.plus_class.plus\<close>)
+       (deps2 \<^locale>\<open>Test_Sensitivity.sens_def\<close>))
 end
 \<close>
 
@@ -98,28 +102,32 @@ subsection \<open>S4 type: typedef representing set, also when ctr_sugar answers
 
 ML \<open>
 check "S4a  Int.int depends on Int.intrel (from its defining set)"
-  (mentions (Universal_Key.Type "Int.int") "Int.intrel");
+  (mentions (Universal_Key.Type \<^type_name>\<open>Int.int\<close>)
+    \<^const_name>\<open>Int.intrel\<close>);
 (* Nat.nat answers on BOTH channels (ctrs [0,Suc] AND a typedef over ind);
    short-circuiting on ctr_sugar used to discard the representing set. *)
 check "S4b  Nat.nat reaches its typedef predicate despite having ctr_sugar"
-  (mentions (Universal_Key.Type "Nat.nat") "Nat.Nat");
+  (mentions (Universal_Key.Type \<^type_name>\<open>Nat.nat\<close>)
+    \<^const_name>\<open>Nat.Nat\<close>);
 \<close>
 
 subsection \<open>S5 class: parameters\<close>
 
 ML \<open>
 check "S5a  Orderings.ord depends on its parameter less_eq"
-  (mentions (Universal_Key.Class "Orderings.ord") "Orderings.ord_class.less_eq");
+  (mentions (Universal_Key.Class \<^class>\<open>Orderings.ord\<close>)
+    \<^const_name>\<open>Orderings.ord_class.less_eq\<close>);
 check "S5b  Orderings.ord depends on its parameter less"
-  (mentions (Universal_Key.Class "Orderings.ord") "Orderings.ord_class.less");
+  (mentions (Universal_Key.Class \<^class>\<open>Orderings.ord\<close>)
+    \<^const_name>\<open>Orderings.ord_class.less\<close>);
 \<close>
 
 subsection \<open>S6 theorem: sort constraints yield class edges\<close>
 
 ML \<open>
 check "S6  not_less has a ClassK edge for its linorder sort"
-  (mentions_kind (Universal_Key.Named_Theorem "Orderings.linorder_class.not_less")
-     (Universal_Key.ClassK, "Orderings.linorder"));
+  (mentions_kind (Universal_Key.Named_Theorem \<^unchecked_name>\<open>Orderings.linorder_class.not_less\<close>)
+     (Universal_Key.ClassK, \<^class>\<open>Orderings.linorder\<close>));
 (* The same statement handed over as a THEOREM VALUE (the pipeline's own form:
    entries carry thms, not names) must yield the same edges.  Set comparison:
    the name-valued path merges per-thm lists through `unions`, which changes
@@ -127,7 +135,7 @@ check "S6  not_less has a ClassK edge for its linorder sort"
 check "S6b  the thm-valued form agrees with the name-valued form"
   (eq_set (op =)
      (deps_of (Universal_Key.Theorem @{thm Orderings.linorder_class.not_less}),
-      deps_of (Universal_Key.Named_Theorem "Orderings.linorder_class.not_less")));
+      deps_of (Universal_Key.Named_Theorem \<^unchecked_name>\<open>Orderings.linorder_class.not_less\<close>)));
 \<close>
 
 subsection \<open>S7 class: the digest must not depend on the enclosing env\<close>
@@ -137,14 +145,14 @@ ML \<open>
    `subclass (in idom) ...`, so its transitive super set differs between envs
    (43 under HOL.Rings, 48 under Main).  Orderings.order cannot discriminate. *)
 let
-  val env_rings = Semantic_Digest.make_env (Thy_Info.get_theory "HOL.Rings")
+  val env_rings = Semantic_Digest.make_env (Context.get_theory {long = true} \<^theory> \<^unchecked_name>\<open>HOL.Rings\<close>)
   fun d e n = Option.map fst (Semantic_Digest.semantics_of e (Universal_Key.Class n))
   fun supers e n = length (Sign.super_classes (Semantic_Digest.theory_of_env e) n)
   fun cmp n =
     (writeln ("      (supers: Rings=" ^ string_of_int (supers env_rings n) ^
               ", Main=" ^ string_of_int (supers env n) ^ ")");
      check ("S7  " ^ n ^ " digest is env-independent") (d env_rings n = d env n))
-in map cmp ["Rings.idom", "Rings.comm_ring_1"] end
+in map cmp [\<^class>\<open>Rings.idom\<close>, \<^class>\<open>Rings.comm_ring_1\<close>] end
 \<close>
 
 subsection \<open>S9 datatype: constructor declaration order is semantic\<close>
@@ -162,11 +170,11 @@ let
       SOME {ctrs, ...} => map (fn Const (c, _) => Long_Name.base_name c | _ => "?") ctrs
     | NONE => []
 in
-  writeln ("      sens_ctrA ctrs: " ^ commas (ctr_names "Test_Sensitivity.sens_ctrA"));
-  writeln ("      sens_ctrB ctrs: " ^ commas (ctr_names "Test_Sensitivity.sens_ctrB"));
+  writeln ("      sens_ctrA ctrs: " ^ commas (ctr_names \<^type_name>\<open>Test_Sensitivity.sens_ctrA\<close>));
+  writeln ("      sens_ctrB ctrs: " ^ commas (ctr_names \<^type_name>\<open>Test_Sensitivity.sens_ctrB\<close>));
   check "S9  constructor order is preserved (not sorted away)"
-    (ctr_names "Test_Sensitivity.sens_ctrA" = ["SA", "SB"] andalso
-     ctr_names "Test_Sensitivity.sens_ctrB" = ["TB", "TA"])
+    (ctr_names \<^type_name>\<open>Test_Sensitivity.sens_ctrA\<close> = ["SA", "SB"] andalso
+     ctr_names \<^type_name>\<open>Test_Sensitivity.sens_ctrB\<close> = ["TB", "TA"])
 end
 \<close>
 
@@ -179,13 +187,13 @@ let
   fun d e = Option.map snd (Semantic_Digest.semantics_of env e)
 in
   check "S10  Named_Introduction_Rule resolves for HOL.conjI"
-    (is_some (d (Universal_Key.Named_Introduction_Rule "HOL.conjI")));
+    (is_some (d (Universal_Key.Named_Introduction_Rule \<^unchecked_name>\<open>HOL.conjI\<close>)));
   check "S10b Named_Introduction_Rule deps agree with Named_Theorem"
-    (d (Universal_Key.Named_Introduction_Rule "HOL.conjI") =
-     d (Universal_Key.Named_Theorem "HOL.conjI"));
+    (d (Universal_Key.Named_Introduction_Rule \<^unchecked_name>\<open>HOL.conjI\<close>) =
+     d (Universal_Key.Named_Theorem \<^unchecked_name>\<open>HOL.conjI\<close>));
   check "S10c theorem-alike entities carry no digest"
     (Option.map fst (Semantic_Digest.semantics_of env
-       (Universal_Key.Named_Theorem "HOL.conjI")) = SOME NONE)
+       (Universal_Key.Named_Theorem \<^unchecked_name>\<open>HOL.conjI\<close>)) = SOME NONE)
 end
 \<close>
 
@@ -205,15 +213,15 @@ fun def_parse_supers thy c =
         |> Logic.dest_equals |> snd
         |> Logic.dest_conjunctions
         |> map_filter (fn t => try (snd o Logic.dest_of_class) t)
-        |> filter_out (fn s => s = "HOL.type")
+        |> filter_out (fn s => s = \<^class>\<open>HOL.type\<close>)
         |> sort_strings);
 \<close>
 
 ML \<open>
 let
   val thy = \<^theory>
-  val env_rings = Semantic_Digest.make_env (Thy_Info.get_theory "HOL.Rings")
-  val idom_direct = these (def_parse_supers thy "Rings.idom")
+  val env_rings = Semantic_Digest.make_env (Context.get_theory {long = true} \<^theory> \<^unchecked_name>\<open>HOL.Rings\<close>)
+  val idom_direct = these (def_parse_supers thy \<^class>\<open>Rings.idom\<close>)
   fun full_deps e n =
     case Semantic_Digest.semantics_of e (Universal_Key.Class n) of
       SOME (_, ds) => ds | NONE => []
@@ -222,12 +230,14 @@ in
   check "S11a Rings.idom declares exactly 2 direct supers (A5 census)"
     (length idom_direct = 2);
   check "S11b idom's production super component == def-parse (direct, not transitive)"
-    (eq_set (op =) (Semantic_Digest.class_parents env "Rings.idom", idom_direct));
+    (eq_set (op =) (Semantic_Digest.class_parents env \<^class>\<open>Rings.idom\<close>, idom_direct));
   (* Discriminating TODAY: idom's transitive super set is 43 under HOL.Rings
      and 48 under Main-scale envs (post-hoc `subclass` widenings), so an
      extraction that leaks transitivity cannot pass this. *)
   check "S11c idom's full dep set is env-independent (Rings env vs this env)"
-    (eq_set (op =) (full_deps env_rings "Rings.idom", full_deps env "Rings.idom"))
+    (eq_set (op =)
+      (full_deps env_rings \<^class>\<open>Rings.idom\<close>,
+       full_deps env \<^class>\<open>Rings.idom\<close>))
 end
 \<close>
 
@@ -344,56 +354,60 @@ let
   fun labels c = distinct (op =) (map fst (own c))
   fun show c = writeln ("      " ^ c ^ ": " ^ commas (labels c))
 in
-  app show ["sens_fun", "sens_pfun", "sens_cfun", "sens_loc.sens_lfun", "sens_prim",
+  app show ["sens_fun", "sens_pfun", "sens_cfun", \<^unchecked_name>\<open>sens_loc.sens_lfun\<close>, "sens_prim",
             "sens_defn", "sens_part", "sens_col", "sens_iset", "sens_abb", "sens_sz"];
   check "S13a sens_fun takes exactly sens_fun.simps (one equation)"
-    (labels "sens_fun" = ["Test_Sensitivity.sens_fun.simps"] andalso
+    (labels "sens_fun" = [\<^unchecked_name>\<open>Test_Sensitivity.sens_fun.simps\<close>] andalso
      length (own "sens_fun") = 1);
   check "S13b sens_fun's props mention Orderings.ord_class.less (from its equation)"
-    (props_mention (own "sens_fun") "Orderings.ord_class.less");
+    (props_mention (own "sens_fun") \<^const_name>\<open>Orderings.ord_class.less\<close>);
   (* .simps before .psimps: no accp premise once termination is proved *)
   check "S13c sens_fun's props do not carry the accp premise"
-    (not (props_mention (own "sens_fun") "Wellfounded.accp"));
+    (not (props_mention (own "sens_fun") \<^const_name>\<open>Wellfounded.accp\<close>));
   check "S13d sens_pfun (no termination) takes exactly sens_pfun.psimps"
-    (labels "sens_pfun" = ["Test_Sensitivity.sens_pfun.psimps"]);
+    (labels "sens_pfun" = [\<^unchecked_name>\<open>Test_Sensitivity.sens_pfun.psimps\<close>]);
   check "S13e sens_pfun's psimps carry the equation and the accp premise"
-    (props_mention (own "sens_pfun") "Orderings.ord_class.less" andalso
-     props_mention (own "sens_pfun") "Wellfounded.accp");
+    (props_mention (own "sens_pfun") \<^const_name>\<open>Orderings.ord_class.less\<close> andalso
+     props_mention (own "sens_pfun") \<^const_name>\<open>Wellfounded.accp\<close>);
   (* nat => nat => nat cannot supply `plus`; both equations must survive the guard *)
   check "S13f fun under context-fixes takes its two simps (mentions plus)"
-    (labels "sens_cfun" = ["Test_Sensitivity.sens_cfun.simps"] andalso
+    (labels "sens_cfun" = [\<^unchecked_name>\<open>Test_Sensitivity.sens_cfun.simps\<close>] andalso
      length (own "sens_cfun") = 2 andalso
-     props_mention (own "sens_cfun") "Groups.plus_class.plus");
+     props_mention (own "sens_cfun") \<^const_name>\<open>Groups.plus_class.plus\<close>);
   check "S13g locale-target function takes its exported psimps (mentions less)"
-    (labels "sens_loc.sens_lfun" = ["Test_Sensitivity.sens_loc.sens_lfun.psimps"] andalso
-     props_mention (own "sens_loc.sens_lfun") "Orderings.ord_class.less");
+    (labels \<^unchecked_name>\<open>sens_loc.sens_lfun\<close> =
+       [\<^unchecked_name>\<open>Test_Sensitivity.sens_loc.sens_lfun.psimps\<close>] andalso
+     props_mention (own \<^unchecked_name>\<open>sens_loc.sens_lfun\<close>)
+       \<^const_name>\<open>Orderings.ord_class.less\<close>);
   check "S13h primrec takes its two simps"
-    (labels "sens_prim" = ["Test_Sensitivity.sens_prim.simps"] andalso
+    (labels "sens_prim" = [\<^unchecked_name>\<open>Test_Sensitivity.sens_prim.simps\<close>] andalso
      length (own "sens_prim") = 2);
   check "S13i definition takes its _def"
-    (labels "sens_defn" = ["Test_Sensitivity.sens_defn_def"]);
+    (labels "sens_defn" = [\<^unchecked_name>\<open>Test_Sensitivity.sens_defn_def\<close>]);
   check "S13j partial_function takes its simps"
-    (labels "sens_part" = ["Test_Sensitivity.sens_part.simps"]);
+    (labels "sens_part" = [\<^unchecked_name>\<open>Test_Sensitivity.sens_part.simps\<close>]);
   (* a `definition`'s Defs axiom is `_def_raw`, so a rule that stops at the
      guarded-to-nothing `sens_col.simps` and falls to Defs shows a different
      label: this is the pin of "an empty guarded answer moves on" *)
   check "S13k a constant named like a datatype takes its _def, not the type's simps"
-    (labels "sens_col" = ["Test_Sensitivity.sens_col_def"] andalso
-     not (props_mention (own "sens_col") "Test_Sensitivity.sens_col.Sens_A"));
+    (labels "sens_col" = [\<^unchecked_name>\<open>Test_Sensitivity.sens_col_def\<close>] andalso
+     not (props_mention (own "sens_col") \<^const_name>\<open>Test_Sensitivity.sens_col.Sens_A\<close>));
   (* inductive_set's Defs axiom is itself named `_def`, so this pins the
      guard (member-headed simps rejected), not the move-on *)
   check "S13l inductive_set: guarded simps empty, its _def answers"
-    (labels "sens_iset" = ["Test_Sensitivity.sens_iset_def"]);
+    (labels "sens_iset" = [\<^unchecked_name>\<open>Test_Sensitivity.sens_iset_def\<close>]);
   check "S13m an author's X_def lemma is the abbreviation's definition"
-    (labels "sens_abb" = ["Test_Sensitivity.sens_abb_def"] andalso
-     props_mention (own "sens_abb") "Orderings.ord_class.less");
+    (labels "sens_abb" = [\<^unchecked_name>\<open>Test_Sensitivity.sens_abb_def\<close>] andalso
+     props_mention (own "sens_abb") \<^const_name>\<open>Orderings.ord_class.less\<close>);
   (* three props: the sibling's Defs axiom and the fun's two equations; the
      body-free `_sumC` axiom is gone *)
   check "S13n fun inside overloading: the _sumC axiom unfolds to the local name's simps"
-    (labels "sens_sz" = ["Test_Sensitivity.sens_sz_hp_def_raw", "Test_Sensitivity.sens_sz_hps.simps"] andalso
+    (labels "sens_sz" =
+       [\<^unchecked_name>\<open>Test_Sensitivity.sens_sz_hp_def_raw\<close>,
+        \<^unchecked_name>\<open>Test_Sensitivity.sens_sz_hps.simps\<close>] andalso
      length (own "sens_sz") = 3 andalso
-     props_mention (own "sens_sz") "Groups.plus_class.plus" andalso
-     not (props_mention (own "sens_sz") "Test_Sensitivity.sens_sz_hps_sumC"))
+     props_mention (own "sens_sz") \<^const_name>\<open>Groups.plus_class.plus\<close> andalso
+     not (props_mention (own "sens_sz") \<^const_name>\<open>Test_Sensitivity.sens_sz_hps_sumC\<close>))
 end
 \<close>
 
@@ -409,7 +423,7 @@ class sens_cls =
 ML \<open>
 let
   val env4 = Semantic_Digest.make_env \<^theory>
-  val c = "Test_Sensitivity.sens_cls_class.sens_op"
+  val c = \<^const_name>\<open>Test_Sensitivity.sens_cls_class.sens_op\<close>
   val fact_exists =
     is_some (Facts.lookup (Context.Theory \<^theory>) (Global_Theory.facts_of \<^theory>) (c ^ "_def"))
 in

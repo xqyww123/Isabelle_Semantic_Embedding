@@ -30,11 +30,11 @@ let
   val _ = L "  PASS\n"
 
   val _ = L "\n=== Test 2: context_at_position for heap Lattices.thy ===\n"
-  val thy = Thy_Info.get_theory "HOL.Lattices"
+  val thy = Context.get_theory {long = true} \<^theory> \<^unchecked_name>\<open>HOL.Lattices\<close>
   val dir = Resources.master_directory thy
   val file = Path.implode (Path.append dir (Path.basic "Lattices.thy"))
   val timer = Timer.startRealTimer ()
-  val ctx = PIDE_State.context_at_position {re_eval_cache = true} file 3000
+  val ctx = PIDE_State.context_at_position {re_eval_cache = true} (Context.Proof \<^context>) file 3000
   val elapsed = Timer.checkRealTimer timer
   val _ = case ctx of
       NONE => L "  RESULT: NONE\n"
@@ -45,29 +45,29 @@ let
           " (" ^ Time.toString elapsed ^ "s)\n")
 
   val _ = L "\n=== Test 3: re_eval_cache=false for heap ===\n"
-  val ctx3 = PIDE_State.context_at_position {re_eval_cache = false} file 3000
+  val ctx3 = PIDE_State.context_at_position {re_eval_cache = false} (Context.Proof \<^context>) file 3000
   val _ = L (case ctx3 of
       NONE => "  RESULT: NONE (expected)\n"
     | SOME _ => "  RESULT: SOME (unexpected!)\n")
 
   val _ = L "\n=== Test 4: Cached lookup (should be fast) ===\n"
   val timer2 = Timer.startRealTimer ()
-  val ctx4 = PIDE_State.context_at_position {re_eval_cache = true} file 5000
+  val ctx4 = PIDE_State.context_at_position {re_eval_cache = true} (Context.Proof \<^context>) file 5000
   val elapsed2 = Timer.checkRealTimer timer2
   val _ = L ("  " ^ Time.toString elapsed2 ^ "s -> " ^
     (case ctx4 of NONE => "NONE" | SOME _ => "SOME") ^ "\n")
 
   val _ = L "\n=== Test 5: Locale context in Groups.thy ===\n"
-  val thy5 = Thy_Info.get_theory "HOL.Groups"
+  val thy5 = Context.get_theory {long = true} \<^theory> \<^unchecked_name>\<open>HOL.Groups\<close>
   val dir5 = Resources.master_directory thy5
   val file5 = Path.implode (Path.append dir5 (Path.basic "Groups.thy"))
   fun probe off =
-    case PIDE_State.context_at_position {re_eval_cache = true} file5 off of
+    case PIDE_State.context_at_position {re_eval_cache = true} (Context.Proof \<^context>) file5 off of
       NONE => "NONE"
     | SOME (Context.Theory _) => "Theory"
     | SOME (Context.Proof ctxt) =>
         let val space = Proof_Context.const_space ctxt
-            val fq = Name_Space.intern space "local.mult"
+            val fq = Name_Space.intern space \<^unchecked_name>\<open>local.mult\<close>
         in if String.isPrefix "??" fq then "Proof(no local.mult)"
            else "Proof(mult=" ^ fq ^ ")"
         end

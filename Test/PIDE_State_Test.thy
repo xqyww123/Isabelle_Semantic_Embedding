@@ -8,8 +8,8 @@ definition AAA_test :: bool where \<open>AAA_test = True\<close>
 
 definition BBB_test :: bool where \<open>BBB_test = False\<close>
 
-ML \<open>PIDE_State.command_at_position (Position.make {line=74, offset=1694, end_offset=530, props={label="", file="~~/src/HOL/List.thy", id=""}})\<close>
-ML \<open>PIDE_State.command_at_position (Position.make {line=5, offset=113, end_offset=40, props={label="", file="/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Semantic_Embedding.thy", id=""}})\<close>
+ML \<open>PIDE_State.command_at_position (Context.Proof \<^context>) (Position.make {line=74, offset=1694, end_offset=530, props={label="", file="~~/src/HOL/List.thy", id=""}})\<close>
+ML \<open>PIDE_State.command_at_position (Context.Proof \<^context>) (Position.make {line=5, offset=113, end_offset=40, props={label="", file="/home/qiyuan/Current/MLML/contrib/Semantic_Embedding/Semantic_Embedding.thy", id=""}})\<close>
 
 ML \<open>
 let
@@ -30,8 +30,8 @@ let
   (* Get positions of known constants from the name space.
      These positions carry a command ID and command-relative offsets. *)
   val const_space = Proof_Context.consts_of \<^context> |> Consts.space_of
-  val pos_AAA = Name_Space.the_entry const_space @{const_name AAA_test} |> #pos
-  val pos_BBB = Name_Space.the_entry const_space @{const_name BBB_test} |> #pos
+  val pos_AAA = Name_Space.the_entry_pos const_space @{const_name AAA_test}
+  val pos_BBB = Name_Space.the_entry_pos const_space @{const_name BBB_test}
 
   val _ = writeln ("--- Before resolution ---")
   val _ = writeln ("AAA_test: " ^ pos_str pos_AAA)

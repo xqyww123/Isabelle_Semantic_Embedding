@@ -1,5 +1,7 @@
 # `explain_term` — Compact Term Printer Design
 
+> Investigated under Isabelle2025; paths, line numbers and counts refer to that release.
+
 **Date**: 2026-05-21
 **Status**: Prototype in `contrib/Isa-Mini/Test/Uncheck_Experiment.thy`
 **Purpose**: Part of the planned `explain_term` MCP tool for the agentic deformalizer

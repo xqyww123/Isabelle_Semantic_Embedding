@@ -13,7 +13,7 @@ This library ships as part of the Isabelle-AI package. If you already have Isabe
 conda create -n <YOUR_ENV> -c https://conda.qiyuan.me -c conda-forge isabelle-ai
 ```
 
-**Note**: this system currently supports Isabelle 2025-2 only. 
+**Note**: this system currently supports Isabelle2026 only. 
 Installing without the conda manager is possible, but is an expert-only path: detailed documentation is not ready for now; the author suggests asking Claude/Codex to work out a standalone installation.
 
 ## 2. Quick start

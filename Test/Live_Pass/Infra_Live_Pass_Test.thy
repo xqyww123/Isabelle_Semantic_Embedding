@@ -8,10 +8,10 @@
   context registered by index.  The pins read a
   process-wide closure and build counter, so the commands must run one at a time:
   the checks in proofs are ML_prf (PIDE forks a diagnostic ML_val, not ML_prf), and
-  Test/ROOT gives this theory a clause of its own with parallel_proofs = 0.
+  Test/ROOT gives this theory a session of its own with parallel_proofs = 0.
 *)
 theory Infra_Live_Pass_Test
-  imports Link_Finder_Test_Base
+  imports Semantic_Embedding_Test.Link_Finder_Test_Base
 begin
 
 definition lp_c :: "nat \<Rightarrow> bool" where "lp_c n = True"
@@ -28,7 +28,7 @@ struct
 
 open Link_Finder_Test
 
-val contexts = Synchronized.var "Live_Pass_Test.contexts" ([] : Context.generic list)
+val contexts = Synchronized.var \<^unchecked_name>\<open>Live_Pass_Test.contexts\<close> ([] : Context.generic list)
 fun register ctxt =
   Synchronized.change_result contexts (fn cs => (length cs, cs @ [Context.Proof ctxt]))
 fun context_at i = nth (Synchronized.value contexts) i
@@ -36,7 +36,7 @@ val unpack : Context_Callbacks.context_unpacker = fn src =>
   let val (i, src') = MessagePackBinIO.Unpack.unpackInt src in (context_at i, src') end
 
 (*the closure under test and the index of its build-time context*)
-val closure = Synchronized.var "Live_Pass_Test.closure" ([] : Remote_Procedure_Calling.callback' list, ~1)
+val closure = Synchronized.var \<^unchecked_name>\<open>Live_Pass_Test.closure\<close> ([] : Remote_Procedure_Calling.callback' list, ~1)
 fun build_time () = #2 (Synchronized.value closure)
 
 (*registers the context and builds the closure from it*)
@@ -63,7 +63,10 @@ val intro_rules = query "INTRODUCTION_RULE"
 fun constants i pat = map #1 (query "CONSTANT" i pat)
 
 (*one invocation: the theorems, introduction-rule and constants callbacks*)
-fun invoke i = (theorems i "local.lp_"; intro_rules i "local.lp_"; constants i "lp_c"; ())
+fun invoke i =
+  (theorems i \<^unchecked_name>\<open>local.lp_\<close>;
+   intro_rules i \<^unchecked_name>\<open>local.lp_\<close>;
+   constants i "lp_c"; ())
 fun builds f = let val n = Semantic_Store.query_filter_builds () in f (); Semantic_Store.query_filter_builds () - n end
 
 end
@@ -89,13 +92,13 @@ begin
   ML_prf \<open>
     local open Live_Pass_Test in
     val _ = check "the first context returns its fact"
-      (theorems (register \<^context>) "lp_one" = [("local.lp_one", true)])
+      (theorems (register \<^context>) "lp_one" = [(\<^unchecked_name>\<open>local.lp_one\<close>, true)])
     end\<close>
   have lp_two: "(2::nat) + 2 = 4" by simp
   ML_prf \<open>
     local open Live_Pass_Test in
     val _ = check "the second context returns its fact"
-      (theorems (register \<^context>) "lp_two" = [("local.lp_two", true)])
+      (theorems (register \<^context>) "lp_two" = [(\<^unchecked_name>\<open>local.lp_two\<close>, true)])
     end\<close>
 end
 
@@ -109,9 +112,10 @@ begin
     local open Live_Pass_Test val _ = start \<^context> val b = build_time () in
     val _ = check_all "the build-time context"
      [("the build-time context lists lp_c",
-         fn () => member (op =) (constants b "lp_c") "Infra_Live_Pass_Test.lp_c"),
+         fn () => member (op =) (constants b "lp_c") \<^const_name>\<open>Infra_Live_Pass_Test.lp_c\<close>),
       ("the build-time context lists the global rule lp_g, not local",
-         fn () => intro_rules b "Infra_Live_Pass_Test.lp_g" = [("Infra_Live_Pass_Test.lp_g", false)])]
+         fn () => intro_rules b \<^unchecked_name>\<open>Infra_Live_Pass_Test.lp_g\<close> =
+           [(\<^unchecked_name>\<open>Infra_Live_Pass_Test.lp_g\<close>, false)])]
     end\<close>
   note [[infra_constant lp_c]]
   have lp_m[intro]: "lp_c n \<Longrightarrow> lp_c n \<or> P" for n P by simp
@@ -120,15 +124,17 @@ begin
     local open Live_Pass_Test val i = register \<^context> in
     val _ = check_all "a declaration made after the closure was built"
      [("the theorems callback returns only the fact without lp_c",
-         fn () => theorems i "local.lp_" = [("local.lp_n", true)]),
+         fn () => theorems i \<^unchecked_name>\<open>local.lp_\<close> =
+           [(\<^unchecked_name>\<open>local.lp_n\<close>, true)]),
       ("the introduction-rule callback returns only the fact without lp_c",
-         fn () => intro_rules i "local.lp_" = [("local.lp_n", true)]),
+         fn () => intro_rules i \<^unchecked_name>\<open>local.lp_\<close> =
+           [(\<^unchecked_name>\<open>local.lp_n\<close>, true)]),
       ("the introduction-rule callback no longer lists the global rule lp_g",
-         fn () => null (intro_rules i "Infra_Live_Pass_Test.lp_g")),
+         fn () => null (intro_rules i \<^unchecked_name>\<open>Infra_Live_Pass_Test.lp_g\<close>)),
       ("the constants callback no longer lists lp_c",
-         fn () => not (member (op =) (constants i "lp_c") "Infra_Live_Pass_Test.lp_c")),
+         fn () => not (member (op =) (constants i "lp_c") \<^const_name>\<open>Infra_Live_Pass_Test.lp_c\<close>)),
       ("the build-time context still lists lp_c",
-         fn () => member (op =) (constants (build_time ()) "lp_c") "Infra_Live_Pass_Test.lp_c")]
+         fn () => member (op =) (constants (build_time ()) "lp_c") \<^const_name>\<open>Infra_Live_Pass_Test.lp_c\<close>)]
     end\<close>
 end
 

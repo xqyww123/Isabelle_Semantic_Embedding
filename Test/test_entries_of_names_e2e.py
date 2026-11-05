@@ -1,7 +1,8 @@
 """
 End-to-end test of the by-name resolver: `Context.entries_of_names`
-(`Context_Callbacks.entry_of_name`) and the definitions show_defs reads
-through it (`_definition_of_name`).
+(`Context_Callbacks.entry_of_name`), and the definitions show_defs reads
+(`_definition_of_name`, one `Semantic_Store.declaring_commands` call, which
+resolves the name by `Context_Callbacks.entry_of_name` and cuts its command).
 
 1. Differential: for each `(kind, name)` of a corpus, every resolver SOME
    agrees with `universal_key_and_name_of` on the uk and the name, and every
@@ -151,7 +152,7 @@ let
     in (Context.Proof (case name of NONE => base | SOME s => the (AList.lookup (op =) contexts s)),
         src') end
   val differential : (unit, int) command = {{
-    name = "test.entries_of_names_differential",
+    name = \<^unchecked_name>\<open>test.entries_of_names_differential\<close>,
     arg_schema = packUnit, ret_schema = unpackInt,
     callback = [Universal_Key.make_universal_key_callback unpack,
                 Context_Callbacks.make_entries_of_names_callback unpack],
@@ -160,7 +161,7 @@ let
   val config_cb = Config.make_config_lookup_callback
     (Context_Callbacks.static_context_unpacker (Context.Proof base))
   val definitions : (unit, int) command = {{
-    name = "test.definition_of_name",
+    name = \<^unchecked_name>\<open>test.definition_of_name\<close>,
     arg_schema = packUnit, ret_schema = unpackInt,
     callback = Semantic_Store.interpret_file_callbacks config_cb (Context.Proof base),
     timeout = SOME (Time.fromSeconds 300)

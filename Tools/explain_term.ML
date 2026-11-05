@@ -136,7 +136,7 @@ fun extract_nontrivial_constants (ctxt : Proof.context) (checked_term : term)
     val {is_uninterpreted_const, ...} = Infra_Filter.gen_infra_filters context
 
     val main_thy_ancestors =
-      let val main_thy = Thy_Info.get_theory "Main"
+      let val main_thy = Build.get_theory "Main"
       in Strhashtab.make_set
            (Context.theory_long_name main_thy ::
             map Context.theory_long_name (Theory.ancestors_of main_thy))
@@ -161,7 +161,7 @@ fun context_at pos_opt (fallback : Context.generic) : Context.generic =
     NONE => fallback
   | SOME (file, offset) =>
       (case PIDE_State.context_at_position
-              {re_eval_cache = true} file offset of
+              {re_eval_cache = true} fallback file offset of
          SOME ctx => ctx
        | NONE => fallback)
 
@@ -169,7 +169,7 @@ fun make_desugar_callback (fallback : Context.generic)
     : Remote_Procedure_Calling.callback' =
   let open MessagePackBinIO.Pack MessagePackBinIO.Unpack in
   Remote_Procedure_Calling.mk_callback {
-    name = "explain_term.desugar_and_explain",
+    name = \<^unchecked_name>\<open>explain_term.desugar_and_explain\<close>,
     on_interrupt = Remote_Procedure_Calling.Reraise,
     arg_schema = unpackPair (
       unpackOption (unpackPair (unpackString, unpackInt)),
@@ -200,7 +200,7 @@ fun make_resolve_notation_callback (fallback : Context.generic)
     : Remote_Procedure_Calling.callback' =
   let open MessagePackBinIO.Pack MessagePackBinIO.Unpack in
   Remote_Procedure_Calling.mk_callback {
-    name = "explain_term.resolve_notation",
+    name = \<^unchecked_name>\<open>explain_term.resolve_notation\<close>,
     on_interrupt = Remote_Procedure_Calling.Reraise,
     arg_schema = unpackPair (
       unpackOption (unpackPair (unpackString, unpackInt)),

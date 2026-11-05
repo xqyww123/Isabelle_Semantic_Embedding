@@ -100,10 +100,10 @@ let
     | infos => (map (fn ({Rep_name, Abs_name, ...}, _) =>
         writeln ("  " ^ name ^ ": Rep=" ^ Rep_name ^ ", Abs=" ^ Abs_name)) infos; ())
   val _ = writeln "=== Typedef info ==="
-  val _ = print_typedef "Infra_Test.my_nat"
-  val _ = print_typedef "Infra_Test.my_wrapper"
-  val _ = print_typedef "Infra_Test.my_tagged"
-  val _ = print_typedef "Infra_Test.my_unit"
+  val _ = print_typedef \<^unchecked_name>\<open>Infra_Test.my_nat\<close>
+  val _ = print_typedef \<^unchecked_name>\<open>Infra_Test.my_wrapper\<close>
+  val _ = print_typedef \<^unchecked_name>\<open>Infra_Test.my_tagged\<close>
+  val _ = print_typedef \<^unchecked_name>\<open>Infra_Test.my_unit\<close>
 in () end
 \<close>
 
@@ -184,15 +184,15 @@ let
   val consts = Proof_Context.consts_of \<^context>
   val all_const_names = #constants (Consts.dest consts) |> map fst
   val my_consts = sort string_ord (filter (fn n =>
-    String.isPrefix "Infra_Test.my_frac" n
-    orelse String.isPrefix "Infra_Test.abs_my_frac" n
-    orelse String.isPrefix "Infra_Test.rep_my_frac" n
-    orelse String.isPrefix "Infra_Test.my_uprod" n
-    orelse String.isPrefix "Infra_Test.abs_my_uprod" n
-    orelse String.isPrefix "Infra_Test.rep_my_uprod" n
-    orelse String.isPrefix "Infra_Test.my_rat" n
-    orelse String.isPrefix "Infra_Test.mk_rat" n
-    orelse String.isPrefix "Infra_Test.rep_rat" n) all_const_names)
+    String.isPrefix \<^unchecked_name>\<open>Infra_Test.my_frac\<close> n
+    orelse String.isPrefix \<^unchecked_name>\<open>Infra_Test.abs_my_frac\<close> n
+    orelse String.isPrefix \<^unchecked_name>\<open>Infra_Test.rep_my_frac\<close> n
+    orelse String.isPrefix \<^unchecked_name>\<open>Infra_Test.my_uprod\<close> n
+    orelse String.isPrefix \<^unchecked_name>\<open>Infra_Test.abs_my_uprod\<close> n
+    orelse String.isPrefix \<^unchecked_name>\<open>Infra_Test.rep_my_uprod\<close> n
+    orelse String.isPrefix \<^unchecked_name>\<open>Infra_Test.my_rat\<close> n
+    orelse String.isPrefix \<^unchecked_name>\<open>Infra_Test.mk_rat\<close> n
+    orelse String.isPrefix \<^unchecked_name>\<open>Infra_Test.rep_rat\<close> n) all_const_names)
   val _ = writeln "=== Constants (quotient_type) ==="
   val _ = map (fn name =>
     writeln (String.concat ["  ", if is_uninterpreted_const name then "  " else "* ", name])) my_consts
@@ -206,9 +206,9 @@ let
   val facts = Proof_Context.facts_of \<^context>
   val all_facts = Facts.dest_static false [] facts
   val my_facts = filter (fn (name, _) =>
-    String.isPrefix "Infra_Test.my_frac" name
-    orelse String.isPrefix "Infra_Test.my_uprod" name
-    orelse String.isPrefix "Infra_Test.my_rat" name) all_facts
+    String.isPrefix \<^unchecked_name>\<open>Infra_Test.my_frac\<close> name
+    orelse String.isPrefix \<^unchecked_name>\<open>Infra_Test.my_uprod\<close> name
+    orelse String.isPrefix \<^unchecked_name>\<open>Infra_Test.my_rat\<close> name) all_facts
   val _ = writeln "=== Theorems (quotient_type) ==="
   val _ = map (fn (name, thms) =>
     let val infra = List.all (fn thm => is_infra_thm (name, thm)) thms

@@ -94,39 +94,39 @@ val infra_theories = [
   "HOL-Decision_Procs.Approximation_Quickcheck_Ex",
   "HOL-Decision_Procs.Dense_Linear_Order_Ex",
   (* tool support (23) *)
-  "HOL.Quickcheck_Exhaustive",
-  "HOL.Quickcheck_Narrowing",
-  "HOL.Quickcheck_Random",
-  "HOL.Random_Pred",
-  "HOL.Random_Sequence",
-  "HOL.Lazy_Sequence",
-  "HOL.Limited_Sequence",
-  "HOL.Nitpick",
-  "HOL.Nunchaku",
-  "HOL.SMT",
-  "HOL.Meson",
-  "HOL.Metis",
-  "HOL.Record",
-  "HOL.Typerep",
-  "HOL.Extraction",
+  \<^unchecked_name>\<open>HOL.Quickcheck_Exhaustive\<close>,
+  \<^unchecked_name>\<open>HOL.Quickcheck_Narrowing\<close>,
+  \<^unchecked_name>\<open>HOL.Quickcheck_Random\<close>,
+  \<^unchecked_name>\<open>HOL.Random_Pred\<close>,
+  \<^unchecked_name>\<open>HOL.Random_Sequence\<close>,
+  \<^unchecked_name>\<open>HOL.Lazy_Sequence\<close>,
+  \<^unchecked_name>\<open>HOL.Limited_Sequence\<close>,
+  \<^unchecked_name>\<open>HOL.Nitpick\<close>,
+  \<^unchecked_name>\<open>HOL.Nunchaku\<close>,
+  \<^unchecked_name>\<open>HOL.SMT\<close>,
+  \<^unchecked_name>\<open>HOL.Meson\<close>,
+  \<^unchecked_name>\<open>HOL.Metis\<close>,
+  \<^unchecked_name>\<open>HOL.Record\<close>,
+  \<^unchecked_name>\<open>HOL.Typerep\<close>,
+  \<^unchecked_name>\<open>HOL.Extraction\<close>,
   "HOL-Library.Code_Test",
   "HOL-Library.Code_Lazy",
   "HOL-Library.Code_Target_Nat",
   "HOL-Library.Code_Target_Int",
   "HOL-Library.Code_Cardinality",
-  "Tools.Code_Generator",
+  \<^unchecked_name>\<open>Tools.Code_Generator\<close>,
   "HOL-Real_Asymp.Multiseries_Expansion",
   "HOL-Real_Asymp.Lazy_Eval",
   (* proof-language / evaluation plumbing (2) *)
-  "Minilang.Minilang",
-  "HOL.Code_Evaluation"]
+  \<^unchecked_name>\<open>Minilang.Minilang\<close>,
+  \<^unchecked_name>\<open>HOL.Code_Evaluation\<close>]
 
 (* `Performant_Isabelle_HOL.SSymb`: runtime symbols.  Its constants (the digits
    Z, A..F, mk_symbol) are process-local numerals with nothing to interpret, and
    its own lemmas are statements about those numerals; but a downstream theorem
    mentioning a symbol (phi-system's aggregate lemmas over named fields) is
    ordinary mathematics and must not be dropped. *)
-val uninterpreted_theories = ["Performant_Isabelle_HOL.SSymb"]
+val uninterpreted_theories = [\<^unchecked_name>\<open>Performant_Isabelle_HOL.SSymb\<close>]
 
 val marked_theories =
   Symtab.make
@@ -385,19 +385,19 @@ fun gen_infra_filters (context : Context.generic) =
           in from_ctr @ from_bnf @ from_fp @ from_pre_bnf end
         val all_bnf_names = maps collect_bnf_names type_names
         fun pos_key_of cname =
-          case try (Name_Space.the_entry const_space) cname of
+          case try (Name_Space.the_entry_pos const_space) cname of
             NONE => NONE
-          | SOME entry =>
-              (case (Position.file_of (#pos entry), Position.offset_of (#pos entry)) of
+          | SOME pos =>
+              (case (Position.file_of pos, Position.offset_of pos) of
                 (SOME file, SOME offset) => SOME (String.concat [file, "\t", Int.toString offset])
               | _ => NONE)
       in Strhashtab.make_set (map_filter pos_key_of all_bnf_names) end
 
     fun on_bnf_origin_pos name =
-      case try (Name_Space.the_entry const_space) name of
+      case try (Name_Space.the_entry_pos const_space) name of
         NONE => false
-      | SOME entry =>
-          (case (Position.file_of (#pos entry), Position.offset_of (#pos entry)) of
+      | SOME pos =>
+          (case (Position.file_of pos, Position.offset_of pos) of
             (SOME file, SOME offset) =>
               Strhashtab.defined bnf_origin_pos_set (String.concat [file, "\t", Int.toString offset])
           | _ => false)
@@ -443,7 +443,7 @@ fun gen_infra_filters (context : Context.generic) =
        plumbing — kept rejected by design (ruled 08-24).  Theory-identity
        marking lives in marked_theories instead. *)
     val internal_prefixes = ["Lifting.", "BNF_Def.", "Transfer.",
-          "HOL.equal", "ATP.", "Code_Evaluation."]
+          \<^unchecked_name>\<open>HOL.equal\<close>, "ATP.", "Code_Evaluation."]
 
     (* Rule class_pred, authoritative form: the exact set of class-predicate
        constant names.  Logic.const_of_class appends "_class" to the class's
@@ -671,15 +671,17 @@ fun gen_infra_filters (context : Context.generic) =
        tool-internal collections regardless of which kind they are, so it can be
        extended with non-named_theorems names as needed. *)
     val dynamic_fact_blacklist = Symtab.make_set [
-        "HOL.no_atp", "HOL.atomize_elim",
-        "HOL.nitpick_simp", "HOL.nitpick_psimp", "HOL.nitpick_unfold", "HOL.nitpick_choice_spec",
-        "HOL.code_pred_def", "HOL.code_pred_inline", "HOL.code_pred_simp",
-        "SMT.smt_arith_combine", "SMT.smt_arith_multiplication", "SMT.smt_arith_simplify",
-        "Quotient.quot_equiv", "Quotient.quot_preserve", "Quotient.quot_respect",
-        "Quotient.quot_thm", "Quotient.id_simps",
-        "Lifting.relator_eq_onp",
-        "Fun_Def.measure_function", "Fun_Def_Base.termination_simp",
-        "Partial_Function.partial_function_mono"]
+        \<^unchecked_name>\<open>HOL.no_atp\<close>, \<^unchecked_name>\<open>HOL.atomize_elim\<close>,
+        \<^unchecked_name>\<open>HOL.nitpick_simp\<close>, \<^unchecked_name>\<open>HOL.nitpick_psimp\<close>,
+        \<^unchecked_name>\<open>HOL.nitpick_unfold\<close>, \<^unchecked_name>\<open>HOL.nitpick_choice_spec\<close>,
+        \<^unchecked_name>\<open>HOL.code_pred_def\<close>, \<^unchecked_name>\<open>HOL.code_pred_inline\<close>,
+        \<^unchecked_name>\<open>HOL.code_pred_simp\<close>, \<^unchecked_name>\<open>SMT.smt_arith_combine\<close>,
+        \<^unchecked_name>\<open>SMT.smt_arith_multiplication\<close>, \<^unchecked_name>\<open>SMT.smt_arith_simplify\<close>,
+        \<^unchecked_name>\<open>Quotient.quot_equiv\<close>, \<^unchecked_name>\<open>Quotient.quot_preserve\<close>,
+        \<^unchecked_name>\<open>Quotient.quot_respect\<close>, \<^unchecked_name>\<open>Quotient.quot_thm\<close>,
+        \<^unchecked_name>\<open>Quotient.id_simps\<close>, \<^unchecked_name>\<open>Lifting.relator_eq_onp\<close>,
+        \<^unchecked_name>\<open>Fun_Def.measure_function\<close>, \<^unchecked_name>\<open>Fun_Def_Base.termination_simp\<close>,
+        \<^unchecked_name>\<open>Partial_Function.partial_function_mono\<close>]
     (* Theory prefixes whose dynamic facts are all tool-internal (Transfer/Lifting
        relators, SMT proof rules, Pure method_facts).  None of these four packages
        emits a dynamic collection worth retrieving, so filter the whole prefix

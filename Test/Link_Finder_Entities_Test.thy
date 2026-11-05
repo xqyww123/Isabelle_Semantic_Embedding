@@ -107,30 +107,41 @@ local open Link_Finder_Test
 in
   val _ = check_all "entities"
    [("linorder: Max.insert lists max, then Max", fn () =>
-      member (op =) (entities linorder "Lattices_Big.semilattice_set" (is "insert"))
-        (pairs linorder [("max", "Orderings.ord_class.max"), ("Max", "Lattices_Big.linorder_class.Max")])),
+      member (op =) (entities linorder \<^locale>\<open>Lattices_Big.semilattice_set\<close> (is "insert"))
+        (pairs linorder
+          [("max", \<^const_name>\<open>Orderings.ord_class.max\<close>),
+           ("Max", \<^const_name>\<open>Lattices_Big.linorder_class.Max\<close>)])),
     ("comm_monoid_add: sum.distrib lists (+), 0 and sum in that order", fn () =>
-      entities comm_monoid_add "Groups_Big.comm_monoid_set" (is "distrib") =
+      entities comm_monoid_add \<^locale>\<open>Groups_Big.comm_monoid_set\<close> (is "distrib") =
         [pairs comm_monoid_add
-          [("(+)", "Groups.plus_class.plus"), ("0", "Groups.zero_class.zero"),
-           ("sum", "Groups_Big.comm_monoid_add_class.sum")]]),
+          [("(+)", \<^const_name>\<open>Groups.plus_class.plus\<close>),
+           ("0", \<^const_name>\<open>Groups.zero_class.zero\<close>),
+           ("sum", \<^const_name>\<open>Groups_Big.comm_monoid_add_class.sum\<close>)]]),
     ("order: the dual order's links list (\<le>) and (<), the identity's none", fn () =>
-      eq_set (op =) (entities order "Orderings.ordering" (K true),
-        [pairs order [("(\<le>)", "Orderings.ord_class.less_eq"), ("(<)", "Orderings.ord_class.less")], []])),
+      eq_set (op =) (entities order \<^locale>\<open>Orderings.ordering\<close> (K true),
+        [pairs order
+          [("(\<le>)", \<^const_name>\<open>Orderings.ord_class.less_eq\<close>),
+           ("(<)", \<^const_name>\<open>Orderings.ord_class.less\<close>)], []])),
     ("linorder: every identity link without rewrites has an empty list", fn () =>
       Link_Finder.links linorder |> map #2
       |> filter (fn l => kind l = Link_Finder.Identity andalso null (#rewrites l))
       |> (fn ls => not (null ls) andalso forall (null o #entities) ls)),
     ("semilattice_inf: the renaming tier lists the Renamed f only, as (\<sqinter>)", fn () =>
-      entities semilattice_inf "Lattices.semilattice_order" (K true) =
-        [pairs semilattice_inf [("(\<sqinter>)", "Lattices.inf_class.inf")]]),
+      entities semilattice_inf \<^locale>\<open>Lattices.semilattice_order\<close> (K true) =
+        [pairs semilattice_inf [("(\<sqinter>)", \<^const_name>\<open>Lattices.inf_class.inf\<close>)]]),
     ("EB: an abbreviation is not contracted, eh lists eg", fn () =>
       let val c = ctxt_of "EB" in entities c (T ^ "EA") (is "ea") = [pairs c [("eg", T ^ "eg")]] end),
     ("EC: HOL.HOL's If and (=) are left out, eg is listed once after 0", fn () =>
       let val c = ctxt_of "EC"
-      in entities c (T ^ "EA") (is "ea") = [pairs c [("0", "Groups.zero_class.zero"), ("eg", T ^ "eg")]] end),
+      in
+        entities c (T ^ "EA") (is "ea") =
+          [pairs c [("0", \<^const_name>\<open>Groups.zero_class.zero\<close>), ("eg", T ^ "eg")]]
+      end),
     ("ED: a locale's own definition is listed as itself, not as its local abbreviation", fn () =>
-      let val c = ctxt_of "ED" in entities c (T ^ "EA") (is "ea") = [pairs c [("ED.edf", T ^ "ED.edf")]] end),
+      let val c = ctxt_of "ED" in
+        entities c (T ^ "EA") (is "ea") =
+          [pairs c [(\<^unchecked_name>\<open>ED.edf\<close>, T ^ \<^unchecked_name>\<open>ED.edf\<close>)]]
+      end),
     ("EP: one constant at two types, each printed name its own link's", fn () =>
       let val c = ctxt_of "EP" in
         entities c (T ^ "EN") (K true) = [pairs c [("epn", T ^ "ep")]] andalso
@@ -142,13 +153,17 @@ in
         val t = Syntax.read_term c "\<lambda>x. if x = 0 then eg x else eg (eg x)"
       in
         map (#1 o dest_Const o #1) (Explain_Term.collect_constants (K true) (Context.Proof c) [t, t]) =
-          ["HOL.If", "HOL.eq", "Groups.zero_class.zero", T ^ "eg"]
+          [\<^const_name>\<open>HOL.If\<close>, \<^const_name>\<open>HOL.eq\<close>,
+           \<^const_name>\<open>Groups.zero_class.zero\<close>, T ^ "eg"]
       end),
     ("YN: a constant of both the instance and a definitional rewrite is listed once", fn () =>
       let val c = ctxt_of "YN" in
-        member (op =) (entities c "Lattices_Big.semilattice_set" (is "closed"))
-          (pairs c [("ord.max", "Orderings.ord.max"), ("(\<le>)", "Orderings.ord_class.less_eq"),
-            ("linorder.Max", "Lattices_Big.linorder.Max")])
+        member (op =) (entities c \<^locale>\<open>Lattices_Big.semilattice_set\<close> (is "closed"))
+          (pairs c
+            [(\<^unchecked_name>\<open>ord.max\<close>, \<^const_name>\<open>Orderings.ord.max\<close>),
+             ("(\<le>)", \<^const_name>\<open>Orderings.ord_class.less_eq\<close>),
+             (\<^unchecked_name>\<open>linorder.Max\<close>,
+              \<^const_name>\<open>Lattices_Big.linorder.Max\<close>)])
       end),
     ("XK: a pure rewrites mixin gives no rewrite and no entity (D62)", fn () =>
       let
@@ -163,7 +178,7 @@ in
     ("comm_monoid_add: sum_def, a Level 2 link, carries no rewrite and no entity (D65)", fn () =>
       let
         val ls = Link_Finder.links comm_monoid_add |> map #2
-          |> filter (fn l: Link_Finder.link => #source l = "Groups.comm_monoid_add" andalso
+          |> filter (fn l: Link_Finder.link => #source l = \<^locale>\<open>Groups.comm_monoid_add\<close> andalso
                #note l = ("sum_def", 0))
       in
         not (null ls) andalso
@@ -173,22 +188,22 @@ in
     ("comm_monoid_add: sum.distrib, a Level 3 exact link, carries the sum rewrite (D65)", fn () =>
       let
         val ls = Link_Finder.links comm_monoid_add |> map #2
-          |> filter (fn l: Link_Finder.link => #source l = "Groups_Big.comm_monoid_set" andalso
+          |> filter (fn l: Link_Finder.link => #source l = \<^locale>\<open>Groups_Big.comm_monoid_set\<close> andalso
                #note l = ("distrib", 0))
       in
         not (null ls) andalso
-        forall (fn l => folded_heads (#level l) = ["Groups_Big.comm_monoid_add.sum"]) ls
+        forall (fn l => folded_heads (#level l) = [\<^const_name>\<open>Groups_Big.comm_monoid_add.sum\<close>]) ls
       end),
     ("linorder: sorted_key_list_of_set_empty carries the sorted_list_of_set rewrite and entity (D65)",
       fn () =>
       let
         val ls = Link_Finder.links linorder |> map #2
-          |> filter (fn l: Link_Finder.link => #source l = "List.folding_insort_key" andalso
+          |> filter (fn l: Link_Finder.link => #source l = \<^locale>\<open>List.folding_insort_key\<close> andalso
                #note l = ("sorted_key_list_of_set_empty", 0))
-        val sorted = #2 (hd (pairs linorder [("", "List.linorder_class.sorted_list_of_set")]))
+        val sorted = #2 (hd (pairs linorder [("", \<^const_name>\<open>List.linorder_class.sorted_list_of_set\<close>)]))
       in
         not (null ls) andalso
-        forall (fn l => folded_heads (#level l) = ["List.linorder.sorted_list_of_set"] andalso
+        forall (fn l => folded_heads (#level l) = [\<^const_name>\<open>List.linorder.sorted_list_of_set\<close>] andalso
           member (op =) (map #2 (#entities l)) sorted) ls
       end),
     ("OV: of two overlapping equations only the one that fired is a rewrite (D65)", fn () =>
@@ -197,7 +212,7 @@ in
           |> filter (fn l: Link_Finder.link => #source l = T ^ "OT" andalso #note l = ("ot", 0))
       in
         not (null ls) andalso
-        forall (fn l => folded_heads (#level l) = [T ^ "OV.s"] andalso length (#rewrites l) = 1) ls
+        forall (fn l => folded_heads (#level l) = [T ^ \<^unchecked_name>\<open>OV.s\<close>] andalso length (#rewrites l) = 1) ls
       end)]
 end
 \<close>

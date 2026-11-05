@@ -27,7 +27,7 @@ ML \<open>
 local open Link_Finder_Test
   val (_, r) = report_in \<^context> "construction A"
 in
-  val _ = check_element \<^context> "construction A" (#elements r) "local.q.ax" 0
+  val _ = check_element \<^context> "construction A" (#elements r) \<^unchecked_name>\<open>local.q.ax\<close> 0
     "local.q.ax#0: Level 2 N6::ax#1 @[q] [n]"
 end
 \<close>
@@ -52,7 +52,7 @@ ML \<open>
 local open Link_Finder_Test
   val (_, r) = report_in \<^context> "construction A, no axioms"
 in
-  val _ = check_element \<^context> "construction A, no axioms" (#elements r) "local.q.ax" 0
+  val _ = check_element \<^context> "construction A, no axioms" (#elements r) \<^unchecked_name>\<open>local.q.ax\<close> 0
     "local.q.ax#0: Level 2 N6'::ax#0 @[q] [n]"
 end
 \<close>
@@ -81,7 +81,7 @@ ML \<open>
 local open Link_Finder_Test
   val (ctxt, _, r) = report \<^theory> "L7"
 in
-  val _ = check_element ctxt "construction B" (#elements r) "local.r.foo" 0 "local.r.foo#0: Level 3 approximate B7::foo#3 @[r] [k]"
+  val _ = check_element ctxt "construction B" (#elements r) \<^unchecked_name>\<open>local.r.foo\<close> 0 "local.r.foo#0: Level 3 approximate B7::foo#3 @[r] [k]"
 end
 \<close>
 
@@ -102,14 +102,14 @@ local open Link_Finder_Test
   val lk = Link_Finder.links ctxt
   val key = Universal_Key.key_of_theorem' NONE (Context.Proof ctxt)
 in
-  val _ = check_element ctxt "block-level lemma" (#elements r) "local.blk" 0
+  val _ = check_element ctxt "block-level lemma" (#elements r) \<^unchecked_name>\<open>local.blk\<close> 0
     "local.blk#0: Level 2 LB::blk#2 @[] [f]"
   val _ =
     (case AList.lookup (op =) lk (key (Proof_Context.get_thm ctxt "blk")) of
       SOME (l: Link_Finder.link) =>
         (check "the block-level lemma's link has the template LB.blk"
           (#template l = Universal_Key.key_of_theorem' NONE (Context.Theory thy)
-            (Global_Theory.get_thm thy "Link_Finder_Cons_Blocks.LB.blk"));
+            (Global_Theory.get_thm thy \<^unchecked_name>\<open>Link_Finder_Cons_Blocks.LB.blk\<close>));
          check "the block-level lemma's link is an identity" (kind l = Link_Finder.Identity))
     | NONE => fail "no link for the block-level lemma")
 end
@@ -126,9 +126,9 @@ ML \<open>
 local open Link_Finder_Test
   val (_, r) = report_in \<^context> "nested block"
 in
-  val _ = check_element \<^context> "nested block's lemma, exported to its target" (#elements r) "local.zlem" 0
+  val _ = check_element \<^context> "nested block's lemma, exported to its target" (#elements r) \<^unchecked_name>\<open>local.zlem\<close> 0
     "local.zlem#0: Level 2 LB::zlem#3 @[] [f]"
-  val _ = check_element \<^context> "outer block's lemma" (#elements r) "local.blk" 0
+  val _ = check_element \<^context> "outer block's lemma" (#elements r) \<^unchecked_name>\<open>local.blk\<close> 0
     "local.blk#0: Level 2 LB::blk#2 @[] [f]"
 end
 \<close>
@@ -150,7 +150,7 @@ ML \<open>
 local open Link_Finder_Test
   val (_, r) = report_in \<^context> "unnamed block"
 in
-  val _ = check_element \<^context> "unnamed block's lemma" (#elements r) "local.ulem" 0
+  val _ = check_element \<^context> "unnamed block's lemma" (#elements r) \<^unchecked_name>\<open>local.ulem\<close> 0
     "local.ulem#0: Level 2 ::Link_Finder_Cons_Blocks.ulem#0 @[] []"
 end
 \<close>
@@ -171,7 +171,10 @@ proof -
       fun V name = outcome_string (#outcome (the_element (#elements r) name 0))
     in
       val _ = check "a lemma's assumes, a have and a note rebinding names are Level 0"
-        (map V ["local.blk", "local.fid", "local.other"] = ["Level 0", "Level 0", "Level 0"])
+        (map V
+          [\<^unchecked_name>\<open>local.blk\<close>, \<^unchecked_name>\<open>local.fid\<close>,
+           \<^unchecked_name>\<open>local.other\<close>] =
+          ["Level 0", "Level 0", "Level 0"])
     end
   \<close>
   show ?thesis by simp
@@ -186,7 +189,8 @@ proof -
       fun V name = outcome_string (#outcome (the_element (#elements r) name 0))
     in
       val _ = check "an activated fact the proof re-noted under another name passes Level 0"
-        (map V ["local.fid", "local.again"] = ["Level 2", "Level 0"])
+        (map V [\<^unchecked_name>\<open>local.fid\<close>, \<^unchecked_name>\<open>local.again\<close>] =
+          ["Level 2", "Level 0"])
     end
   \<close>
   show ?thesis by simp
@@ -212,12 +216,13 @@ proof -
       fun link name = AList.lookup (op =) links
         (Universal_Key.key_of_theorem' NONE (Context.Proof ctxt) (Proof_Context.get_thm ctxt name))
     in
-      val _ = check_element ctxt "proof interpret" (#elements r) "local.p.lr_note" 0
+      val _ = check_element ctxt "proof interpret" (#elements r) \<^unchecked_name>\<open>local.p.lr_note\<close> 0
         "local.p.lr_note#0: Level 2 LR::lr_note#2 @[p] [(=)]"
-      val _ = check_element ctxt "proof interpret over a fix" (#elements r) "local.q.lr_note" 0
+      val _ = check_element ctxt "proof interpret over a fix" (#elements r) \<^unchecked_name>\<open>local.q.lr_note\<close> 0
         "local.q.lr_note#0: Level 2 LR::lr_note#2 @[q] [\<lambda>x y. c = c]"
       val _ =
-        (case (link "p.lr_note", link "q.lr_note") of
+        (case (link \<^unchecked_name>\<open>p.lr_note\<close>,
+              link \<^unchecked_name>\<open>q.lr_note\<close>) of
           (SOME (lp: Link_Finder.link), SOME (lq: Link_Finder.link)) =>
             check "links of proof interpretations: proper"
               (kind lp = Link_Finder.Proper andalso kind lq = Link_Finder.Proper)
@@ -239,7 +244,7 @@ local open Link_Finder_Test
   val ctxt = \<^context>
   val (_, r) = report_in ctxt "block interpretation"
 in
-  val _ = check_element ctxt "block interpretation" (#elements r) "local.p.lr_note" 0
+  val _ = check_element ctxt "block interpretation" (#elements r) \<^unchecked_name>\<open>local.p.lr_note\<close> 0
     "local.p.lr_note#0: Level 2 LR::lr_note#2 @[p] [\<lambda>x y. s y x]"
 end
 \<close>
@@ -297,21 +302,21 @@ interpretation qd: LD Suc .
 ML \<open>
 local open Link_Finder_Test
   val thy = \<^theory>
-  val ord = "Orderings.ord"
+  val ord = \<^locale>\<open>Orderings.ord\<close>
   val (b, th) =
     Locale.locale_notes thy ord |> maps #2
     |> get_first (fn ((b, _), gs) => if Binding.name_of b = "arg_min_def" then SOME (b, hd (maps #1 gs)) else NONE)
     |> the
   val name = Link_Finder.template_name ord b th
   val _ = check ("the template's global name of ord's arg_min_def: " ^ name)
-    (name = "Lattices_Big.ord.arg_min_def" andalso can (Global_Theory.get_thms thy) name)
-  val fact = "Link_Finder_Cons_Blocks.qd.dd_def"
+    (name = \<^unchecked_name>\<open>Lattices_Big.ord.arg_min_def\<close> andalso can (Global_Theory.get_thms thy) name)
+  val fact = \<^unchecked_name>\<open>Link_Finder_Cons_Blocks.qd.dd_def\<close>
   val uk = Universal_Key.key_of_theorem' NONE (Context.Theory thy) (Global_Theory.get_thm thy fact)
   val provenances = hd (Locale_Instance.detect thy [(fact, uk)])
 in
   val _ = check "Locale_Instance.detect names the template LD.dd_def and finds it"
     (exists (fn (p: Locale_Instance.provenance) =>
-      #template_name p = "Link_Finder_Cons_Blocks.LD.dd_def" andalso is_some (#template_thm p)) provenances)
+      #template_name p = \<^unchecked_name>\<open>Link_Finder_Cons_Blocks.LD.dd_def\<close> andalso is_some (#template_thm p)) provenances)
 end
 \<close>
 
@@ -348,7 +353,7 @@ local open Link_Finder_Test
     (map (is_some o Link_Finder.template_global_fact thy o template) ["lh_hidden", "lh_shown", "lh_concealed"] =
       [false, true, false])
   val (ctxt, F, r) = report thy "LHI"
-  val _ = check_element ctxt "hidden template" (#elements r) "local.p.lh_hidden" 0
+  val _ = check_element ctxt "hidden template" (#elements r) \<^unchecked_name>\<open>local.p.lh_hidden\<close> 0
     "local.p.lh_hidden#0: Level 2 LH::lh_hidden#0 @[p] [\<lambda>x. k (k x)]"
   val _ = check "LHI: one link, from lh_shown"
     (map (#note o #2) (Link_Finder.links_of F) = [("lh_shown", 0)])

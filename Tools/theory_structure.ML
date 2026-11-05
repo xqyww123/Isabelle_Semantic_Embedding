@@ -68,7 +68,7 @@ fun get_types_with_positions context =
     |> map_filter (fn name =>
         let val entry = Name_Space.the_entry space name
         in if #theory_long_name entry = thy_name
-           then SOME (name, #pos entry)
+           then SOME (name, Name_Space.entry_pos entry)
            else NONE
         end)
   end
@@ -83,7 +83,7 @@ fun get_classes_with_positions context =
     |> map_filter (fn name =>
         let val entry = Name_Space.the_entry space name
         in if #theory_long_name entry = thy_name
-           then SOME (name, #pos entry)
+           then SOME (name, Name_Space.entry_pos entry)
            else NONE
         end)
   end
@@ -101,7 +101,7 @@ fun get_locales_with_positions context =
     Name_Space.get_names space
     |> map_filter (fn name =>
         if Symtab.defined parent_locale_names name then NONE
-        else SOME (name, #pos (Name_Space.the_entry space name)))
+        else SOME (name, Name_Space.the_entry_pos space name))
   end
 
 (* Get theorem collections with positions (local definitions only).
@@ -123,7 +123,7 @@ fun get_theorem_collections_with_positions context =
     |> map_filter (fn name =>
         if Symtab.defined parent_names name then NONE
         else if Facts.is_dynamic facts name
-        then SOME (name, #pos (Name_Space.the_entry space name))
+        then SOME (name, Name_Space.the_entry_pos space name)
         else NONE)
   end
 
@@ -139,7 +139,7 @@ fun get_methods_with_positions context =
     Name_Space.get_names space
     |> map_filter (fn name =>
         if Symtab.defined parent_names name then NONE
-        else SOME (name, #pos (Name_Space.the_entry space name)))
+        else SOME (name, Name_Space.the_entry_pos space name))
   end
 
 (* Parse "name(N)" into (name, SOME N) or (name, NONE) *)
@@ -177,7 +177,7 @@ fun get_constants_with_positions ctxt =
     |> map_filter (fn name =>
         let val entry = Name_Space.the_entry space name
         in if #theory_long_name entry = thy_name
-           then SOME (name, #pos entry)
+           then SOME (name, Name_Space.entry_pos entry)
            else NONE
         end)
   end
@@ -198,8 +198,7 @@ fun get_theorems_with_positions context =
     val facts_list = Facts.dest_static false parent_facts facts
   in
     facts_list |> maps (fn (name, thms) =>
-      let val pos = (case try (Name_Space.the_entry space) name of
-              SOME entry => #pos entry | NONE => Position.none)
+      let val pos = the_default Position.none (try (Name_Space.the_entry_pos space) name)
           val n = length thms
           val global = is_global name
       in thms |> map_index (fn (idx, thm) =>
@@ -255,10 +254,10 @@ fun get_rules_with_positions is_elim suffix context =
       in if Strhashtab.defined seen name then NONE
          else if not (String.isPrefix thy_prefix name) then NONE
          else (Strhashtab.update seen (name, ());
-               (* the_entry is keyed on the bare fact name; the Thm_Name index
+               (* the_entry_pos is keyed on the bare fact name; the Thm_Name index
                   selects a theorem within a fact and is not a name-space key. *)
-               let val pos = case try (Name_Space.the_entry fact_space) (#1 thm_name) of
-                     SOME entry => #pos entry | NONE => Position.none
+               let val pos =
+                     the_default Position.none (try (Name_Space.the_entry_pos fact_space) (#1 thm_name))
                in SOME (name, pos, thm) end)
       end end) cs_rules
 
@@ -284,8 +283,7 @@ fun get_rules_with_positions is_elim suffix context =
           in if Strhashtab.defined seen key
                 orelse not (String.isPrefix thy_prefix key) then NONE
              else (Strhashtab.update seen (key, ());
-                   let val pos = case try (Name_Space.the_entry fact_space) name of
-                         SOME entry => #pos entry | NONE => Position.none
+                   let val pos = the_default Position.none (try (Name_Space.the_entry_pos fact_space) name)
                    in SOME (key, pos, thm) end)
           end) thms |> map_filter I
         end) facts_list
@@ -347,8 +345,7 @@ fun get_induct_rules_with_positions selector suffixes context =
     val fact_space = Facts.space_of (Proof_Context.facts_of ctxt)
     val seen : unit Strhashtab.table = Strhashtab.empty 64
     fun pos_of name =
-      case try (Name_Space.the_entry fact_space) name of
-        SOME entry => #pos entry | NONE => Position.none
+      the_default Position.none (try (Name_Space.the_entry_pos fact_space) name)
 
     val src1 = selector (Induct.dest_rules ctxt)
       |> map_filter (fn (_, thm) =>
