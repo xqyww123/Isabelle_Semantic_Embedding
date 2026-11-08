@@ -2485,17 +2485,18 @@ fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpa
        MessagePackBinIO.Pack.packInt),
     function = fn (context, names, force, dry, include_context) =>
       let
-        val named = map (Theory_Hash.resolve_theory context) names
+        val ctxt = Context.proof_of context
+        val named = map (fn name => Theory.resolve_theory ctxt (name, Position.none)) names
         (* include_context adds the background theory of the caller's context
            (CHECK_OUTDATE_PLAN.md §8 "aoa 启动的 context 根", its "包含当前 theory 自身"
            half): no fact of a proof context is interpreted, they are linked at query
            time (LINK_LAYER_PLAN.md D9, D39, D58, §4.2). *)
         val roots = named @ (if include_context then [Context.theory_of context] else [])
-        (* As in interpret_command.ML:63 and semantic_interpretation_app.ML: push the
+        (* As in interpret_command.ML and semantic_interpretation_app.ML: push the
            hash->name map to Python before interpreting, or Python cannot resolve the
            ancestor theories the cone sweeps in.  store_theory_hash walks
            Theory.nodes_of, so the roots cover the whole cone. *)
-        val _ = List.app Theory_Hash.store_theory_hash roots
+        val _ = List.app Theory_Hash_Store.store_theory_hash roots
       in
         if dry then dry_run force roots
         else

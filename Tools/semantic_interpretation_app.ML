@@ -92,7 +92,7 @@ fun register_streaming_app name body =
 fun resolve_roots thy_names =
   let
     val thys = map Build.get_theory thy_names
-    val _ = List.app Theory_Hash.store_theory_hash thys
+    val _ = List.app Theory_Hash_Store.store_theory_hash thys
     val _ = Remote_Procedure_Calling.load ["Isabelle_Semantic_Embedding"]
   in thys end
 

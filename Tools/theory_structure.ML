@@ -1,5 +1,6 @@
 signature THEORY_STRUCTURE = sig
-  val resolve_theory : Context.generic -> string -> theory
+  (* File.platform_path of Theory_Hash.get_theory_path: the file the theory hash is
+     taken over, as a platform string for Python. *)
   val get_theory_file_path : theory -> string
   val get_constants_with_positions : Context.generic -> (string (* full_name *) * Position.T) list
   val get_theorems_with_positions : Context.generic ->
@@ -29,34 +30,7 @@ end
 
 structure Theory_Structure : THEORY_STRUCTURE = struct
 
-fun resolve_theory (context : Context.generic) (name : string) : theory =
-  let
-    val thy = Context.theory_of context
-    val ctxt = Context.proof_of context
-    val thy_long = Context.theory_long_name thy
-    val thy_short = Context.theory_base_name thy
-  in
-    (* Special case: the current theory may be unfinished,
-       so Theory.check would reject it *)
-    if name = thy_long orelse name = thy_short
-    then thy
-    else
-      (* Try short name first, then long name *)
-      (Theory.check {long = false} ctxt (name, Position.none)
-       handle ERROR _ =>
-         Theory.check {long = true} ctxt (name, Position.none))
-  end
-
-fun get_theory_file_path thy =
-  let
-    val thy_name = Context.theory_long_name thy
-    val master_dir = Resources.master_directory thy
-    val thy_base = Long_Name.base_name thy_name
-    val thy_file = Path.ext "thy" (master_dir + Path.basic thy_base)
-    val expanded_path = File.full_path master_dir thy_file
-  in
-    File.platform_path expanded_path
-  end
+val get_theory_file_path = File.platform_path o Theory_Hash.get_theory_path
 
 (* Get types with positions (local definitions only) *)
 fun get_types_with_positions context =

@@ -12,10 +12,10 @@ text \<open>
   This theory MUST be evaluated in a process that has NEVER run
   Remote_Procedure_Calling.load ["Isabelle_Semantic_Embedding"].  In such a
   process the ephemeral RPC host auto-launched on first use serves only the
-  base Isabelle_RPC_Host procedures: xxhash128_theory works (so
-  Theory_Hash.is_persistent distinguishes heap theories from WIP ones), but
-  every Semantic_Store.* procedure is unknown, so check_theorem_name_in_file
-  raises Remote_Calling_Failure -- exactly the degraded state the refusal
+  base Isabelle_RPC_Host procedures (Theory_Hash needs none: it hashes in ML,
+  so Theory_Hash.is_persistent still distinguishes heap theories from WIP
+  ones), but every Semantic_Store.* procedure is unknown, so
+  check_theorem_name_in_file raises Remote_Calling_Failure -- exactly the degraded state the refusal
   guard exists for.  The backfill_positions write RPC could not silently
   succeed either: if the guard failed to fire, the attempted write would
   surface as a raw Remote_Calling_Failure instead of the end-of-run ERROR,

@@ -29,29 +29,6 @@ Batch collection goes through the `Semantic_Store.collect` REPL app instead
 structure Semantic_Interpret_Command =
 struct
 
-(* Resolve a theory name against the ancestors of the current theory.
-
-   Mirrors Theory_Hash.resolve_theory (theory_hash.ML:33) rather than calling it, so the
-   real source position can be threaded through: Theory.check then highlights the offending
-   name in jEdit and lists the candidates.  resolve_theory hard-codes Position.none.
-
-   The self case is NOT about the candidate set: Theory.check (theory.ML:163) resolves via
-   Context.get_theory, which does handle name = thy itself (context.ML:353-359) -- but only
-   by falling through to `theory_id_final (theory_id thy)`, and erroring "Unfinished theory"
-   otherwise.  This command is interactive, so the theory under the cursor is still being
-   constructed and hence not final; without the bypass, naming the theory you are sitting in
-   would be rejected.  (`ancestors_of thy` feeds only `all ()`, the completion list used to
-   build the error report -- not the lookup.)  Same bypass as resolve_theory. *)
-fun resolve_root ctxt (name, pos) =
-  let
-    val thy = Proof_Context.theory_of ctxt
-    val long = String.isSubstring "." name
-    val self = if long then Context.theory_long_name thy else Context.theory_base_name thy
-  in
-    if name = self then thy
-    else Theory.check {long = long} ctxt (name, pos)
-  end
-
 fun run (force : bool) names state =
   let
     val _ =
@@ -61,10 +38,11 @@ fun run (force : bool) names state =
     val ctxt = Toplevel.context_of state
 
     (* Resolve BEFORE touching the RPC: a typo should fail instantly, with a position,
-       rather than after a cold RPC-host launch. *)
+       rather than after a cold RPC-host launch.  Theory.resolve_theory (Performant_
+       Isabelle_ML) also finds the theory under the cursor, which is still unfinished. *)
     val roots =
       if null names then [Toplevel.theory_of state]
-      else map (resolve_root ctxt) names
+      else map (Theory.resolve_theory ctxt) names
 
     (* Say so at once: the scan below (plan + enumerate + cache filter over the whole
        cone) runs for minutes on a large cone, and its first output is its result. *)
@@ -90,9 +68,9 @@ fun run (force : bool) names state =
     val _ = writeln "[Semantic_Embedding] Connecting to the semantic DB"
     val _ = Remote_Procedure_Calling.load ["Isabelle_Semantic_Embedding"]
 
-    (* As in semantic_interpretation_app.ML:42 -- without this the Python side cannot
-       resolve these theory hashes. *)
-    val _ = List.app Theory_Hash.store_theory_hash roots
+    (* As in semantic_interpretation_app.ML's resolve_roots -- without this the Python
+       side cannot resolve these theory hashes. *)
+    val _ = List.app Theory_Hash_Store.store_theory_hash roots
 
     (* Mode 4 / dry run (CHECK_OUTDATE_PLAN.md §8): the entity count n is the one
        workload number: the cone's changed / uncached entities against the store as it
