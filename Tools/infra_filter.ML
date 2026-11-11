@@ -46,7 +46,8 @@ fun name_of_verdict Kept = "kept"
   | name_of_verdict (Infra _) = "infrastructure"
 
 (* Theories whose own entities get no record and are not retrievable, whatever
-   their kind.  The table's value is the verdict on the theory's CONSTANTS:
+   their kind -- except proof methods, which D17 keeps.  The table's value is
+   the verdict on the theory's CONSTANTS:
    Infra makes them cascade (any theorem whose statement mentions one is
    dropped too, via is_infra_thm); Uninterpreted leaves downstream theorems
    untouched -- and, since the marking is consulted before the built-in rules,
@@ -60,7 +61,7 @@ fun name_of_verdict Kept = "kept"
      theory added upstream then defaults to ordinary mathematics: machinery
      shows up as visible store noise, which is repairable, whereas a session
      default deletes mathematics silently (the Algebra_Aux incident).
-   Composition (41 names).  Infra (40):
+   Composition (53 names).  Infra (52):
    - 15 marked HOL-Decision_Procs theories — reflected-syntax machinery behind
      decision procedures.  The session's ordinary-mathematics theories
      (Algebra_Aux, Polynomial_List, DP_Library, Approximation,
@@ -71,6 +72,11 @@ fun name_of_verdict Kept = "kept"
      statement-level citations; evidence table in archive/plans/TOOL_THEORY_MARKING_LIST.md.
      `HOL.Random`, `HOL.Predicate_Compile` and `HOL.Code_Numeral` are
      deliberately absent — AFP entries state lemmas about their constants.
+   - 12 cvc5 proof-reconstruction theories new in Isabelle2026 (`HOL.SMT_CVC`, imported
+     by Main; `HOL.SMT_CVC_Real`, by Complex_Main; the ten `HOL.Alethe_*` rewrite
+     theories), vetted the same way (2026-11-11): their only constants, the cvc_*
+     list operators of Alethe_Rare_Nary_Ops, occur in no AFP 2026-10-26 theory and
+     nowhere in Isabelle outside the Alethe/SMT tooling.
    - `Minilang.Minilang`: internal proof-language plumbing (TAG/GOAL/PROTECT/
      ISO_* constants + their _def lemmas); `hide_const (open)` only hides the
      short names, the fully-qualified names still leak.
@@ -117,6 +123,19 @@ val infra_theories = [
   \<^unchecked_name>\<open>Tools.Code_Generator\<close>,
   "HOL-Real_Asymp.Multiseries_Expansion",
   "HOL-Real_Asymp.Lazy_Eval",
+  (* Isabelle2026 cvc5 proof reconstruction (12) *)
+  \<^unchecked_name>\<open>HOL.SMT_CVC\<close>,
+  \<^unchecked_name>\<open>HOL.SMT_CVC_Real\<close>,
+  \<^unchecked_name>\<open>HOL.Alethe_Arith_Real_Rewrites\<close>,
+  \<^unchecked_name>\<open>HOL.Alethe_Arith_Rewrites_Lemmas\<close>,
+  \<^unchecked_name>\<open>HOL.Alethe_Arith_Rewrites\<close>,
+  \<^unchecked_name>\<open>HOL.Alethe_Boolean_Rewrites_Lemmas\<close>,
+  \<^unchecked_name>\<open>HOL.Alethe_Boolean_Rewrites\<close>,
+  \<^unchecked_name>\<open>HOL.Alethe_Builtin_Rewrites\<close>,
+  \<^unchecked_name>\<open>HOL.Alethe_cvc5_Rewrites\<close>,
+  \<^unchecked_name>\<open>HOL.Alethe_Rare_Interface\<close>,
+  \<^unchecked_name>\<open>HOL.Alethe_Rare_Nary_Ops\<close>,
+  \<^unchecked_name>\<open>HOL.Alethe_UF_Rewrites\<close>,
   (* proof-language / evaluation plumbing (2) *)
   \<^unchecked_name>\<open>Minilang.Minilang\<close>,
   \<^unchecked_name>\<open>HOL.Code_Evaluation\<close>]
@@ -702,7 +721,8 @@ fun gen_infra_filters (context : Context.generic) =
        in a private scope) and shadowed names ("??." extern).  Such names also
        crash Universal_Key.key_of_theorem_collection: Name_Space.intern yields the
        "??."-hidden form and Name_Space.the_entry then fails with
-       "Inaccessible fact". *)
+       "Inaccessible fact".  Last, as for types, classes and locales: collections
+       declared in a marked theory. *)
     fun is_infra_dynamic_fact name =
       Symtab.defined dynamic_fact_blacklist name
       orelse exists (fn pfx => String.isPrefix pfx name) infra_dynamic_thy_prefixes
@@ -710,6 +730,7 @@ fun gen_infra_filters (context : Context.generic) =
       orelse Name_Space.is_concealed fact_space name
       orelse is_hidden fact_space name
       orelse String.isPrefix "??." (Facts.extern ctxt facts name)
+      orelse is_from_marked_theory fact_space name
 
     (* Exactly the decl-driven drops `is_infra_thm` adds — thm membership (by proposition)
        + the cascade of DECLARED infra constants — and nothing else.  Used by the caller
