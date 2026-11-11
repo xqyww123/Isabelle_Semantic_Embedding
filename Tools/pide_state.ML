@@ -12,7 +12,7 @@ Access PIDE document state via Scala functions:
   - make_command_at_position_callback: command_at_position as an RPC callback with a
     fixed context
 The cut of a file on disk needs a context: its keyword table comes from the theories the
-context sees, then from Build's registry.
+context sees, then from PIDE_Loader's (Build's registry and run-time loads).
 *)
 
 signature PIDE_STATE =
@@ -112,8 +112,9 @@ sig
     Context.generic option
 
   (* The finished theory whose master .thy file is the given file (same base name, then
-     the same OS file): among those the context sees, then in Build's registry of
-     session-build and heap theories.  The context's own unfinished theory is not
+     the same OS file): among those the context sees, then among PIDE_Loader's (Build's
+     registry of session-build and heap theories, and the theories a PIDE_Loader session
+     loaded at run time).  The context's own unfinished theory is not
      answered, so a replay never re-runs the command that asked. *)
   val theory_of_file: Context.generic -> string -> theory option
 
@@ -457,12 +458,14 @@ val reeval_cache :
   Synchronized.var \<^unchecked_name>\<open>PIDE_State.reeval_cache\<close> Symtab.empty;
 
 (* The theories a file lookup searches, in tiers: those the context sees (its own theory
-   included), then Build's registry, which holds only theories committed at the end of a
-   session build or loaded from a heap -- it misses those the context sees from the session
-   being built, from PIDE, or from Isa-REPL.  The first tier with a hit answers. *)
+   included), then PIDE_Loader's -- Build's registry (theories committed at the end of a
+   session build or loaded from a heap) plus the theories it loaded at run time through
+   the PIDE document, as for Isa-REPL's load_theory; it misses those of the session being
+   built, those Isa-REPL evaluates itself (its own theory tables), and those of other PIDE
+   front ends.  The first tier with a hit answers. *)
 fun known_theories context =
   [Theory.nodes_of (Context.theory_of context),
-   map_filter Build.lookup_theory (Build.all_theories ())];
+   map_filter PIDE_Loader.lookup_theory (PIDE_Loader.all_theories ())];
 
 (* Context.get_theory refuses a theory's own name while it is unfinished *)
 fun finished thy = can (Context.get_theory {long = true} thy) (Context.theory_long_name thy);
@@ -780,24 +783,27 @@ fun build_reeval_cache thy file_path =
           keywords = #keywords header, condition_bad = (false, ""), errors = [],
           initiators = []}
           (Theory.parents_of thy)
+      (* PIDE_Loader.init_theory checks the header options and evaluates its `condition`
+         as PIDE does for a document node: a theory skipped for its condition replays as
+         skipped, not by running the body the real theory never ran. *)
       val trs =
-        Outer_Syntax.parse_text fresh_thy (K {skip_theory = false, theory = fresh_thy})
+        Outer_Syntax.parse_text fresh_thy (PIDE_Loader.init_theory (#options header) fresh_thy)
           text_pos text
 
+      (* Each step under the theory options, as PIDE runs a command
+         (PIDE_Loader.with_theory_options) *)
       fun step tr (st, acc) =
-        let val st' = Toplevel.command_exception tr st
+        let val st' = PIDE_Loader.with_theory_options (Toplevel.command_exception tr) st
             val offset = the_default 0 (Position.offset_of (Toplevel.pos_of tr))
         in if offset > 0 andalso not (Toplevel.is_ignored tr)
            then (st', (offset, st') :: acc)
            else (st', acc)
         end
-      (* Under the header's options (build.ML:278-298 in load_thy) and in interactive
-         mode, as 2025-2's `Toplevel.command_exception true` was (toplevel.ML:650 in
-         begin_proof spells that `Interactive.setmp true`): a quick_and_dirty `sorry`
-         replays instead of failing the whole replay. *)
+      (* In interactive mode, as 2025-2's `Toplevel.command_exception true` was
+         (toplevel.ML:650 in begin_proof spells that `Interactive.setmp true`): a
+         quick_and_dirty `sorry` replays instead of failing the whole replay. *)
       val (_, entries_rev) =
-        Options.strict_thread_update (Options.update_no_pos (#options header))
-          (Interactive.setmp true (fold step trs)) (Toplevel.make_state NONE, [])
+        Interactive.setmp true (fold step trs) (Toplevel.make_state NONE, [])
       val entries = rev entries_rev
       val _ = writeln ("PIDE_State: cached " ^ string_of_int (length entries) ^
         " states for " ^ Context.theory_long_name thy)

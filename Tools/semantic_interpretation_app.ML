@@ -44,35 +44,34 @@ fun register_streaming_app name body =
           (REPL_Server.output cout packUnit ();
            BinIO.StreamIO.flushOut cout))
 
-      val old_writeln = !Private_Output.writeln_fn
-      val old_state = !Private_Output.state_fn
-      val old_information = !Private_Output.information_fn
-      val old_tracing = !Private_Output.tracing_fn
-      val old_warning = !Private_Output.warning_fn
-      val old_legacy = !Private_Output.legacy_fn
-      val old_error_message = !Private_Output.error_message_fn
+      (* A message carrying a document exec id (PIDE_Loader.is_document_message, the rule of
+         Isa-REPL's mute) belongs to a theory the PIDE document loads: it keeps its channel,
+         so a load running meanwhile, for any client, still reports its messages and errors.
+         The result puts back what it replaced. *)
       fun set_channels out_fn =
-        (Private_Output.writeln_fn := out_fn;
-         Private_Output.state_fn := out_fn;
-         Private_Output.information_fn := out_fn;
-         Private_Output.tracing_fn := out_fn;
-         Private_Output.warning_fn := (fn msgs => List.app (fn m => send ("### " ^ m)) msgs);
-         Private_Output.legacy_fn := (fn msgs => List.app (fn m => send ("legacy: " ^ m)) msgs);
-         Private_Output.error_message_fn := (fn (_, msgs) => List.app (fn m => send ("*** " ^ m)) msgs))
-      fun restore_channels () =
-        (Private_Output.writeln_fn := old_writeln;
-         Private_Output.state_fn := old_state;
-         Private_Output.information_fn := old_information;
-         Private_Output.tracing_fn := old_tracing;
-         Private_Output.warning_fn := old_warning;
-         Private_Output.legacy_fn := old_legacy;
-         Private_Output.error_message_fn := old_error_message)
+        let
+          fun capture r f =
+            let val old = !r
+            in
+              r := (fn x => if PIDE_Loader.is_document_message [] then old x else f x);
+              fn () => r := old
+            end
+          val restores =
+            [capture Private_Output.writeln_fn out_fn,
+             capture Private_Output.state_fn out_fn,
+             capture Private_Output.information_fn out_fn,
+             capture Private_Output.tracing_fn out_fn,
+             capture Private_Output.warning_fn (List.app (fn m => send ("### " ^ m))),
+             capture Private_Output.legacy_fn (List.app (fn m => send ("legacy: " ^ m))),
+             capture Private_Output.error_message_fn
+               (fn (_, msgs) => List.app (fn m => send ("*** " ^ m)) msgs)]
+        in fn () => List.app (fn restore => restore ()) restores end
     in
       \<^try>\<open>
         let
-          val _ = set_channels (fn msgs => List.app send msgs)
-          val _ = \<^try>\<open>body cin catch exn => (restore_channels (); Exn.reraise exn)\<close>
-          val _ = restore_channels ()
+          val restore_channels = set_channels (fn msgs => List.app send msgs)
+          (* finally, not catch: an interrupt (Isa-REPL's kill) skips a catch handler *)
+          val _ = \<^try>\<open>body cin finally restore_channels ()\<close>
           val _ = done ()
         in state end
       catch exn =>
@@ -86,12 +85,13 @@ fun register_streaming_app name body =
 
    Deliberately does NOT read the names itself.  Every app drains its whole protocol
    FIRST and only then does work that can fail, as the original collect app did: an
-   exception raised here -- Build.get_theory on a bad name, or a wedged RPC host
+   exception raised here -- PIDE_Loader.get_theory on a bad name, or a wedged RPC host
    in `load` -- would otherwise leave the client's remaining msgpack values unread in
-   the socket, and the next command on that connection would unpack them as itself. *)
+   the socket, and the next command on that connection would unpack them as itself.
+   PIDE_Loader, not Build: a root may be a theory the REPL loaded at run time. *)
 fun resolve_roots thy_names =
   let
-    val thys = map Build.get_theory thy_names
+    val thys = map PIDE_Loader.get_theory thy_names
     val _ = List.app Theory_Hash_Store.store_theory_hash thys
     val _ = Remote_Procedure_Calling.load ["Isabelle_Semantic_Embedding"]
   in thys end
