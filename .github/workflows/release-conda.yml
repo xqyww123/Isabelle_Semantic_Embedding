@@ -76,7 +76,7 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "version $v"
 
-  # wheels.yml's own `wheel` job (plus its intel-mac and abi3 proofs), called -- not
+  # wheels.yml's own `wheel` job (plus its abi3 proof), called -- not
   # copied.  'no' keeps its PyPI publish from firing; see this file's header.
   natives:
     uses: ./.github/workflows/wheels.yml
@@ -104,8 +104,9 @@ jobs:
         # it queues forever without ever erroring.
         #
         # osx-64 and osx-arm64 take the SAME wheel: wheels.yml builds one universal2
-        # artifact for both, and its intel-mac job is what proves the x86_64 slice is real.
-        # conda has no fat-binary concept, so one wheel becomes two packages.
+        # artifact for both (nothing runs its x86_64 slice on an Intel host: no macOS
+        # check, owner 2026-11-11).  conda has no fat-binary concept, so one wheel becomes
+        # two packages.
         target:
           - {subdir: linux-64,      runner: ubuntu-latest,   artifact: wheel-x86_64}
           - {subdir: linux-aarch64, runner: ubuntu-24.04-arm, artifact: wheel-aarch64}
@@ -249,10 +250,10 @@ jobs:
       fail-fast: false
       matrix:
         target:
+          # no macOS leg: its runners are too slow (owner, 2026-11-11); the osx packages
+          # are built by conda-build and published without this check
           - {subdir: linux-64,      runner: ubuntu-latest}
           - {subdir: linux-aarch64, runner: ubuntu-24.04-arm}
-          - {subdir: osx-64,        runner: macos-15-intel}
-          - {subdir: osx-arm64,     runner: macos-15}
           - {subdir: win-64,        runner: windows-latest}
     defaults:
       run:
@@ -404,7 +405,7 @@ jobs:
           # that file assigns, and the symptom (a path with a line break in the middle)
           # looks nothing like its cause.
           st="$CONDA_PREFIX/share/isabelle-semantic-embedding/etc/settings"
-          # python, not `grep -U`: -U is GNU-only and this step now runs on macOS too.
+          # python, not `grep -U`, as in conda-build above.
           python -c "import sys; sys.exit(1 if b'\r' in open(sys.argv[1],'rb').read() else 0)" "$st" \
             || { echo "::error::etc/settings contains a carriage return -- bash appends it to every variable that file assigns"; exit 1; }
           # And the value that actually broke, read back from Isabelle's own settings

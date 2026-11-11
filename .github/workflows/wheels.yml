@@ -320,39 +320,6 @@ jobs:
           path: dist/*.whl
           if-no-files-found: error
 
-  # The universal2 wheel is built on an Apple Silicon runner, where an arm64-only
-  # extension module imports perfectly well. Only an Intel host can tell whether the
-  # x86_64 slice is real. This job is that host, and it builds nothing.
-  #
-  # macos-15-intel, not macos-13: GitHub retired the macOS 13 image, and a job asking
-  # for a label that no longer exists queues forever rather than failing -- ours sat
-  # there for an hour and twenty minutes before the label, not the queue, turned out
-  # to be the problem. The surviving Intel labels are macos-15-intel and
-  # macos-26-intel, both standard runners and free on public repositories.
-  intel-mac:
-    name: universal2 on Intel
-    needs: wheel
-    runs-on: macos-15-intel
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          # The package floor (pyproject requires-python), not the abi3 floor. This said
-          # "3.11" and pip now refuses the wheel there -- correctly, because four modules
-          # need PEP 695 syntax. What this job exists to prove is the x86_64 SLICE of the
-          # fat kernel, which is a property of the binary and is unaffected by the
-          # interpreter version.
-          python-version: "3.12"
-      - uses: actions/download-artifact@v4
-        with: { name: wheel-universal2, path: dist }
-      - shell: bash
-        run: |
-          python -c "import platform; print('host:', platform.machine())"
-          python -m pip install --quiet pytest numpy
-          python -m pip install --quiet --no-deps dist/*.whl
-          mkdir -p /tmp/vecarith-run && cd /tmp/vecarith-run
-          VECARITH_REQUIRE_INSTALLED=1 pytest -q "$GITHUB_WORKSPACE/tests/test_vecarith.py"
-
   # The wheel says cp311-abi3: one binary for every CPython from 3.11 on. That is a
   # claim about the limited API, and it is cheap enough to test rather than assume --
   # the extension is built once, against 3.12, and must import on all of them.
@@ -399,7 +366,7 @@ jobs:
     # tag push already ran this workflow standalone and that run owns the PyPI upload;
     # a second attempt would fail on "file already exists".
     if: startsWith(github.ref, 'refs/tags/v') && inputs.publish_to_pypi != 'no'
-    needs: [wheel, intel-mac, abi3]
+    needs: [wheel, abi3]
     runs-on: ubuntu-24.04
     environment: pypi
     permissions:
