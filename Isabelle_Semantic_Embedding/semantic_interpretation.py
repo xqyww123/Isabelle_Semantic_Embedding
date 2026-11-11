@@ -48,6 +48,7 @@ from .semantics import (
 from .snapshot_sync import INTERPRETATION_LOCK_NAME
 
 if TYPE_CHECKING:
+    from .migration import MigrationContext
     from .semantics import Semantic_Vector_Store
 
 # --- Module-level configuration ---
@@ -1357,6 +1358,10 @@ def _write(task: InterpretationTask, idx: int, rec: 'SemanticRecord | None',
             version = rec.version or w.counter_value()
             baseline, digest = rec.baseline_interpretation, e.semantic_digest
         deps = (e.deps or []) if has_gate_fields else None
+        # The record keeps its predecessor's meaning only on an UNCHANGED verdict
+        # (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.8).
+        migrated_from = (rec.migrated_from
+                         if verdict is _Verdict.UNCHANGED and rec is not None else None)
         # The snapshot after this entity's own version: passed to a FRESH
         # evaluator over rec_cache, not read back from a fabricated record.
         ia = (_EffStar(task.rec_cache).eff_value(version, e.deps)  # type: ignore[arg-type]
@@ -1368,7 +1373,8 @@ def _write(task: InterpretationTask, idx: int, rec: 'SemanticRecord | None',
             theory_constituents=e.theory_constituents,
             position=e.position, from_collection=e.from_collection,
             semantic_digest=digest, deps=deps, version=version,
-            interpreted_at=ia, baseline_interpretation=baseline)
+            interpreted_at=ia, baseline_interpretation=baseline,
+            migrated_from=migrated_from)
     task.rec_cache[e.universal_key] = written    # "rec_cache == store" for every later eff*
     task.state[idx] = _DONE
     return judged and verdict is _Verdict.CHANGED
@@ -1609,6 +1615,7 @@ async def interpret_file(
     entries: list[Entry],
     driver: str = "",
     dry_run: bool = False,
+    migration: MigrationContext | None = None,
 ) -> InterpretationResult | int:
     """Interpret entities from an Isabelle theory file.
 
@@ -1633,6 +1640,9 @@ async def interpret_file(
             wall off a seed counted here; plan §5.2); exact at zero.  No LLM
             runs, no cost is written, and the theory is never marked
             interpreted.
+        migration: The run's migration context
+            (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.1); None when the
+            switch is off or the theory is WIP.
 
     Returns:
         InterpretationResult with per-entry interpretations, pretty-prints,
@@ -1663,9 +1673,14 @@ async def interpret_file(
     # seed's verdict is CHANGED (§5.3.1); until then the seed's record, which
     # still looks fresh, is rightly a wall.
     results: list[str | None] = [None] * n
-    recs = Semantic_DB.get_many([e.universal_key for e in entries])
-    rec_cache: 'dict[bytes, SemanticRecord | None]' = {
-        e.universal_key: r for e, r in zip(entries, recs)}
+    rec_cache: 'dict[bytes, SemanticRecord | None]' = dict(zip(
+        (e.universal_key for e in entries),
+        Semantic_DB.get_many([e.universal_key for e in entries])))
+    if migration is not None:
+        # The migration step (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.5-3.7):
+        # the previous generation's records copied in, before the scan reads them.
+        step = await migration.migrate(entries, rec_cache)
+    recs = [rec_cache[e.universal_key] for e in entries]
     # ε for a version-less record (§9 "ε epoch"): read, never put -- the gate
     # takes its own ε from its own transaction.
     epsilon = Semantic_DB.counter_snapshot()
@@ -1703,6 +1718,10 @@ async def interpret_file(
         else:
             seeds.append(i)
     not_enrolled = [i for i in range(n) if results[i] is not None]   # filled from the store
+    if migration is not None:
+        line = migration.count(entries, step, seeds)
+        if dry_run:
+            await _report(f"{theory_longname}: {line}")
 
     # The theory-internal dependency graph, reversed: dependents[j] lists the
     # entries whose deps name entry j; a CHANGED verdict on j enrols them
@@ -1912,17 +1931,32 @@ async def interpret_file(
 
 # --- RPC shims ---
 
+_MISMATCHED_HALVES = (
+    " the Isabelle/ML and Python halves are from different releases."
+    " Install matching versions (the conda package ships both"
+    " together; PyPI ships the Python half alone).")
+
+
+def _payload_of_wire(arg: Any) -> 'tuple[str, str, bytes, str, MigrationContext | None, list[Entry]]':
+    """Decode the argument of Semantic_Store.interpret_file / its dry-run twin
+    (one `pack_arg` on the ML side, so one decoder here)."""
+    from .migration import migration_context
+    if len(arg) != 6:
+        raise RuntimeError(
+            f"interpret_file payload has {len(arg)} components, expected 6:"
+            + _MISMATCHED_HALVES)
+    (file_path, theory_longname, theory_key, driver, handle, raw_entries) = arg
+    return (file_path, theory_longname, bytes(theory_key), driver,
+            migration_context(handle), _entries_of_wire(raw_entries))
+
+
 def _entries_of_wire(raw_entries: Any) -> list[Entry]:
-    """Decode the wire entries of Semantic_Store.interpret_file / its dry-run
-    twin (one `pack_arg` on the ML side, so one decoder here)."""
     from Isabelle_RPC_Host.universal_key import THM_RULE_KINDS
     for e in raw_entries:
         if len(e) != 11:
             raise RuntimeError(
                 f"interpret_file wire entry has {len(e)} components, expected 11:"
-                " the Isabelle/ML and Python halves are from different releases."
-                " Install matching versions (the conda package ships both"
-                " together; PyPI ships the Python half alone).")
+                + _MISMATCHED_HALVES)
     return [
         Entry(
             kind=kind,
@@ -1960,11 +1994,11 @@ def _entries_of_wire(raw_entries: Any) -> list[Entry]:
 
 @isabelle_remote_procedure("Semantic_Store.interpret_file")
 async def _interpret_file(arg: Any, connection: Connection) -> InterpretationResult:
-    (file_path, theory_longname, theory_key, driver, raw_entries) = arg
+    (file_path, theory_longname, theory_key, driver, migration,
+     entries) = _payload_of_wire(arg)
     result = await interpret_file(
-        connection, file_path, theory_longname, bytes(theory_key),
-        _entries_of_wire(raw_entries), driver
-    )
+        connection, file_path, theory_longname, theory_key, entries, driver,
+        migration=migration)
     assert isinstance(result, InterpretationResult)  # not a dry run
     return result
 
@@ -1997,11 +2031,11 @@ async def _interpret_file_dry_run(arg: Any, connection: Connection) -> int:
     ordinary run sends, the entries that are changed or uncached (the seed
     set, plan §5.2).  The driver field arrives as "" and is never read --
     nothing runs on this path."""
-    (file_path, theory_longname, theory_key, driver, raw_entries) = arg
+    (file_path, theory_longname, theory_key, driver, migration,
+     entries) = _payload_of_wire(arg)
     count = await interpret_file(
-        connection, file_path, theory_longname, bytes(theory_key),
-        _entries_of_wire(raw_entries), driver, dry_run=True
-    )
+        connection, file_path, theory_longname, theory_key, entries, driver,
+        dry_run=True, migration=migration)
     assert isinstance(count, int)  # the dry-run branch returns the count
     return count
 

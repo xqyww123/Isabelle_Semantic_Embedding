@@ -26,6 +26,7 @@ session Semantic_Embedding_Test = Semantic_Embedding +
     SSymb_Infra_Test
     Interpretation_Driver_Config_Test
     Interpretation_Lock_Test
+    Migration_Switch_Test
     Command_At_Position_Test
     Entity_Position_Test
     Link_Finder_Cons_Lazy

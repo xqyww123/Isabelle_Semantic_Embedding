@@ -14,6 +14,7 @@ from .premise_selection import (
 from .theory_structure import mk_unicode_file, theory_info
 from .hover import goto_definition, hover_message, command_at_position
 from .semantic_interpretation import interpret_file, _interpret_file
+from . import migration  # registers Semantic_Store.begin_migration / end_migration
 from .semantics import (
     Semantic_DB,
     mk_query_by_name_tool as query_by_name_tool,

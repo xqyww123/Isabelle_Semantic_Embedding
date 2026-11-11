@@ -1114,25 +1114,22 @@ async def stream_app_messages(c, sink=None) -> bool:
 
 
 def cmd_collect(args: argparse.Namespace) -> None:
-    if args.reinterpret and args.migrate_on_hash_change:
-        print("Error: --reinterpret and --migrate-on-hash-change are mutually exclusive.",
-              file=sys.stderr)
-        sys.exit(1)
     if args.re_embed and args.reinterpret:
         print("Error: --re-embed and --reinterpret are mutually exclusive.",
-              file=sys.stderr)
-        sys.exit(1)
-    if args.re_embed and args.migrate_on_hash_change:
-        print("Error: --re-embed and --migrate-on-hash-change are mutually exclusive.",
               file=sys.stderr)
         sys.exit(1)
     if args.re_embed and not args.embed_models:
         print("Error: --re-embed requires --embed-models.", file=sys.stderr)
         sys.exit(1)
+    if args.dry_run and not args.migrate_on_hash_change:
+        print("Error: --dry-run requires --migrate-on-hash-change.", file=sys.stderr)
+        sys.exit(1)
+    if args.dry_run and args.embed_models:
+        print("Error: --dry-run and --embed-models are mutually exclusive (a dry run "
+              "writes nothing).", file=sys.stderr)
+        sys.exit(1)
 
     import asyncio
-    import Isabelle_Semantic_Embedding.semantics as sem
-    sem.migrate_on_hash_change = args.migrate_on_hash_change
 
     # Interpretation phase (needs the REPL + RPC host). --re-embed skips it entirely
     # and goes straight to the offline embed below — no Isabelle required.
@@ -1175,16 +1172,18 @@ def cmd_collect(args: argparse.Namespace) -> None:
 
                 print("Running app...", flush=True)
                 await c.run_app("Semantic_Store.collect")
-                # Interpret-only protocol: (theory_names, force). Concurrency width is the
-                # REPL's own -o threads=N; there is no per-call override.
-                await c._write(targets, args.reinterpret)
+                # Interpret-only protocol: (theory_names, force, migrate, dry_run).
+                # Concurrency width is the REPL's own -o threads=N; there is no
+                # per-call override.
+                await c._write(targets, args.reinterpret, args.migrate_on_hash_change,
+                               args.dry_run)
 
                 has_error = await stream_app_messages(c)
 
                 if has_error:
                     print("Failed.", file=sys.stderr)
                     sys.exit(1)
-                else:
+                elif not args.dry_run:      # a dry run interpreted nothing
                     print("Interpretation done.")
 
         asyncio.run(main())
@@ -1375,7 +1374,14 @@ def main() -> None:
     p_collect.add_argument("--reinterpret", action="store_true",
         help="Re-interpret already-finished theories to pick up new entities")
     p_collect.add_argument("--migrate-on-hash-change", action="store_true",
-        help="Copy old data to new hash instead of re-interpreting when hash changes")
+        help="When a theory is first seen under a new hash, copy from its previous "
+             "generation every entity whose definition and dependencies kept their "
+             "meaning, and re-interpret the rest (the semantic change gate decides what "
+             "propagates). Persistent theories then also carry semantic digests. Release "
+             "builds only; the build store always runs with it.")
+    p_collect.add_argument("--dry-run", action="store_true",
+        help="Scan and migrate in memory, but write nothing, ask the LLM nothing and "
+             "mark nothing; print per theory what a live run would send and why.")
     p_collect.add_argument("--re-embed", action="store_true",
         help="Re-embed vectors for --embed-models (force, whole DB), not just the missing ones")
     p_collect.add_argument("--yes-embed", action="store_true",

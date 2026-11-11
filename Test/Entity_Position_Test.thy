@@ -345,7 +345,7 @@ let
   val _ = Remote_Procedure_Calling.load ["Isabelle_Semantic_Embedding"]
   val ctx = Context.Theory \<^theory>
   val {entries, tie_break_degraded, position_report, ...} =
-    Semantic_Store.enumerate_entries ctx
+    Semantic_Store.enumerate_entries NONE ctx
 
   (* The flag is what the backfill refuses on.  It must be false here: the theorem
      dedup below is only meaningful when check_theorem_name_in_file really ran. *)

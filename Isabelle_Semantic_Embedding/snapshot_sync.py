@@ -769,6 +769,22 @@ def _ships_predicate() -> 'Callable[[bytes, bytes], bool]':
     return _ships
 
 
+# The fields only the build store keeps (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md
+# §3.10, A9): version and interpreted_at are this store's counter values, which must
+# not leave it (SEMANTIC_CHANGE_GATE_PLAN.md §6.3), and the rest serve only its own
+# next migration.
+_BUILD_ONLY_FIELDS = dict.fromkeys((
+    "semantic_digest", "deps", "version", "interpreted_at", "baseline_interpretation",
+    "migrated_from"))
+
+
+def _shipped_record(raw: bytes) -> bytes:
+    """An entity record as the payload carries it: the build-only fields None.
+    An undecodable record stops the export rather than ship unstripped."""
+    from .semantics import Semantic_DB
+    return Semantic_DB._encode(Semantic_DB._decode(raw)._replace(**_BUILD_ONLY_FIELDS))
+
+
 def export(outdir: str) -> dict:
     """Rewrite the layered store at ``semantic_DB_dir()`` into a publishable
     system-DB payload at ``outdir``; returns the stamped manifest.
@@ -824,7 +840,8 @@ def export(outdir: str) -> dict:
         if not _ships(k, v):
             n_wip_dropped += 1
             continue
-        batch.append((k, v))
+        # a 16-byte key is a theory-status record, not an entity
+        batch.append((k, v if len(k) <= 16 else _shipped_record(v)))
         n_records += 1
         if len(batch) >= _EXPORT_BATCH:
             _flush(out_sem)

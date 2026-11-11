@@ -138,8 +138,6 @@ async def excluded_theory_names(connection: Connection) -> list[str]:
     return list(cached)  # tuple in the slot, fresh list out: no caller can edit the authority
 
 
-migrate_on_hash_change: bool = False
-
 # Write ceiling for semantics.lmdb.  LMDB does not preallocate: this only
 # reserves virtual address space, and the value passed at open() is the hard
 # limit for *writes* by that process (exceeding it raises MapFullError).
@@ -147,7 +145,9 @@ migrate_on_hash_change: bool = False
 # Keep every writer of semantics.lmdb on this one constant.  Raised from 1<<30
 # because `snapshot_sync` merges a remote snapshot into this store, and 1 GiB was the
 # lowest ceiling anywhere in the tree (isabelle_semantics's `remove` used 1<<33).
-SEMANTICS_MAP_SIZE: int = 1 << 32   # 4 GiB
+# Raised from 1<<32: a migrating release build holds two or three generations of
+# records at once (~3 GB each; ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §8).
+SEMANTICS_MAP_SIZE: int = 1 << 34   # 16 GiB
 
 # Keys per write transaction of a whole-store field backfill (backfill_field).
 # The unit is KEYS.  Deliberately separate from snapshot_sync._EXPORT_BATCH,
@@ -164,7 +164,7 @@ _WRITE_BATCH: int = 10_000
 # `unpack_fields`' padding destroys exactly the tuple-length signal
 # migrate_entity_positions._scan and the reached/not-reached audits exist to
 # read -- those keep reading len(msgpack.unpackb(raw)) raw.
-RECORD_FIELD_COUNT = 15   # keep equal to _encode's field count below
+RECORD_FIELD_COUNT = 16   # keep equal to _encode's field count below
 F_KIND, F_NAME, F_INTERPRETATION, F_POSITION, F_FROM_COLLECTION = 0, 1, 3, 12, 13
 
 
@@ -367,6 +367,13 @@ class _Semantic_DB:
         # Tracked kinds of WIP records only; None everywhere else and on every
         # record written before this field existed (read as CHANGED, §3).
         baseline_interpretation: 'str | None' = None
+        # --- cross-version migration (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.7) ---
+        # The key of the predecessor record (an older generation's) whose meaning
+        # this record still has.  None once this record's meaning was minted in
+        # its own generation, on every record without a predecessor, on every
+        # record written with the switch off, and on every record written before
+        # this field existed.
+        migrated_from: 'bytes | None' = None
         # A display record's entities block (ai-artifacts/LINK_LAYER_PLAN.md §2, D50):
         # document_text_of appends it and no renderer prints it -- the mirror image
         # of `experience`.  None on every stored record: a display record is built
@@ -464,21 +471,23 @@ class _Semantic_DB:
 
     @staticmethod
     def _decode(raw: bytes) -> 'Record':
-        """Decode a stored record.  Records with fewer than 15 fields read with the
+        """Decode a stored record.  Records with fewer than 16 fields read with the
         missing trailing fields (locale_provenance, theory_constituents, experience,
         goal_patterns, semantic_digest, deps, version, interpreted_at, position,
-        from_collection, baseline_interpretation) = None.
+        from_collection, baseline_interpretation, migrated_from) = None.
 
         The codec is positional tail-append (8 -> 12 with the incremental
         invalidation fields, CHECK_OUTDATE_PLAN.md §3.1; 12 -> 13 with the entity
         position, archive/plans/ENTITY_POSITION_PLAN.md §4; 13 -> 14 with from_collection,
         archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.2; 14 -> 15 with
-        baseline_interpretation, ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md §6.1).
+        baseline_interpretation, ai-artifacts/SEMANTIC_CHANGE_GATE_PLAN.md §6.1;
+        15 -> 16 with migrated_from, ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §8).
         NB code from before the 12-field
         codec truncates at [:8] and would DROP the four incremental fields on its
-        next write of the record, and code from before the 13-, 14- or 15-field codecs
-        drops `position` / `from_collection` / `baseline_interpretation` the same way -- do not run a pre-§3.1 or pre-position build
-        against a store that has them.
+        next write of the record, and code from before the 13-, 14-, 15- or 16-field
+        codecs drops `position` / `from_collection` / `baseline_interpretation` /
+        `migrated_from` the same way -- do not run an older build against a store
+        that has them.
 
         LEGACY (experiences written before goal_patterns became a real field): their
         patterns are a JSON list packed into ``expr``.  Unpack them HERE, at the storage
@@ -488,7 +497,7 @@ class _Semantic_DB:
         vals = unpack_fields(raw)
         (kind, name, expr, sem, prov_raw, consts_raw, experience, pats_raw,
          digest_raw, deps_raw, version, interpreted_at, position_raw,
-         from_coll_raw, baseline_raw) = vals[:RECORD_FIELD_COUNT]
+         from_coll_raw, baseline_raw, migrated_raw) = vals[:RECORD_FIELD_COUNT]
         d = _Semantic_DB._dec
         pats = [d(p) for p in pats_raw] if pats_raw is not None else None
         if pats is None and kind == int(EntityKind.EXPERIENCE) and expr is not None:
@@ -530,7 +539,8 @@ class _Semantic_DB:
                                    [bytes(u) for u in deps_raw] if deps_raw is not None else None,
                                    version, interpreted_at, position,
                                    d(from_coll_raw) if from_coll_raw is not None else None,
-                                   d(baseline_raw) if baseline_raw is not None else None)
+                                   d(baseline_raw) if baseline_raw is not None else None,
+                                   bytes(migrated_raw) if migrated_raw is not None else None)
 
     @staticmethod
     def _encode(record: 'Record') -> bytes:
@@ -556,7 +566,8 @@ class _Semantic_DB:
                               record.interpreted_at,
                               record.position,
                               record.from_collection,
-                              record.baseline_interpretation))  # type: ignore[return-value]
+                              record.baseline_interpretation,
+                              record.migrated_from))  # type: ignore[return-value]
 
     # --- the global version counter (CHECK_OUTDATE_PLAN.md §3.3) ---
     # One single-byte key, NOT a Record.  Length keeps it apart from everything
@@ -800,8 +811,8 @@ class _Semantic_DB:
 
         Writers that do NOT come through here must invalidate explicitly; the
         enumerated set is `delete`, `update_expr`, `declare_interpretation`,
-        `Gate_Writer.put_interpretation`, `repair_xor_prefixes`, `clean_wip`
-        and isabelle_semantics._execute_removal.  The record is encoded before
+        `Gate_Writer.put_interpretation`, `create_records`, `repair_xor_prefixes`,
+        `clean_wip` and isabelle_semantics._execute_removal.  The record is encoded before
         anything is written, so a record _encode refuses changes nothing."""
         raw = self._encode(record)
         invalidate_vectors([key])
@@ -944,6 +955,28 @@ class _Semantic_DB:
         txn.put(key, self._encode(rec))
         return rec
 
+    def create_records(self, records: 'dict[universal_key, Record]'
+                       ) -> 'dict[universal_key, tuple[Record, bool]]':
+        """Create-only batch write in ONE transaction
+        (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.7): a key is written only
+        where it reads as absent (`_raw_for_update`: no record, or a tombstone); a
+        live record is left alone.  Returns, per key, the record the store holds
+        afterwards and whether this call created it.
+
+        Vectors FIRST (ordering rule 1, see __setitem__), for every key: one that
+        turns out to hold a live record costs only a re-embed."""
+        invalidate_vectors(list(records))
+        out: 'dict[universal_key, tuple[_Semantic_DB.Record, bool]]' = {}
+        with self._ensure_env().begin(write=True) as txn:
+            for key, rec in records.items():
+                raw = self._raw_for_update(txn, key)
+                if raw is None:
+                    txn.put(key, self._encode(rec))
+                    out[key] = (rec, True)
+                else:
+                    out[key] = (self._decode(raw), False)
+        return out
+
     def _status_for_update(self, txn: Any, key: universal_key) -> dict:
         """A theory-status record ready for read-modify-write inside ``txn``:
         copy-up-then-modify, so a system-resident status is continued (its
@@ -1056,9 +1089,11 @@ class _Semantic_DB:
                                from_collection: 'str | None',
                                semantic_digest: 'bytes | None', deps: 'list[bytes] | None',
                                version: 'int | None', interpreted_at: 'int | None',
-                               baseline_interpretation: 'str | None') -> '_Semantic_DB.Record':
+                               baseline_interpretation: 'str | None',
+                               migrated_from: 'bytes | None') -> '_Semantic_DB.Record':
             """The one write of an interpreted entity (plan §5.4 step 5): the
-            text, the other wire fields and the gate fields together.  The
+            text, the other wire fields and the gate fields together, with
+            `migrated_from` (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.8).  The
             text changes, so the vectors are invalidated FIRST (ordering rule
             1, see __setitem__).  Creates the record when absent and resurrects
             a tombstoned key.  Returns the record as written."""
@@ -1069,7 +1104,8 @@ class _Semantic_DB:
                 theory_constituents=theory_constituents, position=position,
                 from_collection=from_collection, semantic_digest=semantic_digest,
                 deps=deps, version=version, interpreted_at=interpreted_at,
-                baseline_interpretation=baseline_interpretation), create=True)
+                baseline_interpretation=baseline_interpretation,
+                migrated_from=migrated_from), create=True)
 
         def update_gate_fields(self, key: universal_key, *,
                                semantic_digest: 'bytes | None', deps: 'list[bytes] | None',
@@ -1231,8 +1267,7 @@ class _Semantic_DB:
 
         Lock order is semantics -> experience_index, matching every other writer:
         mcp_http_server commits the record (closing that transaction) before
-        calling Experience_Index.add, and _migrate_constituent_records likewise
-        touches the index only after its write transaction exits.  Nothing ever
+        calling Experience_Index.add.  Nothing ever
         holds the index lock while wanting the semantics one, so no deadlock."""
         from .experience_index import Experience_Index
         with self._ensure_env().begin(write=True) as txn:
@@ -1341,33 +1376,6 @@ class _Semantic_DB:
         invalidate_vectors([bad for bad, _ in moved])
         return moved, conflicts
 
-    @staticmethod
-    def _copy_prefix(env: lmdb.Environment, old_prefix: bytes, new_prefix: bytes) -> int:
-        """Rekey prefix-addressed entries (theory records, namespace entities).
-
-        XOR-prefixed keys (theorem/rule AND experience keys) are skipped even
-        when their XOR pseudo-theory prefix coincides with old_prefix (a
-        single-constituent such key equals its constituent's hash byte-for-byte):
-        blindly rewriting the prefix would desynchronize the key from the
-        record's constituent list — they are rekeyed by
-        _migrate_constituent_records instead."""
-        from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key
-        assert len(old_prefix) == 16 and len(new_prefix) == 16
-        count = 0
-        with env.begin(write=True) as txn:
-            cursor = txn.cursor()
-            if cursor.set_range(old_prefix):
-                while True:
-                    key = bytes(cursor.key())
-                    if not key.startswith(old_prefix):
-                        break
-                    if not is_xor_prefixed_key(key):
-                        txn.put(new_prefix + key[16:], bytes(cursor.value()))
-                        count += 1
-                    if not cursor.next():
-                        break
-        return count
-
     def keys_belonging_to(self, theory_hashes: 'set[bytes]') -> list[bytes]:
         """All semantic-DB keys belonging to the given theories.
 
@@ -1391,193 +1399,19 @@ class _Semantic_DB:
         return result
 
     @staticmethod
-    def _moved_constituents(consts: 'list[tuple[str, bytes]]', old_hash: bytes,
-                            new_hash: bytes) -> 'tuple[list[tuple[str, bytes]], bytes] | None':
-        """`consts` with old_hash replaced by new_hash, and their XOR prefix; None
-        when old_hash is not among them.  A migration's one prefix computation: a
-        record's own new key and the `template_uk` naming it both come from here."""
+    def _moved_constituents(consts: 'list[tuple[str, bytes]]', moves: 'dict[bytes, bytes]'
+                            ) -> 'tuple[list[tuple[str, bytes]], bytes] | None':
+        """`consts` with every hash in `moves` replaced by its image, and their XOR
+        prefix; None when no hash of `consts` is in `moves`.  The cross-version
+        migration's one prefix computation: the predecessor map and the experience
+        move (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.4, §3.8) both come
+        from here."""
         from Isabelle_RPC_Host.universal_key import xor_theory_prefix
-        if not any(h == old_hash for _, h in consts):
+        if not any(h in moves for _, h in consts):
             return None
-        new_consts = [(n, new_hash if h == old_hash else h) for n, h in consts]
+        new_consts = [(n, moves.get(h, h)) for n, h in consts]
         return new_consts, xor_theory_prefix([h for _, h in new_consts])
 
-    def _moved_provenance(self, txn: Any, prov: Provenance, old_hash: bytes,
-                          new_hash: bytes, memo: 'dict[bytes, bytes]') -> Provenance:
-        """The pointers of `prov` after the migration from old_hash to new_hash
-        (TEMPLATE_UK_MIGRATION_PLAN.md §3.1 item 2).  A `template_uk` moves to its
-        target's new key when the target, read in `txn` (the user layer), is a
-        record whose constituents mention old_hash; a `locale_uk` under old_hash's
-        prefix moves to new_hash's, where _copy_prefix copies the locale's record.
-        Any other pointer stays.  `memo` caches the template moves of one scan."""
-        tuk = prov.template_uk
-        if tuk is not None:
-            if tuk not in memo:
-                raw = txn.get(tuk)
-                consts = (None if raw is None or is_tombstone(raw)
-                          else self._decode(bytes(raw)).theory_constituents)
-                moved = (self._moved_constituents(consts, old_hash, new_hash)
-                         if consts else None)
-                memo[tuk] = moved[1] + tuk[16:] if moved else tuk
-            tuk = memo[tuk]
-        luk = prov.locale_uk
-        if luk is not None and luk[:16] == old_hash:
-            luk = new_hash + luk[16:]
-        return prov._replace(template_uk=tuk, locale_uk=luk)
-
-    def _migrate_constituent_records(self, old_hash: bytes, new_hash: bytes
-                                     ) -> 'tuple[int, list[tuple[str, list[bytes]]]]':
-        """Rekey XOR-prefixed records (theorem/rule AND experience) whose
-        constituents mention old_hash, and move the stored pointers that name a
-        moved record (TEMPLATE_UK_MIGRATION_PLAN.md §3.1), in one scan.
-
-        Replaces old_hash with new_hash in the constituent list, recomputes
-        the XOR prefix, and copies the record (and any vector-store entries)
-        under the new key, its pointers moved.  Old entries are left in place,
-        mirroring _copy_prefix's copy semantics.  A record that is not rekeyed
-        but whose pointer moves is rewritten in place by raw put, its vectors
-        untouched (the `locale_provenance` grant, backfill_field).  Experience
-        records always carry a constituent list, so they never trip the
-        legacy-record guard below.
-
-        Returns the number of rekeyed records and, for each rekeyed record with
-        a pointer, its theory (the first component of its name) and its new
-        pointers, for _try_migrate's warning."""
-        from Isabelle_RPC_Host.universal_key import is_xor_prefixed_key, EntityKind
-        env = self._ensure_env()
-        rekeys: list[tuple[bytes, bytes, bytes]] = []
-        in_place: list[tuple[bytes, Provenance]] = []
-        holders: list[tuple[str, list[bytes]]] = []
-        memo: dict[bytes, bytes] = {}
-        # Experience keys additionally live in the (separate) inverted index,
-        # keyed by their constituent hashes — rekeying moves them there too.
-        # (old_key, new_key, old_hashes, new_hashes)
-        exp_rekeys: list[tuple[bytes, bytes, list[bytes], list[bytes]]] = []
-        with env.begin() as txn:
-            for key, val in txn.cursor():
-                key = bytes(key)
-                if not is_xor_prefixed_key(key):
-                    continue
-                if is_tombstone(val):
-                    continue          # a deleted record is not a migration source
-                rec = self._decode(bytes(val))
-                if rec.theory_constituents is None:
-                    raise ValueError(
-                        f"XOR-prefixed record {key.hex()} has no constituent list "
-                        "(pre-XOR legacy theorem/rule record); run migrate_xor_thm_keys.py first")
-                prov = rec.locale_provenance
-                new_prov = (None if prov is None
-                            else self._moved_provenance(txn, prov, old_hash, new_hash, memo))
-                moved = self._moved_constituents(rec.theory_constituents, old_hash, new_hash)
-                if moved is None:
-                    if new_prov is not None and new_prov != prov:
-                        in_place.append((key, new_prov))
-                    continue
-                new_consts, prefix = moved
-                new_key = prefix + key[16:]
-                rekeys.append((key, new_key, self._encode(
-                    rec._replace(theory_constituents=new_consts, locale_provenance=new_prov))))
-                if new_prov is not None:
-                    pointers = [p for p in (new_prov.template_uk, new_prov.locale_uk)
-                                if p is not None]
-                    if pointers:
-                        holders.append((rec.name.split(".")[0], pointers))
-                if key[16] == int(EntityKind.EXPERIENCE):
-                    exp_rekeys.append((key, new_key,
-                                       [h for _, h in rec.theory_constituents],
-                                       [h for _, h in new_consts]))
-        if in_place:
-            self._check_raw_put_grant("_migrate_constituent_records", ("locale_provenance",))
-        if rekeys or in_place:
-            with env.begin(write=True) as txn:
-                for _, new_key, new_val in rekeys:
-                    txn.put(new_key, new_val)
-                for key, prov in in_place:
-                    self._put_fields(txn, key, {"locale_provenance": prov})
-        if exp_rekeys:
-            from .experience_index import Experience_Index
-            for old_key, new_key, old_hashes, new_hashes in exp_rekeys:
-                Experience_Index.remove(old_key, old_hashes)
-                Experience_Index.add(new_key, new_hashes)
-        for venv in _iter_vector_store_envs():
-            with venv.begin(write=True) as vtxn:
-                for old_key, new_key, _ in rekeys:
-                    v = vtxn.get(old_key)
-                    if v is not None:
-                        vtxn.put(new_key, bytes(v))
-        return len(rekeys), holders
-
-    def _try_migrate(self, new_key: universal_key) -> bool:
-        import Isabelle_Semantic_Embedding.theory_hash_registry as theory_hash_registry
-
-        new_hash = bytes(new_key[:16])
-        # Never into a WIP hash (TEMPLATE_UK_MIGRATION_PLAN.md E13): it names the theory, not
-        # its content, WIP's change gate re-judges the copies, and clean_wip deletes them.
-        if is_WIP(new_hash):
-            return False
-        raw = theory_hash_registry._get_raw(new_hash)
-        if raw is None:
-            return False
-        new_name, _ = theory_hash_registry.decode_entry(raw)
-
-        # The LAYERED walk: a candidate found only in the system layer is
-        # harmless -- the migration-source check below reads the user-layer
-        # semantics.lmdb, finds nothing, and skips it.
-        candidates: list[tuple[bytes, int]] = []
-        for k, v in theory_hash_registry.iter_items():
-            if k == new_hash:
-                continue
-            name, ts = theory_hash_registry.decode_entry(v)
-            if name == new_name:
-                candidates.append((k, ts))
-
-        if not candidates:
-            return False
-        candidates.sort(key=lambda x: x[1], reverse=True)
-
-        sem_env = self._ensure_env()
-        old_hash: bytes | None = None
-        for candidate_hash, _ in candidates:
-            with sem_env.begin() as txn:
-                raw = txn.get(candidate_hash)
-            # `if raw` not `is not None`: a TOMBSTONE thy-status reads as "not
-            # finished" -- a tombstoned theory is never a migration source.
-            # (Deliberately a USER-layer read: migration copies within the user
-            # env, so a system-resident source would have nothing to copy.)
-            if raw and unpack_thy_status(raw).get(b"finished", False):
-                old_hash = candidate_hash
-                break
-
-        if old_hash is None:
-            return False
-
-        # Theorem/rule AND experience records reference theories through their
-        # constituent lists, not their key prefix — rekey them by XOR recomputation.
-        # The semantics _copy_prefix runs last: its one transaction carries the
-        # theory-status record, so a crash before it leaves the new hash
-        # unfinished and the next is_interpreted runs the whole migration again
-        # (TEMPLATE_UK_MIGRATION_PLAN.md §3.1 item 5).
-        n_thm, holders = self._migrate_constituent_records(old_hash, new_hash)
-
-        for venv in _iter_vector_store_envs():      # THE enumerator (plan §3.2)
-            self._copy_prefix(venv, old_hash, new_hash)
-
-        n = self._copy_prefix(sem_env, old_hash, new_hash)
-
-        print(f"Migrated {n} entries and {n_thm} constituent records for {new_name} "
-              f"from {old_hash.hex()[:12]}… to {new_hash.hex()[:12]}…")
-
-        # Only now: a moved locale_uk names the record the last step wrote.
-        pointers = [p for _, ps in holders for p in ps]
-        found = dict(zip(pointers, self.contains(pointers)))
-        dangling = [thy for thy, ps in holders if not all(found[p] for p in ps)]
-        if dangling:
-            theories = sorted(set(dangling))
-            shown = ", ".join(theories[:10]) + (
-                f" and {len(theories) - 10} more" if len(theories) > 10 else "")
-            print(f"Warning: {len(dangling)} records migrated for {new_name} point to a "
-                  f"template or locale that has no record (their theories: {shown})")
-        return True
 
 
 Semantic_DB = _Semantic_DB()
@@ -3084,11 +2918,7 @@ async def _query(arg: Any, connection: Connection) -> str | None:
 @isabelle_remote_procedure("Semantic_Store.is_interpreted")
 async def _is_interpreted(arg: Any, connection: Connection) -> bool:
     key, process_id, serial = bytes(arg[0]), arg[1], arg[2]
-    if Semantic_DB.is_thy_interpreted(key, process_id, serial):
-        return True
-    if migrate_on_hash_change and Semantic_DB._try_migrate(key):
-        return True
-    return False
+    return Semantic_DB.is_thy_interpreted(key, process_id, serial)
 
 
 @isabelle_remote_procedure("Semantic_Store.mark_interpreted")

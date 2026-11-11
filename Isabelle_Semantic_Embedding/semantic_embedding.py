@@ -1214,6 +1214,29 @@ def invalidate_vectors_in_store(path: str, keys: 'Sequence[bytes]', *,
         _report_store_problem(_store_problem_message(path, e))
 
 
+def copy_vectors(pairs: 'Sequence[tuple[bytes, bytes]]') -> None:
+    """For each (src, dst), copy src's vector to dst in every user vector store
+    where src has one (a tombstone is none): the cross-version migration's
+    created copies whose document text is unchanged
+    (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.7).  Vectors are a lazy
+    cache, so a store without src's vector leaves dst as it is.  One write
+    transaction per store; write failures are logged, as `invalidate_vectors`'
+    are."""
+    if not pairs:
+        return
+    os.makedirs(semantic_DB_dir(), exist_ok=True)
+    for path in user_vector_store_paths():
+        env = _get_lmdb_env(path)                  # open failures RAISE
+        try:
+            with env.begin(write=True) as txn:
+                for src, dst in pairs:
+                    v = txn.get(src)
+                    if v:
+                        txn.put(dst, bytes(v))
+        except (lmdb.Error, OSError) as e:
+            _report_store_problem(_store_problem_message(path, e))
+
+
 # Read-only system-layer stores, cached separately from the writable user
 # stores above: the same process never opens one path both ways (system store
 # directories live under the system DB, user ones under the cache dir).

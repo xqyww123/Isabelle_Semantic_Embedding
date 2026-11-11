@@ -156,7 +156,7 @@ let
             (Universal_Key.Constant \<^const_name>\<open>Test_All.dry_run_probe\<close>) false of
       NONE => ()
     | SOME _ => error "Test_All: probe vacuous -- dry_run_probe already cached")
-  val (works, _) = Semantic_Store.dry_run false [thy]
+  val (works, _) = Semantic_Store.dry_run false false [thy]
   val own = Semantic_Store.dry_run' (Context.Theory thy)
 in
   writeln ("dry-run metering of the current theory: " ^ string_of_int own);

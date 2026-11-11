@@ -26,8 +26,11 @@ signature SEMANTIC_STORE = sig
   val interpret : bool -> Context.generic -> unit
   (* The context is where the run reads `Semantic_Embedding.interpretation_driver`;
      it is read once, here, and carried down to every cone node as data.  Pass the
-     context the USER declared it in; the roots are theories. *)
-  val interpret_with_parallel : Context.generic -> bool -> theory list -> unit option
+     context the USER declared it in; the roots are theories.  The two flags are
+     `force` and `migrate`, the migration switch of `collect --migrate-on-hash-change`
+     (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.1); every other entry point
+     passes false. *)
+  val interpret_with_parallel : Context.generic -> bool -> bool -> theory list -> unit option
   (* The interpretation lock (SEMANTIC_CHANGE_GATE_PLAN.md §8): run `body` as the one
      live interpretation run on this database, or return NONE at once if another run
      holds the lock (D8: try once, never wait).  interpret_with_parallel is wrapped in
@@ -65,8 +68,9 @@ signature SEMANTIC_STORE = sig
      theory's UNCHANGED verdict walls off a dependent counted here); exact at zero
      (SEMANTIC_CHANGE_GATE_PLAN.md §5.2).  Counts only: no
      LLM call, no cost written, and no theory marked interpreted -- the same theories
-     stay due until a live run completes (write-back discipline 3). *)
-  val dry_run : bool -> theory list -> string list * int
+     stay due until a live run completes (write-back discipline 3).  The flags are
+     `force` and `migrate`, as for interpret_with_parallel. *)
+  val dry_run : bool -> bool -> theory list -> string list * int
   (* Level 2 alone, one theory, no level-1 due-filter -- exposed for sizing
      measurements (archive/plans/INFRA_FILTER_REWORK_PLAN.md step 4). *)
   val dry_run' : Context.generic -> int
@@ -94,7 +98,11 @@ signature SEMANTIC_STORE = sig
      invented from, NONE for a name adopted from the producer --
      archive/plans/DYNAMIC_MEMBER_NAMING_PLAN.md §2.2), semantic digest, dependency edges.  `tie_break_degraded` says the source-order offsets behind
      the theorem dedup are not real, so the surviving occurrence -- and hence its
-     position -- may be the wrong one (§8.6).  Exposed for tests. *)
+     position -- may be the wrong one (§8.6).  The argument is the handle of the
+     run's migration context, NONE when the migration switch is off; with a handle,
+     a persistent theory's entries get their digest and deps as a WIP theory's do,
+     and `migration` carries the handle (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md
+     §3.1-3.2).  Exposed for tests. *)
   type wire_entry =
     Universal_Key.entity * string * string * Entity_Position.entity_position option
     * Universal_Key.universal_key * string
@@ -103,9 +111,9 @@ signature SEMANTIC_STORE = sig
     * Word8Vector.vector option * Word8Vector.vector list
   type payload =
     {file_path: string, theory_longname: string, theory_key: Universal_Key.universal_key,
-     entries: wire_entry list, position_report: Entity_Position.report,
-     tie_break_degraded: bool}
-  val enumerate_entries : Context.generic -> payload
+     migration: int option, entries: wire_entry list,
+     position_report: Entity_Position.report, tie_break_degraded: bool}
+  val enumerate_entries : int option -> Context.generic -> payload
 
   (* The position backfill (archive/plans/ENTITY_POSITION_PLAN.md §8): give the records already
      collected from the AFP their entity positions, with no LLM involved.  Route A
@@ -454,9 +462,13 @@ local
   val pack_entry_kind = Universal_Key.pack_entity_kind
 
   val pack_arg =
-    fn {file_path, theory_longname, theory_key, driver, entries} =>
-    packTuple5
+    fn {file_path, theory_longname, theory_key, driver, migration, entries} =>
+    packTuple6
       (packString, packString, packBytes, packString,
+       (* The handle of the run's migration context
+          (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.1): NONE unless the switch
+          is on and the theory is persistent. *)
+       packOption packInt,
        (* The last two fields are the incremental-invalidation payload
           (CHECK_OUTDATE_PLAN.md §3.2, step 9): the entity's semantic digest
           (NONE for theorem-alike entities and for persistent theories) and its
@@ -476,7 +488,7 @@ local
                               packList (packPair (packString, packBytes)),
                               packOption packString,
                               packOption packBytes, packList packBytes)))
-      (file_path, theory_longname, theory_key, driver, entries)
+      (file_path, theory_longname, theory_key, driver, migration, entries)
 
   fun unpackUsage src =
     let val ((i, cw, cr, o_, c), src') = unpackTuple5 (unpackInt, unpackInt, unpackInt, unpackInt, unpackReal) src
@@ -494,7 +506,7 @@ val check_theorem_name_in_file_cmd :
 
 fun make_interpret_file_cmd callbacks :
     ({file_path: string, theory_longname: string, theory_key: Universal_Key.universal_key,
-      driver: string,
+      driver: string, migration: int option,
       entries: (Universal_Key.entity * string * string
                 * Entity_Position.entity_position option * Word8Vector.vector * string
                 * (Word8Vector.vector option * Word8Vector.vector option * string) option
@@ -519,7 +531,7 @@ fun make_interpret_file_cmd callbacks :
    interpretation agent's tools. *)
 val interpret_file_dry_run_cmd :
     ({file_path: string, theory_longname: string, theory_key: Universal_Key.universal_key,
-      driver: string,
+      driver: string, migration: int option,
       entries: (Universal_Key.entity * string * string
                 * Entity_Position.entity_position option * Word8Vector.vector * string
                 * (Word8Vector.vector option * Word8Vector.vector option * string) option
@@ -1566,15 +1578,17 @@ type wire_entry =
 (* One interpreter call (the interpret_file payload). *)
 type payload =
   {file_path: string, theory_longname: string, theory_key: Universal_Key.universal_key,
-   entries: wire_entry list, position_report: Entity_Position.report,
-   tie_break_degraded: bool}
+   migration: int option, entries: wire_entry list,
+   position_report: Entity_Position.report, tie_break_degraded: bool}
 
 (* The enumerate half of interpret' (CHECK_OUTDATE_PLAN.md §8's two-piece split):
    steps 1-6 -- enumerate the context's entities, build the wire entries, run the
    label-uniqueness assert -- with no LLM-side effect.  Shared verbatim by the live
    path (interpret') and the dry run (dry_run_payload), so both see the same
-   entities. *)
-fun enumerate_entries (context : Context.generic) : payload =
+   entities.  `migration` is the handle of the run's migration context, NONE when
+   the switch is off (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.1); the
+   payload carries it only for a persistent theory. *)
+fun enumerate_entries (migration : int option) (context : Context.generic) : payload =
   let
     (* 1. Get theory information *)
     val thy = Context.theory_of context
@@ -1892,9 +1906,11 @@ fun enumerate_entries (context : Context.generic) : payload =
           end) entries
       end
     (* --- semantic digest / deps (CHECK_OUTDATE_PLAN.md §3.2, step 9) ---
-       Computed ONLY for WIP theories: a persistent theory's keys are content-
-       addressed (Merkle prefix), so the key itself is the change signal and the
-       incremental fields stay absent (§2).  For a WIP theory, every entry gets
+       Computed for WIP theories, and for persistent ones when the migration switch
+       is on (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.2); otherwise a
+       persistent theory's keys are content-addressed (Merkle prefix), so the key
+       itself is the change signal and the incremental fields stay absent (§2).
+       Every such entry gets
        its dependency edges (as the targets' CURRENT universal keys -- the uk
        doubles as the edge's moment-in-time imprint, §4.3), and the four
        name-addressed kinds additionally get their semantic digest.  The entity
@@ -1902,7 +1918,7 @@ fun enumerate_entries (context : Context.generic) : payload =
        list is assumed. *)
     val wip = not (Theory_Hash.is_persistent (Theory_Hash.hash_of thy))
     val entries' =
-      if not wip then
+      if not (wip orelse is_some migration) then
         map (fn (k, nm, prop, epos, uk, hint, prov, consts, fc) =>
                (k, nm, prop, epos, uk, hint, prov, consts, fc, NONE, [])) entries
       else
@@ -1930,7 +1946,8 @@ fun enumerate_entries (context : Context.generic) : payload =
         in map attach entries end
   in
     {file_path = thy_file_path, theory_longname = thy_name,
-     theory_key = Universal_Key.key_of_theory' thy, entries = entries',
+     theory_key = Universal_Key.key_of_theory' thy,
+     migration = if wip then NONE else migration, entries = entries',
      position_report = position_report, tie_break_degraded = tie_break_degraded}
   end
 
@@ -1966,7 +1983,8 @@ fun interpret_file_callbacks (config_cb : Remote_Procedure_Calling.callback')
    context, carried down for the same reason (interpret_file_callbacks). *)
 fun send_for_interpretation (driver : string) (config_cb : Remote_Procedure_Calling.callback')
       (context : Context.generic)
-      ({file_path, theory_longname, theory_key, entries, ...} : payload) : usage * usage =
+      ({file_path, theory_longname, theory_key, migration, entries, ...} : payload)
+      : usage * usage =
   let
     val cmd = make_interpret_file_cmd (interpret_file_callbacks config_cb context)
 
@@ -1976,6 +1994,7 @@ fun send_for_interpretation (driver : string) (config_cb : Remote_Procedure_Call
       theory_longname = theory_longname,
       theory_key = theory_key,
       driver = driver,
+      migration = migration,
       entries = entries
     }
     val (_, _, current, cumulative) =
@@ -1990,9 +2009,9 @@ fun send_for_interpretation (driver : string) (config_cb : Remote_Procedure_Call
   end
 
 fun interpret' (driver : string) (config_cb : Remote_Procedure_Calling.callback')
-    (thy : theory) : usage * usage =
+    (migration : int option) (thy : theory) : usage * usage =
   let val context = Context.Theory thy
-      val payload = enumerate_entries context
+      val payload = enumerate_entries migration context
   in
     if null (#entries payload) then (zero_usage, zero_usage)
     else send_for_interpretation driver config_cb context payload
@@ -2004,18 +2023,18 @@ fun interpret' (driver : string) (config_cb : Remote_Procedure_Calling.callback'
    changed / uncached entities.  Their dependents are not counted -- whether a change
    propagates is decided by the semantic change gate after re-interpretation, which a
    dry run never runs.  Exact at zero.  No driver is involved: nothing runs. *)
-fun dry_run_payload ({file_path, theory_longname, theory_key, entries, ...} : payload)
-    : int =
+fun dry_run_payload
+      ({file_path, theory_longname, theory_key, migration, entries, ...} : payload) : int =
   if null entries then 0
   else
     Remote_Procedure_Calling.call_command interpret_file_dry_run_cmd
       {file_path = file_path, theory_longname = theory_longname,
-       theory_key = theory_key, driver = "", entries = entries}
+       theory_key = theory_key, driver = "", migration = migration, entries = entries}
     handle Remote_Procedure_Calling.Remote_Calling_Failure {message, ...} =>
       interpretation_rpc_error message
 
 fun dry_run' (context : Context.generic) : int =
-  dry_run_payload (enumerate_entries context)
+  dry_run_payload (enumerate_entries NONE context)
 
 (* Theories that are never interpreted: `base_theories`, the kernel and code-generator
    base every HOL theory sits on. They are still TRAVERSED THROUGH -- see collect_cone.
@@ -2139,14 +2158,14 @@ fun schedule_dag (label : string) (body : theory -> unit -> 'a) (cone : theory l
       end)
 
 fun interpret_cone (driver : string) (config_cb : Remote_Procedure_Calling.callback')
-      (force : bool) (cone : theory list) : usage * usage =
+      (force : bool) (migration : int option) (cone : theory list) : usage * usage =
   let
     (* An already-interpreted theory still gets a task: it relays the dependency edge on to
        its descendants without doing any work. *)
     fun body thy () =
       if skip_interpreted force thy then (zero_usage, zero_usage)
       else
-        let val r = interpret' driver config_cb thy
+        let val r = interpret' driver config_cb migration thy
             val _ = mark_interpreted thy
         in r end
     fun add2 ((c1, h1), (c2, h2)) = (add_usage (c1, c2), add_usage (h1, h2))
@@ -2205,7 +2224,7 @@ fun sweep_theory (pass : string) skip body thy =
     (warning (pass ^ ": skipping the non-persistent theory " ^
               Context.theory_long_name thy);
      skip ())
-  else body (enumerate_entries (Context.Theory thy))
+  else body (enumerate_entries NONE (Context.Theory thy))
 
 (* One theory.  There is no skip and no mark (L9): a repeat pass rewrites the same
    bytes, so "resume" is "rerun".  A refusal (§8.6) and a line mismatch (§5.2) both
@@ -2216,8 +2235,8 @@ fun backfill_theory (thy : theory) : backfill_report =
     (fn () =>
       {theories = 0, skipped = 1, refused = 0, hit_shortfall = 0, enumerated = 0,
        hit = 0, missing = 0, no_position = 0, unreadable = 0, line_mismatch = 0})
-    (fn {file_path = _, theory_longname, theory_key = _, entries, position_report,
-         tie_break_degraded} =>
+    (fn {file_path = _, theory_longname, theory_key = _, migration = _, entries,
+         position_report, tie_break_degraded} =>
     let
       val {no_file, unreadable, line_mismatch} = position_report
       fun report (theories, refused, hit_shortfall, hit, missing) : backfill_report =
@@ -2302,14 +2321,71 @@ fun backfill_cone (roots : theory list) : backfill_report =
   in total end
 
 
+(* --- a connection held for a whole run --- *)
+
+(* A connection of its own, held open for the whole of `body` and CLOSED afterwards,
+   never released to the pool: what the host ties to it (the interpretation lock, a
+   migration context) goes when the socket goes, so an interrupt anywhere in `body`
+   releases it too.  The finaliser is armed before the connection exists, and the
+   connect-and-record step is one uninterruptible bubble in which `get_connection` (it
+   may launch a host) stays interruptible through `run`: no interrupt can leave a
+   connection unguarded. *)
+fun with_held_connection (body : Remote_Procedure_Calling.connection -> 'a) : 'a =
+  let val conn : Remote_Procedure_Calling.connection option Unsynchronized.ref =
+        Unsynchronized.ref NONE
+  in
+    \<^try>\<open>
+      body (Thread_Attributes.uninterruptible_body (fn run =>
+              let val c = run Remote_Procedure_Calling.get_connection ()
+              in conn := SOME c; c end))
+    finally
+      (case ! conn of
+        SOME c => (try Remote_Procedure_Calling.close_connection c; ())
+      | NONE => ())\<close>
+  end
+
+(* --- the migration context (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.1) --- *)
+
+val begin_migration_cmd :
+    (bool * (string * Theory_Hash.hash) list, int) Remote_Procedure_Calling.command = {
+  name = \<^unchecked_name>\<open>Semantic_Store.begin_migration\<close>,
+  arg_schema = MessagePackBinIO.Pack.packPair (MessagePackBinIO.Pack.packBool,
+    MessagePackBinIO.Pack.packList (MessagePackBinIO.Pack.packPair
+      (MessagePackBinIO.Pack.packString, MessagePackBinIO.Pack.packBytes))),
+  ret_schema = MessagePackBinIO.Unpack.unpackInt,
+  callback = [], timeout = NONE}
+
+val end_migration_cmd : (int, string list) Remote_Procedure_Calling.command = {
+  name = \<^unchecked_name>\<open>Semantic_Store.end_migration\<close>,
+  arg_schema = MessagePackBinIO.Pack.packInt,
+  ret_schema = MessagePackBinIO.Unpack.unpackList MessagePackBinIO.Unpack.unpackString,
+  callback = [], timeout = NONE}
+
+(* Open a run's migration context on `conn`, the connection the run holds for its whole
+   length; Python drops the context when `conn` closes.  It is built from the (long
+   name, current hash) pairs of the cone and the base theories.  Returns its handle,
+   which the payload of each persistent theory carries. *)
+fun begin_migration (conn : Remote_Procedure_Calling.connection) (dry : bool)
+      (cone : theory list) : int =
+  Remote_Procedure_Calling.call_command' begin_migration_cmd conn
+    (dry, map (fn thy => (Context.theory_long_name thy, Theory_Hash.hash_of thy))
+              (base_theories @ cone))
+  handle Remote_Procedure_Calling.Remote_Calling_Failure {message, ...} =>
+    interpretation_rpc_error message
+
+(* Close the run's side of it and print the per-kind summary Python returns. *)
+fun end_migration (conn : Remote_Procedure_Calling.connection) (migration : int) : unit =
+  List.app writeln (Remote_Procedure_Calling.call_command' end_migration_cmd conn migration
+    handle Remote_Procedure_Calling.Remote_Calling_Failure {message, ...} =>
+      interpretation_rpc_error message)
+
 (* Level 1 of the dry run, and the very filter interpret_with_parallel applies: the
    theories in the ancestor cone of `roots` that still need interpretation.  Private
    since the dry run became the system's one workload metering (CHECK_OUTDATE_PLAN.md
    §8); the name survives because interpret_with_parallel's "same set ... by
    construction" comment leans on it. *)
-fun plan_interpretation (force : bool) (roots : theory list) : theory list =
+fun plan_interpretation (force : bool) (cone : theory list) : theory list =
   let
-    val cone = collect_cone roots
     val n = length cone
     (* One is_interpreted RPC per cone theory, sequentially: worth announcing. *)
     val _ = writeln (String.concat [
@@ -2322,9 +2398,10 @@ fun plan_interpretation (force : bool) (roots : theory list) : theory list =
    parallelism only: dry bodies neither mark nor skip (level 1 already picked the work
    set), and enumeration does not depend on ancestors' interpretation state, so the
    edges merely bound concurrency the same way a live run's do. *)
-fun dry_run (force : bool) (roots : theory list) : string list * int =
+fun dry_run (force : bool) (migrate : bool) (roots : theory list) : string list * int =
   let
-    val work = plan_interpretation force roots
+    val cone = collect_cone roots
+    val work = plan_interpretation force cone
     val m = length work
     val _ =
       if m = 0 then ()
@@ -2332,10 +2409,22 @@ fun dry_run (force : bool) (roots : theory list) : string list * int =
         "[Semantic_Embedding] Enumerating and cache-filtering entities of ",
         string_of_int m, (if m = 1 then " theory..." else " theories...")])
     (* Theory channel: enumerate once per theory and count via the RPC. *)
-    val counts =
+    fun count migration =
       schedule_dag \<^unchecked_name>\<open>Semantic_Store.dry_run\<close>
-        (fn thy => fn () => dry_run_payload (enumerate_entries (Context.Theory thy)))
+        (fn thy => fn () =>
+          dry_run_payload (enumerate_entries migration (Context.Theory thy)))
         work
+    (* A dry run takes no lock (D8), so its migration context lives on a connection of
+       its own (§3.1). *)
+    val counts =
+      if migrate then
+        with_held_connection (fn conn =>
+          let
+            val migration = begin_migration conn true cone
+            val counts = count (SOME migration)
+            val _ = end_migration conn migration
+          in counts end)
+      else count NONE
   in
     (map Context.theory_long_name work, fold (curry op +) counts 0)
   end
@@ -2348,32 +2437,19 @@ val try_acquire_cmd : (unit, bool) Remote_Procedure_Calling.command = {
   ret_schema = MessagePackBinIO.Unpack.unpackBool,
   callback = [], timeout = NONE}
 
-(* The lock is owned by a connection of its own, held open for the whole run and
-   CLOSED afterwards, never released to the pool: the host releases the lock when the
-   socket goes, so an interrupt anywhere in `body` releases it too.  The finaliser is
-   armed before the connection exists, and the connect-and-record step is one
-   uninterruptible bubble in which `get_connection` (it may launch a host) stays
-   interruptible through `run`: no interrupt can leave a connection unguarded. *)
+(* The lock is owned by a connection held for the whole run (with_held_connection): the
+   host releases the lock when the socket goes.  `body` gets that connection, on which a
+   run with the migration switch on opens its migration context. *)
+fun with_interpretation_lock' (body : Remote_Procedure_Calling.connection -> 'a)
+    : 'a option =
+  with_held_connection (fn c =>
+    if (Remote_Procedure_Calling.call_command' try_acquire_cmd c ()
+          handle Remote_Procedure_Calling.Remote_Calling_Failure {message, ...} =>
+            interpretation_rpc_error message)
+    then SOME (body c) else NONE)
+
 fun with_interpretation_lock (body : unit -> 'a) : 'a option =
-  let val conn : Remote_Procedure_Calling.connection option Unsynchronized.ref =
-        Unsynchronized.ref NONE
-  in
-    \<^try>\<open>
-      let
-        val c = Thread_Attributes.uninterruptible_body (fn run =>
-                  let val c = run Remote_Procedure_Calling.get_connection ()
-                  in conn := SOME c; c end)
-      in
-        if (Remote_Procedure_Calling.call_command' try_acquire_cmd c ()
-              handle Remote_Procedure_Calling.Remote_Calling_Failure {message, ...} =>
-                interpretation_rpc_error message)
-        then SOME (body ()) else NONE
-      end
-    finally
-      (case ! conn of
-        SOME c => (try Remote_Procedure_Calling.close_connection c; ())
-      | NONE => ())\<close>
-  end
+  with_interpretation_lock' (fn _ => body ())
 
 (* The startup check of a cone run (SEMANTIC_CHANGE_GATE_PLAN.md §5.6): Python resolves
    the embedding configuration through `config_cb` -- the very Config.lookup callback
@@ -2403,6 +2479,7 @@ fun check_embedding_service (config_cb : Remote_Procedure_Calling.callback') : u
 local
 
 fun interpret_with_parallel' (cfg_context : Context.generic) (force : bool)
+      (migrate : bool) (conn : Remote_Procedure_Calling.connection)
       (roots : theory list) : unit =
   let
     val driver = Config.get_generic cfg_context interpretation_driver
@@ -2412,6 +2489,9 @@ fun interpret_with_parallel' (cfg_context : Context.generic) (force : bool)
     val config_cb = Config.make_config_lookup_callback
                       (Context_Callbacks.static_context_unpacker cfg_context)
     val cone = collect_cone roots
+    (* On the lock's connection, before the nothing-to-do branch: a resume reaches
+       end_migration below too (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.1). *)
+    val migration = if migrate then SOME (begin_migration conn false cone) else NONE
     (* Same set plan_interpretation reports, by construction: the command shows the user
        a count, then this runs the work.  `cone` itself is still needed below -- interpret_cone
        turns its already-interpreted nodes into relay tasks so a work node waits for its
@@ -2440,7 +2520,8 @@ fun interpret_with_parallel' (cfg_context : Context.generic) (force : bool)
     (* Nothing to do (the common resume case): do not build a graph or fork relay tasks. *)
     val (total, hist) =
       if null work then (zero_usage, zero_usage)
-      else interpret_cone driver config_cb force cone
+      else interpret_cone driver config_cb force migration cone
+    val _ = Option.app (end_migration conn) migration
 
     val _ = vtr (String.concat [
         "[Semantic_Embedding] Done: ", Int.toString n_units, " theories. This run cost ",
@@ -2454,8 +2535,9 @@ in
 
 (* Every live run goes through the lock -- the unlocked body above is reachable from
    nowhere else; a dry run never does (D8). *)
-fun interpret_with_parallel cfg_context force roots =
-  with_interpretation_lock (fn () => interpret_with_parallel' cfg_context force roots)
+fun interpret_with_parallel cfg_context force migrate roots =
+  with_interpretation_lock' (fn conn =>
+    interpret_with_parallel' cfg_context force migrate conn roots)
 
 end
 
@@ -2466,7 +2548,7 @@ val lock_busy_error =
 (* Called by Interpretation_Lock_Test only; run_semantic_interpretation is the one user
    command on this path, so its text is reused deliberately (D17). *)
 fun interpret force context =
-  (case interpret_with_parallel context force [Context.theory_of context] of
+  (case interpret_with_parallel context force false [Context.theory_of context] of
     SOME () => ()
   | NONE => error lock_busy_error)
 
@@ -2498,7 +2580,7 @@ fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpa
            Theory.nodes_of, so the roots cover the whole cone. *)
         val _ = List.app Theory_Hash_Store.store_theory_hash roots
       in
-        if dry then dry_run force roots
+        if dry then dry_run force false roots
         else
           (* `context` for the config read whatever the roots are: only the
              caller's context carries its interpretation_driver declaration. *)
@@ -2506,7 +2588,7 @@ fun make_interpret_theory_callback (ctxt_unpack : Context_Callbacks.context_unpa
              metering.  ~1 says "not counted", distinct from a genuine ([], 0)
              nothing-to-do dry-run report.  Lock busy: the caller (aoa's startup
              check, _auto_embed) goes on with what is stored (D8). *)
-          ((case interpret_with_parallel context force roots of
+          ((case interpret_with_parallel context force false roots of
               SOME () => ()
             | NONE => writeln
                 "[Semantic_Embedding] Another semantic interpretation run is in progress \

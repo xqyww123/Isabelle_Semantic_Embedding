@@ -152,6 +152,11 @@ class _Experience_Index:
                     bucket.remove(uk)
                     self._put_bucket(txn, h, bucket)
 
+    def user_bucket(self, h: theory_hash) -> 'list[bytes]':
+        """The USER index's bucket of ``h``: the layer every write touches."""
+        with self._ensure_env().begin() as txn:
+            return self._get_bucket(txn, bytes(h))
+
     def remove_scanning(self, uk: universal_key) -> None:
         """Remove ``uk`` from every bucket, scanning the whole index.
 

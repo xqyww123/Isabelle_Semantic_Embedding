@@ -7,6 +7,10 @@
   Semantic_Store.collect -- collect semantic interpretations.
     Client sends: theory_names (msgpack string list — the roots to interpret)
                   force (msgpack bool – when true, re-interpret already-finished theories)
+                  migrate (msgpack bool – the migration switch of
+                    `collect --migrate-on-hash-change`,
+                    ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.1)
+                  dry_run (msgpack bool – run Semantic_Store.dry_run instead: write nothing)
 
   Semantic_Store.backfill_positions -- give already-collected records their entity
   positions (archive/plans/ENTITY_POSITION_PLAN.md §8.2).  No LLM is involved.
@@ -103,6 +107,8 @@ val _ = register_streaming_app \<^unchecked_name>\<open>Semantic_Store.collect\<
       in cin := cin'; ret end
     val thy_names = read (unpackList unpackString)
     val force = read unpackBool
+    val migrate = read unpackBool
+    val dry_run = read unpackBool
     val thys = resolve_roots thy_names
     (* Batch collection has no user context of its own, so the first root theory
        serves as the one whose `declare [[Semantic_Embedding.interpretation_driver]]`
@@ -112,12 +118,14 @@ val _ = register_streaming_app \<^unchecked_name>\<open>Semantic_Store.collect\<
     val cfg_context = (case thys of thy :: _ => Context.Theory thy
                         | [] => Context.Theory (Build.get_theory "Pure"))
   in
-    (case Semantic_Store.interpret_with_parallel cfg_context force thys of
-      SOME () => ()
-    | NONE => error
-        "Semantic_Store.collect: another semantic interpretation run is in progress on \
-        \this database. Two runs must never share a database; wait for the other run \
-        \to finish, then retry.")
+    if dry_run then ignore (Semantic_Store.dry_run force migrate thys)
+    else
+      (case Semantic_Store.interpret_with_parallel cfg_context force migrate thys of
+        SOME () => ()
+      | NONE => error
+          "Semantic_Store.collect: another semantic interpretation run is in progress on \
+          \this database. Two runs must never share a database; wait for the other run \
+          \to finish, then retry.")
   end)
 
 val _ = register_streaming_app \<^unchecked_name>\<open>Semantic_Store.backfill_positions\<close> (fn cin =>
