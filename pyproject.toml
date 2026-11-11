@@ -61,7 +61,13 @@ dependencies = [
     # so pip cannot resolve this floor.  Deliberate (user decision 2026-08-08): an
     # unresolvable floor fails loudly, where a lower one would install green and
     # misbehave at runtime.
-    "isabelle-rpc>=0.5.0",
+    # >=0.6.0, not >=0.5.0: the session calls Theory_Hash_Store
+    # (interpret_command.ML, semantic_store.ML, semantic_interpretation_app.ML),
+    # which isabelle-rpc has only from 0.6.0, where Theory_Hash moved to
+    # Performant_Isabelle_ML; 0.6.0 also covers 0.5.3's raw pos in
+    # Context_Callbacks.entry_of_name (Semantic_Store.declaring_commands) and 0.5.2's
+    # RPC_Pretty.plain_string (Tools/explain_term.ML, the Sledgehammer embedding).
+    "isabelle-rpc>=0.6.0",
     "rocksdict",
     # Floor, not a pin. liblmdb 0.9.35 (bundled in py-lmdb 2.x) carries no
     # corruption regression over 0.9.29 -- the arc trends safer. The ONE release to
