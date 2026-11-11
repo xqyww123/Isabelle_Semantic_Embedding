@@ -135,8 +135,9 @@ fun extract_nontrivial_constants (ctxt : Proof.context) (checked_term : term)
     val const_space = Consts.space_of (Proof_Context.consts_of ctxt)
     val {is_uninterpreted_const, ...} = Infra_Filter.gen_infra_filters context
 
+    (* PIDE_Loader, not Build: Main may be loaded at run time (a REPL on a logic without it) *)
     val main_thy_ancestors =
-      let val main_thy = Build.get_theory "Main"
+      let val main_thy = PIDE_Loader.get_theory "Main"
       in Strhashtab.make_set
            (Context.theory_long_name main_thy ::
             map Context.theory_long_name (Theory.ancestors_of main_thy))
