@@ -35,8 +35,8 @@ accepted-gap register is doc/invalidation_limitations.md #1/#2.
 
 signature SEMANTIC_DIGEST =
 sig
-  (* Per-pass precomputed state: the indexed axiom table and the
-     locale-parent index.  Building these per entity would be quadratic. *)
+  (* Per-pass precomputed state: the indexed axiom table and the index of
+     declared locale imports.  Building these per entity would be quadratic. *)
   type env
   val make_env: theory -> env
   val theory_of_env: env -> theory
@@ -73,6 +73,14 @@ sig
   (* The hash every payload goes through, exposed for the sensitivity suite's
      guard that no transformation sits between a payload and its hash. *)
   val digest_term: term -> Term_Digest.digest128
+
+  (* A locale's digest as `semantics_of` computes it, with the GIVEN imports
+     (parent locale, the terms its parameters are instantiated with) in place
+     of the declared ones.  A locale's name is in its payload, so two fixtures
+     never share a digest; this is how the sensitivity suite varies the imports
+     alone.  ERROR when the name is not a locale. *)
+  val locale_digest_with_imports:
+    env -> string -> (string * term list) list -> Term_Digest.digest128
 end;
 
 structure Semantic_Digest: SEMANTIC_DIGEST =
@@ -85,11 +93,12 @@ struct
 type env =
  {thy: theory,
   axioms: term Symtab.table,
-  (* locale long name -> its DEF-TIME parent locales.  Locale.dependencies_of
+  (* locale long name -> its DEF-TIME imports: each parent locale with the
+     morphism instantiating the parent's parameters.  Locale.dependencies_of
      is NOT exported (only its implementation is visible at locale.ML:259); the
      signature offers dest_dependencies, which yields every {source, target}
      edge in one traversal, so index it once here rather than per locale. *)
-  locale_parents: string list Symtab.table}
+  locale_imports: (string * morphism) list Symtab.table}
 
 (* Def-time-only filter (CHECK_OUTDATE_PLAN.md section 3.2, the A5 ruling): an
    edge's serial is the registration event's timestamp, and a def-time
@@ -108,13 +117,13 @@ type env =
 fun make_env thy : env =
  {thy = thy,
   axioms = Symtab.make_distinct (Theory.all_axioms_of thy),
-  locale_parents =
+  locale_imports =
     let
       val space = Locale.locale_space thy
     in
-      fold (fn {source, target, serial, ...} =>
+      fold (fn {source, target, morphism, serial, ...} =>
           if serial < #serial (Name_Space.the_entry space target)
-          then Symtab.cons_list (target, source)
+          then Symtab.cons_list (target, (source, morphism))
           else I)   (* post-hoc registration *)
         (Locale.dest_dependencies [] thy) Symtab.empty
     end}
@@ -598,7 +607,7 @@ fun sem_type (env: env) name =
    (S11/S12) can cross-check this against the test-only def-parse
    extraction. *)
 fun class_parents (env: env) name =
-  sort_strings (these (Symtab.lookup (#locale_parents env) name))
+  sort_strings (map #1 (these (Symtab.lookup (#locale_imports env) name)))
 
 fun sem_class (env: env) name =
   let
@@ -643,64 +652,98 @@ fun sem_class (env: env) name =
         SOME (digest_term (tagged "class" (Const (name, dummyT))), super_deps)
   end
 
-(* Locale content: its parameters (name and type, in DECLARATION order, which is
-   semantic here and so is not sorted) plus its axioms.
+(* A locale's own content: its name, its parameters (name and type, in
+   DECLARATION order, which is semantic here and so is not sorted) and the
+   propositions of its own `assumes` and `defines`; with the dependencies they
+   induce, one list per source.  ERROR when the name is not a locale.
    NB Locale.params_of returns ((string * typ) * mixfix) list -- the parameter
    name is a plain string, not a binding. *)
-fun sem_locale (env: env) name =
+fun locale_own (env: env) name =
   let
     val thy = #thy env
     val params = Locale.params_of thy name
-    (* Locale.axioms_of is NOT the `assumes`.  Pure keeps only b_axioms in the
-       locale record, and expression.ML:762 sets b_axioms = [] whenever no
-       import contributes an assertion predicate -- i.e. for every locale with
-       no parent, and every class-generated locale whose parents assert nothing.
-       Measured: Groups.semigroup, which literally states `assumes assoc`, has
-       axioms_of = 0; Orderings.preorder likewise.  Digesting that list alone
-       would leave `locale semigroup` unchanged when assoc becomes commutativity.
+    (* Locale.axioms_of is NOT the `assumes`, and is not read at all.  Pure
+       keeps only b_axioms in the locale record, and expression.ML:762 sets
+       b_axioms = [] whenever no import contributes an assertion predicate --
+       i.e. for every locale with no parent, and every class-generated locale
+       whose parents assert nothing.  Measured: Groups.semigroup, which
+       literally states `assumes assoc`, has axioms_of = 0; Orderings.preorder
+       likewise.  Where it is not empty it holds the parents' predicate
+       instances and, if the locale states assumptions, its own `_axioms`
+       predicate: nothing that the import items (locale_payload) and the
+       propositions below do not state.
 
        hyp_spec_of returns the declared elements, from which the Assumes carry
        the real propositions. *)
     (* hyp_spec holds BOTH element kinds: Pure's own predicate is
        `is_hyp = fn Assumes _ => true | Defines _ => true | _ => false`
        (expression.ML:800).  Matching only Assumes silently drops every
-       `locale ... defines ...`, and the axioms_of fall-back cannot recover them
-       either -- eval_text passes a Defines through untouched
-       (expression.ML:616), so the locale's axioms never contain the defining
+       `locale ... defines ...`: eval_text passes a Defines through untouched
+       (expression.ML:616), so no axiom of the locale contains the defining
        body.  Main declares no such locale; HOL-Algebra has roughly 33 (Sylow,
        UnivPoly, residues, ...). *)
-    fun hyp_props () =
+    val hyps =
       Locale.hyp_spec_of thy name
       |> maps (fn Element.Assumes asms => maps (fn (_, ts) => maps (op ::) ts) asms
                 | Element.Defines defs => map (fn (_, (t, _)) => t) defs
                 | _ => [])
-    val axiom_props =
-      (case hyp_props () of
-         [] => map Thm.prop_of (Locale.axioms_of thy name)
-       | ts => ts)
     (* Parameters are Free, as they also occur in the propositions.  Free is
        invisible to deps_of_term, which is wanted: a parameter is locale-local,
        not an entity to depend on.  Its TYPE still contributes dependencies.
        Renaming a parameter moves the digest (see digest_term). *)
     val param_payload =
       fold (fn ((nm, T), _) => fn acc => Free (nm, T) $ acc) params nil_payload
-    val payload =
-      tagged "locale"
-        (Const (name, dummyT) $ param_payload $
-         fold (fn p => fn acc => tagged "ax" p $ acc) axiom_props nil_payload)
     val param_type_deps =
       unions (map (fn ((_, T), _) => deps_of_term (typ_payload T)) params)
-    (* REGRESSION: parent locales are dependencies, exactly as superclasses are
-       for a class -- ask for them explicitly rather than hoping a parent
-       predicate shows up as a Const inside some proposition.  Locales with a
-       predicate parent AND their own assumes (Groups.abel_semigroup,
-       Groups.monoid, Orderings.ordering_top) otherwise get no path to it. *)
-    val parent_deps =
-      map (pair Universal_Key.LocaleK)
-        (sort_strings (the_default [] (Symtab.lookup (#locale_parents env) name)))
   in
-    SOME (digest_term payload,
-          unions (parent_deps :: param_type_deps :: map deps_of_term axiom_props))
+    (Const (name, dummyT) $ param_payload $
+       fold (fn p => fn acc => tagged "ax" p $ acc) hyps nil_payload,
+     param_type_deps :: map deps_of_term hyps)
+  end
+
+(* One declared import: the parent locale applied to the terms its parameters
+   are instantiated with, in the parent's parameter order.  The qualifier
+   (`A:` in `A: parent p`) stays out: it names the inherited facts and does not
+   change what the locale states. *)
+fun import_item (source, args) =
+  tagged "import" (list_comb (Const (source, dummyT), args))
+
+(* The imports are a SET of items: neither the order in which a declaration
+   lists them nor a repeated identical import changes what the locale means.
+   Items equal up to bound-variable names are one item (term_ord), as Isabelle
+   identifies locale instances.  A locale WITHOUT imports keeps the
+   three-component payload -- the digests stored before the imports entered
+   the payload stay valid for it -- and the fourth component keeps the two
+   shapes apart. *)
+fun locale_payload own imports =
+  tagged "locale"
+    (case sort_distinct Term_Ord.term_ord (map import_item imports) of
+       [] => own
+     | items => own $ fold (fn i => fn acc => i $ acc) items nil_payload)
+
+fun locale_digest_with_imports env name imports =
+  digest_term (locale_payload (#1 (locale_own env name)) imports)
+
+(* The imports of the DECLARATION (make_env's serial filter), each with the
+   terms Isabelle recorded for the parent's parameters. *)
+fun declared_imports (env: env) name =
+  map (fn (source, morph) => (source, Locale.instance_of (#thy env) source morph))
+    (these (Symtab.lookup (#locale_imports env) name))
+
+fun sem_locale (env: env) name =
+  let
+    val (own, own_deps) = locale_own env name
+    (* Digest and deps are read off this ONE list, so they cannot disagree
+       about what the locale imports. *)
+    val imports = declared_imports env name
+    (* The parents are dependencies, as superclasses are for a class; so is
+       every entity an argument mentions -- a constant occurring only there
+       shapes what the locale states as one in an assumption does. *)
+    val parent_deps =
+      map (pair Universal_Key.LocaleK) (sort_distinct string_ord (map #1 imports))
+  in
+    SOME (digest_term (locale_payload own imports),
+          unions (parent_deps :: own_deps @ map deps_of_term (maps #2 imports)))
   end
   handle ERROR _ => NONE
 

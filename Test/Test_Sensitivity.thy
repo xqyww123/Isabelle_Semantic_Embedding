@@ -98,6 +98,161 @@ in
 end
 \<close>
 
+subsection \<open>S3, continued: a locale's declared imports are part of its digest\<close>
+
+locale sens_shift = sens_parent "\<lambda>n. p (n + 1)" for p :: "nat \<Rightarrow> bool" + assumes "p 5"
+locale sens_twice = A: sens_parent p + B: sens_parent q for p q
+locale sens_swap = sens_twice q p for p q
+locale sens_plain0 = sens_parent p for p
+locale sens_fixes = fixes f :: "nat \<Rightarrow> nat"
+(* two parameters and two assumptions, declared against the order of Term_Ord.term_ord *)
+locale sens_two = fixes b :: "nat \<Rightarrow> bool" and a :: "nat \<Rightarrow> bool" assumes "b 0" and "a 1"
+locale sens_late = sens_parent p for p + assumes p1: "p 1"
+(* registered AFTER the declaration, with an argument no declared import has *)
+sublocale sens_late \<subseteq> X: sens_parent "\<lambda>n. p (n + 1)" by unfold_locales (simp only: add_0_left p1)
+
+ML \<open>
+(* A locale's name is in its payload, so the digests of two fixtures always
+   differ and prove nothing.  locale_digest_with_imports varies the imports of
+   ONE locale; the production digest must be that function at the imports of
+   the declaration. *)
+let
+  val thy = \<^theory>
+  val env3 = Semantic_Digest.make_env thy
+  val parent = \<^locale>\<open>Test_Sensitivity.sens_parent\<close>
+  val child = \<^locale>\<open>Test_Sensitivity.sens_child\<close>
+  val def = \<^locale>\<open>Test_Sensitivity.sens_def\<close>
+  val shifted = \<^locale>\<open>Test_Sensitivity.sens_shift\<close>
+  val twice = \<^locale>\<open>Test_Sensitivity.sens_twice\<close>
+  val swap = \<^locale>\<open>Test_Sensitivity.sens_swap\<close>
+  val plain0 = \<^locale>\<open>Test_Sensitivity.sens_plain0\<close>
+  val fixes = \<^locale>\<open>Test_Sensitivity.sens_fixes\<close>
+  val two = \<^locale>\<open>Test_Sensitivity.sens_two\<close>
+  val late = \<^locale>\<open>Test_Sensitivity.sens_late\<close>
+  fun sem n = Semantic_Digest.semantics_of env3 (Universal_Key.Locale n)
+  fun digest n = (case sem n of SOME (SOME d, _) => d | _ => error ("no digest: " ^ n))
+  fun deps n = (case sem n of SOME (_, ds) => ds | NONE => [])
+  val with_imports = Semantic_Digest.locale_digest_with_imports env3
+  val P = Free ("p", \<^typ>\<open>nat \<Rightarrow> bool\<close>)
+  val Q = Free ("q", \<^typ>\<open>nat \<Rightarrow> bool\<close>)
+  val shift = \<^term>\<open>\<lambda>n. (p :: nat \<Rightarrow> bool) (n + 1)\<close>
+  val declared = [(parent, [P])]
+  (* payloads rebuilt by hand from the literal names in semantic_digest.ML *)
+  val nilP = Const ("Semantic_Digest.nil", dummyT)
+  fun tag s t = Const ("Semantic_Digest.kind." ^ s, dummyT) $ t
+  fun hand n params hyps = Const (n, dummyT) $ params $ hyps
+  val twice_own = hand twice (Q $ (P $ nilP)) nilP
+in
+  check "S3e  sens_child's digest is the one with its declared import"
+    (digest child = with_imports child declared);
+  check "S3f  sens_shift's digest is the one with its instantiated import"
+    (digest shifted = with_imports shifted [(parent, [shift])]);
+  check "S3g  sens_twice's digest is the one with both its imports"
+    (digest twice = with_imports twice [(parent, [P]), (parent, [Q])]);
+
+  check "S3h  dropping the import changes the digest"
+    (with_imports child declared <> with_imports child []);
+  check "S3i  importing another parent changes the digest"
+    (with_imports child declared <> with_imports child [(def, [P])]);
+  check "S3j  another instantiation of the parent changes the digest"
+    (with_imports child declared <> with_imports child [(parent, [shift])]);
+  check "S3k  importing the parent a second time changes the digest"
+    (with_imports child declared <> with_imports child [(parent, [P]), (parent, [Q])]);
+
+  check "S3l  the order of the imports does not change the digest"
+    (with_imports child [(parent, [P]), (def, [Q])] =
+     with_imports child [(def, [Q]), (parent, [P])]);
+  check "S3m  a repeated identical import counts once"
+    (with_imports child [(parent, [P]), (parent, [P])] = with_imports child declared);
+  check "S3n  which argument goes to which parent changes the digest"
+    (with_imports child [(parent, [P]), (def, [Q])] <>
+     with_imports child [(parent, [Q]), (def, [P])]);
+
+  (* A locale without imports keeps the three-component payload: its stored
+     digests stay valid. *)
+  check "S3o  sens_parent (no import) has the three-component payload"
+    (let val d = Semantic_Digest.digest_term (tag "locale"
+        (hand parent (P $ nilP)
+          (tag "ax" (HOLogic.mk_Trueprop (P $ \<^term>\<open>0::nat\<close>)) $ nilP)))
+     in digest parent = d andalso with_imports parent [] = d end);
+  (* ...also where the removed fallback used to consult Locale.axioms_of: that
+     list is empty for a locale without imports. *)
+  check "S3p  sens_fixes (no import, no assumption): axioms_of is empty, payload unchanged"
+    (null (Locale.axioms_of thy fixes) andalso
+     digest fixes = Semantic_Digest.digest_term (tag "locale"
+       (hand fixes (Free ("f", \<^typ>\<open>nat \<Rightarrow> nat\<close>) $ nilP) nilP)));
+
+  (* The fallback is gone: Locale.axioms_of is not empty here, yet the
+     assumptions component is, and no edge leads to the parent's predicate. *)
+  check "S3q  sens_plain0 (an import, no assumption): empty assumptions, one import item"
+    (not (null (Locale.axioms_of thy plain0)) andalso
+     digest plain0 = Semantic_Digest.digest_term (tag "locale"
+       (hand plain0 (P $ nilP) nilP $ (tag "import" (Const (parent, dummyT) $ P) $ nilP))));
+  check "S3r  sens_plain0 has no ConstantK edge to the predicate constant sens_parent"
+    (not (member (op =) (deps plain0)
+       (Universal_Key.ConstantK, \<^const_name>\<open>Test_Sensitivity.sens_parent\<close>)));
+
+  check "S3s  a sublocale registered later does not enter sens_late's digest"
+    (length (filter (fn {target, ...} => target = late) (Locale.dest_dependencies [] thy)) = 2
+     andalso digest late = with_imports late declared
+     andalso digest late <> with_imports late [(parent, [P]), (parent, [shift])]);
+
+  check "S3t  swapped arguments of one import change the digest"
+    (with_imports child [(twice, [P, Q])] <> with_imports child [(twice, [Q, P])]);
+  check "S3u  the type of an argument is part of the digest"
+    (with_imports child declared <>
+     with_imports child [(parent, [Free ("p", \<^typ>\<open>int \<Rightarrow> bool\<close>)])]);
+  check "S3v  sens_swap's arguments are in the PARENT's parameter order"
+    (digest swap = with_imports swap [(twice, [Q, P])] andalso
+     digest swap <> with_imports swap [(twice, [P, Q])]);
+
+  check "S3w  sens_shift depends on Groups.plus, which occurs only in an import's argument"
+    (member (op =) (deps shifted)
+       (Universal_Key.ConstantK, \<^const_name>\<open>Groups.plus_class.plus\<close>));
+  check "S3x  sens_twice has exactly one LocaleK edge, to sens_parent"
+    (filter (fn (k, _) => k = Universal_Key.LocaleK) (deps twice) =
+       [(Universal_Key.LocaleK, parent)]);
+  (* no import, no assumption: the parameter's type is the only source of deps *)
+  check "S3y  sens_fixes depends on exactly the types of its parameter"
+    (eq_set (op =) (deps fixes,
+       [(Universal_Key.TypeK, \<^type_name>\<open>fun\<close>),
+        (Universal_Key.TypeK, \<^type_name>\<open>nat\<close>)]));
+
+  (* The ORDER inside the payload's lists: parameters and assumptions as declared,
+     import items by Term_Ord.term_ord; in each list the last element is outermost.
+     Stored digests depend on it. *)
+  check "S3z  sens_two (no import): parameters and assumptions in declaration order"
+    (let
+       val A = Free ("a", \<^typ>\<open>nat \<Rightarrow> bool\<close>)
+       val B = Free ("b", \<^typ>\<open>nat \<Rightarrow> bool\<close>)
+     in
+       digest two = Semantic_Digest.digest_term (tag "locale"
+         (hand two (A $ (B $ nilP))
+           (tag "ax" (HOLogic.mk_Trueprop (A $ \<^term>\<open>1::nat\<close>)) $
+             (tag "ax" (HOLogic.mk_Trueprop (B $ \<^term>\<open>0::nat\<close>)) $ nilP))))
+     end);
+  check "S3aa sens_twice: the payload with its two import items"
+    (digest twice = Semantic_Digest.digest_term (tag "locale"
+       (twice_own $
+         (tag "import" (Const (parent, dummyT) $ Q) $
+           (tag "import" (Const (parent, dummyT) $ P) $ nilP)))));
+  (* "aa" precedes "p" alphabetically (term_ord) and follows it by length (fast_term_ord) *)
+  check "S3ab import items are ordered by Term_Ord.term_ord"
+    (let val AA = Free ("aa", \<^typ>\<open>nat \<Rightarrow> bool\<close>) in
+       with_imports twice [(parent, [P]), (parent, [AA])] =
+       Semantic_Digest.digest_term (tag "locale"
+         (twice_own $
+           (tag "import" (Const (parent, dummyT) $ P) $
+             (tag "import" (Const (parent, dummyT) $ AA) $ nilP))))
+     end);
+  (* the FIRST of the two is kept: the instance Isabelle activates *)
+  check "S3ac imports equal up to bound-variable names are one item, the first"
+    (with_imports child
+       [(parent, [shift]), (parent, [\<^term>\<open>\<lambda>m. (p :: nat \<Rightarrow> bool) (m + 1)\<close>])] =
+     with_imports child [(parent, [shift])])
+end
+\<close>
+
 subsection \<open>S4 type: typedef representing set, also when ctr_sugar answers\<close>
 
 ML \<open>
