@@ -3,6 +3,7 @@
 Run with  python -m pytest contrib/Semantic_Embedding/tests/test_cross_version_migration.py
 """
 import asyncio
+import logging
 
 import msgpack
 import pytest
@@ -20,6 +21,11 @@ from layered_db import (  # noqa: F401
 pytestmark = pytest.mark.usefixtures("cache")
 
 Record = S.SemanticRecord
+
+# The connection doubles' logger: no file handler of its own, and none borrowed from
+# pytest's root (a FileHandler on /dev/null), so _host_log_dir falls back to the DB dir.
+_DOUBLES_LOGGER = logging.getLogger("test_cross_version_migration")
+_DOUBLES_LOGGER.propagate = False
 OLD = thm([bytes.fromhex("22" * 16)], b"old")
 NEW = thm([bytes.fromhex("24" * 16)], b"old")
 
@@ -83,7 +89,7 @@ class _Connection:
     base theory names `excluded_theory_names` caches on it."""
 
     class server:                       # a host that logs to no file
-        logger = __import__("logging").getLogger("test_cross_version_migration")
+        logger = _DOUBLES_LOGGER
 
     def __init__(self) -> None:
         self.on_close: list = []
@@ -183,7 +189,7 @@ def test_old_hash_ignores_a_tombstoned_status(cache):  # noqa: F811
 # --- §3.4: the forward map and the predecessor map ---
 
 PURE0, PURE1 = H(0x20), H(0x22)       # Pure in two Isabelle versions
-A0, A1 = H(0x40), H(0x42)             # a changed theory
+A0, A1 = H(0x40), H(0x44)             # a changed theory (no new key equals an old one)
 U = H(0x60)                           # a theory with one hash in both
 W = H(0x81)                           # a WIP cone theory
 
@@ -257,21 +263,32 @@ def test_same_isabelle_refresh_finds_predecessors(cache):  # noqa: F811
     assert asyncio.run(ctx.predecessors()) == {thm([PURE0, A1], b"pa"): old}
 
 
-def test_predecessor_tie_break_keeps_fewer_rewritten_constituents(cache):  # noqa: F811
-    # Plan §3.4's example: Y re-hashes in release k only, Z in release k+1 only.
-    Y0, Y1, Z0, Z2 = H(0x10), H(0x12), H(0x30), H(0x32)
-    _registry([(Y0, "Tst.Y", 1), (Z0, "Tst.Z", 1), (Y1, "Tst.Y", 2), (Z2, "Tst.Z", 3)],
-              finished=[Y0, Z0, Y1])
-    older = thm([Y0, Z0], b"s")                       # release k-1
-    newer = thm([Y1, Z0], b"s")                       # release k
-    write_user({older: _thm_record([("Tst.Y", Y0), ("Tst.Z", Z0)]),
-                newer: _thm_record([("Tst.Y", Y1), ("Tst.Z", Z0)])})
-    # Release k+1: Y keeps Y1, so its old hash is Y0; Z's is Z0.  Both records
-    # rewrite to {Y1, Z2}: the older one through two constituents, the newer one
-    # through one.
-    ctx = _ctx([("Tst.Y", Y1), ("Tst.Z", Z2)])
-    assert ctx.forward == {Y0: Y1, Z0: Z2}
-    assert asyncio.run(ctx.predecessors()) == {thm([Y1, Z2], b"s"): newer}
+@pytest.mark.parametrize("y0, y1", [(H(0x10), H(0x12)), (H(0x12), H(0x10))])
+def test_predecessor_tie_break_keeps_fewer_rewritten_constituents(cache, y0, y1):  # noqa: F811
+    # Plan §3.4's example: Y re-hashes in release k only, Z in release k+1 only.  Both
+    # LMDB scan orders of the two old records are run.  y (in Y) was minted in step k.
+    z0, z2 = H(0x30), H(0x34)
+    _registry([(y0, "Tst.Y", 1), (z0, "Tst.Z", 1), (y1, "Tst.Y", 2), (z2, "Tst.Z", 3)],
+              finished=[y0, z0, y1])
+    y_old, y_k = ns(y0, CONST, "Tst.y"), ns(y1, CONST, "Tst.y")
+    older, newer, new = thm([y0, z0], b"s"), thm([y1, z0], b"s"), thm([y1, z2], b"s")
+    assert new not in (older, newer)
+    write_user({k: S.Semantic_DB._encode(r) for k, r in {
+        older: trec(EntityKind.THEOREM, "Tst.s", digest=None, deps=[y_old], version=4, ia=4,
+                    consts=[("Tst.Y", y0), ("Tst.Z", z0)]),
+        newer: trec(EntityKind.THEOREM, "Tst.s", digest=None, deps=[y_k], version=4, ia=9,
+                    consts=[("Tst.Y", y1), ("Tst.Z", z0)]),
+        y_k: trec(CONST, "Tst.y", deps=[y_k], version=9, ia=9)}.items()})
+    # Release k+1: Y keeps y1, so its old hash is y0; Z's is z0.  Both records rewrite to
+    # `new`: the older one through two constituents, the newer one through one.
+    ctx = _ctx([("Tst.Y", y1), ("Tst.Z", z2)])
+    assert ctx.forward == {y0: y1, z0: z2}
+    assert asyncio.run(ctx.predecessors()) == {new: newer}
+    reasons, rec_cache, _ = _migrate(
+        [ent(EntityKind.THEOREM, "Tst.s", new, digest=None, deps=[y_k])], ctx=ctx)
+    t = rec_cache[new]
+    assert reasons[new] is M.Reason.UNCHANGED           # copied, not re-interpreted
+    assert t is not None and t.migrated_from == newer
 
 
 def test_predecessor_map_is_built_once_and_recomputed_alike(cache, monkeypatch):  # noqa: F811
@@ -749,18 +766,28 @@ def test_experiences_move_once_with_every_mapped_constituent(cache):  # noqa: F8
     assert _vectors(cache)[new[both]] == b"vb"
 
 
-def test_experience_move_resumes_after_an_interrupt(cache):  # noqa: F811
+@pytest.mark.parametrize("site", ["_add_in", "_remove_in"])
+def test_experience_move_resumes_after_an_interrupt(cache, monkeypatch, site):  # noqa: F811
+    # The interrupt lands in either half of step (3); only one transaction for both
+    # keeps the experience listed somewhere.
     ctx = _exp_world(cache)
-    old = _experience([("Pure", P0)], b"e")
-    new = exp_key([P1], b"e")
-    rec = S.Semantic_DB[old]
-    assert rec is not None
-    # interrupted after phase (1): the record exists, the index still lists the old key
-    S.Semantic_DB.create_records({new: rec._replace(theory_constituents=[("Pure", P1)],
-                                                    migrated_from=old)})
-    assert ctx.summary(str(cache)) == ["Experiences: 0 moved to the new generation, 1 were already moved."]
-    assert Experience_Index.user_bucket(P1) == [new] and Experience_Index.user_bucket(P0) == []
-    assert ctx.summary(str(cache)) == ["Experiences: 0 moved to the new generation, 0 were already moved."]
+    old = _experience([("Pure", P0), ("Tst.A", A_0)], b"e")
+    new = exp_key([P1, A_1], b"e")
+
+    def interrupted(*args):
+        raise KeyboardInterrupt("interrupted inside step (3)")
+    # context(), never undo(): undo() would also revert the cache fixture's
+    # SEMANTIC_DB_DIR, and the rest of the test would write the real store.
+    with monkeypatch.context() as m, pytest.raises(KeyboardInterrupt):
+        m.setattr(Experience_Index, site, interrupted)
+        ctx.summary(str(cache))
+    assert S.Semantic_DB[new] is not None                     # step (1) committed
+    assert Experience_Index.user_bucket(P0) == Experience_Index.user_bucket(A_0) == [old]
+    assert Experience_Index.user_bucket(P1) == Experience_Index.user_bucket(A_1) == []
+    assert ctx.summary(str(cache)) == [
+        "Experiences: 0 moved to the new generation, 1 were already moved."]
+    assert Experience_Index.user_bucket(P1) == Experience_Index.user_bucket(A_1) == [new]
+    assert Experience_Index.user_bucket(P0) == Experience_Index.user_bucket(A_0) == []
 
 
 def test_experience_whose_record_is_gone_only_leaves_the_index(cache):  # noqa: F811
@@ -821,7 +848,7 @@ class _HostConnection:
     """What interpret_file's dry path touches of a connection."""
 
     class server:
-        logger = __import__("logging").getLogger("test_cross_version_migration")
+        logger = _DOUBLES_LOGGER
 
 
 def _snapshot() -> dict:
@@ -910,3 +937,104 @@ def test_dry_run_option_errors(cache, monkeypatch, capsys, argv, error):  # noqa
         CLI.main()
     assert exc.value.code == 1 and capsys.readouterr().err.strip() == error
     assert sorted(p.name for p in cache.iterdir()) == before
+
+
+def test_forward_map_goes_beside_the_host_log(cache, tmp_path, monkeypatch):  # noqa: F811
+    # The handler sits on an ancestor of the server's logger, as mk_logger_ puts it
+    # on the root (pytest's own root handler is avoided by a private chain).
+    root, child = logging.getLogger("cvm_host"), logging.getLogger("cvm_host.rpc")
+    handler = logging.FileHandler(tmp_path / "host.log")
+    root.addHandler(handler)
+
+    class Conn:
+        class server:
+            logger = child
+    try:
+        assert M._host_log_dir(Conn()) == str(tmp_path)   # type: ignore[arg-type]
+        monkeypatch.setattr(child, "propagate", False)     # the host then logs to no file
+        assert M._host_log_dir(Conn()) == str(cache)       # type: ignore[arg-type]
+    finally:
+        root.removeHandler(handler)
+        handler.close()
+
+
+def test_clause_3_reads_p_s_x_when_t_sat_out_a_step(cache):  # noqa: F811
+    # T sat out step k, in which D re-hashed to Dk and d was not enumerated; at k+1 d is
+    # back with no record.  The inverse map would read Dk++d (no record, Dk kept); p's
+    # own X, which has a record, decides: d had a record and has none now.
+    dk, d2, t2 = H(0xc2), H(0xc6), H(0xb6)
+    _registry([(T0, "Tst.T", 1), (D0, "Tst.D", 1), (dk, "Tst.D", 2),
+               (t2, "Tst.T", 3), (d2, "Tst.D", 3)], finished=[T0, D0, dk])
+    write_user({k: S.Semantic_DB._encode(r) for k, r in {
+        C0: trec(CONST, "Tst.c", deps=[C0, X], version=5, ia=7),
+        X: trec(CONST, "Tst.d", deps=[X], version=5, ia=5)}.items()})
+    ctx = _ctx([("Tst.T", t2), ("Tst.D", d2)])
+    assert ctx.inverse == {t2: T0, d2: dk}
+    c2 = ns(t2, CONST, "Tst.c")
+    reasons, _, _ = _migrate([ent(CONST, "Tst.c", c2, deps=[c2, ns(d2, CONST, "Tst.d")])],
+                             ctx=ctx)
+    assert reasons[c2] is M.Reason.DEPENDENCY_CHANGED
+
+
+# --- §3.10: a third migration step after `prune --all --keep 2` ---
+
+@pytest.mark.parametrize("prune", [False, True])
+def test_third_step_after_prune_keep_2(cache, monkeypatch, prune):  # noqa: F811
+    import argparse
+    import os
+    import Isabelle_Semantic_Embedding.isabelle_semantics as CLI
+    gens = [H(0xc0), H(0xc2), H(0xc4), H(0xc6)]          # D's generations; the last is current
+    t0, t3 = H(0xb0), H(0xb6)                            # T sat out steps 1 and 2
+    d = [ns(h, CONST, "Tst.d") for h in gens]
+    c0, z0 = ns(t0, CONST, "Tst.c"), ns(gens[0], CONST, "Tst.z")
+    _registry([(gens[0], "Tst.D", 1), (gens[1], "Tst.D", 2), (gens[2], "Tst.D", 3),
+               (t0, "Tst.T", 1)], finished=gens[:3] + [t0])
+    write_user({k: S.Semantic_DB._encode(r) for k, r in {
+        d[0]: trec(CONST, "Tst.d", deps=[d[0]], version=1, ia=1),
+        d[1]: trec(CONST, "Tst.d", deps=[d[1]], version=1, ia=1, migrated_from=d[0]),
+        d[2]: trec(CONST, "Tst.d", deps=[d[2]], version=1, ia=1, migrated_from=d[1]),
+        # c was written against D's generation 0; its dependency z never had a record
+        c0: trec(CONST, "Tst.c", deps=[c0, z0], version=1, ia=1)}.items()})
+    if prune:
+        reset_singletons()          # the CLI opens the store with a plain lmdb.open
+        monkeypatch.setattr(CLI, "CACHE_DIR", str(cache))
+        monkeypatch.setattr(CLI, "SEMANTICS_DB_PATH", os.path.join(str(cache), "semantics.lmdb"))
+        CLI.cmd_prune(argparse.Namespace(all=True, keep=2, apply=True, yes=True, no_backup=True,
+                                         identifiers=[], current_from="store"))
+        reset_singletons()
+        assert S.Semantic_DB[d[0]] is None and S.Semantic_DB[d[1]] is not None
+    _registry([(gens[3], "Tst.D", 4), (t3, "Tst.T", 4)])
+    ctx = _ctx([("Tst.D", gens[3]), ("Tst.T", t3)])
+    assert ctx.forward == {gens[2]: gens[3], t0: t3}
+    lines, reasons = [], {}
+    for entries in ([ent(CONST, "Tst.d", d[3], deps=[d[3]])],
+                    [ent(CONST, "Tst.c", ns(t3, CONST, "Tst.c"),
+                         deps=[ns(t3, CONST, "Tst.c"), ns(gens[3], CONST, "Tst.z")]),
+                     ent(CONST, "Tst.e", ns(t3, CONST, "Tst.e"))]):
+        rec_cache = dict(zip((e.universal_key for e in entries),
+                             S.Semantic_DB.get_many([e.universal_key for e in entries])))
+        step = asyncio.run(ctx.migrate(entries, rec_cache))
+        reasons.update(step.reasons)
+        seeds = [i for i, e in enumerate(entries) if rec_cache[e.universal_key] is None
+                 or rec_cache[e.universal_key].interpreted_at is None]  # type: ignore[union-attr]
+        lines.append(ctx.count(entries, step, seeds))
+    copy = S.Semantic_DB[d[3]]
+    assert copy is not None and copy.migrated_from == d[2]      # from the kept generation
+    assert reasons[d[3]] is M.Reason.UNCHANGED
+    # the dependency check reads z at the pruned generation 0: gone means changed (A20)
+    assert reasons[ns(t3, CONST, "Tst.c")] is (
+        M.Reason.DEPENDENCY_CHANGED if prune else M.Reason.UNCHANGED)
+    # the per-kind summary is the sum of the two per-theory lines
+    sends = 2 if prune else 1
+    assert lines[1].startswith(f"2 entities; copied 1; to interpret {sends}")
+    assert ctx.summary(str(cache))[0] == (
+        f"constant: 3 entities; predecessor found 2; copied 2; to interpret {sends}")
+
+
+def test_a_declared_method_text_clears_migrated_from(cache):  # noqa: F811
+    m = ns(T1, METHOD, "Tst.m")
+    write_user({m: S.Semantic_DB._encode(trec(METHOD, "Tst.m", digest=None,
+                                              migrated_from=ns(T0, METHOD, "Tst.m")))})
+    assert S.Semantic_DB.declare_interpretation(m, "A new account of the method.")
+    rec = S.Semantic_DB[m]
+    assert rec is not None and rec.migrated_from is None

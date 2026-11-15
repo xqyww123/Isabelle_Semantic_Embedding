@@ -305,9 +305,11 @@ class _Semantic_DB:
         # kind, and None for a legacy experience record that _decode could not unpack.
         goal_patterns: 'list[str] | None' = None
         # --- incremental invalidation (CHECK_OUTDATE_PLAN.md §3.1) ---
-        # The four fields live on WIP records only; on persistent records all
+        # The four fields are set only on records whose entry went through the ML
+        # digest step: WIP theories, and persistent theories under the migration
+        # switch (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.2).  Otherwise all
         # four stay None (a persistent key is content-addressed, so the key
-        # itself is the change signal).  Among WIP records:
+        # itself is the change signal).  Among digested records:
         #   * the four name-addressed kinds (constant/type/class/locale) carry
         #     all four;
         #   * theorem-alike records carry deps/version/interpreted_at but no
@@ -364,8 +366,9 @@ class _Semantic_DB:
         # what the gate compares a fresh interpretation against.  A separate
         # field, not `interpretation`: an answer is persisted before its gate
         # runs, so the stored interpretation may be ungated text (§6.2).
-        # Tracked kinds of WIP records only; None everywhere else and on every
-        # record written before this field existed (read as CHANGED, §3).
+        # Tracked kinds of digested records only (see the incremental fields
+        # above); None everywhere else and on every record written before this
+        # field existed (read as CHANGED, §3).
         baseline_interpretation: 'str | None' = None
         # --- cross-version migration (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.7) ---
         # The key of the predecessor record (an older generation's) whose meaning
@@ -882,7 +885,9 @@ class _Semantic_DB:
         text is left alone, vectors included; otherwise the vectors are
         invalidated first (ordering rule 1) and the record is written
         copy-up-then-modify through `_put_fields` with `create`, so an existing
-        record keeps its other fields.  Returns whether it wrote.
+        record keeps its other fields -- except `migrated_from`: a new text is a
+        meaning of this generation's own (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md
+        §3.8).  Returns whether it wrote.
 
         METHOD keys only: a declaration is the one source of a method's
         interpretation (the pipeline never indexes the methods of Main), which
@@ -898,7 +903,8 @@ class _Semantic_DB:
                 return False
             invalidate_vectors([key])
             self._put_fields(txn, key, {"kind": EntityKind.METHOD, "name": entity.name,
-                                        "expr": None, "interpretation": text}, create=True)
+                                        "expr": None, "interpretation": text,
+                                        "migrated_from": None}, create=True)
             return True
 
     def query(self, key: universal_key, with_pretty: bool = False,

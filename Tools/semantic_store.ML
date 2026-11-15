@@ -471,8 +471,9 @@ local
        packOption packInt,
        (* The last two fields are the incremental-invalidation payload
           (CHECK_OUTDATE_PLAN.md §3.2, step 9): the entity's semantic digest
-          (NONE for theorem-alike entities and for persistent theories) and its
-          dependency edges as the targets' CURRENT universal keys ([] likewise). *)
+          (NONE for theorem-alike entities and wherever the digest step did not run:
+          a persistent theory with the migration switch off) and its dependency
+          edges as the targets' CURRENT universal keys ([] likewise). *)
        (* Field 4 is the entity position (portable symbolic file path, line, byte
           column), NONE when there is none -- archive/plans/ENTITY_POSITION_PLAN.md §6.  It used
           to be the bare line, and the wire is not backward compatible: an ML build
@@ -2394,10 +2395,13 @@ fun plan_interpretation (force : bool) (cone : theory list) : theory list =
       " in the cone are already interpreted..."])
   in filter_out (skip_interpreted force) cone end
 
-(* Mode 4 / dry run -- see the signature comment.  Level 2 reuses schedule_dag for
-   parallelism only: dry bodies neither mark nor skip (level 1 already picked the work
-   set), and enumeration does not depend on ancestors' interpretation state, so the
-   edges merely bound concurrency the same way a live run's do. *)
+(* Mode 4 / dry run -- see the signature comment.  Level 2 reuses schedule_dag: dry
+   bodies neither mark nor skip (level 1 already picked the work set).  Without `migrate`
+   enumeration does not depend on ancestors' state, so the edges merely bound
+   concurrency.  With it they also ORDER the dry steps: a descendant's step reads the
+   pass-1 outcomes its ancestors recorded in the migration context
+   (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.6), and the dry-run RPC is
+   synchronous -- so this must stay an ancestors-first schedule. *)
 fun dry_run (force : bool) (migrate : bool) (roots : theory list) : string list * int =
   let
     val cone = collect_cone roots

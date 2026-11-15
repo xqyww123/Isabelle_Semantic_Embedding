@@ -288,10 +288,10 @@ class Entry(NamedTuple):
     # --- incremental invalidation (CHECK_OUTDATE_PLAN.md §3.2, step 9) ---
     # 16-byte semantic digest of the entity's own content; None for
     # theorem-alike entries (their key's thm128 is the digest) and for every
-    # entry of a persistent theory (content-addressed keys need no digest).
+    # entry the ML digest step skipped (see SemanticRecord's incremental fields).
     semantic_digest: "bytes | None" = None
     # dependency edges as the targets' CURRENT universal keys, resolved at
-    # scan time on the ML side; empty for entries of persistent theories.
+    # scan time on the ML side; empty when the digest step skipped the entry.
     # An entry is increment-tracked iff it carries a digest or any edges.
     deps: "list[bytes] | None" = None
 
@@ -1328,12 +1328,12 @@ def _write(task: InterpretationTask, idx: int, rec: 'SemanticRecord | None',
     `text` -- so what is written and what was judged cannot drift.  Returns
     whether a version was minted.
 
-    Two predicates, each keyed on the digest, never on the kind (a persistent
-    constant, or a four-kind entry whose digest is NONE, has a tracked kind
-    and no digest and must NOT be given a baseline): `judged` = the entry has
-    a digest (§3 rows 1-5); `has_gate_fields` = digest or deps (false only for
-    persistent entries and WIP collections / methods, which get None
-    everywhere, D15)."""
+    Two predicates, each keyed on the digest, never on the kind (a constant
+    the digest step skipped, or a four-kind entry whose digest is NONE, has a
+    tracked kind and no digest and must NOT be given a baseline): `judged` =
+    the entry has a digest (§3 rows 1-5); `has_gate_fields` = digest or deps
+    (false only for entries the digest step skipped and for collections /
+    methods, which get None everywhere, D15)."""
     e = task.entries[idx]
     judged = e.semantic_digest is not None
     has_gate_fields = judged or bool(e.deps)
@@ -1341,7 +1341,8 @@ def _write(task: InterpretationTask, idx: int, rec: 'SemanticRecord | None',
          Semantic_DB.gate_write() as w:
         if not judged:
             # theorem-alike (deps present): the stored version, else ε; never
-            # a mint (I2).  Persistent, collection, method: None everywhere.
+            # a mint (I2).  Skipped by the digest step, collection, method:
+            # None everywhere.
             version = ((rec.version if rec is not None and rec.version else w.counter_value())
                        if has_gate_fields else None)
             baseline, digest = None, None
@@ -1423,7 +1424,7 @@ async def _gate(task: InterpretationTask, idx: int) -> None:
         rec = task.rec_cache[e.universal_key]       # the record as currently stored (§3's R)
         text = task.results[idx]
         assert text is not None
-        verdict: _Verdict | None = None             # rows 1, theorem-alike, persistent: no verdict needed
+        verdict: _Verdict | None = None             # row 1, theorem-alike, no digest: no verdict needed
         if e.semantic_digest is not None and rec is not None and rec.semantic_digest is not None:
             if rec.baseline_interpretation is None:
                 verdict = _Verdict.CHANGED          # §3 row 2: a record from before the gate

@@ -336,9 +336,9 @@ class MigrationContext:
     def move_experiences(self) -> tuple[int, int]:
         """§3.8 (A8): every experience listed in a USER-index bucket of an old hash
         gets one copy under the key its constituents give once every mapped hash is
-        replaced, in four phases -- (1) the record, create-only, with
-        `migrated_from` = the old key; (2) its vector; (3) the new key into the
-        index; (4) LAST the old key out of its buckets.  The buckets are the
+        replaced, in three phases -- (1) the record, create-only, with
+        `migrated_from` = the old key; (2) its vector; (3) in one index
+        transaction, the new key in and the old key out.  The buckets are the
         done-marker and every phase is idempotent, so an interrupted move is
         completed by the next run.  The old record and its vector stay.  Returns
         (moved, already moved)."""
@@ -346,7 +346,7 @@ class MigrationContext:
         listed = self.listed_experiences()
         # new key -> (old key, its constituent hashes, the new record)
         moves: dict[bytes, tuple[bytes, list[bytes], SemanticRecord]] = {}
-        gone: list[bytes] = []          # listed, but the record is absent: phase (4) only
+        gone: list[bytes] = []          # listed, but the record is absent: it only leaves
         for old_key, rec in zip(listed, Semantic_DB.get_many(listed)):
             if rec is None:
                 gone.append(old_key)
@@ -360,10 +360,9 @@ class MigrationContext:
                 rec._replace(theory_constituents=consts, migrated_from=old_key))
         written = Semantic_DB.create_records({k: r for k, (_, _, r) in moves.items()})
         copy_vectors([(old_key, k) for k, (old_key, _, _) in moves.items()])
-        for k, (_, _, r) in moves.items():
-            Experience_Index.add(k, [h for _, h in r.theory_constituents or []])
-        for old_key, old_hashes, _ in moves.values():
-            Experience_Index.remove(old_key, old_hashes)
+        for k, (old_key, old_hashes, r) in moves.items():
+            Experience_Index.move(old_key, old_hashes, k,
+                                  [h for _, h in r.theory_constituents or []])
         for old_key in gone:
             Experience_Index.remove_scanning(old_key)
         created = sum(1 for _, c in written.values() if c)
@@ -433,10 +432,14 @@ async def _end_migration(arg: Any, connection: Connection) -> list[str]:
 
 def _host_log_dir(connection: Connection) -> str:
     """The directory of the host's log file (§3.1: the dry run's TSV goes beside
-    it); the semantic DB directory when the host logs to no file."""
+    it); the semantic DB directory when the host logs to no file.  The handler is
+    looked up the way a record propagates: `mk_logger_` puts it on the root."""
     import logging
     from ._paths import semantic_DB_dir
-    for h in connection.server.logger.handlers:
-        if isinstance(h, logging.FileHandler):
-            return os.path.dirname(h.baseFilename)
+    lg: 'logging.Logger | None' = connection.server.logger
+    while lg is not None:
+        for h in lg.handlers:
+            if isinstance(h, logging.FileHandler):
+                return os.path.dirname(h.baseFilename)
+        lg = lg.parent if lg.propagate else None
     return semantic_DB_dir()

@@ -131,26 +131,39 @@ class _Experience_Index:
         An empty constituent list registers ``uk`` under the ``_GLOBAL`` sentinel
         bucket instead (a global experience), so it stays retrievable + dedup-visible
         rather than being orphaned (never added to any bucket)."""
-        uk = bytes(uk)
         with self._ensure_env().begin(write=True) as txn:
-            for h in (constituent_hashes or [_GLOBAL]):
-                h = bytes(h)
-                bucket = self._get_bucket(txn, h)
-                if uk not in bucket:
-                    bucket.append(uk)
-                    self._put_bucket(txn, h, bucket)
+            self._add_in(txn, bytes(uk), constituent_hashes)
 
     def remove(self, uk: universal_key, constituent_hashes: 'list[theory_hash]') -> None:
         """Remove ``uk`` from each of its constituent theory hashes' buckets (an empty
         list removes it from the ``_GLOBAL`` bucket — symmetric with ``add``)."""
-        uk = bytes(uk)
         with self._ensure_env().begin(write=True) as txn:
-            for h in (constituent_hashes or [_GLOBAL]):
-                h = bytes(h)
-                bucket = self._get_bucket(txn, h)
-                if uk in bucket:
-                    bucket.remove(uk)
-                    self._put_bucket(txn, h, bucket)
+            self._remove_in(txn, bytes(uk), constituent_hashes)
+
+    def move(self, old_uk: universal_key, old_hashes: 'list[theory_hash]',
+             new_uk: universal_key, new_hashes: 'list[theory_hash]') -> None:
+        """Re-list one experience under a new key: ``add`` the new key and ``remove``
+        the old one in ONE write transaction, so no interrupt can leave it listed
+        in no bucket (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.8)."""
+        with self._ensure_env().begin(write=True) as txn:
+            self._add_in(txn, bytes(new_uk), new_hashes)
+            self._remove_in(txn, bytes(old_uk), old_hashes)
+
+    def _add_in(self, txn: Any, uk: bytes, constituent_hashes: 'list[theory_hash]') -> None:
+        for h in (constituent_hashes or [_GLOBAL]):
+            h = bytes(h)
+            bucket = self._get_bucket(txn, h)
+            if uk not in bucket:
+                bucket.append(uk)
+                self._put_bucket(txn, h, bucket)
+
+    def _remove_in(self, txn: Any, uk: bytes, constituent_hashes: 'list[theory_hash]') -> None:
+        for h in (constituent_hashes or [_GLOBAL]):
+            h = bytes(h)
+            bucket = self._get_bucket(txn, h)
+            if uk in bucket:
+                bucket.remove(uk)
+                self._put_bucket(txn, h, bucket)
 
     def user_bucket(self, h: theory_hash) -> 'list[bytes]':
         """The USER index's bucket of ``h``: the layer every write touches."""
