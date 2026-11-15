@@ -16,6 +16,7 @@ import math
 import os
 import random
 import re
+import time
 from collections import deque
 from collections.abc import Callable, Generator, Iterable
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -418,6 +419,8 @@ class AgentTask:
     #: the interpretation task "raise after this many", on the judge "ask
     #: once more, then CHANGED" (plan §15.6)
     max_stalled_retries: int = _MAX_STALLED_RETRIES
+    #: what its `turn` events call the session
+    role: str = "interpretation"
 
     def __init__(self, connection: Connection, file_path: str,
                  theory_longname: str, theory_key: universal_key,
@@ -486,6 +489,11 @@ class AgentTask:
         # The terminal ResultMessage of an expired credential is byte-identical to
         # that of a dead network; this trail is the only thing that tells them apart.
         self.api_retry_errors: list[tuple[Any, Any]] = []
+        # The run's migration context, whose event log records every turn
+        # (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.12); None: no log.
+        self.migration: 'MigrationContext | None' = None
+        # The turn in flight: the indices it sends, whether it is a retry, its start.
+        self._turn: tuple[list[int], bool, float] = ([], False, time.monotonic())
 
     # --- the work queue (plan §5.3) ---
 
@@ -569,6 +577,21 @@ class AgentTask:
         raise NotImplementedError
 
     # --- cost ---
+
+    def begin_turn(self, indices: list[int], retry: bool) -> None:
+        """Called just before a turn is sent: what its `turn` event reports."""
+        self._turn = (indices, retry, time.monotonic())
+
+    def log_turn(self, **usage: Any) -> None:
+        """The `turn` event of the turn whose usage was just accounted (§3.12)."""
+        if self.migration is None:
+            return
+        indices, retry, started = self._turn
+        self.migration.log.event(
+            "turn", theory=self.theory_longname, role=self.role, retry=retry,
+            keys=[self.entries[i].universal_key for i in indices],
+            seconds=round(time.monotonic() - started, 3), driver=self.driver,
+            model=self.model, **usage)
 
     def run_cost(self) -> CostSummary:
         """The cost of THIS invocation so far (the `run_*` accumulators)."""
@@ -654,9 +677,11 @@ class InterpretationTask(AgentTask):
                  dependents: 'list[list[int]] | None' = None,
                  emb_store: 'Semantic_Vector_Store | None' = None,
                  run_state: RunState | None = None,
-                 make_judge_driver: 'Callable[[JudgeTask], InterpretationDriver] | None' = None):
+                 make_judge_driver: 'Callable[[JudgeTask], InterpretationDriver] | None' = None,
+                 migration: 'MigrationContext | None' = None):
         super().__init__(connection, file_path, theory_longname, theory_key,
                          entries, driver, model)
+        self.migration = migration
         self.unicode_file_path = unicode_file_path or file_path
         self._first_turn_sent = False
         # The gate's collaborators (plan §15.3): the vector store whose
@@ -802,11 +827,13 @@ class JudgeTask(AgentTask):
 
     cost_prefix = b"judge_"
     max_stalled_retries = 1             # ask once more, then CHANGED (§5.4 step 3)
+    role = "judge"
 
     def __init__(self, parent: InterpretationTask, idx: int, baseline: str, fresh: str):
         super().__init__(parent.connection, parent.file_path, parent.theory_longname,
                          parent.theory_key, [parent.entries[idx]], parent.driver,
                          parent.model)
+        self.migration = parent.migration
         self.baseline, self.fresh = baseline, fresh
         self.verdict: bool | None = None    # True: "same"; None: no verdict given
         self.enqueue(0)
@@ -1300,12 +1327,14 @@ async def _prefilter(task: InterpretationTask, e: Entry,
     return _cosine(u, v)
 
 
-async def _judge(task: InterpretationTask, idx: int, baseline: str, fresh: str) -> bool:
+async def _judge(task: InterpretationTask, idx: int, baseline: str,
+                 fresh: str) -> 'tuple[bool, str | None]':
     """The judge session (§5.4 step 3): one fresh session over the one pair,
     under a permit of `_JUDGE_SESSIONS` (D12).  True iff the judge said
-    "same".  Every other outcome -- no verdict after the one extra ask, a
-    `FatalAgentError`, any failure of the session -- reads as CHANGED,
-    logged to the host only (D10); a cancellation propagates."""
+    "same", with the reason it gave.  Every other outcome -- no verdict after
+    the one extra ask, a `FatalAgentError`, any failure of the session --
+    reads as CHANGED, logged to the host only (D10); a cancellation
+    propagates."""
     assert task.make_judge_driver is not None, "interpret_file hands the task its judge driver"
     judge = JudgeTask(task, idx, baseline, fresh)
     try:
@@ -1317,7 +1346,7 @@ async def _judge(task: InterpretationTask, idx: int, baseline: str, fresh: str) 
                      _label(judge.entries[0]), exc_info=True)
     finally:
         task.judge_cost = task.judge_cost.plus(judge.run_cost())
-    return judge.verdict is True
+    return judge.verdict is True, judge.results[0]
 
 
 def _write(task: InterpretationTask, idx: int, rec: 'SemanticRecord | None',
@@ -1388,11 +1417,15 @@ def _propagate(task: InterpretationTask, idx: int) -> None:
     has its `interpreted_at` raised to the eff* that now includes the mint
     (done) -- a gate-field write, no mint, no re-interpretation, and nothing
     beyond it: a dependent's own dependents were handled at its own verdict."""
+    enrolled: list[bytes] = []
+    pending: list[bytes] = []
+    raised: list[tuple[bytes, int | None, int]] = []
     for j in task.dependents[idx]:
+        ej = task.entries[j]
         if task.state[j] == _NOT_ENROLLED:
             task.enqueue(j)
+            enrolled.append(ej.universal_key)
         elif task.state[j] == _DONE:
-            ej = task.entries[j]
             r = task.rec_cache[ej.universal_key]
             assert r is not None, "done means written and put back into rec_cache"
             ia = _EffStar(task.rec_cache).eff_value(r.version or 0, r.deps)
@@ -1402,6 +1435,13 @@ def _propagate(task: InterpretationTask, idx: int) -> None:
                     ej.universal_key, semantic_digest=r.semantic_digest, deps=r.deps,
                     version=r.version, interpreted_at=ia,
                     baseline_interpretation=r.baseline_interpretation)
+            raised.append((ej.universal_key, r.interpreted_at, ia))
+        else:
+            pending.append(ej.universal_key)
+    if task.migration is not None:
+        task.migration.log.event(
+            "propagate", theory=task.theory_longname, key=task.entries[idx].universal_key,
+            enrolled=enrolled, pending=pending, raised=raised)
 
 
 async def _gate(task: InterpretationTask, idx: int) -> None:
@@ -1420,28 +1460,44 @@ async def _gate(task: InterpretationTask, idx: int) -> None:
     are synchronous -- so an answer that finds the entry done runs strictly
     after this gate)."""
     e = task.entries[idx]
+    rounds = 0
     while True:
+        rounds += 1
         rec = task.rec_cache[e.universal_key]       # the record as currently stored (§3's R)
         text = task.results[idx]
         assert text is not None
         verdict: _Verdict | None = None             # row 1, theorem-alike, no digest: no verdict needed
+        # The §3 row, the prefilter's similarity, the judge's reason: for the
+        # `gate` event (migration plan §3.12).  An entry with no digest has no row.
+        row: int | None = 1 if e.semantic_digest is not None else None
+        sim: float | None = None
+        why: str | None = None
         if e.semantic_digest is not None and rec is not None and rec.semantic_digest is not None:
             if rec.baseline_interpretation is None:
-                verdict = _Verdict.CHANGED          # §3 row 2: a record from before the gate
+                row, verdict = 2, _Verdict.CHANGED  # §3 row 2: a record from before the gate
             else:
                 sim = await _prefilter(task, e, rec.baseline_interpretation, text)
                 if sim is not None and sim < _GATE_SIMILARITY:
-                    verdict = _Verdict.CHANGED      # §3 row 3
+                    row, verdict = 3, _Verdict.CHANGED      # §3 row 3
                     _log.info("gate: %s CHANGED by the prefilter (similarity %.3f)",
                               _label(e), sim)
-                elif await _judge(task, idx, rec.baseline_interpretation, text):
-                    verdict = _Verdict.UNCHANGED    # §3 row 4
                 else:
-                    verdict = _Verdict.CHANGED      # §3 row 5
+                    same, why = await _judge(task, idx, rec.baseline_interpretation, text)
+                    row, verdict = ((4, _Verdict.UNCHANGED) if same     # §3 row 4
+                                    else (5, _Verdict.CHANGED))         # §3 row 5
         if task.results[idx] != text:               # a correction landed mid-gate:
             continue                                # judge the new text; nothing written, nothing minted
         minted = _write(task, idx, rec, verdict, text)
         break
+    if task.migration is not None:
+        w = task.rec_cache[e.universal_key]
+        assert w is not None, "_write puts the written record back into rec_cache"
+        task.migration.log.event(
+            "gate", theory=task.theory_longname, key=e.universal_key, row=row,
+            similarity=sim, verdict=verdict.name if verdict else None, why=why,
+            rounds=rounds, version_before=rec.version if rec else None,
+            version_after=w.version, interpreted_at=w.interpreted_at,
+            migrated_from=w.migrated_from, minted=minted)
     if minted:
         _propagate(task, idx)
 
@@ -1501,6 +1557,7 @@ async def _retry_unanswered(driver: InterpretationDriver, task: AgentTask) -> No
         line = task.retry_report(len(task.unanswered()), stall + 1)
         if line:
             await _report(line, warn=True)
+        task.begin_turn(chunk, retry=True)
         await driver.run_turn(task.retry_prompt(chunk))
 
 
@@ -1549,6 +1606,7 @@ async def _run_agent(make_driver: Callable[[], InterpretationDriver],
                         continue
                     _log.info("agent: sending %d entries (%d gates running)",
                               len(batch), task.gates_running)
+                    task.begin_turn(batch, retry=False)
                     await driver.run_turn(task.build_prompt(batch))
                     throttled = 0
                     await _retry_unanswered(driver, task)
@@ -1664,6 +1722,11 @@ async def interpret_file(
     _log.info("interpret_file%s: %s (%s), %d entries",
               " (dry run)" if dry_run else "", theory_longname, file_path, n)
     run_state = current_run_state()
+    started = time.monotonic()
+    if migration is not None:
+        migration.log.event("theory_start", theory=theory_longname, hash=theory_key,
+                            old_hash=migration.inverse.get(bytes(theory_key)),
+                            entities=n, file=file_path)
 
     # --- the scan (plan §5.2, §15.8) ---
     # Nothing minted, no gate field written, no counter put.  Per entry: the
@@ -1680,17 +1743,20 @@ async def interpret_file(
     if migration is not None:
         # The migration step (ai-artifacts/CROSS_VERSION_MIGRATION_PLAN.md §3.5-3.7):
         # the previous generation's records copied in, before the scan reads them.
-        step = await migration.migrate(entries, rec_cache)
+        step = await migration.migrate(theory_longname, entries, rec_cache)
     recs = [rec_cache[e.universal_key] for e in entries]
     # ε for a version-less record (§9 "ε epoch"): read, never put -- the gate
     # takes its own ε from its own transaction.
     epsilon = Semantic_DB.counter_snapshot()
     eff = _EffStar(rec_cache)          # one instance: nothing changes during a scan
     seeds: list[int] = []
+    scanned: list[dict[str, Any]] = []      # the `scan` events (migration plan §3.12)
     for i, (e, rec) in enumerate(zip(entries, recs)):
         has_gate_fields = e.semantic_digest is not None or bool(e.deps)
         cached = rec is not None and rec.interpretation is not None
-        stale = False
+        # Which criterion finds the record stale; None: it serves.
+        stale: str | None = None if cached else "uncached"
+        eff_star: int | None = None         # eff*, when the scan computes it
         if cached and has_gate_fields:
             assert rec is not None
             if e.semantic_digest is not None and (
@@ -1698,7 +1764,7 @@ async def interpret_file(
                     rec.semantic_digest != e.semantic_digest):
                 # Changed -- or a record that never had a digest: its text was
                 # written for content nobody can reconstruct, stale by §4.4.
-                stale = True
+                stale = "digest"
             elif rec.deps is not None and set(rec.deps) != set(e.deps or []):
                 # Unified dep criterion (§4.3): every stored edge is compared,
                 # by value, against the target's CURRENT universal key as the
@@ -1709,17 +1775,24 @@ async def interpret_file(
                 # would query the OLD key forever and read silence: the dead
                 # edge.  Re-interpretation stores the current uks (the gate's
                 # write takes deps off the wire entry), which heals the edge.
-                stale = True
+                stale = "deps"
             else:
-                stale = (eff.eff_value(rec.version or epsilon, e.deps)
-                         > (rec.interpreted_at or 0))
-        if cached and not stale:
+                eff_star = eff.eff_value(rec.version or epsilon, e.deps)
+                if eff_star > (rec.interpreted_at or 0):
+                    stale = "eff"
+        if stale is None:
             assert rec is not None
             results[i] = rec.interpretation
         else:
             seeds.append(i)
+        if migration is not None:
+            scanned.append({"theory": theory_longname, "key": e.universal_key,
+                            "cached": cached, "stale": stale, "eff": eff_star,
+                            "version": rec.version if rec else None,
+                            "interpreted_at": rec.interpreted_at if rec else None})
     not_enrolled = [i for i in range(n) if results[i] is not None]   # filled from the store
     if migration is not None:
+        migration.log.write("scan", scanned)
         line = migration.count(entries, step, seeds)
         if dry_run:
             await _report(f"{theory_longname}: {line}")
@@ -1754,6 +1827,10 @@ async def interpret_file(
         _refresh_statements(entries, rec_cache, not_enrolled)
         _log.info("interpret_file (dry run): %s -- %d of %d entries are seeds",
                   theory_longname, len(seeds), n)
+        if migration is not None:
+            migration.log.event("theory_end", theory=theory_longname,
+                                seconds=round(time.monotonic() - started, 3),
+                                seeds=len(seeds), line=line)
         return len(seeds)
 
     # Resolve before any LLM work: a misspelt driver name is a configuration
@@ -1775,6 +1852,10 @@ async def interpret_file(
         await _report(f"Interpreting {theory_longname}: {n} entities, none are in the "
                       f"semantic database yet, asking the LLM for all {n}.")
     current_cost = cumulative_cost = _NO_COST
+    # What the `theory_end` event reports of the agent work (migration plan §3.12).
+    spent: dict[str, Any] = {"interpreted": 0, "enrolled": 0, "driver": driver_name,
+                             "model": model, "interpretation": _NO_COST._asdict(),
+                             "judge": _NO_COST._asdict()}
 
     if seeds:
         from .hover import mk_definition_tool, mk_hover_tool
@@ -1820,6 +1901,7 @@ async def interpret_file(
             rec_cache=rec_cache, dependents=dependents,
             emb_store=emb_store, run_state=run_state,
             make_judge_driver=make_judge_driver,
+            migration=migration,
         )
         for i in not_enrolled:
             task.results[i] = results[i]
@@ -1910,6 +1992,9 @@ async def interpret_file(
         cumulative_cost = CostSummary(*cum)
         await _report(f"{theory_longname}: {task.n_interpreted()} entities interpreted; "
                       f"cost ${current_cost.cost_usd:.4f}.")
+        spent.update(interpreted=task.n_interpreted(), enrolled=task.enrolled(),
+                     model=task.model, interpretation=task.run_cost()._asdict(),
+                     judge=task.judge_cost._asdict())
 
         results = list(task.results)     # 1:1 with `entries`; the store was written by the gates
     else:
@@ -1922,6 +2007,10 @@ async def interpret_file(
     # _statement(e, rec)` and put back into rec_cache, and `_statement` over
     # that written record returns the same string, so the guard is a no-op.
     _refresh_statements(entries, rec_cache, not_enrolled)
+    if migration is not None:
+        migration.log.event("theory_end", theory=theory_longname,
+                            seconds=round(time.monotonic() - started, 3),
+                            seeds=len(seeds), line=line, **spent)
     return InterpretationResult(
         results,
         pretty_prints,
@@ -1949,6 +2038,21 @@ def _payload_of_wire(arg: Any) -> 'tuple[str, str, bytes, str, MigrationContext 
     (file_path, theory_longname, theory_key, driver, handle, raw_entries) = arg
     return (file_path, theory_longname, bytes(theory_key), driver,
             migration_context(handle), _entries_of_wire(raw_entries))
+
+
+@contextlib.contextmanager
+def _failure_logged(migration: 'MigrationContext | None',
+                    theory: str) -> Generator[None, None, None]:
+    """A theory whose `interpret_file` raises -- an interrupt included -- ends
+    its events with a `theory_end` that names the exception (migration plan
+    §3.12)."""
+    try:
+        yield
+    except BaseException as exc:
+        if migration is not None:
+            migration.log.event("theory_end", theory=theory,
+                                error=f"{type(exc).__name__}: {exc}")
+        raise
 
 
 def _entries_of_wire(raw_entries: Any) -> list[Entry]:
@@ -1997,9 +2101,10 @@ def _entries_of_wire(raw_entries: Any) -> list[Entry]:
 async def _interpret_file(arg: Any, connection: Connection) -> InterpretationResult:
     (file_path, theory_longname, theory_key, driver, migration,
      entries) = _payload_of_wire(arg)
-    result = await interpret_file(
-        connection, file_path, theory_longname, theory_key, entries, driver,
-        migration=migration)
+    with _failure_logged(migration, theory_longname):
+        result = await interpret_file(
+            connection, file_path, theory_longname, theory_key, entries, driver,
+            migration=migration)
     assert isinstance(result, InterpretationResult)  # not a dry run
     return result
 
@@ -2034,9 +2139,10 @@ async def _interpret_file_dry_run(arg: Any, connection: Connection) -> int:
     nothing runs on this path."""
     (file_path, theory_longname, theory_key, driver, migration,
      entries) = _payload_of_wire(arg)
-    count = await interpret_file(
-        connection, file_path, theory_longname, theory_key, entries, driver,
-        dry_run=True, migration=migration)
+    with _failure_logged(migration, theory_longname):
+        count = await interpret_file(
+            connection, file_path, theory_longname, theory_key, entries, driver,
+            dry_run=True, migration=migration)
     assert isinstance(count, int)  # the dry-run branch returns the count
     return count
 

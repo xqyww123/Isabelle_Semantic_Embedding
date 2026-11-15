@@ -4,16 +4,26 @@
 The migration context is the state of one run with the switch on
 (`collect --migrate-on-hash-change`, §3.1): opened by `Semantic_Store.begin_migration`
 on a connection the run holds for its whole length, read by every `interpret_file`
-whose payload carries its handle, and dropped when that connection closes.
+whose payload carries its handle, and dropped when that connection closes.  It
+writes the run's event log (§3.12).
 """
 
 from __future__ import annotations
 
 import asyncio
+import datetime
 import enum
+import hashlib
 import itertools
+import json
+import logging
 import os
+import pathlib
+import socket
+import subprocess
+import sys
 import time
+from collections.abc import Iterable
 from typing import Any, NamedTuple
 
 import msgpack
@@ -22,6 +32,7 @@ from Isabelle_RPC_Host.theory_hash import is_persistent
 from Isabelle_RPC_Host.universal_key import EntityKind, is_thm_rule_key
 
 from . import theory_hash_registry
+from ._paths import semantic_DB_dir
 from .document_text import entity_document_text
 from .semantic_embedding import copy_vectors
 from .semantic_interpretation import Entry, _EffStar, _statement
@@ -55,6 +66,73 @@ _NO_STEP = Step({}, frozenset())
 
 # A dry run's recorded pass-1 outcome of an entry that will be first-written (§3.6).
 _FIRST_WRITE = object()
+
+
+# --- the event log (§3.12) ---
+
+def _json_value(o: Any) -> Any:
+    """What `json.dumps` writes for the values it does not know: bytes as hex."""
+    if isinstance(o, (bytes, bytearray, memoryview)):
+        return bytes(o).hex()
+    raise TypeError(f"no JSON form for {type(o).__name__}")
+
+
+class EventLog:
+    """A run's event log (§3.12): `<semantic DB dir>/migration_stats/<run>.jsonl`,
+    one JSON object per line, each batch appended and closed at once, so a crash
+    leaves every line before it whole.  Every object has `t` (UTC, ms), `run`
+    and `ev`."""
+
+    def __init__(self, run: str) -> None:
+        self.run = run
+        directory = os.path.join(semantic_DB_dir(), "migration_stats")
+        os.makedirs(directory, exist_ok=True)
+        self.path = os.path.join(directory, run + ".jsonl")
+
+    def write(self, ev: str, rows: Iterable[dict[str, Any]]) -> None:
+        t = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
+        head = {"t": t.replace("+00:00", "Z"), "run": self.run, "ev": ev}
+        # ASCII escapes: a lone surrogate in a judge's text cannot break the write.
+        lines = [json.dumps({**head, **row}, default=_json_value) + "\n" for row in rows]
+        if lines:
+            with open(self.path, "a", encoding="ascii") as f:
+                f.writelines(lines)
+
+    def event(self, ev: str, **fields: Any) -> None:
+        self.write(ev, [fields])
+
+
+def _provenance() -> dict[str, Any]:
+    """Which code runs (§3.12): the package's checkout, its git commit and the
+    tracked files that differ from it (both null outside a git checkout), and the
+    SHA-1 of Tools/semantic_digest.ML (null where the package ships without it)."""
+    checkout = pathlib.Path(__file__).resolve().parent.parent
+
+    def git(*args: str) -> 'str | None':
+        if not (checkout / ".git").exists():     # an install inside some other repository
+            return None
+        try:
+            p = subprocess.run(["git", "-C", str(checkout), *args],
+                               capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return p.stdout if p.returncode == 0 else None
+
+    commit = git("rev-parse", "HEAD")
+    status = git("status", "--porcelain", "--untracked-files=no")
+    ml = checkout / "Tools" / "semantic_digest.ML"
+    return {"checkout": str(checkout),
+            "git_commit": commit.strip() if commit is not None else None,
+            "git_changed": status.splitlines() if status is not None else None,
+            "semantic_digest_ml_sha1":
+                hashlib.sha1(ml.read_bytes()).hexdigest() if ml.is_file() else None}
+
+
+def _tombstoned(key: bytes) -> bool:
+    """The user layer holds a tombstone at `key`."""
+    with Semantic_DB._ensure_env().begin() as txn:
+        raw = txn.get(key)
+    return raw is not None and is_tombstone(raw)
 
 
 def _finished(txn: Any, h: bytes) -> bool:
@@ -125,7 +203,9 @@ class MigrationContext:
     """One run's migration state (§3.1)."""
 
     def __init__(self, dry_run: bool, theories: list[tuple[str, bytes]],
-                 base_names: 'set[str]') -> None:
+                 base_names: 'set[str]', host_log: 'str | None') -> None:
+        self.handle = next(_handles)
+        self._started = time.monotonic()
         # A dry run writes nothing (A12): its copies stay in memory (§3.9).
         self.dry_run = dry_run
         # (long name, current hash) of the cone and the base theories, as ML sent them.
@@ -148,15 +228,30 @@ class MigrationContext:
         self.inverse: dict[bytes, bytes] = {new: old for old, new in self.forward.items()}
         self._predecessors: 'dict[bytes, bytes] | None' = None
         self._building: 'asyncio.Future[dict[bytes, bytes]] | None' = None
+        mode = "dry" if dry_run else "live"
+        self.log = EventLog(time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+                            + f"-{mode}-{os.getpid()}-{self.handle}")
+        self.log.event(
+            "run_start", mode=mode, host=socket.gethostname(), pid=os.getpid(),
+            argv=sys.argv, python=sys.version, db_dir=semantic_DB_dir(), host_log=host_log,
+            counter=Semantic_DB.counter_snapshot(), **_provenance(),
+            theories=[(name, h, self.inverse.get(h)) for name, h in theories],
+            base_names=sorted(base_names))
 
     async def predecessors(self) -> dict[bytes, bytes]:
         """The predecessor map (§3.4), built on first use -- a resume with nothing
         to do scans nothing -- in a worker thread, so the minutes-long scan does not
         stall the host's other work; concurrent first uses share the one build."""
+        async def build() -> dict[bytes, bytes]:
+            t0 = time.monotonic()
+            found = await asyncio.to_thread(predecessor_map, self.forward)
+            self.log.event("predecessor_map", size=len(found),
+                           seconds=round(time.monotonic() - t0, 3))
+            return found
+
         if self._predecessors is None:
             if self._building is None:
-                self._building = asyncio.ensure_future(
-                    asyncio.to_thread(predecessor_map, self.forward))
+                self._building = asyncio.ensure_future(build())
             self._predecessors = await self._building
         return self._predecessors
 
@@ -179,15 +274,17 @@ class MigrationContext:
             self._generation_kept[h] = kept
         return kept
 
-    async def migrate(self, entries: list[Entry],
+    async def migrate(self, theory: str, entries: list[Entry],
                       rec_cache: 'dict[bytes, SemanticRecord | None]') -> Step:
         """One theory's migration step (§3.5-3.7), before the scan: every entry
         whose key reads absent in `rec_cache` and has a predecessor gets a copy
         -- written create-only in one transaction, its vector copied, in a live
         run; only into `rec_cache` in a dry run -- and `rec_cache` then holds
-        what the store (or the dry run) holds."""
+        what the store (or the dry run) holds.  Every entry gets an `entry` event
+        (§3.12)."""
         absent = [e for e in entries if rec_cache[e.universal_key] is None]
         if not absent:
+            self._log_entries(theory, entries, {})
             return _NO_STEP
         old_keys = {e.universal_key: await self.old_key(e.universal_key) for e in absent}
         # No await below: the reads and the one write transaction run without
@@ -199,18 +296,33 @@ class MigrationContext:
         reasons: dict[bytes, Reason] = {}
         copies: dict[bytes, SemanticRecord] = {}
         sources: dict[bytes, SemanticRecord] = {}
+        # What the `entry` event says of each absent entry, beyond its identity.
+        trace: dict[bytes, dict[str, Any]] = {}
         epsilon = Semantic_DB.counter_snapshot()
         for e in absent:
             uk, kind = e.universal_key, EntityKind(e.kind)
             k_old = old_keys[uk]
             p = preds.get(k_old) if k_old is not None else None
-            if (p is None or p.interpretation is None
-                    or (kind in TRACKED_KINDS and p.semantic_digest is None)):
-                reasons[uk] = Reason.NO_PREDECESSOR
-                continue
-            if kind in _STATEMENT_KINDS and not (
+            t = trace[uk] = {"old_key": k_old, "predecessor": "found",
+                             "old_digest": p.semantic_digest if p else None,
+                             "new_digest": e.semantic_digest, "p2": None, "deps": None,
+                             "created": None, "same_document_text": None,
+                             "vector_stores": None}
+            if k_old is None:
+                t["predecessor"] = "no old key"
+            elif p is None:
+                t["predecessor"] = "tombstone" if _tombstoned(k_old) else "no record"
+            elif p.interpretation is None:
+                t["predecessor"] = "no interpretation"
+            elif kind in TRACKED_KINDS and p.semantic_digest is None:
+                t["predecessor"] = "no digest"
+            elif kind in _STATEMENT_KINDS and not (
                     e.prop_str == p.expr or (not e.prop_str and not p.expr)):
+                t["predecessor"] = "statement changed"
                 reasons[uk] = Reason.DEFINITION_CHANGED
+                continue
+            if p is None or t["predecessor"] != "found":
+                reasons[uk] = Reason.NO_PREDECESSOR
                 continue
             assert k_old is not None
             gated = kind not in _STATEMENT_KINDS
@@ -246,24 +358,38 @@ class MigrationContext:
                 return o
             return r
 
-        def unchanged(d: bytes, p: SemanticRecord) -> bool:
+        def check(d: bytes, p: SemanticRecord) -> tuple[str, 'bytes | None', bool]:
+            """The dependency check of `d` against `p` (§3.6): the clause that
+            decides, the key it reads beside `d` (X, M or Y), and the result."""
             r = rec_at(d)
             if r is _FIRST_WRITE:
-                return False
+                return "first write", None, False
             if p.version is not None:      # clause 1, or clause 3 at Y = X
                 x = next((x for x in p.deps or [] if x[16:] == d[16:]), None)
                 if r is not None:
-                    return (x is not None and (d == x or r.migrated_from == x)
-                            and (r.version or 0) <= (p.interpreted_at or 0))
+                    return "1", x, (x is not None and (d == x or r.migrated_from == x)
+                                    and (r.version or 0) <= (p.interpreted_at or 0))
                 y = x
             else:                          # clause 2, or clause 3 at Y = inverse
                 if r is not None:
                     m = rec_at(r.migrated_from) if r.migrated_from is not None else None
-                    return m is not None and m is not _FIRST_WRITE and m.version is None
+                    return "2", r.migrated_from, (m is not None and m is not _FIRST_WRITE
+                                                  and m.version is None)
                 old = self.inverse.get(d[:16])
                 y = None if old is None else old + d[16:]
-            return (d not in first_written and y is not None
-                    and rec_at(y) is None and self.generation_kept(y[:16]))
+            return "3", y, (d not in first_written and y is not None
+                            and rec_at(y) is None and self.generation_kept(y[:16]))
+
+        def checked(e: Entry, p: SemanticRecord) -> list[dict[str, Any]]:
+            """The checks of `e`'s dependencies against `p`, in order, up to and
+            including the first that finds a change."""
+            checks: list[dict[str, Any]] = []
+            for d in e.deps or []:
+                clause, via, ok = check(d, p)
+                checks.append({"key": d, "clause": clause, "via": via, "result": ok})
+                if not ok:
+                    break
+            return checks
 
         eligible: list[Entry] = []
         for e in absent:
@@ -271,11 +397,14 @@ class MigrationContext:
             c = copies.get(uk)
             if c is None or c.version is None:     # no copy, or a method / collection
                 continue
-            p = sources[uk]
+            p, t = sources[uk], trace[uk]
+            t["p2"] = p.version is not None and p.interpreted_at is None     # P2 mark
             if EntityKind(e.kind) in TRACKED_KINDS and p.semantic_digest != e.semantic_digest:
                 reasons[uk] = Reason.DEFINITION_CHANGED
-            elif ((p.version is not None and p.interpreted_at is None)     # P2 mark
-                  or not all(unchanged(d, p) for d in e.deps or [])):
+                continue
+            if not t["p2"]:
+                t["deps"] = checked(e, p)
+            if t["p2"] or not all(c["result"] for c in t["deps"]):
                 reasons[uk] = Reason.DEPENDENCY_CHANGED
             else:
                 eligible.append(e)
@@ -294,13 +423,33 @@ class MigrationContext:
                         e.universal_key, _FIRST_WRITE)
         elif copies:
             written = Semantic_DB.create_records(copies)
-            for uk, (rec, _) in written.items():
+            for uk, (rec, created) in written.items():
                 rec_cache[uk] = rec
-            copy_vectors([
-                (c.migrated_from, uk) for uk, (c, created) in written.items()
-                if created and c.migrated_from is not None
-                and entity_document_text(c) == entity_document_text(sources[uk])])
+                trace[uk]["created"] = created
+                if created:
+                    trace[uk]["same_document_text"] = (
+                        entity_document_text(rec) == entity_document_text(sources[uk]))
+            vectors = copy_vectors([(k_old, uk) for uk, k_old in old_keys.items()
+                                    if k_old is not None and trace[uk]["same_document_text"]])
+            for uk, stores in vectors.items():
+                trace[uk]["vector_stores"] = stores
+        for uk, t in trace.items():
+            r = rec_cache[uk] if uk in copies else None
+            t.update(reason=reasons[uk].value, copied=uk in copies,
+                     version=r.version if r else None,
+                     interpreted_at=r.interpreted_at if r else None)
+        self._log_entries(theory, entries, trace)
         return Step(reasons, frozenset(copies))
+
+    def _log_entries(self, theory: str, entries: list[Entry],
+                     trace: dict[bytes, dict[str, Any]]) -> None:
+        """One `entry` event per entry of a migrating theory (§3.12); `trace` has
+        the absent ones."""
+        self.log.write("entry", (
+            {"theory": theory, "key": e.universal_key, "kind": EntityKind(e.kind).name,
+             "name": e.name, "absent": e.universal_key in trace,
+             **trace.get(e.universal_key, {})}
+            for e in entries))
 
     def count(self, entries: list[Entry], step: Step, seeds: list[int]) -> str:
         """Add one theory's numbers to the per-kind summary and return its dry-run
@@ -340,53 +489,74 @@ class MigrationContext:
         `migrated_from` = the old key; (2) its vector; (3) in one index
         transaction, the new key in and the old key out.  The buckets are the
         done-marker and every phase is idempotent, so an interrupted move is
-        completed by the next run.  The old record and its vector stay.  Returns
-        (moved, already moved)."""
+        completed by the next run.  The old record and its vector stay.  Every
+        listed experience gets an `experience` event (§3.12).  Returns (moved,
+        already moved)."""
         from .experience_index import Experience_Index
         listed = self.listed_experiences()
         # new key -> (old key, its constituent hashes, the new record)
         moves: dict[bytes, tuple[bytes, list[bytes], SemanticRecord]] = {}
         gone: list[bytes] = []          # listed, but the record is absent: it only leaves
+        rows: list[dict[str, Any]] = []
         for old_key, rec in zip(listed, Semantic_DB.get_many(listed)):
             if rec is None:
                 gone.append(old_key)
                 continue
             moved = Semantic_DB._moved_constituents(rec.theory_constituents or [], self.forward)
             if moved is None:           # a stale listing; `rebuild_experience_index` repairs it
+                rows.append({"old_key": old_key, "new_key": None, "outcome": "stale listing",
+                             "vector_stores": None})
                 continue
             consts, prefix = moved
             moves[prefix + old_key[16:]] = (
                 old_key, [h for _, h in rec.theory_constituents or []],
                 rec._replace(theory_constituents=consts, migrated_from=old_key))
         written = Semantic_DB.create_records({k: r for k, (_, _, r) in moves.items()})
-        copy_vectors([(old_key, k) for k, (old_key, _, _) in moves.items()])
+        vectors = copy_vectors([(old_key, k) for k, (old_key, _, _) in moves.items()])
         for k, (old_key, old_hashes, r) in moves.items():
             Experience_Index.move(old_key, old_hashes, k,
                                   [h for _, h in r.theory_constituents or []])
+            rows.append({"old_key": old_key, "new_key": k,
+                         "outcome": "moved" if written[k][1] else "already moved",
+                         "vector_stores": vectors[k]})
         for old_key in gone:
             Experience_Index.remove_scanning(old_key)
+            rows.append({"old_key": old_key, "new_key": None, "outcome": "gone",
+                         "vector_stores": None})
+        self.log.write("experience", rows)
         created = sum(1 for _, c in written.values() if c)
         return created, len(written) - created
 
     def summary(self, log_dir: str) -> list[str]:
         """What `end_migration` returns for ML to print (§3.9): one line per kind,
         then the experiences -- moved in a live run (§3.8), counted in a dry run,
-        which also writes the forward map as a TSV into `log_dir` (§3.1)."""
+        which also writes the forward map as a TSV into `log_dir` (§3.1).  Ends
+        the event log with `run_end` (§3.12)."""
         lines = [f"{kind.label}: {n} entities; predecessor found {p}; copied {c}; "
                  f"to interpret {s}"
                  for kind, (n, p, c, s) in sorted(self._kinds.items())]
+        end: dict[str, Any] = {"kinds": {
+            kind.name: dict(zip(("entities", "predecessor_found", "copied", "to_interpret"), n))
+            for kind, n in sorted(self._kinds.items())}}
         if not self.dry_run:
             moved, already = self.move_experiences()
-            return lines + [f"Experiences: {moved} moved to the new generation, "
-                            f"{already} were already moved."]
-        path = os.path.join(log_dir, time.strftime("forward_map-%Y%m%d-%H%M%S.tsv",
-                                                   time.gmtime()))
-        with open(path, "w", encoding="utf-8") as f:
-            for name, h in self.theories:
-                old = self.inverse.get(h)
-                f.write(f"{name}\t{h.hex()}\t{old.hex() if old else ''}\n")
-        return lines + [f"Experiences: {len(self.listed_experiences())} still listed "
-                        "under an old hash.", f"Forward map written to {path}."]
+            end.update(experiences_moved=moved, experiences_already_moved=already)
+            lines.append(f"Experiences: {moved} moved to the new generation, "
+                         f"{already} were already moved.")
+        else:
+            path = os.path.join(log_dir, time.strftime("forward_map-%Y%m%d-%H%M%S.tsv",
+                                                       time.gmtime()))
+            with open(path, "w", encoding="utf-8") as f:
+                for name, h in self.theories:
+                    old = self.inverse.get(h)
+                    f.write(f"{name}\t{h.hex()}\t{old.hex() if old else ''}\n")
+            listed = len(self.listed_experiences())
+            end.update(experiences_listed=listed, forward_map=path)
+            lines += [f"Experiences: {listed} still listed under an old hash.",
+                      f"Forward map written to {path}."]
+        self.log.event("run_end", **end, counter=Semantic_DB.counter_snapshot(),
+                       seconds=round(time.monotonic() - self._started, 3))
+        return lines
 
 
 # Live contexts by handle.  A handle is never reused within the host process.
@@ -412,15 +582,15 @@ async def _begin_migration(arg: Any, connection: Connection) -> int:
     connection closes, as the interpretation lock's `RunState` does."""
     dry_run, theories = arg
     ctx = MigrationContext(bool(dry_run), [(name, bytes(h)) for name, h in theories],
-                           set(await excluded_theory_names(connection)))
-    handle = next(_handles)
-    _contexts[handle] = ctx
+                           set(await excluded_theory_names(connection)),
+                           _host_log_file(connection))
+    _contexts[ctx.handle] = ctx
 
     def drop() -> None:
-        _contexts.pop(handle, None)
+        _contexts.pop(ctx.handle, None)
 
     connection.on_close.append(drop)
-    return handle
+    return ctx.handle
 
 
 @isabelle_remote_procedure("Semantic_Store.end_migration")
@@ -430,16 +600,20 @@ async def _end_migration(arg: Any, connection: Connection) -> list[str]:
     return ctx.summary(_host_log_dir(connection))
 
 
-def _host_log_dir(connection: Connection) -> str:
-    """The directory of the host's log file (§3.1: the dry run's TSV goes beside
-    it); the semantic DB directory when the host logs to no file.  The handler is
-    looked up the way a record propagates: `mk_logger_` puts it on the root."""
-    import logging
-    from ._paths import semantic_DB_dir
+def _host_log_file(connection: Connection) -> 'str | None':
+    """The host's log file, None when it logs to no file.  The handler is looked
+    up the way a record propagates: `mk_logger_` puts it on the root."""
     lg: 'logging.Logger | None' = connection.server.logger
     while lg is not None:
         for h in lg.handlers:
             if isinstance(h, logging.FileHandler):
-                return os.path.dirname(h.baseFilename)
+                return h.baseFilename
         lg = lg.parent if lg.propagate else None
-    return semantic_DB_dir()
+    return None
+
+
+def _host_log_dir(connection: Connection) -> str:
+    """The directory of the host's log file (§3.1: the dry run's TSV goes beside
+    it); the semantic DB directory when the host logs to no file."""
+    path = _host_log_file(connection)
+    return os.path.dirname(path) if path is not None else semantic_DB_dir()

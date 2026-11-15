@@ -198,7 +198,7 @@ BASES = {"Pure", "HOL.Code_Generator", "HOL.Code_Evaluation", "HOL.Typerep"}
 
 
 def _ctx(theories, dry_run=False) -> 'M.MigrationContext':
-    return M.MigrationContext(dry_run, theories, BASES)
+    return M.MigrationContext(dry_run, theories, BASES, None)
 
 
 def _thm_record(consts: 'list[tuple[str, bytes]]') -> bytes:
@@ -342,7 +342,7 @@ def _migrate(entries, dry_run=False, ctx=None):
     ctx = ctx or _ctx([("Pure", P1), ("Tst.T", T1), ("Tst.D", D1)], dry_run)
     rec_cache = dict(zip((e.universal_key for e in entries),
                          S.Semantic_DB.get_many([e.universal_key for e in entries])))
-    reasons = asyncio.run(ctx.migrate(entries, rec_cache)).reasons
+    reasons = asyncio.run(ctx.migrate("Tst.T", entries, rec_cache)).reasons
     return reasons, rec_cache, ctx
 
 
@@ -370,11 +370,20 @@ def test_namespace_copy_fields(cache):  # noqa: F811
 
 
 def test_predecessor_must_be_live_and_digested(cache):  # noqa: F811
-    _world({C0: S.TOMBSTONE, ns(T0, TYPE, "Tst.t"): trec(TYPE, "Tst.t", digest=None)})
+    _world({C0: S.TOMBSTONE, ns(T0, TYPE, "Tst.t"): trec(TYPE, "Tst.t", digest=None),
+            ns(T0, TYPE, "Tst.u"): trec(TYPE, "Tst.u", interp=None)})
     reasons, rec_cache, _ = _migrate([ent(CONST, "Tst.c", C1),
-                                      ent(TYPE, "Tst.t", ns(T1, TYPE, "Tst.t"))])
+                                      ent(TYPE, "Tst.t", ns(T1, TYPE, "Tst.t")),
+                                      ent(TYPE, "Tst.u", ns(T1, TYPE, "Tst.u")),
+                                      ent(CONST, "Tst.n", ns(T1, CONST, "Tst.n")),
+                                      ent(EntityKind.THEOREM, "Tst.h", thm([P1, T1], b"h"),
+                                          digest=None)])
     assert set(reasons.values()) == {M.Reason.NO_PREDECESSOR}
     assert all(v is None for v in rec_cache.values())
+    # what the event log says of each (§3.12)
+    assert {e["name"]: e["predecessor"] for e in _events(cache) if e["ev"] == "entry"} == {
+        "Tst.c": "tombstone", "Tst.t": "no digest", "Tst.u": "no interpretation",
+        "Tst.n": "no record", "Tst.h": "no old key"}
 
 
 def test_methods_and_collections_by_statement(cache):  # noqa: F811
@@ -394,6 +403,7 @@ def test_methods_and_collections_by_statement(cache):  # noqa: F811
     assert (m.semantic_digest, m.deps, m.version, m.interpreted_at,
             m.baseline_interpretation) == (None, None, None, None, None)
     assert rec_cache[es[1].universal_key] is None
+    assert _one(_events(cache), "entry", es[1].universal_key)["predecessor"] == "statement changed"
 
 
 def test_changed_digest_copies_the_old_digest(cache):  # noqa: F811
@@ -607,6 +617,10 @@ def test_vectors_follow_created_copies_with_the_same_text(cache):  # noqa: F811
     v = _vectors(cache)
     assert v[same1] == b"vs"                        # same document text: p's vector
     assert v[moved1] == S.TOMBSTONE                 # the text changed: none, not the stale one
+    evs = _events(cache)
+    assert [(e["same_document_text"], e["vector_stores"]) for e in
+            (_one(evs, "entry", same1), _one(evs, "entry", moved1))] == [
+        (True, ["vector_test.lmdb"]), (False, None)]
 
 
 def test_dry_run_writes_nothing(cache):  # noqa: F811
@@ -897,7 +911,7 @@ def test_per_theory_line_and_kind_summary_agree(cache):  # noqa: F811
     ctx = _ctx([("Pure", P1), ("Tst.T", T1)], dry_run=True)
     rec_cache = dict(zip((e.universal_key for e in entries),
                          S.Semantic_DB.get_many([e.universal_key for e in entries])))
-    step = asyncio.run(ctx.migrate(entries, rec_cache))
+    step = asyncio.run(ctx.migrate("Tst.T", entries, rec_cache))
     seeds = [1, 3]          # e: no predecessor; f: stale by the scan's own criteria
     assert ctx.count(entries, step, seeds) == (
         "4 entities; copied 2; to interpret 2 (no predecessor 1, definition changed 0, "
@@ -1013,7 +1027,7 @@ def test_third_step_after_prune_keep_2(cache, monkeypatch, prune):  # noqa: F811
                      ent(CONST, "Tst.e", ns(t3, CONST, "Tst.e"))]):
         rec_cache = dict(zip((e.universal_key for e in entries),
                              S.Semantic_DB.get_many([e.universal_key for e in entries])))
-        step = asyncio.run(ctx.migrate(entries, rec_cache))
+        step = asyncio.run(ctx.migrate("Tst.T", entries, rec_cache))
         reasons.update(step.reasons)
         seeds = [i for i, e in enumerate(entries) if rec_cache[e.universal_key] is None
                  or rec_cache[e.universal_key].interpreted_at is None]  # type: ignore[union-attr]
@@ -1038,3 +1052,241 @@ def test_a_declared_method_text_clears_migrated_from(cache):  # noqa: F811
     assert S.Semantic_DB.declare_interpretation(m, "A new account of the method.")
     rec = S.Semantic_DB[m]
     assert rec is not None and rec.migrated_from is None
+
+
+# --- §3.12: the event log ---
+
+import hashlib  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import re  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+import numpy as np  # noqa: E402
+
+from Isabelle_Semantic_Embedding.interpretation_driver import (  # noqa: E402
+    InterpretationDriver, accumulate_usage)
+
+_HEAD = {"t", "run", "ev"}
+_ABSENT_ENTRY = {"old_key", "predecessor", "old_digest", "new_digest", "p2", "deps", "created",
+                 "same_document_text", "vector_stores", "reason", "copied", "version",
+                 "interpreted_at"}
+# The documented fields of every event type (§3.12); `entry` adds _ABSENT_ENTRY for an
+# entry whose key read absent, and a live run's `theory_end` and `run_end` differ.
+_FIELDS = {
+    "run_start": {"mode", "host", "pid", "argv", "python", "db_dir", "host_log", "counter",
+                  "checkout", "git_commit", "git_changed", "semantic_digest_ml_sha1",
+                  "theories", "base_names"},
+    "predecessor_map": {"size", "seconds"},
+    "theory_start": {"theory", "hash", "old_hash", "entities", "file"},
+    "entry": {"theory", "key", "kind", "name", "absent"},
+    "scan": {"theory", "key", "cached", "stale", "eff", "version", "interpreted_at"},
+    "turn": {"theory", "role", "retry", "keys", "seconds", "driver", "model", "input_tokens",
+             "cache_creation_tokens", "cache_read_tokens", "output_tokens", "cost_usd"},
+    "gate": {"theory", "key", "row", "similarity", "verdict", "why", "rounds", "version_before",
+             "version_after", "interpreted_at", "migrated_from", "minted"},
+    "propagate": {"theory", "key", "enrolled", "pending", "raised"},
+    "experience": {"old_key", "new_key", "outcome", "vector_stores"},
+    "theory_end": {"theory", "seconds", "seeds", "line"},
+    "run_end": {"kinds", "counter", "seconds"},
+}
+_LIVE_THEORY_END = {"interpreted", "enrolled", "driver", "model", "interpretation", "judge"}
+_DRY_EVENTS = {"run_start", "predecessor_map", "theory_start", "entry", "scan", "theory_end",
+               "run_end"}
+
+
+def _events(cache) -> list[dict]:
+    """The events of the one log the test's run wrote, in file order."""
+    logs = sorted((cache / "migration_stats").iterdir())
+    assert len(logs) == 1
+    evs = [json.loads(line) for line in logs[0].read_text().splitlines()]
+    assert {e["run"] for e in evs} == {logs[0].stem}
+    assert all(re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", e["t"]) for e in evs)
+    return evs
+
+
+def _check_fields(evs: list[dict], dry: bool) -> None:
+    for e in evs:
+        want = _HEAD | _FIELDS[e["ev"]]
+        if e["ev"] == "entry" and e["absent"]:
+            want |= _ABSENT_ENTRY
+        elif e["ev"] == "theory_end" and not dry:
+            want |= _LIVE_THEORY_END
+        elif e["ev"] == "run_end":
+            want |= ({"experiences_listed", "forward_map"} if dry
+                     else {"experiences_moved", "experiences_already_moved"})
+        assert set(e) == want, e["ev"]
+
+
+def _one(evs: list[dict], ev: str, key: bytes, field: str = "key") -> dict:
+    [e] = [e for e in evs if e["ev"] == ev and e[field] == key.hex()]
+    return e
+
+
+def test_a_dry_run_logs_every_event_it_has_with_the_documented_fields(cache):  # noqa: F811
+    entries = _dry_world()
+    th1 = entries[2].universal_key
+    ctx = _ctx([("Pure", P1), ("Tst.T", T1)], dry_run=True)
+    _interpret_dry(ctx, entries)
+    lines = ctx.summary(str(cache))
+    evs = _events(cache)
+    assert {e["ev"] for e in evs} == _DRY_EVENTS
+    assert (evs[0]["ev"], evs[1]["ev"], evs[-1]["ev"]) == ("run_start", "theory_start", "run_end")
+    _check_fields(evs, dry=True)
+    start = evs[0]
+    ml = os.path.join(os.path.dirname(M.__file__), os.pardir, "Tools", "semantic_digest.ML")
+    assert (start["mode"], start["pid"], start["db_dir"], start["host_log"]) == (
+        "dry", os.getpid(), str(cache), None)
+    assert start["semantic_digest_ml_sha1"] == hashlib.sha1(open(ml, "rb").read()).hexdigest()
+    assert start["theories"] == [["Pure", P1.hex(), P0.hex()], ["Tst.T", T1.hex(), T0.hex()]]
+    c = _one(evs, "entry", C1)
+    assert (c["absent"], c["predecessor"], c["old_key"], c["reason"], c["copied"]) == (
+        True, "found", C0.hex(), "unchanged", True)
+    assert (c["created"], c["vector_stores"], c["p2"]) == (None, None, False)
+    assert c["deps"] == [{"key": C1.hex(), "clause": "1", "via": C0.hex(), "result": True}]
+    e = _one(evs, "entry", ns(T1, CONST, "Tst.e"))
+    assert (e["predecessor"], e["reason"], e["copied"]) == ("no record", "no predecessor", False)
+    assert _one(evs, "entry", th1)["old_key"] == thm([P0, T0], b"t").hex()
+    assert _one(evs, "scan", ns(T1, CONST, "Tst.e"))["stale"] == "uncached"
+    sc = _one(evs, "scan", C1)
+    assert (sc["cached"], sc["stale"], sc["version"]) == (True, None, 5)
+    assert sc["eff"] == sc["interpreted_at"]
+    end = next(x for x in evs if x["ev"] == "theory_end")
+    assert end["seeds"] == 1 and end["line"].startswith("3 entities; copied 2; to interpret 1")
+    run_end = evs[-1]
+    assert run_end["kinds"]["CONSTANT"] == {
+        "entities": 2, "predecessor_found": 1, "copied": 1, "to_interpret": 1}
+    assert run_end["forward_map"] == lines[3].removeprefix("Forward map written to ")[:-1]
+
+
+# The live fixture: c's definition changed (its judge says "different", so it mints and
+# enrols its dependents e and t); e copies unchanged (its judge says "same"); f is new.
+
+class _Agent(InterpretationDriver):
+    """Answers every entry of the turn with "new <name>"; each turn bills the same."""
+
+    async def run_turn(self, prompt: str) -> None:
+        for i in self.task.unanswered_in_batch():
+            self.task.on_answer(i, "new " + self.task.entries[i].name)
+        accumulate_usage(self.task, input_tokens=100, cache_creation_tokens=10,
+                         cache_read_tokens=20, output_tokens=30, cost_usd=0.5)
+
+
+class _Judge(InterpretationDriver):
+    """Says "same" for every entity but Tst.c."""
+
+    async def run_turn(self, prompt: str) -> None:
+        name = self.task.entries[0].name
+        await self.tools[0].handler({"same": name != "Tst.c", "why": f"judged {name}"})
+        accumulate_usage(self.task, input_tokens=5, output_tokens=1, cost_usd=0.25)
+
+
+class _LiveConnection:
+    """What interpret_file's live path touches: the host logger, and the prefilter's
+    embedding service, whose every pair has the cosine 0.95 (the judge decides)."""
+
+    class server:
+        logger = _DOUBLES_LOGGER
+
+    async def semantic_vector_store(self, *, warn: bool = True):
+        async def embed(docs, *, role):
+            return SimpleNamespace(vectors=np.array([[1.0, 0.0], [0.95, (1 - 0.95**2) ** 0.5]]))
+        return SimpleNamespace(emb_provider=SimpleNamespace(embed=embed))
+
+
+def _interpret_live(monkeypatch, tmp_path, ctx, entries):
+    monkeypatch.setattr(SI, "interpretation_driver_override", "")
+    monkeypatch.delenv("INTERPRETATION_DRIVER", raising=False)
+    monkeypatch.setattr(SI, "_JUDGE_SESSIONS", asyncio.Semaphore(4))
+
+    def make(name, *, task, **kw):
+        return (_Judge if isinstance(task, SI.JudgeTask) else _Agent)(task=task, **kw)
+    monkeypatch.setattr(SI, "make_interpretation_driver", make)
+    thy = tmp_path / "T.thy"
+    thy.write_text("theory T imports Main begin\nend\n")
+    return asyncio.run(SI.interpret_file(_LiveConnection(), str(thy), "Tst.T",  # type: ignore[arg-type]
+                                         T1, entries, migration=ctx))
+
+
+E0, E1 = ns(T0, CONST, "Tst.e"), ns(T1, CONST, "Tst.e")
+F1 = ns(T1, CONST, "Tst.f")
+
+
+def _live_world(cache):
+    th0, th1 = thm([P0, T0], b"t"), thm([P1, T1], b"t")
+    _world({C0: trec(CONST, "Tst.c", deps=[C0], version=5, ia=5, baseline="base c"),
+            E0: trec(CONST, "Tst.e", deps=[E0, C0], version=5, ia=5, baseline="base e"),
+            th0: trec(EntityKind.THEOREM, "Tst.t", digest=None, deps=[C0], version=5, ia=5,
+                      consts=[("Pure", P0), ("Tst.T", T0)])})
+    _vectors(cache, {C0: b"vc"})
+    exp = _experience([("Pure", P0)], b"x")
+    return th1, exp, [ent(CONST, "Tst.c", C1, digest=DG2, deps=[C1]),
+                      ent(CONST, "Tst.e", E1, deps=[E1, C1]),
+                      ent(CONST, "Tst.f", F1, deps=[F1]),
+                      ent(EntityKind.THEOREM, "Tst.t", th1, digest=None, deps=[C1])]
+
+
+def test_a_live_run_logs_every_event_with_the_documented_fields(cache, monkeypatch, tmp_path):  # noqa: F811
+    th1, exp, entries = _live_world(cache)
+    ctx = _ctx([("Pure", P1), ("Tst.T", T1)])
+    _interpret_live(monkeypatch, tmp_path, ctx, entries)
+    ctx.summary(str(cache))
+    evs = _events(cache)
+    assert {e["ev"] for e in evs} == set(_FIELDS)
+    _check_fields(evs, dry=False)
+    c = _one(evs, "entry", C1)
+    assert (c["reason"], c["copied"], c["created"], c["same_document_text"]) == (
+        "definition changed", True, True, True)
+    assert (c["old_digest"], c["new_digest"], c["vector_stores"]) == (DG.hex(), DG2.hex(), ["vector_test.lmdb"])
+    assert c["deps"] is None                     # a changed digest checks no dependency
+    e = _one(evs, "entry", E1)
+    assert e["reason"] == "unchanged" and [d["result"] for d in e["deps"]] == [True, True]
+    assert _one(evs, "scan", C1)["stale"] == "digest"
+    assert _one(evs, "scan", E1)["stale"] is None
+    gc = _one(evs, "gate", C1)
+    assert (gc["row"], gc["verdict"], gc["why"], gc["minted"], gc["version_before"]) == (
+        5, "CHANGED", "judged Tst.c", True, 5)
+    assert gc["similarity"] == pytest.approx(0.95)
+    assert gc["version_after"] == S.Semantic_DB.counter_snapshot()     # the one mint
+    assert gc["migrated_from"] is None
+    ge = _one(evs, "gate", E1)
+    assert (ge["row"], ge["verdict"], ge["minted"], ge["migrated_from"]) == (
+        4, "UNCHANGED", False, E0.hex())
+    assert (_one(evs, "gate", F1)["row"], _one(evs, "gate", th1)["row"]) == (1, None)
+    p = _one(evs, "propagate", C1)
+    assert sorted(p["enrolled"]) == sorted([E1.hex(), th1.hex()])
+    turns = [t for t in evs if t["ev"] == "turn"]
+    judged = sorted(t["keys"][0] for t in turns if t["role"] == "judge")
+    assert judged == sorted([C1.hex(), E1.hex()])
+    asked = [k for t in turns if t["role"] == "interpretation" for k in t["keys"]]
+    assert sorted(asked) == sorted(k.hex() for k in (C1, E1, F1, th1))
+    end = next(x for x in evs if x["ev"] == "theory_end")
+    n_turns = sum(t["role"] == "interpretation" for t in turns)
+    assert (end["interpreted"], end["judge"]["cost_usd"]) == (4, 0.5)
+    assert end["interpretation"]["cost_usd"] == 0.5 * n_turns
+    [x] = [x for x in evs if x["ev"] == "experience"]
+    assert (x["old_key"], x["outcome"]) == (exp.hex(), "moved")
+    assert evs[-1]["experiences_moved"] == 1
+
+
+def test_a_run_without_the_switch_writes_no_log(cache, monkeypatch, tmp_path):  # noqa: F811
+    _, _, entries = _live_world(cache)
+    _interpret_live(monkeypatch, tmp_path, None, entries)
+    asyncio.run(SI.interpret_file(_HostConnection(), "/tmp/T.thy", "Tst.T",  # type: ignore[arg-type]
+                                  T1, entries, dry_run=True))
+    assert not (cache / "migration_stats").exists()
+
+
+def test_a_failing_theory_ends_its_events_with_the_error(cache, monkeypatch):  # noqa: F811
+    conn = _Connection()
+    handle = asyncio.run(M._begin_migration([True, PAIRS], conn))  # type: ignore[arg-type]
+
+    async def fail(*args, **kw):
+        raise SI.FatalAgentError("no agent")
+    monkeypatch.setattr(SI, "interpret_file", fail)
+    with pytest.raises(SI.FatalAgentError) as raised:
+        asyncio.run(SI._interpret_file_dry_run(_wire(handle), conn))  # type: ignore[arg-type]
+    conn.close()
+    end = _events(cache)[-1]
+    assert (end["ev"], end["theory"], end["error"]) == (
+        "theory_end", "Tst.A", f"FatalAgentError: {raised.value}")

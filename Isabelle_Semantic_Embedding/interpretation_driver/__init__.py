@@ -231,3 +231,6 @@ def accumulate_usage(task: "AgentTask", *,
     task.run_output_tokens += output_tokens
     task.run_cost_usd += cost_usd
     task.write_cost()
+    task.log_turn(input_tokens=input_tokens, cache_creation_tokens=cache_creation_tokens,
+                  cache_read_tokens=cache_read_tokens, output_tokens=output_tokens,
+                  cost_usd=cost_usd)
