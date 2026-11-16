@@ -62,8 +62,8 @@ _UNEXPECTED_BILLING_WARNED: set[str] = set()
 #: The CLI's own tools an agent with `cli_tools` may use.  The interpretation
 #: tools are NOT listed: the allowed set is derived in `_options` from the
 #: tools the driver actually serves (`mcp__<SERVER_NAME>__<name>`), so a
-#: judge session -- one `verdict` tool, no built-ins -- cannot inherit the
-#: interpretation agent's reach.
+#: judge session -- one `verdict` tool, no built-ins but the tool search
+#: (`_TOOL_SEARCH`) -- cannot inherit the interpretation agent's reach.
 _CLI_BUILTINS = {
     "Read",
     "Grep",
@@ -82,8 +82,14 @@ _CLI_BUILTINS = {
     "WebSearch",
     "ExitPlanMode",
     "MCPSearch",
-    "ToolSearch",
 }
+
+#: The CLI's tool search, allowed in every session: the CLI defers MCP tools,
+#: giving the model their names only, and the model fetches a tool's schema
+#: through `ToolSearch` before calling it -- a judge denied it cannot call
+#: `verdict`.  It grants nothing: every tool it fetches is still gated by the
+#: PreToolUse hook.
+_TOOL_SEARCH = {"ToolSearch"}
 
 
 def _deny(reason: str) -> HookJSONOutput:
@@ -424,7 +430,7 @@ class ClaudeCodeDriver(InterpretationDriver):
         # ONE allowed set feeds both `allowed_tools` (which only suppresses
         # prompts) and the PreToolUse hook (the enforcement), so the two
         # cannot disagree.
-        allowed = {f"mcp__{SERVER_NAME}__{t.name}" for t in self.tools}
+        allowed = {f"mcp__{SERVER_NAME}__{t.name}" for t in self.tools} | _TOOL_SEARCH
         if self.cli_tools:
             allowed |= _CLI_BUILTINS
 
