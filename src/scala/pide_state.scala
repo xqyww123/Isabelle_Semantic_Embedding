@@ -18,6 +18,8 @@ package isabelle.semantic_embedding
 
 import isabelle._
 
+import java.lang.ref.SoftReference
+
 
 /* Shared query helpers operating on any Document.Snapshot */
 
@@ -274,24 +276,24 @@ object DB_Snapshots {
     resources.find_theory(file.file).map(_.theory)
       .filter(theory => resources.parent_background.base.loaded_theory(theory))
 
-  // per Session (its heap): Session.read_theory's own cache is weak and cleared at GC
-  private val snapshots =
-    new java.util.WeakHashMap[Session, Map[String, Option[Document.Snapshot]]]
+  // per Session (its heap): Session.read_theory's own cache is weak and cleared at GC;
+  // this one holds snapshots softly, which the JVM clears before running out of heap
+  private type Cache = Map[String, SoftReference[Option[Document.Snapshot]]]
+  private val snapshots = new java.util.WeakHashMap[Session, Cache]
 
   private def read_theory(session: Session, theory: String): Option[Document.Snapshot] =
     snapshots.synchronized {
-      val found = snapshots.get(session)
-      val cache = if (found == null) Map.empty[String, Option[Document.Snapshot]] else found
-      cache.getOrElse(theory, {
+      val cache = proper_value(snapshots.get(session)).getOrElse(Map.empty: Cache)
+      cache.get(theory).flatMap(ref => proper_value(ref.get)).getOrElse {
         val result =
           try { Some(session.read_theory(theory)) }
           catch {
             case exn: Exception if !Exn.is_interrupt(exn) =>
               Output.warning("DB_Snapshots: " + Exn.message(exn)); None
           }
-        snapshots.put(session, cache + (theory -> result))
+        snapshots.put(session, cache + (theory -> new SoftReference(result)))
         result
-      })
+      }
     }
 
   def get_snapshot(session: Session, file_path: String): Option[Document.Snapshot] =
