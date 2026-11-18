@@ -212,8 +212,8 @@ def accumulate_usage(task: "AgentTask", *,
                      **raw: Any) -> None:
     """Add one turn's usage to `task` and flush it to the theory record.
 
-    `raw` is what the backend reported with the turn (a session id, a running
-    total, ...), written to the `turn` event only (§3.12).
+    `raw` is backend-specific detail of the turn (a session id, a running
+    total, a per-model breakdown), written to the `turn` event only (§3.12).
 
     Two accumulators, deliberately: ``total_*`` is the pending delta that
     ``write_cost`` folds into LMDB and then zeroes, ``run_*`` is the whole

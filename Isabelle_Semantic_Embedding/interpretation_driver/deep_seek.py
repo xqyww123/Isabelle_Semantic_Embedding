@@ -9,7 +9,7 @@ DeepSeek and everything that is true only of Anthropic's own API overridden.
 Measured against the live endpoint (2026-08-27):
 - It accepts real model names (`deepseek-v4-pro`) and echoes them back; a
   bogus name is a hard invalid_request_error, never a silent substitution.
-- The CLI's `total_cost_usd` prices tokens at Anthropic list prices, so
+- The CLI's cost figures price tokens at Anthropic list prices, so
   `_turn_cost_usd` recomputes from tokens.  How far the CLI's figure lands
   above ours depends on the turn's cache-hit ratio: 4.8x on a cache-heavy
   turn, ~100x on a cache-miss-dominated one.
