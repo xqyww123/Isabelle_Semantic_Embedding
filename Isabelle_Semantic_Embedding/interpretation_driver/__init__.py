@@ -208,8 +208,12 @@ def accumulate_usage(task: "AgentTask", *,
                      cache_creation_tokens: int = 0,
                      cache_read_tokens: int = 0,
                      output_tokens: int = 0,
-                     cost_usd: float = 0.0) -> None:
+                     cost_usd: float = 0.0,
+                     **raw: Any) -> None:
     """Add one turn's usage to `task` and flush it to the theory record.
+
+    `raw` is what the backend reported with the turn (a session id, a running
+    total, ...), written to the `turn` event only (§3.12).
 
     Two accumulators, deliberately: ``total_*`` is the pending delta that
     ``write_cost`` folds into LMDB and then zeroes, ``run_*`` is the whole
@@ -233,4 +237,4 @@ def accumulate_usage(task: "AgentTask", *,
     task.write_cost()
     task.log_turn(input_tokens=input_tokens, cache_creation_tokens=cache_creation_tokens,
                   cache_read_tokens=cache_read_tokens, output_tokens=output_tokens,
-                  cost_usd=cost_usd)
+                  cost_usd=cost_usd, **raw)

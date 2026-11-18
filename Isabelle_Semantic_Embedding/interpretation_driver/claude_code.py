@@ -195,6 +195,12 @@ class ClaudeCodeDriver(InterpretationDriver):
     def __init__(self, **kw: Any) -> None:
         super().__init__(**kw)
         self._client: ClaudeSDKClient | None = None
+        #: Each CLI session's highest `total_cost_usd` seen.  It is the session's
+        #: running total (a compaction keeps both), so a turn costs its advance;
+        #: never lowered, as a crash result may carry zero.
+        self._cost_by_session: dict[str, float] = {}
+        #: The models of the current turn's assistant messages.
+        self._turn_models: set[str] = set()
 
     @property
     def status_messages(self) -> dict[int, str]:
@@ -322,8 +328,10 @@ class ClaudeCodeDriver(InterpretationDriver):
             # record it so write_cost's provenance names the model that ran.
             # Which models actually BILLED is a separate, stronger question,
             # answered from the terminal message (see _record_turn_cost).
-            if not self.task.model and isinstance(message.model, str) and message.model:
-                self.task.model = message.model
+            if isinstance(message.model, str) and message.model:
+                self._turn_models.add(message.model)
+                if not self.task.model:
+                    self.task.model = message.model
             err = getattr(message, "error", None)
             if err is not None:
                 self._raise_for_agent_error(err, None, _model_error_text(message))
@@ -385,26 +393,32 @@ class ClaudeCodeDriver(InterpretationDriver):
             d_out = message.usage.get("output_tokens", 0)
         else:
             d_in = d_cw = d_cr = d_out = 0
+        # `usage` is the turn's own; `total_cost_usd` is the session's running total.
+        total = message.total_cost_usd
+        seen = self._cost_by_session.get(message.session_id, 0.0)
+        reported = max((total or 0.0) - seen, 0.0)
+        self._cost_by_session[message.session_id] = seen + reported
         cost = self._turn_cost_usd(
             input_tokens=d_in, cache_creation_tokens=d_cw,
             cache_read_tokens=d_cr, output_tokens=d_out,
-            reported_usd=message.total_cost_usd or 0.0)
+            reported_usd=reported)
         # Both figures on purpose: for a redirected backend the CLI figure is
         # Anthropic-priced, and how far above ours it lands depends on the
         # turn's cache-hit ratio (measured 4.8x on a cache-heavy DeepSeek
         # turn, ~100x on a cache-miss-dominated one).  A figure NEAR OURS is
         # the alarm -- it means the tokens really were Anthropic's.
         _log.info("turn usage: %s, cost: $%.6f (CLI reported $%.6f)",
-                  message.usage, cost, message.total_cost_usd or 0.0)
+                  message.usage, cost, reported)
         self._check_billable_models(message)
         accumulate_usage(self.task, input_tokens=d_in, cache_creation_tokens=d_cw,
                          cache_read_tokens=d_cr, output_tokens=d_out,
-                         cost_usd=cost)
+                         cost_usd=cost, session_id=message.session_id,
+                         total_cost_usd=total, models=sorted(self._turn_models))
 
     def _check_billable_models(self, message: ResultMessage) -> None:
         """Warn when a model this backend did not expect has billed.
 
-        `model_usage` names EVERY model that billed on the turn, including
+        `model_usage` names EVERY model that billed in the session, including
         the auxiliary ones the CLI reaches for on its own -- which the single
         model field of an assistant message structurally cannot show.  For a
         backend that pins every model selector, an extra name here means a
@@ -419,7 +433,7 @@ class ClaudeCodeDriver(InterpretationDriver):
             if name in expected or name in _UNEXPECTED_BILLING_WARNED:
                 continue
             _UNEXPECTED_BILLING_WARNED.add(name)
-            _log.warning("model %r billed on this turn, but this backend runs "
+            _log.warning("model %r billed in this session, but this backend runs "
                          "only %s -- check ANTHROPIC_BASE_URL and the ambient "
                          "environment", name, sorted(expected))
 
@@ -504,6 +518,7 @@ class ClaudeCodeDriver(InterpretationDriver):
 
     async def run_turn(self, prompt: str) -> None:
         assert self._client is not None, "run_turn outside the driver's context"
+        self._turn_models = set()
         await self._client.query(prompt)
         async for message in self._client.receive_response():
             self._handle_message(message)
